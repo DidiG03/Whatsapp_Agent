@@ -1,0 +1,32 @@
+{
+  "name": "whatsapp_agent",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DidiG03/Whatsapp_Agent.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/DidiG03/Whatsapp_Agent/issues"
+  },
+  "homepage": "https://github.com/DidiG03/Whatsapp_Agent#readme",
+  "description": "",
+  "dependencies": {
+    "@clerk/express": "^1.7.31",
+    "better-sqlite3": "^12.2.0",
+    "body-parser": "^2.2.0",
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^17.2.2",
+    "express": "^5.1.0",
+    "node-fetch": "^3.3.2",
+    "openai": "^5.22.0",
+    "pino": "^9.11.0",
+    "pino-http": "^10.5.0"
+  }
+}
