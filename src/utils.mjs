@@ -38,7 +38,7 @@ export function escapeHtml(text) {
  * @returns {string} HTML of chat bubbles
  */
 export function renderTranscriptAsBubbles(transcript) {
-  if (!transcript || !transcript.trim()) return '<div class="small" style="text-align:center;">(no messages yet)</div>';
+  if (!transcript || !transcript.trim()) return '<div class="empty_chat" style="text-align:center;">How can I improve your KB?</div>';
   const lines = transcript.split('\n');
   const messages = [];
   let current = null;

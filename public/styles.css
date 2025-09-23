@@ -43,8 +43,8 @@ header h1, header h2 { margin: 0; }
 label { display: block; margin-bottom: 8px; font-size: 14px; color: var(--muted); font-weight: bold;}
 
 /* Chat bubbles */
-.chat-box { max-height: 85vh; overflow-y: auto; }
-.chat-box-settings { max-height: 93vh; overflow-y: auto; }
+.chat-box { flex: 1; min-height: 0; max-height: 85vh; overflow-y: auto; }
+.chat-box-settings { flex: 1; min-height: 0; overflow-y: auto; }
 .chat { display:flex; flex-direction: column; gap: 8px; }
 .row { display:flex; }
 .row.user { justify-content: flex-end; }
@@ -52,8 +52,20 @@ label { display: block; margin-bottom: 8px; font-size: 14px; color: var(--muted)
 .bubble { max-width: 70%; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--border);}
 .bubble.user { background: #eef2ff; border-color: #c7d2fe; }
 .bubble.ai { background: #f9fafb; }
+.empty_chat { 
+  display: flex; 
+  align-items: center; 
+  justify-content: center; 
+  text-align: center; 
+  width: 100%; 
+  min-height: 50vh; 
+  color: var(--fg); 
+  font-size: 21px; 
+  font-weight: bold;
+  opacity: 0.8;
+}
 
-.spacer { flex: 1; }
+.spacer { height: 8px; flex: 0; }
 
 form input[type="text"], form input[type="password"], form input[type="url"], form textarea {
   width: 100%;

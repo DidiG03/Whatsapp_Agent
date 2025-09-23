@@ -218,7 +218,7 @@ export default function registerWebhookRoutes(app) {
       if (suggestions.length > 0) {
         await sendWhatsappButton(
           from,
-          "I might have answers in these topics. Choose one:",
+          "That seems outside my scope. Try choosing one of these topics:",
           suggestions,
           cfg
         );
