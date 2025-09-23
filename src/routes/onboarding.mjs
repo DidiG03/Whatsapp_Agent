@@ -2,6 +2,7 @@ import { ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
 import { ONBOARD_STEPS, getOnboarding, setOnboarding } from "../services/onboarding.mjs";
 import { renderSidebar, renderTranscriptAsBubbles } from "../utils.mjs";
 import { upsertKbItem } from "../services/kb.mjs";
+import { upsertSettingsForUser, getSettingsForUser } from "../services/settings.mjs";
 import { kbCoachReply, onboardingCoachReply } from "../services/ai.mjs";
 import { db } from "../db.mjs";
 
@@ -80,6 +81,7 @@ export default function registerOnboardingRoutes(app) {
       const trimmed = lines.map(l => l.trim());
       const addLines = trimmed.filter(l => /^ADD_KB\|/.test(l));
       const askLine = trimmed.find(l => /^ASK_MORE\|/.test(l));
+      const setLines = trimmed.filter(l => /^SET\|/.test(l));
       const completeLine = trimmed.find(l => /^COMPLETE$/.test(l));
 
       // Visible part excludes directives
@@ -97,6 +99,55 @@ export default function registerOnboardingRoutes(app) {
           savedSummaries.push(`Saved “${title}” to KB.`);
         }
       }
+
+      // Apply any settings updates returned by the coach (SET|key|value)
+      if (setLines.length) {
+        const current = getSettingsForUser(userId) || {};
+        const updates = { };
+        for (const l of setLines) {
+          const m = /^SET\|(.*?)\|(.*)$/.exec(l);
+          if (!m) continue;
+          const key = (m[1] || '').trim();
+          const value = (m[2] || '').trim();
+          if (key && value) {
+            updates[key] = value;
+          }
+        }
+        if (Object.keys(updates).length) {
+          upsertSettingsForUser(userId, { ...current, ...updates });
+          const saved = Object.keys(updates).map(k => `Updated setting ${k}.`);
+          savedSummaries.push(...saved);
+        }
+      }
+
+      // Lightweight heuristics to capture common restaurant statements even if the AI omitted ADD_KB
+      try {
+        const lower = userMsg.toLowerCase();
+        const extractSentence = (text, kw) => {
+          try {
+            const parts = text.split(/[.!?]/);
+            const hit = parts.find(p => p.toLowerCase().includes(kw));
+            return (hit || '').trim() ? (hit.trim() + '.') : '';
+          } catch { return ''; }
+        };
+        if (/\bcuisine\b/i.test(userMsg)) {
+          const sentence = extractSentence(userMsg, 'cuisine') || userMsg;
+          upsertKbItem(userId, 'Cuisine', sentence);
+          savedSummaries.push('Saved “Cuisine” to KB.');
+        }
+        let resText = '';
+        const hasBoth = /accepts?\s+both/i.test(lower) || /we\s+accept\s+both/i.test(lower);
+        const hasRes = /reservations?/.test(lower);
+        const hasWalk = /walk-?ins?/.test(lower);
+        if (hasBoth) { resText = 'We accept reservations and walk-ins.'; }
+        else if (hasRes || hasWalk) {
+          resText = `We accept ${hasRes ? 'reservations' : ''}${hasRes && hasWalk ? ' and ' : ''}${hasWalk ? 'walk-ins' : ''}.`;
+        }
+        if (resText) {
+          upsertKbItem(userId, 'Reservations', resText);
+          savedSummaries.push('Saved “Reservations” to KB.');
+        }
+      } catch {}
 
       const askFollow = askLine ? (askLine.split('|')[1] || '').trim() : '';
       let aiReply = visible;

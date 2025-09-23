@@ -28,11 +28,24 @@ export function retrieveKbMatches(query, limit = 3, userId = null, onboardingTra
   const q = (query || "").toLowerCase();
   const ob = (onboardingTranscript || '').toLowerCase();
   const terms = (q + ' ' + ob).split(/[^a-z0-9]+/).filter(Boolean);
+  // Intent synonyms for better recall
+  const intentMap = [
+    { intent: 'hours', keys: ['open', 'opening', 'hours', 'when do you open', 'time'] },
+    { intent: 'locations', keys: ['where', 'location', 'address', 'located'] },
+    { intent: 'payments', keys: ['pay', 'payment', 'card', 'cash', 'visa', 'mastercard'] },
+    { intent: 'appointments', keys: ['appointment', 'book', 'booking', 'reservations', 'walk in'] },
+    { intent: 'delivery', keys: ['deliver', 'delivery', 'ship', 'shipping', 'pickup'] },
+  ];
+  const extra = new Set();
+  for (const m of intentMap) {
+    if (m.keys.some(k => q.includes(k))) extra.add(m.intent);
+  }
   console.log("KB terms:", terms);
   console.log("KB all:", all);
   const scored = all.map((row) => {
     const text = `${row.title || ""} ${row.content}`.toLowerCase();
-    const score = terms.reduce((acc, t) => acc + (text.includes(t) ? 1 : 0), 0);
+    let score = terms.reduce((acc, t) => acc + (text.includes(t) ? 1 : 0), 0);
+    for (const x of extra) { if (text.includes(x)) score += 2; }
     return { ...row, score };
   });
   
@@ -45,7 +58,14 @@ export function retrieveKbMatches(query, limit = 3, userId = null, onboardingTra
 }
 
 export function buildKbSuggestions(userId, question, max = 3) {
-  const defaults = ["Business Name", "What We Do", "Audience", "Hours", "Locations", "Products & Services", "Delivery", "Returns", "Payments", "Top FAQs"];
+  const defaults = [
+    "Business Name", "What We Do", "Audience", "Hours", "Locations",
+    "Products", "Services", "Service Areas", "Appointments", "Booking",
+    "Pricing", "Payments", "Delivery", "Shipping", "Returns", "Warranty",
+    "Menu", "Reservations", "Pickup", "Dietary Notes", "Insurance",
+    "Emergency Policy", "New Patient Intake", "Exchanges", "Contact",
+    "Social Links", "Top FAQs"
+  ];
   const picks = [];
   const seen = new Set();
 

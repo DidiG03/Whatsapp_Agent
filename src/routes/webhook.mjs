@@ -25,17 +25,41 @@ function isGreeting(raw) {
 export default function registerWebhookRoutes(app) {
   // Webhook verification (Meta)
   app.get("/webhook", (req, res) => {
+    console.log("[WEBHOOK][GET] hit", {
+      query: req.query,
+      ip: req.ip,
+      ua: req.header("user-agent")
+    });
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
     const s = findSettingsByVerifyToken(token);
-    if (mode === "subscribe" && s) return res.status(200).send(challenge);
+    if (mode === "subscribe" && s) {
+      console.log("[WEBHOOK][GET] verified", {
+        mode,
+        tokenPresent: !!token,
+        challengePresent: !!challenge
+      });
+      return res.status(200).send(challenge);
+    }
+    console.warn("[WEBHOOK][GET] verification failed", {
+      mode,
+      tokenPresent: !!token,
+      hasSettings: !!s
+    });
     return res.sendStatus(403);
   });
 
   // Receive messages
   app.post("/webhook", async (req, res) => {
     try {
+      console.log("[WEBHOOK][POST] hit", {
+        ip: req.ip,
+        ua: req.header("user-agent"),
+        contentType: req.header("content-type"),
+        rawBodyLen: (req.rawBody && req.rawBody.length) || 0,
+        hasBody: !!req.body
+      });
       const sig = req.header("X-Hub-Signature-256") || req.header("x-hub-signature-256");
       const prospective = (() => {
         try {
@@ -45,6 +69,7 @@ export default function registerWebhookRoutes(app) {
         } catch { return null; }
       })();
       const s = prospective || {};
+      console.log("[WEBHOOK][POST] tenant lookup", { hasSig: !!sig, tenantFound: !!prospective });
       if (s.app_secret && sig) {
         const [algo, their] = sig.split("=");
         if (algo !== "sha256") return res.sendStatus(403);
@@ -54,6 +79,7 @@ export default function registerWebhookRoutes(app) {
         const ours = hmac.digest("hex");
         if (ours !== their) {
           req.log?.warn({ theirs, ours }, "Invalid webhook signature");
+          console.warn("[WEBHOOK][POST] invalid signature", { hasSig: !!sig });
           return res.sendStatus(403);
         }
       }
@@ -63,6 +89,7 @@ export default function registerWebhookRoutes(app) {
       const change = entry?.changes?.[0]?.value;
       const statuses = change?.statuses;
       if (Array.isArray(statuses) && statuses.length > 0) {
+        console.log("[WEBHOOK][POST] statuses received", { count: statuses.length });
         statuses.forEach((s) => {
           const status = s.status;
           const recipientId = s.recipient_id;
@@ -88,13 +115,19 @@ export default function registerWebhookRoutes(app) {
       }
 
       const message = change?.messages?.[0];
-      if (!message) return res.sendStatus(200);
+      if (!message) {
+        console.log("[WEBHOOK][POST] no message present in change", { keys: Object.keys(change || {}) });
+        return res.sendStatus(200);
+      }
 
       const metadata = change?.metadata;
       const tenant = findSettingsByPhoneNumberId(metadata?.phone_number_id) || findSettingsByBusinessPhone(metadata?.display_phone_number?.replace(/\D/g, ""));
       const tenantUserId = tenant?.user_id || null;
       const businessNumber = metadata?.display_phone_number?.replace(/\D/g, "");
-      if (businessNumber && message.from === businessNumber) return res.sendStatus(200);
+      if (businessNumber && message.from === businessNumber) {
+        console.log("[WEBHOOK][POST] ignoring message from business number (echo)");
+        return res.sendStatus(200);
+      }
       const cfg = tenant || {};
 
       // Define sender and text early so all branches (including interactive) can use them
@@ -127,13 +160,17 @@ export default function registerWebhookRoutes(app) {
         }
       }
 
-      if (!isFirstTimeInbound) return res.sendStatus(200);
+      if (!isFirstTimeInbound) {
+        console.log("[WEBHOOK][POST] duplicate inbound ignored", { inboundId });
+        return res.sendStatus(200);
+      }
 
       // Handle interactive replies (buttons/lists) BEFORE filtering to text
       if (message?.type === "interactive") {
         const data = message.interactive;
         if (data?.type === "button_reply") {
           const { id, title } = data.button_reply || {};
+          console.log("[WEBHOOK][POST] interactive button_reply", { id, title });
           if (id === "YES_GRAPH") {
             await sendWhatsAppText(from, "Great — sending the report graph now.", cfg);
           } else if (id === "NO_GRAPH") {
@@ -147,6 +184,7 @@ export default function registerWebhookRoutes(app) {
         }
         if (data?.type === "list_reply") {
           const { id, title } = data.list_reply || {};
+          console.log("[WEBHOOK][POST] interactive list_reply", { id, title });
           if (id?.startsWith("CLINIC_")) {
             await sendWhatsAppText(from, `You chose ${title}.`, cfg);
             await sendWhatsappButton(
@@ -161,7 +199,17 @@ export default function registerWebhookRoutes(app) {
         return res.sendStatus(200);
       }
 
+      console.log("greet-debug", {
+        type: message.type,
+        from,
+        pnid: metadata?.phone_number_id,
+        display: metadata?.display_phone_number,
+        tenantUserId,
+        cfgOk: !!(cfg.phone_number_id && cfg.whatsapp_token)
+      });
+
       if(isGreeting(text)) {
+        console.log("[WEBHOOK][POST] greeting detected", { from });
         await sendWhatsAppText(from, cfg.entry_greeting || "Hello! How can I help you today?", cfg);
         const suggestions = buildKbSuggestions(tenantUserId, "hello", 3);
         if (suggestions.length) {
@@ -187,7 +235,7 @@ export default function registerWebhookRoutes(app) {
       const topScore = hasMatch ? (kbMatches[0].score || 0) : 0;
 
       // High confidence → AI answer (fallback to top KB snippet)
-      if (hasMatch && topScore >= 2) {
+      if (hasMatch && topScore >= 1) {
         const aiReply = await generateAiReply(text, kbMatches, aiOptions);
         const reply = (aiReply && aiReply.trim()) || kbMatches[0].content || "Sorry, I couldn’t find that.";
         const sendRespData = await sendWhatsAppText(from, reply, cfg);
