@@ -124,3 +124,61 @@ export async function sendWhatsappList(to, headerText, bodyText, buttonLabel, ro
   }
   return await resp.json();
 }
+
+/**
+ * React to a specific inbound message with an emoji (e.g., 👍).
+ * @param {string} to Recipient phone number (digits or E.164)
+ * @param {string} messageId The message id to react to (usually the inbound id)
+ * @param {string} emoji The emoji character to use for the reaction
+ * @param {{ phone_number_id?: string, whatsapp_token?: string }} cfg Tenant configuration
+ */
+export async function sendWhatsappReaction(to, messageId, emoji, cfg) {
+  if (!cfg.phone_number_id || !cfg.whatsapp_token) throw new Error("WhatsApp is not configured");
+  if (!messageId || !emoji) return;
+  const url = `https://graph.facebook.com/v20.0/${cfg.phone_number_id}/messages`;
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "reaction",
+    reaction: { message_id: messageId, emoji }
+  };
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${cfg.whatsapp_token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!resp.ok) {
+    // swallow errors for reactions, they are non-critical
+    return;
+  }
+}
+
+/**
+ * Send a WhatsApp document (e.g., PDF) by URL.
+ */
+export async function sendWhatsappDocument(to, docUrl, filename, cfg) {
+  if (!cfg.phone_number_id || !cfg.whatsapp_token) throw new Error("WhatsApp is not configured");
+  const url = `https://graph.facebook.com/v20.0/${cfg.phone_number_id}/messages`;
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "document",
+    document: { link: docUrl, filename: filename || undefined }
+  };
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${cfg.whatsapp_token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`WhatsApp error ${resp.status}: ${text}`);
+  }
+  return await resp.json();
+}

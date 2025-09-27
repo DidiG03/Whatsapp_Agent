@@ -6,13 +6,13 @@
 import { db } from "../db.mjs";
 
 /** Create or update a KB item by title for a specific user. */
-export function upsertKbItem(userId, title, content) {
+export function upsertKbItem(userId, title, content, file = null) {
   const existing = db.prepare(`SELECT id FROM kb_items WHERE user_id = ? AND title = ?`).get(userId, title);
   if (existing?.id) {
-    db.prepare(`UPDATE kb_items SET content = ?, created_at = created_at WHERE id = ?`).run(content, existing.id);
+    db.prepare(`UPDATE kb_items SET content = ?, file_url = COALESCE(?, file_url), file_mime = COALESCE(?, file_mime), created_at = created_at WHERE id = ?`).run(content, file?.url || null, file?.mime || null, existing.id);
     return existing.id;
   }
-  const info = db.prepare(`INSERT INTO kb_items (title, content, user_id) VALUES (?, ?, ?)`).run(title, content, userId);
+  const info = db.prepare(`INSERT INTO kb_items (title, content, file_url, file_mime, user_id) VALUES (?, ?, ?, ?, ?)`).run(title, content, file?.url || null, file?.mime || null, userId);
   return info.lastInsertRowid;
 }
 
@@ -22,39 +22,57 @@ export function upsertKbItem(userId, title, content) {
  */
 export function retrieveKbMatches(query, limit = 3, userId = null, onboardingTranscript = '') {
   console.log("Retrieving KB matches for user:", userId);
-  const all = userId
-    ? db.prepare(`SELECT id, title, content FROM kb_items WHERE user_id = ? ORDER BY id DESC`).all(userId)
-    : db.prepare(`SELECT id, title, content FROM kb_items ORDER BY id DESC`).all();
-  const q = (query || "").toLowerCase();
-  const ob = (onboardingTranscript || '').toLowerCase();
-  const terms = (q + ' ' + ob).split(/[^a-z0-9]+/).filter(Boolean);
-  // Intent synonyms for better recall
-  const intentMap = [
-    { intent: 'hours', keys: ['open', 'opening', 'hours', 'when do you open', 'time'] },
-    { intent: 'locations', keys: ['where', 'location', 'address', 'located'] },
-    { intent: 'payments', keys: ['pay', 'payment', 'card', 'cash', 'visa', 'mastercard'] },
-    { intent: 'appointments', keys: ['appointment', 'book', 'booking', 'reservations', 'walk in'] },
-    { intent: 'delivery', keys: ['deliver', 'delivery', 'ship', 'shipping', 'pickup'] },
+  const q = String(query || '').trim();
+  const ob = String(onboardingTranscript || '').trim();
+  const full = [q, ob].filter(Boolean).join(' ');
+
+  // Synonym expansion for better recall
+  const synonymPairs = [
+    [/\b(open|opening|hours|time)\b/gi, ' hours '],
+    [/\b(where|location|address|located)\b/gi, ' locations '],
+    [/\b(pay|payment|card|cash|visa|mastercard)\b/gi, ' payments '],
+    [/\b(appointment|book|booking|reservation|reservations|walk\s?in|walk-ins)\b/gi, ' appointments reservations '],
+    [/\b(deliver|delivery|ship|shipping|pickup)\b/gi, ' delivery shipping pickup '],
   ];
-  const extra = new Set();
-  for (const m of intentMap) {
-    if (m.keys.some(k => q.includes(k))) extra.add(m.intent);
+  let expanded = ` ${full} `;
+  for (const [re, rep] of synonymPairs) expanded = expanded.replace(re, ` ${rep} `);
+
+  // FTS5 query. Use bm25() ranking; restrict to this user via join.
+  // Wrap the query in quotes to avoid FTS syntax errors on symbols like () or :
+  const matchQuery = `"${expanded.replace(/"/g, '""').trim()}"`;
+  let rows = [];
+  try {
+    rows = userId
+      ? db.prepare(`
+          SELECT k.id, k.title, k.content, bm25(kb_items_fts) AS rank
+          FROM kb_items_fts
+          JOIN kb_items k ON k.id = kb_items_fts.rowid
+          WHERE k.user_id = ? AND kb_items_fts MATCH ?
+          ORDER BY rank
+          LIMIT ?
+        `).all(userId, matchQuery, limit)
+      : db.prepare(`
+          SELECT k.id, k.title, k.content, bm25(kb_items_fts) AS rank
+          FROM kb_items_fts
+          JOIN kb_items k ON k.id = kb_items_fts.rowid
+          WHERE kb_items_fts MATCH ?
+          ORDER BY rank
+          LIMIT ?
+        `).all(matchQuery, limit);
+  } catch (e) {
+    // Fallback to LIKE if FTS MATCH fails
+    try {
+      const like = `%${q.replace(/[%_]/g, '')}%`;
+      rows = userId
+        ? db.prepare(`SELECT id, title, content, 0 AS rank FROM kb_items WHERE user_id = ? AND (title LIKE ? OR content LIKE ?) LIMIT ?`).all(userId, like, like, limit)
+        : db.prepare(`SELECT id, title, content, 0 AS rank FROM kb_items WHERE title LIKE ? OR content LIKE ? LIMIT ?`).all(like, like, limit);
+    } catch {}
   }
-  console.log("KB terms:", terms);
-  console.log("KB all:", all);
-  const scored = all.map((row) => {
-    const text = `${row.title || ""} ${row.content}`.toLowerCase();
-    let score = terms.reduce((acc, t) => acc + (text.includes(t) ? 1 : 0), 0);
-    for (const x of extra) { if (text.includes(x)) score += 2; }
-    return { ...row, score };
-  });
-  
-  console.log("KB total rows:", all.length);
-  console.log("Top 3 scored:", [...scored].sort((a,b)=>b.score-a.score).slice(0,3));
-  return scored
-    .filter(r => r.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
+
+  // Attach a synthetic score (inverse of rank) for compatibility with callers
+  const results = rows.map(r => ({ id: r.id, title: r.title, content: r.content, score: Math.max(1, 1000 - Math.floor(r.rank || 0)) }));
+  console.log("FTS results:", results.slice(0,3));
+  return results;
 }
 
 export function buildKbSuggestions(userId, question, max = 3) {
@@ -76,9 +94,28 @@ export function buildKbSuggestions(userId, question, max = 3) {
     }
   }
 
-  const matched = retrieveKbMatches(question, 6, userId, '');
-  for(const m of matched) push(m.title || "");
-  for(const t of defaults) {if (picks.length >= max) break; push(t)};
+  // 1) Try semantic matches when there is a meaningful question
+  const q = String(question || '').trim();
+  if (q && q.length > 1 && q.toLowerCase() !== 'hello') {
+    const matched = retrieveKbMatches(q, 6, userId, '');
+    for(const m of matched) push(m.title || "");
+  }
+
+  // 2) Fill from user's own KB titles (most recent first)
+  try {
+    if (picks.length < max && userId) {
+      const rows = db.prepare(`
+        SELECT title FROM kb_items
+        WHERE user_id = ? AND title IS NOT NULL AND TRIM(title) <> ''
+        ORDER BY created_at DESC, id DESC
+        LIMIT 20
+      `).all(userId);
+      for (const r of rows) { if (picks.length >= max) break; push(r.title || ""); }
+    }
+  } catch {}
+
+  // 3) Fallback to sensible defaults if still short
+  for(const t of defaults) { if (picks.length >= max) break; push(t) };
   
   return picks.slice(0, max);
 }

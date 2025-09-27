@@ -32,13 +32,13 @@ export default function registerOnboardingRoutes(app) {
               <div class="card chat-box">
                 <div class="small" style="display:flex; align-items:center; gap:12px;">
                   ${stepDef ? '' : '<span><img src="/onboarding-complete.svg" alt="Onboarding complete" style="width:20px;height:20px;vertical-align:middle;margin-right:6px;"/>Onboarding complete.</span>'}
-                  <form method="post" action="/onboarding/reset" style="margin:0;" onsubmit="return checkAuthThenSubmit(this)">
+                  <form method="post" action="/onboarding/reset" style="margin:0;">
                     <button type="submit" style="background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe">
                       <img src="/restart-onboarding.svg" alt="Restart onboarding" style="width:20px;height:20px;vertical-align:middle;margin-right:6px;"/>
                       Restart onboarding
                     </button>
                   </form>
-                  <form method="post" action="/onboarding/clear" style="margin:0;" onsubmit="return checkAuthThenSubmit(this)">
+                  <form method="post" action="/onboarding/clear" style="margin:0;">
                     <button type="submit" style="background:#f3f4f6;color:#111827;border:1px solid #e5e7eb">
                       <img src="/clear-chat-icon.svg" alt="Clear chat" style="width:20px;height:20px;vertical-align:middle;margin-right:6px;"/>
                       Clear chat
@@ -84,9 +84,14 @@ export default function registerOnboardingRoutes(app) {
       const setLines = trimmed.filter(l => /^SET\|/.test(l));
       const completeLine = trimmed.find(l => /^COMPLETE$/.test(l));
 
-      // Visible part excludes directives
-      let visible = lines.filter(l => !/^ADD_KB\|/.test(l.trim()) && !/^ASK_MORE\|/.test(l.trim())).join('\n');
-      visible = visible.trim();
+      // Visible part excludes ALL directives (ADD_KB, ASK_MORE, SET, COMPLETE)
+      let visible = lines
+        .filter(l => {
+          const t = l.trim();
+          return !/^ADD_KB\|/.test(t) && !/^ASK_MORE\|/.test(t) && !/^SET\|/.test(t) && t !== 'COMPLETE';
+        })
+        .join('\n')
+        .trim();
 
       const savedSummaries = [];
       for (const l of addLines) {
@@ -104,6 +109,7 @@ export default function registerOnboardingRoutes(app) {
       if (setLines.length) {
         const current = getSettingsForUser(userId) || {};
         const updates = { };
+        let entryGreetingVal = '';
         for (const l of setLines) {
           const m = /^SET\|(.*?)\|(.*)$/.exec(l);
           if (!m) continue;
@@ -111,12 +117,15 @@ export default function registerOnboardingRoutes(app) {
           const value = (m[2] || '').trim();
           if (key && value) {
             updates[key] = value;
+            if (key === 'entry_greeting') entryGreetingVal = value;
           }
         }
         if (Object.keys(updates).length) {
           upsertSettingsForUser(userId, { ...current, ...updates });
-          const saved = Object.keys(updates).map(k => `Updated setting ${k}.`);
-          savedSummaries.push(...saved);
+          // If the AI only sent settings (e.g., entry greeting), prefer showing the greeting text as the visible reply
+          if (!visible && entryGreetingVal) {
+            visible = entryGreetingVal;
+          }
         }
       }
 
@@ -150,16 +159,7 @@ export default function registerOnboardingRoutes(app) {
       } catch {}
 
       const askFollow = askLine ? (askLine.split('|')[1] || '').trim() : '';
-      let aiReply = visible;
-      if (savedSummaries.length) {
-        aiReply = (aiReply ? aiReply + '\n' : '') + savedSummaries.join('\n');
-      }
-      if (askFollow) {
-        aiReply = (aiReply ? aiReply + '\n' : '') + askFollow;
-      }
-      if (completeLine) {
-        aiReply = (aiReply ? aiReply + '\n' : '') + 'Thank you. The onboarding process is completed.';
-      }
+      let aiReply = visible || (askFollow ? askFollow : '');
 
       const newTranscript = `${state.transcript}${state.transcript ? '\n\n' : ''}You: ${userMsg}\nAI: ${aiReply}`;
       setOnboarding(userId, { step: state.step ?? 0, transcript: newTranscript });
@@ -173,6 +173,7 @@ export default function registerOnboardingRoutes(app) {
   app.post("/onboarding/reset", ensureAuthed, (req, res) => {
     const userId = getCurrentUserId(req);
     try {
+      console.log("[ONBOARD][RESET] requested by", { userId });
       const titles = ONBOARD_STEPS.map(s => s.title);
       const placeholders = titles.map(() => '?').join(',');
       db.prepare(`DELETE FROM kb_items WHERE user_id = ? AND title IN (${placeholders})`).run(userId, ...titles);
@@ -185,6 +186,7 @@ export default function registerOnboardingRoutes(app) {
   app.post("/onboarding/clear", ensureAuthed, (req, res) => {
     const userId = getCurrentUserId(req);
     try {
+      console.log("[ONBOARD][CLEAR_CHAT] requested by", { userId });
       const current = getOnboarding(userId) || { step: 999, transcript: '' };
       setOnboarding(userId, { step: current.step ?? 999, transcript: '' });
     } catch {}

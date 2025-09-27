@@ -130,7 +130,7 @@ export function renderSidebar(activeKey) {
       ${link('/inbox', 'Inbox', 'inbox')}
       ${link('/onboarding', 'Onboarding', 'onboarding')}
       ${link('/settings', 'Settings', 'settings')}
-      ${link('/kb', 'KB (JSON)', 'kb')}
+      ${link('/kb/ui', 'KB (UI)', 'kb')}
     </ul>
   `;
   const logout = CLERK_ENABLED ? '<a class="logout" href="/logout"><img src="/sign-out.svg" alt="Sign out" style="width:20px;height:20px;vertical-align:middle;margin-right:6px;"/>Sign out</a>' : '';

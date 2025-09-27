@@ -21,6 +21,7 @@ import registerKbRoutes from "./routes/kb.mjs";
 import registerOnboardingRoutes from "./routes/onboarding.mjs";
 import registerWebhookRoutes from "./routes/webhook.mjs";
 import registerMiscRoutes from "./routes/misc.mjs";
+import registerBookingRoutes from "./routes/booking.mjs";
 
 /**
  * Create and configure an Express app instance.
@@ -49,6 +50,7 @@ export function createApp() {
   registerInboxRoutes(app);
   registerSettingsRoutes(app);
   registerKbRoutes(app);
+  registerBookingRoutes(app);
   registerOnboardingRoutes(app);
   registerWebhookRoutes(app);
   registerMiscRoutes(app);
