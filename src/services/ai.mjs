@@ -1,5 +1,6 @@
 // kb-tools.mjs
 import OpenAI from "openai";
+import { normalizePhoneE164 } from "../utils.mjs";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -71,14 +72,7 @@ function detectLanguageHint(userMessage) {
   return "User language: English; reply in English unless user writes otherwise.";
 }
 
-function normalizePhone(value) {
-  if (!value) return null;
-  const cleaned = value.replace(/[ \-().]/g, "");
-  if (/^\+?\d{7,15}$/.test(cleaned)) {
-    return cleaned.startsWith("+") ? cleaned : "+" + cleaned;
-  }
-  return null;
-}
+// moved to utils: normalizePhoneE164
 
 function normalizeUrl(value) {
   if (!value) return null;
@@ -154,7 +148,7 @@ function normalizeSetLines(response) {
     const key = m[1];
     const rawVal = m[2].trim();
     if (key === "business_phone") {
-      const norm = normalizePhone(rawVal);
+      const norm = normalizePhoneE164(rawVal);
       out.push(`SET|business_phone|${norm ?? rawVal}`);
     } else if (key === "website_url") {
       const norm = normalizeUrl(rawVal);
@@ -277,8 +271,19 @@ export async function generateAiReply(userMessage, contextSnippets, options = {}
     ? `Refuse questions about these topics: ${blockedTopics}. If asked, briefly refuse and suggest contacting support.`
     : "";
 
+  const OUT_OF_SCOPE_PHRASE = "That seems outside my scope. Try choosing one of these topics";
+
   const prompt = `You are a WhatsApp assistant for a business.
-Use ONLY the provided docs (KB context). If the answer is not explicitly in the docs, say briefly that you don't have that info and offer the next best step.
+Use ONLY the provided docs (KB context). Prefer concise, direct answers derived from the docs, including yes/no (or short) answers when the docs imply them.
+If the required information is not supported by the docs, reply with EXACTLY: ${OUT_OF_SCOPE_PHRASE}
+Handle varied user styles robustly:
+- Direct questions: answer precisely from KB.
+- Casual/conversational: keep tone friendly; extract intent.
+- Short/vague: infer likely intent from KB; if insufficient, use ${OUT_OF_SCOPE_PHRASE}.
+- Misspellings/slang: interpret common typos and slang.
+- Multi-part: answer what the KB supports; if some parts are unsupported, answer the supported parts and omit the rest.
+- Edge cases: avoid speculation; only state what KB supports.
+Interpret paraphrases and synonymous wording; do not require exact title/phrase matches.
 Tone: ${tone}. Style: ${style}. ${blockedLine}
 Keep replies short (1–4 sentences). Never invent facts.
 
@@ -292,7 +297,7 @@ Assistant:`;
     const resp = await openai.chat.completions.create({
       model: MODEL,
       messages: [
-        { role: "system", content: "You answer briefly, clearly and concisely. Do not invent facts." },
+        { role: "system", content: "Answer briefly and directly based on the KB docs. Infer simple yes/no when supported; if insufficient evidence, say you don't have that info and suggest next step. Never invent facts." },
         { role: "user", content: prompt },
       ],
       temperature: 0.6,
@@ -313,41 +318,37 @@ Assistant:`;
 
 function buildOnboardingSystem() {
   return [
-    "You are a concise onboarding copilot that interviews a business owner and drafts customer-facing KB entries.",
+    "You are an expert onboarding copilot that interviews a business owner and turns their answers into customer‑ready KB entries.",
     "Follow the output protocol EXACTLY. No markdown, no bullets, no code fences, no extra lines.",
     "",
     "Rules:",
     "- Language: reply in the user's language from userMessage.",
-    "- Default tone/style: concise, helpful; adopt ai_tone/ai_style if provided by user.",
-    "- Do NOT invent facts; if unsure, ask via ASK_MORE.",
+    "- Tone/style: concise, helpful; adopt ai_tone/ai_style if provided by user.",
+    "- Never invent facts. Extract facts from userMessage and prior transcript; if missing, ask via ASK_MORE.",
     "- Output may contain only these lines in any order: ASK_MORE|..., ADD_KB|...|..., SET|...|..., COMPLETE",
     "",
     "Delimiters & validation:",
     "- Field delimiter is the pipe `|`. Escape any literal `|` as `\\|`.",
     "- Titles <= 60 chars, single-line.",
-    "- Content must be customer-ready plain text, no placeholders.",
+    "- Content must be customer-ready plain text; write in short sentences.",
     "- Phone must be digits or E.164 (+…).",
     "- Website URL must start with http:// or https://.",
     "",
-    "Target topics (only if relevant/missing):",
-    "Business Name; What We Do; Audience; Hours; Locations; Products; Services; Service Areas; Appointments; Booking; Pricing; Payments; Delivery; Shipping; Returns; Warranty; Contact; Social Links; Top FAQs.",
+    "High‑impact KB topics (save when present; ask when missing):",
+    "Business Name; What We Do; Audience; Hours; Locations; Service Areas; Products; Services; Menu Highlights; Cuisine; Price Range; Payments; Reservations/Walk‑ins; Booking/Lead time/Cancellation; Delivery/Pickup/Shipping; Returns/Exchanges; Warranty; Contact; Website; Social Links; Accessibility/Parking; Languages; Top FAQs.",
     "",
-    "Industry examples (ask only what’s relevant):",
-    "- Restaurants: Menu; Reservations; Walk-ins; Delivery partners; Pickup; Dietary notes; Hours; Locations; Contact; Social; Payment methods.",
-    "- Healthcare: Services; Appointments; Booking link/phone; New patient intake; Insurance; Hours; Emergency policy; Locations; Payments.",
-    "- Retail/eCommerce: Product categories; Shipping areas/fees; Pickup; Returns/Exchanges; Warranty; Payments; Hours; Locations.",
+    "Extraction guidance (very important):",
+    "- From a single user message, create MULTIPLE ADD_KB lines (up to 8) when you can confidently summarize distinct topics.",
+    "  Examples: a sentence mentioning city + hours → ADD_KB|Locations|City... and ADD_KB|Hours|Mon–Fri...",
+    "- Map facts to canonical titles above (e.g., 'we accept cash and cards' → Payments).",
+    "- Prefer crisp, scannable content (lists separated by semicolons; omit fluff).",
     "",
-    "Branching:",
-    "1) Determine if they offer SERVICES, PRODUCTS, or BOTH.",
-    "2) If SERVICES: ask about APPOINTMENTS → how to BOOK (link/phone), lead time, cancellation rules.",
-    "3) If PRODUCTS: ask about categories/flagships, availability, delivery/shipping areas & fees, returns/warranty.",
-    "4) Keep questions minimal; ask only for highest-impact missing info.",
+    "Next‑question strategy (ask exactly ONE question):",
+    "- Pick the highest‑impact missing topic given what is already saved (e.g., Hours, Locations, Booking/Reservations, Menu Highlights/Key Services, Price Range, Payments, Delivery/Pickup).",
+    "- Ask a concrete, answerable question (one sentence; avoid multiple questions).",
+    "- If core basics seem complete, ask for differentiators (e.g., specialties, dietary notes, service areas, policies).",
     "",
-    "KB behavior:",
-    "- You may add multiple ADD_KB lines (cap 8). If title already exists, output the same title to replace (client will overwrite).",
-    "- Prefer short, scannable content; lists separated by semicolons.",
-    "",
-    "Settings capture (optional) — only if clearly provided:",
+    "Settings capture (optional, only if clearly provided in the user's message):",
     "- SET|website_url|https://example.com",
     "- SET|business_phone|+15551234567",
     "- SET|business_name|Acme Deli",
@@ -357,8 +358,8 @@ function buildOnboardingSystem() {
     "- SET|ai_blocked_topics|refunds, legal",
     "",
     "Termination directives:",
-    "- If you need more info, end with EXACTLY ONE line: ASK_MORE|<single follow-up question>",
-    "- If you add KB items, output: ADD_KB|<Title>|<Content>",
+    "- If you need more info, end with EXACTLY ONE line: ASK_MORE|<single follow‑up question>",
+    "- If you add KB items, output: ADD_KB|<Title>|<Content> (you may output several).",
     "- If you add settings, output: SET|<key>|<value>",
     "- If onboarding seems complete, output one final line: COMPLETE",
     "- Never include ASK_MORE with COMPLETE.",
@@ -381,7 +382,7 @@ ${titles || "(none yet)"}
 Conversation history (latest last):
 ${history || "(no history)"}
 
-(Reply ONLY with the allowed DSL lines, plus no extra prose unless absolutely necessary and ≤2 lines.)
+(Reply ONLY with the allowed DSL lines. If you can extract multiple facts, output multiple ADD_KB lines (up to 8). Always ask exactly one high‑impact follow‑up via ASK_MORE unless onboarding is complete.)
 `.trim();
 }
 

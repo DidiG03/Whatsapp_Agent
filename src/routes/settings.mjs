@@ -1,8 +1,8 @@
 import { ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
-import { CLERK_ENABLED } from "../config.mjs";
+import { clerkClient } from "../middleware/auth.mjs";
 import { getOnboarding } from "../services/onboarding.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
-import { renderSidebar } from "../utils.mjs";
+import { renderSidebar, renderTopbar } from "../utils.mjs";
 import { getSignedInEmail } from "../middleware/auth.mjs";
 import { db } from "../db.mjs";
 
@@ -12,18 +12,14 @@ export default function registerSettingsRoutes(app) {
     const s = getSettingsForUser(userId);
     const ob = getOnboarding(userId);
     const email = await getSignedInEmail(req);
+    const q = req.query || {};
     const calendars = db.prepare(`SELECT id, display_name, account_email, calendar_id FROM calendars WHERE user_id = ? ORDER BY id`).all(userId);
     const staff = db.prepare(`SELECT id, name, timezone, slot_minutes, calendar_id FROM staff WHERE user_id = ? ORDER BY id DESC LIMIT 50`).all(userId);
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.end(`
-      <html><head><link rel="stylesheet" href="/styles.css"></head><body>
+      <html><head><title>Code Orbit - Settings</title><link rel="stylesheet" href="/styles.css"></head><body>
         <script>
-          window.CLERK_ENABLED = ${CLERK_ENABLED ? 'true' : 'false'};
-          async function checkAuthThenSubmit(form){
-            if (!window.CLERK_ENABLED) return true;
-            try{ const r=await fetch('/auth/status',{credentials:'include'}); const j=await r.json(); if(!j.signedIn){ window.location='/auth'; return false;} }catch(e){ return false; }
-            return true;
-          }
+          function checkAuthThenSubmit(){ return true; }
           function toggleReveal(id){
             const el=document.getElementById(id);
             if(!el) return; el.type = el.type === 'password' ? 'text' : 'password';
@@ -34,23 +30,46 @@ export default function registerSettingsRoutes(app) {
           }
         </script>
         <div class="container">
-          <div class="topbar">
-            <div class="crumbs"><a href="/dashboard">Dashboard</a> / Settings</div>
-            <div class="small">${email ? `signed in as ${email}` : ''}</div>
-          </div>
+          ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Settings`, email)}
           <div class="layout">
             ${renderSidebar('settings')}
-            <main class="main">
+            <main class="main" style="height: calc(100vh - 106px);">
               <div class="card chat-box-settings">
-                ${(!ob || ob.step < 3) ? '<p><a href="/onboarding">Finish onboarding questions</a></p>' : ''}
                 <form method="post" action="/settings" onsubmit="return checkAuthThenSubmit(this)">
+                  <div class="section">
+                    <h3>Personal Information</h3>
+                    <div class="grid-2">
+                      <label>Name
+                        <input placeholder="John Doe" class="settings-field" name="name" value="${s.name || ''}"/>
+                      </label>
+                      <label>Email
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                          <input type="email" name="new_email" value="${email}" class="settings-field" form="email-start-form" required />
+                          <button type="submit" form="email-start-form">Update</button>
+                        </div>
+                      </label>
+                        ${q.email_update === 'sent' ? `
+                        <form method="post" action="/settings/email/verify" style="display:flex; gap:8px; align-items:center; margin-top:6px;">
+                          <input type="hidden" name="email_id" value="${q.email_id || ''}"/>
+                          <input type="text" name="code" placeholder="6-digit code" class="settings-field" required />
+                          <button type="submit">Verify & set as primary</button>
+                          <button type="submit" formaction="/settings/email/resend">Resend code</button>
+                        </form>
+                        ` : ''}
+                        ${q.email_update === 'done' ? `<div class="small" style="color:#065f46; margin-top:6px;">Email updated successfully.</div>` : ''}
+                        ${q.email_error ? `<div class="small" style="color:#991b1b; margin-top:6px;">${q.email_error}</div>` : ''}
+                      </div>
+                      <label>Business Name
+                        <input placeholder="My Business" class="settings-field" name="business_name" value="${s.business_name || ''}"/>
+                      </label>
+                    </div>
                   <div class="section">
                     <h3>WhatsApp Setup</h3>
                     <div class="grid-2">
                       <label>Phone Number ID
                         <input placeholder="8***************" class="settings-field" name="phone_number_id" value="${s.phone_number_id || ''}"/>
                       </label>
-                      <label>Business Phone (digits)
+                      <label>Business Phone
                         <input placeholder="1***************" class="settings-field" name="business_phone" value="${s.business_phone || ''}"/>
                       </label>
                     </div>
@@ -58,15 +77,15 @@ export default function registerSettingsRoutes(app) {
                       <label>WhatsApp Token
                         <div class="input-row">
                           <input id="wa_token" type="password" placeholder="E***************" class="settings-field" name="whatsapp_token" value="${s.whatsapp_token || ''}"/>
-                          <button type="button" class="btn-ghost" onclick="toggleReveal('wa_token')">Reveal</button>
-                          <button type="button" class="btn-ghost" onclick="copyValue('wa_token')">Copy</button>
+                          <button type="button" style="border:none;" class="btn-ghost" onclick="toggleReveal('wa_token')"><img src="/show-password.svg" alt="Reveal"/></button>
+                          <button type="button" class="btn-ghost" style="border:none;" onclick="copyValue('wa_token')"><img src="/copy-icon.svg" alt="Copy"/></button>
                         </div>
                       </label>
                       <label>App Secret
                         <div class="input-row">
                           <input id="app_secret" type="password" placeholder="c***************" class="settings-field" name="app_secret" value="${s.app_secret || ''}"/>
-                          <button type="button" class="btn-ghost" onclick="toggleReveal('app_secret')">Reveal</button>
-                          <button type="button" class="btn-ghost" onclick="copyValue('app_secret')">Copy</button>
+                          <button type="button" style="border:none;" class="btn-ghost" onclick="toggleReveal('app_secret')"><img src="/show-password.svg" alt="Reveal"/></button>
+                          <button type="button" class="btn-ghost" style="border:none;" onclick="copyValue('app_secret')"><img src="/copy-icon.svg" alt="Copy"/></button>
                         </div>
                       </label>
                     </div>
@@ -80,6 +99,19 @@ export default function registerSettingsRoutes(app) {
                     <label>Website URL
                       <input placeholder="https://www.example.com" class="settings-field" name="website_url" value="${s.website_url || ''}"/>
                     </label>
+                  </div>
+
+                  <div class="section">
+                    <h3>WhatsApp Templates</h3>
+                    <div class="grid-2">
+                      <label>Template Name
+                        <input placeholder="welcome_back" class="settings-field" name="wa_template_name" value="${s.wa_template_name || ''}"/>
+                      </label>
+                      <label>Template Language
+                        <input placeholder="en_US" class="settings-field" name="wa_template_language" value="${s.wa_template_language || 'en_US'}"/>
+                      </label>
+                    </div>
+                    <div class="small">Used when last user message is older than 24h.</div>
                   </div>
 
                   <div class="section">
@@ -132,10 +164,10 @@ export default function registerSettingsRoutes(app) {
                       </div>
                     </div>
                   </div>
-                  <div style="display: flex; gap: 10px; align-items: center; margin-top: 16px;">
-                    <button type="submit">Save</button>
-                  </div>
+                  <button type="submit" style="width:100%;">Save</button>
                 </form>
+                <!-- Separate email form (not nested) to avoid interfering with settings submission -->
+                <form id="email-start-form" method="post" action="/settings/email/start" style="display:none;"></form>
                 <div class="section" style="display:flex; gap:10px; align-items:center;">
                   <form method="post" action="/kb/clear" style="margin:0;display:inline;">
                     <button type="submit" style="background:#fee2e2;color:#b91c1c;border:1px solid #fecaca">Clear Knowledge Base</button>
@@ -163,25 +195,130 @@ export default function registerSettingsRoutes(app) {
                           ${(calendars||[]).map(c => `<option value="${c.id}">${(c.display_name||c.account_email||c.calendar_id||('Calendar #'+c.id))}</option>`).join('')}
                         </select>
                       </label>
-                      <label style="grid-column: 1 / -1;">Working Hours JSON
-                        <textarea class="settings-field" name="working_hours_json" rows="3" placeholder='{"mon":["09:00-17:00"],"tue":["09:00-17:00"],"wed":["09:00-17:00"],"thu":["09:00-17:00"],"fri":["09:00-17:00"]}'></textarea>
-                      </label>
+                      <div style="grid-column: 1 / -1;">
+                        <div class="small" style="margin:0 0 6px 0;">Working Hours</div>
+                        <input type="hidden" name="working_hours_json" id="wh_json" />
+                        <div id="wh_builder" class="card" style="padding:10px; display:grid; gap:10px;">
+                          <div class="wh-row" data-day="mon" style="display:flex; gap:8px; align-items:center;">
+                            <div style="width:72px; text-transform:uppercase; font-size:12px; color:#6b7280;">MON</div>
+                            <div class="wh-slots" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
+                            <button type="button" class="btn-ghost wh-add" style="border:none;">Add</button>
+                          </div>
+                          <div class="wh-row" data-day="tue" style="display:flex; gap:8px; align-items:center;">
+                            <div style="width:72px; text-transform:uppercase; font-size:12px; color:#6b7280;">TUE</div>
+                            <div class="wh-slots" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
+                            <button type="button" class="btn-ghost wh-add" style="border:none;">Add</button>
+                          </div>
+                          <div class="wh-row" data-day="wed" style="display:flex; gap:8px; align-items:center;">
+                            <div style="width:72px; text-transform:uppercase; font-size:12px; color:#6b7280;">WED</div>
+                            <div class="wh-slots" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
+                            <button type="button" class="btn-ghost wh-add" style="border:none;">Add</button>
+                          </div>
+                          <div class="wh-row" data-day="thu" style="display:flex; gap:8px; align-items:center;">
+                            <div style="width:72px; text-transform:uppercase; font-size:12px; color:#6b7280;">THU</div>
+                            <div class="wh-slots" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
+                            <button type="button" class="btn-ghost wh-add" style="border:none;">Add</button>
+                          </div>
+                          <div class="wh-row" data-day="fri" style="display:flex; gap:8px; align-items:center;">
+                            <div style="width:72px; text-transform:uppercase; font-size:12px; color:#6b7280;">FRI</div>
+                            <div class="wh-slots" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
+                            <button type="button" class="btn-ghost wh-add" style="border:none;">Add</button>
+                          </div>
+                          <div class="wh-row" data-day="sat" style="display:flex; gap:8px; align-items:center;">
+                            <div style="width:72px; text-transform:uppercase; font-size:12px; color:#6b7280;">SAT</div>
+                            <div class="wh-slots" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
+                            <button type="button" class="btn-ghost wh-add" style="border:none;">Add</button>
+                          </div>
+                          <div class="wh-row" data-day="sun" style="display:flex; gap:8px; align-items:center;">
+                            <div style="width:72px; text-transform:uppercase; font-size:12px; color:#6b7280;">SUN</div>
+                            <div class="wh-slots" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
+                            <button type="button" class="btn-ghost wh-add" style="border:none;">Add</button>
+                          </div>
+                        </div>
+                        <div class="small" style="margin-top:6px; color:#6b7280;">Example: 09:00-17:00. Add multiple ranges per day if needed.</div>
+                      </div>
                       <div style="grid-column: 1 / -1; display:flex; gap:8px;">
                         <button type="submit">Add Staff</button>
                       </div>
                     </form>
                   </div>
+                  <script>
+                    (function(){
+                      var builder = document.getElementById('wh_builder');
+                      var hidden = document.getElementById('wh_json');
+                      if(!builder || !hidden) return;
+                      var form = builder.closest('form');
+                      if(!form) return;
+
+                      function makeSlotEl(){
+                        var wrap = document.createElement('div');
+                        wrap.style.display = 'flex';
+                        wrap.style.gap = '6px';
+                        wrap.style.alignItems = 'center';
+                        var input = document.createElement('input');
+                        input.className = 'settings-field';
+                        input.type = 'text';
+                        input.placeholder = '09:00-17:00';
+                        input.style.width = '140px';
+                        var del = document.createElement('button');
+                        del.type = 'button';
+                        del.className = 'btn-ghost';
+                        del.style.border = 'none';
+                        del.innerHTML = '<img src="/delete-icon.svg" alt="Delete"/>';
+                        del.addEventListener('click', function(){
+                          var parent = wrap.parentElement; if(parent) parent.removeChild(wrap);
+                        });
+                        wrap.appendChild(input);
+                        wrap.appendChild(del);
+                        return wrap;
+                      }
+
+                      builder.querySelectorAll('.wh-row').forEach(function(row){
+                        var add = row.querySelector('.wh-add');
+                        var slots = row.querySelector('.wh-slots');
+                        if(add){
+                          add.addEventListener('click', function(){
+                            if(slots.querySelectorAll('input.settings-field').length >= 6) return;
+                            slots.appendChild(makeSlotEl());
+                          });
+                        }
+                        // Ensure at least one input is present so the user can type directly
+                        if (slots && slots.querySelectorAll('input.settings-field').length === 0) {
+                          slots.appendChild(makeSlotEl());
+                        }
+                      });
+
+                      form.addEventListener('submit', function(){
+                        var out = {};
+                        builder.querySelectorAll('.wh-row').forEach(function(row){
+                          var day = row.getAttribute('data-day');
+                          var vals = [];
+                          row.querySelectorAll('input.settings-field').forEach(function(i){
+                            var v = String(i.value||'').trim();
+                            // Accept hyphen or en dash and 1–2 digit hours
+                            var m = /^(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})$/.exec(v);
+                            if(m){
+                              var norm = (m[1].padStart(2,'0') + ':' + m[2] + '-' + m[3].padStart(2,'0') + ':' + m[4]);
+                              vals.push(norm);
+                            }
+                          });
+                          if(vals.length) out[day] = vals;
+                        });
+                        hidden.value = JSON.stringify(out);
+                      });
+                    })();
+                  </script>
                   <div class="card">
                     <div class="small" style="margin-bottom:8px;">Existing staff</div>
                     ${staff.length ? `<ul class="list">${staff.map(r => `
                       <li class="inbox-item">
-                        <div class="wa-row">
+                        <div style="display: flex; align-items: space-between; gap: 12px;">
                           <div class="wa-col">
                             <div class="wa-top"><div class="wa-name">${r.name}</div></div>
                             <div class="item-preview small">${r.timezone || 'UTC'} · ${r.slot_minutes||30}m ${r.calendar_id ? '(Calendar linked)' : ''}</div>
                           </div>
                           <form method="post" action="/settings/staff/${r.id}/delete" onsubmit="return checkAuthThenSubmit(this)" style="margin-left:auto;">
-                            <button type="submit" class="btn-ghost" style="color:#991b1b;">Delete</button>
+                            <button type="submit" style="border:none;" class="btn-ghost" style="color:#991b1b;"><img src="/delete-icon.svg" alt="Delete"/></button>
                           </form>
                         </div>
                       </li>
@@ -232,16 +369,35 @@ export default function registerSettingsRoutes(app) {
   app.post("/danger/wipe", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     try {
-      const ids = db.prepare(`SELECT id FROM messages WHERE user_id = ?`).all(userId).map(r => r.id);
-      if (ids.length) {
-        const ph = ids.map(() => '?').join(',');
-        db.prepare(`DELETE FROM message_statuses WHERE message_id IN (${ph})`).run(...ids);
-      }
-      db.prepare(`DELETE FROM messages WHERE user_id = ?`).run(userId);
-      db.prepare(`DELETE FROM handoff WHERE user_id = ?`).run(userId);
-      db.prepare(`DELETE FROM kb_items WHERE user_id = ?`).run(userId);
-      db.prepare(`DELETE FROM onboarding_state WHERE user_id = ?`).run(userId);
-      db.prepare(`DELETE FROM settings_multi WHERE user_id = ?`).run(userId);
+      const wipe = db.transaction((uid) => {
+        // 1) message_statuses: by message_id and by user_id (for safety)
+        const msgIds = db.prepare(`SELECT id FROM messages WHERE user_id = ?`).all(uid).map(r => r.id);
+        if (msgIds.length) {
+          const ph = msgIds.map(() => '?').join(',');
+          try { db.prepare(`DELETE FROM message_statuses WHERE message_id IN (${ph})`).run(...msgIds); } catch {}
+        }
+        try { db.prepare(`DELETE FROM message_statuses WHERE user_id = ?`).run(uid); } catch {}
+
+        // 2) Messages
+        try { db.prepare(`DELETE FROM messages WHERE user_id = ?`).run(uid); } catch {}
+
+        // 3) Booking related
+        try { db.prepare(`DELETE FROM booking_sessions WHERE user_id = ?`).run(uid); } catch {}
+        try { db.prepare(`DELETE FROM appointments WHERE user_id = ?`).run(uid); } catch {}
+        try { db.prepare(`DELETE FROM staff WHERE user_id = ?`).run(uid); } catch {}
+        try { db.prepare(`DELETE FROM calendars WHERE user_id = ?`).run(uid); } catch {}
+        try { db.prepare(`DELETE FROM contact_state WHERE user_id = ?`).run(uid); } catch {}
+        try { db.prepare(`DELETE FROM customers WHERE user_id = ?`).run(uid); } catch {}
+
+        // 4) Inbox state
+        try { db.prepare(`DELETE FROM handoff WHERE user_id = ?`).run(uid); } catch {}
+
+        // 5) KB & onboarding/settings (FTS is maintained by triggers)
+        try { db.prepare(`DELETE FROM kb_items WHERE user_id = ?`).run(uid); } catch {}
+        try { db.prepare(`DELETE FROM onboarding_state WHERE user_id = ?`).run(uid); } catch {}
+        try { db.prepare(`DELETE FROM settings_multi WHERE user_id = ?`).run(uid); } catch {}
+      });
+      wipe(userId);
     } catch (e) {
       console.error('Wipe error:', e?.message || e);
     }
@@ -271,9 +427,56 @@ export default function registerSettingsRoutes(app) {
         const clean = arr.map(x => String(x||'').toLowerCase()).filter(x => ['2h','4h','1d'].includes(x));
         return clean.length ? JSON.stringify(clean) : null;
       })(),
+      wa_template_name: req.body?.wa_template_name || null,
+      wa_template_language: req.body?.wa_template_language || null,
     };
     upsertSettingsForUser(userId, values);
     res.redirect("/settings");
+  });
+
+  // Start email update: create email address and send verification
+  app.post("/settings/email/start", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
+    const newEmail = String(req.body?.new_email || '').trim();
+    if (!newEmail) return res.redirect('/settings?email_error=Missing+email');
+    try {
+      const created = await clerkClient.users.createEmailAddress({ userId, emailAddress: newEmail });
+      try { await clerkClient.users.prepareEmailAddressVerification({ userId, emailAddressId: created.id, strategy: 'email_code' }); } catch {}
+      return res.redirect(`/settings?email_update=sent&email_id=${encodeURIComponent(created.id)}`);
+    } catch (e) {
+      const msg = encodeURIComponent(e?.errors?.[0]?.message || e?.message || 'Failed to start email update');
+      return res.redirect(`/settings?email_error=${msg}`);
+    }
+  });
+
+  // Resend verification code
+  app.post("/settings/email/resend", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
+    const emailId = String(req.body?.email_id || '').trim();
+    if (!emailId) return res.redirect('/settings?email_error=Missing+email_id');
+    try {
+      await clerkClient.users.prepareEmailAddressVerification({ userId, emailAddressId: emailId, strategy: 'email_code' });
+      return res.redirect(`/settings?email_update=sent&email_id=${encodeURIComponent(emailId)}`);
+    } catch (e) {
+      const msg = encodeURIComponent(e?.errors?.[0]?.message || e?.message || 'Failed to resend code');
+      return res.redirect(`/settings?email_error=${msg}`);
+    }
+  });
+
+  // Verify code and set as primary
+  app.post("/settings/email/verify", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
+    const emailId = String(req.body?.email_id || '').trim();
+    const code = String(req.body?.code || '').trim();
+    if (!emailId || !code) return res.redirect('/settings?email_error=Missing+verification+data');
+    try {
+      await clerkClient.users.verifyEmailAddress({ userId, emailAddressId: emailId, code });
+      await clerkClient.users.updateUser(userId, { primaryEmailAddressId: emailId });
+      return res.redirect('/settings?email_update=done');
+    } catch (e) {
+      const msg = encodeURIComponent(e?.errors?.[0]?.message || e?.message || 'Verification failed');
+      return res.redirect(`/settings?email_error=${msg}&email_update=sent&email_id=${encodeURIComponent(emailId)}`);
+    }
   });
 
   // Create staff
@@ -281,12 +484,22 @@ export default function registerSettingsRoutes(app) {
     const userId = getCurrentUserId(req);
     const name = (req.body?.name || '').toString().trim();
     if (!name) return res.redirect('/settings');
-    const timezone = (req.body?.timezone || '').toString().trim() || null;
+    let timezone = (req.body?.timezone || '').toString().trim() || null;
     const slotMinutes = Number(req.body?.slot_minutes || 30) || 30;
-    const workingJson = (req.body?.working_hours_json || '').toString().trim() || null;
+    let workingJson = (req.body?.working_hours_json || '').toString().trim() || null;
     const calIdRaw = (req.body?.calendar_id || '').toString().trim();
     const calendarId = calIdRaw ? Number(calIdRaw) : null;
     try {
+      // Normalize timezone (basic mapping for common labels)
+      if (timezone && !/\//.test(timezone)) {
+        const map = { london: 'Europe/London', utc: 'UTC', ny: 'America/New_York', new_york: 'America/New_York' };
+        const key = timezone.toLowerCase().replace(/\s+/g,'_');
+        timezone = map[key] || timezone;
+      }
+      // Default working hours if none provided or empty object
+      if (!workingJson || workingJson === '{}' || workingJson === 'null') {
+        workingJson = '{"mon":["09:00-17:00"],"tue":["09:00-17:00"],"wed":["09:00-17:00"],"thu":["09:00-17:00"],"fri":["09:00-17:00"]}';
+      }
       db.prepare(`INSERT INTO staff (user_id, name, calendar_id, timezone, slot_minutes, working_hours_json, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, strftime('%s','now'), strftime('%s','now'))`).run(userId, name, calendarId, timezone, slotMinutes, workingJson);
     } catch {}

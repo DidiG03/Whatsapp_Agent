@@ -1,14 +1,15 @@
 import { ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
 import { ONBOARD_STEPS, getOnboarding, setOnboarding } from "../services/onboarding.mjs";
-import { renderSidebar, renderTranscriptAsBubbles } from "../utils.mjs";
+import { renderSidebar, renderTranscriptAsBubbles, renderTopbar } from "../utils.mjs";
 import { upsertKbItem } from "../services/kb.mjs";
 import { upsertSettingsForUser, getSettingsForUser } from "../services/settings.mjs";
-import { kbCoachReply, onboardingCoachReply } from "../services/ai.mjs";
+import { onboardingCoachReply } from "../services/ai.mjs";
 import { db } from "../db.mjs";
 
 export default function registerOnboardingRoutes(app) {
   app.get("/onboarding", ensureAuthed, (req, res) => {
     const userId = getCurrentUserId(req);
+    const email = getEmailForUser(userId);
     const state = getOnboarding(userId) || setOnboarding(userId, { step: 0, transcript: '' });
     const stepDef = ONBOARD_STEPS[state.step];
     const prompt = 'Ask me to add or improve your KB...';
@@ -23,9 +24,7 @@ export default function registerOnboardingRoutes(app) {
           }
         </script>
         <div class="container">
-          <div class="topbar">
-            <div class="crumbs"><a href="/dashboard">Dashboard</a> / Onboarding</div>
-          </div>
+          ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Onboarding`, email)}
           <div class="layout">
             ${renderSidebar('onboarding')}
             <main class="main">
@@ -109,6 +108,7 @@ export default function registerOnboardingRoutes(app) {
       if (setLines.length) {
         const current = getSettingsForUser(userId) || {};
         const updates = { };
+        const updatedKeys = [];
         let entryGreetingVal = '';
         for (const l of setLines) {
           const m = /^SET\|(.*?)\|(.*)$/.exec(l);
@@ -117,19 +117,41 @@ export default function registerOnboardingRoutes(app) {
           const value = (m[2] || '').trim();
           if (key && value) {
             updates[key] = value;
+            updatedKeys.push(key);
             if (key === 'entry_greeting') entryGreetingVal = value;
           }
         }
         if (Object.keys(updates).length) {
           upsertSettingsForUser(userId, { ...current, ...updates });
-          // If the AI only sent settings (e.g., entry greeting), prefer showing the greeting text as the visible reply
-          if (!visible && entryGreetingVal) {
-            visible = entryGreetingVal;
+          // Mirror key settings into KB so they show up in KB UI even when AI returns only SET lines
+          try {
+            if (updates.business_name) {
+              upsertKbItem(userId, 'Business Name', updates.business_name);
+              savedSummaries.push('Saved “Business Name” to KB.');
+            }
+            if (updates.website_url) {
+              upsertKbItem(userId, 'Website', updates.website_url);
+              savedSummaries.push('Saved “Website” to KB.');
+            }
+            if (updates.business_phone) {
+              upsertKbItem(userId, 'Contact', updates.business_phone);
+              savedSummaries.push('Saved “Contact” to KB.');
+            }
+          } catch {}
+          // If the AI only sent settings, surface a concise confirmation
+          if (!visible) {
+            if (entryGreetingVal) {
+              visible = entryGreetingVal;
+            } else if (updates.business_name) {
+              visible = `Saved business name: ${updates.business_name}`;
+            } else {
+              visible = 'Saved your settings.';
+            }
           }
         }
       }
 
-      // Lightweight heuristics to capture common restaurant statements even if the AI omitted ADD_KB
+      // Lightweight heuristics to capture common statements even if the AI omitted ADD_KB
       try {
         const lower = userMsg.toLowerCase();
         const extractSentence = (text, kw) => {
@@ -139,6 +161,47 @@ export default function registerOnboardingRoutes(app) {
             return (hit || '').trim() ? (hit.trim() + '.') : '';
           } catch { return ''; }
         };
+
+        // Settings capture heuristics (business_name, website_url, business_phone)
+        const currentSettings = getSettingsForUser(userId) || {};
+        const toUpdate = {};
+        const heuristicUpdatedKeys = [];
+        const pushSetting = (key, value) => { if (value) { toUpdate[key] = value; heuristicUpdatedKeys.push(key); } };
+        const bn = /\b(business|company)\s*name\s*(is|:)\s*([\p{L}\p{N} _'"&().-]{2,})/iu.exec(userMsg);
+        if (bn && bn[3]) {
+          const raw = bn[3].trim().replace(/^[\'"\s]+|[\'"\s]+$/g, "");
+          pushSetting('business_name', raw);
+          upsertKbItem(userId, 'Business Name', raw);
+          savedSummaries.push('Saved “Business Name” to KB.');
+        }
+        const ws = /\b(website|site|url)\s*(is|:)\s*(\S+)/i.exec(userMsg);
+        if (ws && ws[3]) pushSetting('website_url', ws[3].trim());
+        const ph = /\b(phone|number|contact)\s*(is|:)\s*([+\d][+\d\s().-]{6,})/i.exec(userMsg);
+        if (ph && ph[3]) pushSetting('business_phone', ph[3].trim());
+        if (Object.keys(toUpdate).length) {
+          upsertSettingsForUser(userId, { ...currentSettings, ...toUpdate });
+          if (!visible) visible = 'Saved your settings.';
+        }
+        // What We Do
+        if (/\bwe\s+are\b|\bwe\s+do\b|\bour\s+business\b|\bwe\s+sell\b|\brestaurant|cafe|salon|clinic|store|shop\b/i.test(userMsg)) {
+          const sentence = extractSentence(userMsg, 'we') || userMsg;
+          upsertKbItem(userId, 'What We Do', sentence);
+          savedSummaries.push('Saved “What We Do” to KB.');
+        }
+        // Hours detection: days or time patterns
+        const hasDay = /(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i.test(userMsg);
+        const hasTime = /\b(\d{1,2})([:.][0-5]\d)?\s*(am|pm)?\b.*?-.*?\b(\d{1,2})([:.][0-5]\d)?\s*(am|pm)?\b/i.test(userMsg);
+        if (hasDay || hasTime) {
+          const sentence = extractSentence(userMsg, 'mon') || extractSentence(userMsg, 'sun') || userMsg;
+          upsertKbItem(userId, 'Hours', sentence);
+          savedSummaries.push('Saved “Hours” to KB.');
+        }
+        // Locations detection: common address/location cues
+        if (/(street|st\.|ave\.|avenue|blvd\.|boulevard|road|rd\.|drive|dr\.|plaza|center|centre|city|town|village|address|located|location|near)/i.test(userMsg)) {
+          const sentence = extractSentence(userMsg, 'location') || extractSentence(userMsg, 'address') || userMsg;
+          upsertKbItem(userId, 'Locations', sentence);
+          savedSummaries.push('Saved “Locations” to KB.');
+        }
         if (/\bcuisine\b/i.test(userMsg)) {
           const sentence = extractSentence(userMsg, 'cuisine') || userMsg;
           upsertKbItem(userId, 'Cuisine', sentence);
@@ -159,7 +222,29 @@ export default function registerOnboardingRoutes(app) {
       } catch {}
 
       const askFollow = askLine ? (askLine.split('|')[1] || '').trim() : '';
+      if (!visible && savedSummaries.length) {
+        visible = savedSummaries.join(' ');
+      }
       let aiReply = visible || (askFollow ? askFollow : '');
+      if (!aiReply || !aiReply.trim()) aiReply = 'Got it.';
+
+      // Fallback: if the AI didn't ask a follow-up and we only saved a setting,
+      // continue the conversation with a sensible next question.
+      if (!askFollow && !addLines.length) {
+        const madeSettingChange = (typeof updatedKeys !== 'undefined' && updatedKeys.length) || /Saved “Business Name” to KB\./.test(savedSummaries.join(' '));
+        const shouldAsk = madeSettingChange || (setLines.length > 0) || savedSummaries.length > 0;
+        if (shouldAsk) {
+          const lower = userMsg.toLowerCase();
+          let nextQ = '';
+          if (/business\s*name|name/.test(lower) || /SET\|business_name\|/i.test(setLines.join('\n')) || /Business Name/.test(savedSummaries.join(' '))) {
+            nextQ = 'In one line, what do you sell or do?';
+          } else if (/What We Do/.test(savedSummaries.join(' '))) {
+            nextQ = "What are your opening hours and locations?";
+          }
+          if (!nextQ) nextQ = 'What are your opening hours?';
+          aiReply = `${aiReply ? aiReply + ' ' : ''}${nextQ}`.trim();
+        }
+      }
 
       const newTranscript = `${state.transcript}${state.transcript ? '\n\n' : ''}You: ${userMsg}\nAI: ${aiReply}`;
       setOnboarding(userId, { step: state.step ?? 0, transcript: newTranscript });

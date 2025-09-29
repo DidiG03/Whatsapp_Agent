@@ -6,16 +6,21 @@
 import { db } from "../db.mjs";
 import { freeBusy, createEvent, updateEvent, deleteEvent } from "./google.mjs";
 
-function toISO(tsSeconds, tz) {
-  // tsSeconds is epoch seconds; if not provided, compute at runtime
-  const d = new Date(tsSeconds * 1000);
-  // Return UTC ISO; Google accepts Z with start/end set to dateTime and timeZone
-  return d.toISOString();
+// (removed unused toISO)
+
+function getDowKeyInTz(dateObj, timeZone) {
+  try {
+    const part = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone }).format(dateObj).toLowerCase();
+    // sun, mon, tue, wed, thu, fri, sat
+    return part.slice(0,3);
+  } catch {
+    return ["sun","mon","tue","wed","thu","fri","sat"][dateObj.getDay()];
+  }
 }
 
 function computeDaySlots(dayDate, slotMinutes, tz, workingHours, busyBlocks) {
   // workingHours example: { mon:["09:00-17:00"], ... } with keys sun..sat
-  const dow = ["sun","mon","tue","wed","thu","fri","sat"][dayDate.getDay()];
+  const dow = getDowKeyInTz(dayDate, tz);
   const spans = Array.isArray(workingHours?.[dow]) ? workingHours[dow] : [];
   const slots = [];
   for (const span of spans) {
@@ -64,6 +69,7 @@ export async function listAvailability({ userId, staffId, dateISO, days = 1, slo
     const tMax = new Date(day); tMax.setHours(23,59,59,999);
     const busy = calendar ? await freeBusy(calendar, tMin.toISOString(), tMax.toISOString()) : [];
     const slots = computeDaySlots(day, minutes, tz, working, busy);
+    try { if (!slots.length) console.log('availability-debug', { userId, staffId, tz, date: day.toISOString().slice(0,10), minutes, spans: (working && working[getDowKeyInTz(day, tz)] || []).length, busy: busy.length }); } catch {}
     results.push({ date: day.toISOString().slice(0,10), slots: slots.map(s => ({ start: s.start.toISOString(), end: s.end.toISOString() })) });
   }
   return results;
@@ -136,6 +142,42 @@ export async function rescheduleBooking({ userId, appointmentId, startISO, endIS
   }
   db.prepare(`UPDATE appointments SET start_ts = strftime('%s', ?), end_ts = strftime('%s', ?), status = 'confirmed', updated_at = strftime('%s','now') WHERE id = ?`).run(startISO, endISO, appointmentId);
   return true;
+}
+
+/** Build the next 7 day-list rows for booking or reschedule. */
+export function buildDayRows(staffId, apptId = null) {
+  const base = new Date();
+  return Array.from({ length: 7 }).map((_, i) => {
+    const d = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate() + i));
+    const iso = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+    const id = apptId
+      ? `RESCHED_PICK_DAY_${iso}_${staffId}_${apptId}`
+      : `PICK_DAY_${iso}_${staffId}`;
+    return { id, title: d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }), description: 'Tap to view times' };
+  });
+}
+
+/** Build time rows for a given date using availability. */
+export async function buildTimeRows({ userId, staffId, dateISO, limit = 10, apptId = null }) {
+  const avail = await listAvailability({ userId, staffId, dateISO, days: 1 });
+  const slots = Array.isArray(avail) ? (avail[0]?.slots || []) : [];
+  const upcoming = slots.filter(s => new Date(s.start).getTime() > Date.now()).slice(0, Number(limit||10));
+  const rows = upcoming.map(s => ({
+    id: apptId
+      ? `RESCHED_PICK_TIME_${apptId}_${staffId}_${s.start}_${s.end}`
+      : `BOOK_SLOT_${s.start}_${s.end}_${staffId}`,
+    title: apptId
+      ? new Date(s.start).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+      : new Date(s.start).toLocaleString(),
+    description: apptId ? 'Tap to confirm' : 'Tap to book'
+  }));
+  return rows;
+}
+
+/** Return true if too close to start time per lead minutes. */
+export function isTooCloseToStart(nowSecs, startTs, minLeadMinutes) {
+  const minsToStart = Math.floor(((startTs||0) - (nowSecs||0)) / 60);
+  return minsToStart < Number(minLeadMinutes || 60);
 }
 
 

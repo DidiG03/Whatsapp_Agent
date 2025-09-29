@@ -18,11 +18,11 @@ import registerDashboardRoutes from "./routes/dashboard.mjs";
 import registerInboxRoutes from "./routes/inbox.mjs";
 import registerSettingsRoutes from "./routes/settings.mjs";
 import registerKbRoutes from "./routes/kb.mjs";
-import registerOnboardingRoutes from "./routes/onboarding.mjs";
 import registerWebhookRoutes from "./routes/webhook.mjs";
 import registerMiscRoutes from "./routes/misc.mjs";
 import registerBookingRoutes from "./routes/booking.mjs";
-
+import registerAssistantRoutes from "./routes/assistant.mjs";
+import registerGuideRoutes from "./routes/guide.mjs";
 /**
  * Create and configure an Express app instance.
  * @returns {import('express').Express}
@@ -32,6 +32,8 @@ export function createApp() {
   // rawBody capture for signature verification
   app.use(bodyParser.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
   app.use(bodyParser.urlencoded({ extended: true }));
+
+  // HTTP request logging
 
   app.use(express.static(STATIC_DIR));
 
@@ -49,9 +51,10 @@ export function createApp() {
   registerDashboardRoutes(app);
   registerInboxRoutes(app);
   registerSettingsRoutes(app);
+  registerGuideRoutes(app);
   registerKbRoutes(app);
   registerBookingRoutes(app);
-  registerOnboardingRoutes(app);
+  registerAssistantRoutes(app);
   registerWebhookRoutes(app);
   registerMiscRoutes(app);
 

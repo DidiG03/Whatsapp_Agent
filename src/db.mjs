@@ -40,7 +40,6 @@ db.exec(`
 
   CREATE TABLE IF NOT EXISTS kb_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    tenant_id TEXT DEFAULT 'default',
     title TEXT,
     content TEXT NOT NULL,
     created_at INTEGER DEFAULT (strftime('%s','now'))
@@ -68,20 +67,12 @@ db.exec(`
 
   CREATE TABLE IF NOT EXISTS handoff (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    contact_id TEXT UNIQUE,
+    contact_id TEXT,
     is_human BOOLEAN NOT NULL DEFAULT 0,
     updated_at INTEGER DEFAULT (strftime('%s','now'))
   );
 
-  CREATE TABLE IF NOT EXISTS settings (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    phone_number_id TEXT,
-    whatsapp_token TEXT,
-    verify_token TEXT,
-    app_secret TEXT,
-    business_phone TEXT,
-    updated_at INTEGER DEFAULT (strftime('%s','now'))
-  );
+  -- Legacy 'settings' table removed in favor of settings_multi. Dropped at runtime if present.
 
   CREATE TABLE IF NOT EXISTS settings_multi (
     user_id TEXT PRIMARY KEY,
@@ -150,7 +141,8 @@ db.exec(`
     status TEXT NOT NULL DEFAULT 'confirmed',
     notes TEXT,
     notify_24h_sent INTEGER DEFAULT 0,
-    notify_1h_sent INTEGER DEFAULT 0,
+    notify_4h_sent INTEGER DEFAULT 0,
+    notify_2h_sent INTEGER DEFAULT 0,
     created_at INTEGER DEFAULT (strftime('%s','now')),
     updated_at INTEGER DEFAULT (strftime('%s','now')),
     FOREIGN KEY(staff_id) REFERENCES staff(id)
@@ -182,6 +174,19 @@ db.exec(`
     last_greet_ts INTEGER,
     PRIMARY KEY (user_id, contact_id)
   );
+
+  -- Named customers for contacts (per user)
+  CREATE TABLE IF NOT EXISTS customers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    contact_id TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    notes TEXT,
+    created_at INTEGER DEFAULT (strftime('%s','now')),
+    updated_at INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(user_id, contact_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_customers_user_contact ON customers(user_id, contact_id);
 `);
 
 /**
@@ -216,8 +221,10 @@ function ensureKbFileColumns() {
     const cols = db.prepare('PRAGMA table_info(kb_items)').all();
     const needUrl = !cols.some(c => c.name === 'file_url');
     const needMime = !cols.some(c => c.name === 'file_mime');
+    const needShow = !cols.some(c => c.name === 'show_in_menu');
     if (needUrl) db.prepare('ALTER TABLE kb_items ADD COLUMN file_url TEXT').run();
     if (needMime) db.prepare('ALTER TABLE kb_items ADD COLUMN file_mime TEXT').run();
+    if (needShow) db.prepare('ALTER TABLE kb_items ADD COLUMN show_in_menu INTEGER DEFAULT 0').run();
   } catch {}
 }
 
@@ -265,6 +272,8 @@ export function ensureAiSettingsColumns() {
     if (need('cancel_min_lead_minutes')) db.prepare('ALTER TABLE settings_multi ADD COLUMN cancel_min_lead_minutes INTEGER DEFAULT 60').run();
     if (need('reminders_enabled')) db.prepare('ALTER TABLE settings_multi ADD COLUMN reminders_enabled INTEGER DEFAULT 0').run();
     if (need('reminder_windows')) db.prepare("ALTER TABLE settings_multi ADD COLUMN reminder_windows TEXT").run();
+    if (need('wa_template_name')) db.prepare('ALTER TABLE settings_multi ADD COLUMN wa_template_name TEXT').run();
+    if (need('wa_template_language')) db.prepare('ALTER TABLE settings_multi ADD COLUMN wa_template_language TEXT').run();
   } catch {}
 }
 
@@ -273,6 +282,25 @@ ensureUserScopedColumns();
 ensureDigitColumns();
 ensureAiSettingsColumns();
 ensureKbFileColumns();
+
+/**
+ * Ensure extra columns on handoff for inbox management (archive/delete flags).
+ */
+function ensureHandoffExtras() {
+  try {
+    const cols = db.prepare('PRAGMA table_info(handoff)').all();
+    const needArchived = !cols.some(c => c.name === 'is_archived');
+    const needDeletedAt = !cols.some(c => c.name === 'deleted_at');
+    const needLastSeen = !cols.some(c => c.name === 'last_seen_ts');
+    // Ensure global UNIQUE on contact_id is removed; rely on composite unique created elsewhere
+    try { db.exec("DROP INDEX IF EXISTS sqlite_autoindex_handoff_1"); } catch {}
+    if (needArchived) db.prepare('ALTER TABLE handoff ADD COLUMN is_archived INTEGER DEFAULT 0').run();
+    if (needDeletedAt) db.prepare('ALTER TABLE handoff ADD COLUMN deleted_at INTEGER').run();
+    if (needLastSeen) db.prepare('ALTER TABLE handoff ADD COLUMN last_seen_ts INTEGER DEFAULT 0').run();
+  } catch {}
+}
+
+ensureHandoffExtras();
 
 /**
  * Ensure booking_sessions has latest columns for dynamic Q&A.
@@ -289,5 +317,146 @@ function ensureBookingSessionColumns() {
   } catch {}
 }
 
-ensureBookingSessionColumns();
+// Cleanup legacy schema objects safely
+function cleanupLegacySchema() {
+  try {
+    // Drop legacy single-tenant settings table if it exists
+    db.exec("DROP TABLE IF EXISTS settings");
+    // Drop legacy tenant_id column from kb_items if it somehow still exists (noop if not present)
+    try {
+      const cols = db.prepare('PRAGMA table_info(kb_items)').all();
+      if (cols.some(c => c.name === 'tenant_id')) {
+        // SQLite cannot drop columns easily; rebuild would be required.
+        // Skip destructive migration automatically to avoid data loss.
+        // The column is ignored by code; leaving it is harmless.
+      }
+    } catch {}
+  } catch {}
+}
 
+ensureBookingSessionColumns();
+cleanupLegacySchema();
+
+
+/**
+ * Ensure guides (help/blog) table exists and seed an initial article.
+ */
+function ensureGuides() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS guides (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug TEXT UNIQUE,
+        title TEXT NOT NULL,
+        summary TEXT,
+        content TEXT NOT NULL,
+        created_at INTEGER DEFAULT (strftime('%s','now'))
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_guides_slug ON guides(slug);
+    `);
+  } catch {}
+}
+
+function seedGuides() {
+  try {
+    const count = db.prepare(`SELECT COUNT(1) AS c FROM guides`).get()?.c || 0;
+    const upsert = (slug, title, summary, content) => {
+      const row = db.prepare(`SELECT id FROM guides WHERE slug = ?`).get(slug);
+      if (row?.id) {
+        db.prepare(`UPDATE guides SET title = ?, summary = ?, content = ? WHERE slug = ?`).run(title, summary, content, slug);
+      } else {
+        db.prepare(`INSERT INTO guides (slug, title, summary, content) VALUES (?, ?, ?, ?)`).run(slug, title, summary, content);
+      }
+    };
+
+    // Getting started
+    const gs = [
+      '# Getting Started with WhatsApp Agent',
+      '',
+      'This guide walks you through creating a Meta developer setup, connecting WhatsApp Business, verifying the webhook, and sending your first automated reply.',
+      '',
+      'Prerequisites:',
+      '- A Meta Business account and a WhatsApp Business number (or a test number).',
+      '- A public HTTPS domain for this app (e.g., https://yourdomain.com).',
+      '- Ability to set environment variables and restart the server.',
+      '',
+      'Step 1) Create a Meta Developer account',
+      '1) Go to Meta for Developers and sign up/log in. [Image: Meta Developers logo]',
+      '2) Create a new App (choose a Business type). [Image: Create App screen]',
+      '3) In the App dashboard, add the WhatsApp product. [Image: Add Product → WhatsApp]',
+      '',
+      'Step 2) Generate a long‑lived token and find your App Secret',
+      '1) In WhatsApp → Getting Started or API Setup, follow the steps to create a System User and generate a long‑lived token with scopes:',
+      '   whatsapp_business_messaging, whatsapp_business_management. [Image: Permissions checklist]',
+      '2) Note your App Secret from App settings → Basic. [Image: App Secret field]',
+      '',
+      'Step 3) Get your Phone Number ID and Business Number',
+      '1) In WhatsApp Manager, add or select your number. [Image: WhatsApp Manager numbers]',
+      '2) Copy the Phone Number ID and your formatted Business Phone (digits only). [Image: Phone Number ID]',
+      '',
+      'Step 4) Configure this app (Settings → WhatsApp Setup)',
+      '1) Open Settings in the dashboard and paste:',
+      '   - Phone Number ID',
+      '   - WhatsApp Token (long‑lived)',
+      '   - App Secret',
+      '   - Business Phone (digits)',
+      '2) Choose a Verify Token (any strong string). You will reuse it during webhook setup.',
+      '',
+      'Step 5) Set up the Webhook in Meta',
+      '1) In your Meta App → WhatsApp → Configuration → Webhooks, click “Configure Webhooks”.',
+      '2) Set Callback URL to https://YOUR_DOMAIN/webhook and use the same Verify Token as above.',
+      '3) Click Verify & Save. Meta will call GET /webhook and this app will return the challenge if the token matches.',
+      '4) Subscribe to events (messages, message_template_status, message_status). [Image: Subscribed fields]',
+      '',
+      'Step 6) Add business info & Knowledge Base',
+      '1) In Settings → Personal Information, set Business Name and Website URL.',
+      '2) In Knowledge Base, add entries like Hours, Locations, Payments. You can also upload PDFs; the bot will share them when relevant. [Image: KB list]',
+      '',
+      'Step 7) Test',
+      '1) From your phone, send a WhatsApp message to the Business number.',
+      '2) Try a simple question (e.g., “What are your hours?”). The bot answers from your KB or sends a helpful prompt.',
+      '3) For bookings (optional), enable “Enable bookings via WhatsApp & dashboard” and try saying “book”.',
+      '',
+      'Troubleshooting:',
+      '- If webhook verification fails, confirm Verify Token matches exactly and your domain is HTTPS and public.',
+      '- If replies fail, re‑check Phone Number ID, Token, and App Secret in Settings.',
+      '- Use the server logs for “KB Matches” or webhook errors to pinpoint configuration issues.',
+      '',
+      'You’re set — add more KB entries over time for richer, more accurate answers. [Image: Celebration graphic]'
+    ].join('\n');
+    upsert('getting-started', 'Getting Started with WhatsApp Agent', 'Create Meta app, connect WhatsApp, verify webhook, and send your first reply.', gs);
+
+    // Best practices
+    const bp = [
+      '# Best Practices for a Helpful KB',
+      '',
+      'Your KB powers instant, accurate replies. Use these tips to keep answers tight and useful:',
+      '',
+      '- Prefer short sentences and concrete facts (hours, prices, locations).',
+      '- Group related info under clear titles (Payments, Returns, Delivery).',
+      '- Add PDFs for menus, service catalogs, or forms to enable file replies.',
+      '- Review conversation logs to fill gaps and update the KB regularly.',
+      '',
+      'Pro tip: Add “Top FAQs” with your most common questions for quick wins.'
+    ].join('\n');
+    upsert('kb-best-practices', 'KB Best Practices', 'How to write concise, high-signal KB articles.', bp);
+
+    // Booking setup
+    const bk = [
+      '# Enable Bookings & Reminders',
+      '',
+      'Let customers book appointments via WhatsApp:',
+      '',
+      '1) In Settings, check “Enable bookings via WhatsApp & dashboard”.',
+      '2) Add a Staff member and optional connected calendar.',
+      '3) Customize reminder windows (2h, 4h, 1d).',
+      '4) Try “test reminder” in WhatsApp to preview the flow.',
+      '',
+      'Customers can say “book” to get available dates and times.'
+    ].join('\n');
+    upsert('bookings-and-reminders', 'Bookings & Reminders', 'Turn on scheduling and automated reminders.', bk);
+  } catch {}
+}
+
+ensureGuides();
+seedGuides();

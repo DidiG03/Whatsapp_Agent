@@ -31,3 +31,6 @@ export const CLERK_SIGN_UP_URL = process.env.CLERK_SIGN_UP_URL;
 /** Directory path used to serve static assets. */
 export const STATIC_DIR = "public";
 
+/** Public base URL used for links sent to users (e.g., ICS downloads). */
+export const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || `http://localhost:${PORT}`;
+

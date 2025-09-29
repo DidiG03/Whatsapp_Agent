@@ -34,10 +34,12 @@ export function upsertSettingsForUser(userId, values) {
     cancel_min_lead_minutes: values.cancel_min_lead_minutes ?? current.cancel_min_lead_minutes ?? 60,
     reminders_enabled: values.reminders_enabled ?? current.reminders_enabled ?? 0,
     reminder_windows: values.reminder_windows ?? current.reminder_windows ?? null,
+    wa_template_name: values.wa_template_name ?? current.wa_template_name ?? null,
+    wa_template_language: values.wa_template_language ?? current.wa_template_language ?? null,
   };
   db.prepare(`
-    INSERT INTO settings_multi (user_id, phone_number_id, whatsapp_token, verify_token, app_secret, business_phone, business_name, website_url, ai_tone, ai_blocked_topics, ai_style, entry_greeting, bookings_enabled, booking_questions_json, reschedule_min_lead_minutes, cancel_min_lead_minutes, reminders_enabled, reminder_windows, updated_at)
-    VALUES (@user_id, @phone_number_id, @whatsapp_token, @verify_token, @app_secret, @business_phone, @business_name, @website_url, @ai_tone, @ai_blocked_topics, @ai_style, @entry_greeting, @bookings_enabled, @booking_questions_json, @reschedule_min_lead_minutes, @cancel_min_lead_minutes, @reminders_enabled, @reminder_windows, strftime('%s','now'))
+    INSERT INTO settings_multi (user_id, phone_number_id, whatsapp_token, verify_token, app_secret, business_phone, business_name, website_url, ai_tone, ai_blocked_topics, ai_style, entry_greeting, bookings_enabled, booking_questions_json, reschedule_min_lead_minutes, cancel_min_lead_minutes, reminders_enabled, reminder_windows, wa_template_name, wa_template_language, updated_at)
+    VALUES (@user_id, @phone_number_id, @whatsapp_token, @verify_token, @app_secret, @business_phone, @business_name, @website_url, @ai_tone, @ai_blocked_topics, @ai_style, @entry_greeting, @bookings_enabled, @booking_questions_json, @reschedule_min_lead_minutes, @cancel_min_lead_minutes, @reminders_enabled, @reminder_windows, @wa_template_name, @wa_template_language, strftime('%s','now'))
     ON CONFLICT(user_id) DO UPDATE SET
       phone_number_id = excluded.phone_number_id,
       whatsapp_token = excluded.whatsapp_token,
@@ -56,6 +58,8 @@ export function upsertSettingsForUser(userId, values) {
       cancel_min_lead_minutes = excluded.cancel_min_lead_minutes,
       reminders_enabled = excluded.reminders_enabled,
       reminder_windows = excluded.reminder_windows,
+      wa_template_name = excluded.wa_template_name,
+      wa_template_language = excluded.wa_template_language,
       updated_at = excluded.updated_at
   `).run(merged);
   return merged;

@@ -17,6 +17,16 @@ export function normalizePhone(value) {
   return (value || "").replace(/\D/g, "");
 }
 
+/** Normalize to E.164-like (+digits) when plausible, else null. */
+export function normalizePhoneE164(value) {
+  if (!value) return null;
+  const cleaned = String(value).replace(/[ \-().]/g, "");
+  if (/^\+?\d{7,15}$/.test(cleaned)) {
+    return cleaned.startsWith("+") ? cleaned : "+" + cleaned;
+  }
+  return null;
+}
+
 /**
  * Escape unsafe characters for safe HTML insertion.
  * @param {string} text raw text
@@ -77,7 +87,7 @@ export function renderSidebar(activeKey) {
         <li>
           <a ${activeKey === key ? 'class="active"' : ''} href="${href}">
             <img src="/dashboard-icon.svg" alt="Dashboard" style="width:20px;height:20px;vertical-align:middle;margin-right:6px;"/>
-            ${label}
+            <span style="color: grey;">${label}</span>
           </a>
         </li>
       `;
@@ -87,7 +97,7 @@ export function renderSidebar(activeKey) {
         <li>
           <a ${activeKey === key ? 'class="active"' : ''} href="${href}">
             <img src="/inbox-icon.svg" alt="Inbox" style="width:20px;height:20px;vertical-align:middle;margin-right:6px;"/>
-            ${label}
+            <span style="color: grey;">${label}</span>
           </a>
         </li>
       `;
@@ -97,7 +107,7 @@ export function renderSidebar(activeKey) {
         <li>
           <a ${activeKey === key ? 'class="active"' : ''} href="${href}">
             <img src="/onboarding-icon.svg" alt="Onboarding" style="width:20px;height:20px;vertical-align:middle;margin-right:6px;"/>
-            ${label}
+            <span style="color: grey;">${label}</span>
           </a>
         </li>
       `;
@@ -107,7 +117,7 @@ export function renderSidebar(activeKey) {
         <li>
           <a ${activeKey === key ? 'class="active"' : ''} href="${href}">
             <img src="/settings-icon.svg" alt="Settings" style="width:20px;height:20px;vertical-align:middle;margin-right:6px;"/>
-            ${label}
+            <span style="color: grey;">${label}</span>
           </a>
         </li>
       `;
@@ -117,30 +127,53 @@ export function renderSidebar(activeKey) {
         <li>
           <a ${activeKey === key ? 'class="active"' : ''} href="${href}">
             <img src="/JSON-icon.svg" alt="KB" style="width:20px;height:20px;vertical-align:middle;margin-right:6px;"/>
-            ${label}
+            <span style="color: grey;">${label}</span>
           </a>
         </li>
       `;
     }
-    return `<li><a ${activeKey === key ? 'class="active"' : ''} href="${href}">${label}</a></li>`;
+    if (key === 'guide') {
+      return `
+        <li>
+          <a ${activeKey === key ? 'class="active"' : ''} href="${href}">
+            <img src="/ex-mark-icon.svg" alt="Guide" style="width:20px;height:20px;vertical-align:middle;margin-right:6px;"/>
+            <span style="color: grey;">${label}</span>
+          </a>
+        </li>
+      `;
+    }
+    return `<li><a ${activeKey === key ? 'class="active"' : ''} href="${href}"><span style="color: grey;">${label}</span></a></li>`;
   };
   const nav = `
     <ul class="nav">
       ${link('/dashboard', 'Dashboard', 'dashboard')}
       ${link('/inbox', 'Inbox', 'inbox')}
-      ${link('/onboarding', 'Onboarding', 'onboarding')}
       ${link('/settings', 'Settings', 'settings')}
-      ${link('/kb/ui', 'KB (UI)', 'kb')}
+      ${link('/kb/ui', 'Knowledge Base', 'kb')}
+      ${link('/guide', 'Guide', 'guide')}
     </ul>
   `;
   const logout = CLERK_ENABLED ? '<a class="logout" href="/logout"><img src="/sign-out.svg" alt="Sign out" style="width:20px;height:20px;vertical-align:middle;margin-right:6px;"/>Sign out</a>' : '';
   return `
     <aside class="sidebar">
-      <div class="brand">Code Orbit</div>
+      <div style="display: flex; align-items: center; gap: 12px;">
+      <img src="/logo-icon.png" alt="Code Orbit" style="width:30px;height:40px;margin-bottom:12px;"/>
+      <div style="margin-top: 12px;" class="brand">Code Orbit</div>
+      </div>
+      <div class="separator"></div>
       ${nav}
       <div class="spacer"></div>
       ${logout}
     </aside>
+  `;
+}
+
+export function renderTopbar(crumbs, email) {
+  return `
+    <div class="card topbar">
+      <div class="crumbs">${crumbs}</div>
+      <div class="small">${email ? `Signed in as: ${email}` : ''}</div>
+    </div>
   `;
 }
 

@@ -29,16 +29,18 @@ export function listContactsForUser(userId) {
              SELECT m.text_body FROM messages m
              WHERE m.user_id = ?
                AND (
-                 (m.direction = 'inbound'  AND m.from_id = l.contact) OR
-                 (m.direction = 'outbound' AND m.to_id   = l.contact)
+                (m.direction = 'inbound'  AND m.from_id = l.contact) OR
+                (m.direction = 'outbound' AND m.to_id   = l.contact)
                )
              ORDER BY COALESCE(m.timestamp,0) DESC
              LIMIT 1
            ) AS last_text
     FROM latest l
+    LEFT JOIN handoff h ON h.contact_id = l.contact AND (h.user_id = ? OR h.user_id IS NULL)
+    WHERE COALESCE(h.is_archived,0) = 0 AND COALESCE(h.deleted_at,0) = 0
     ORDER BY l.last_ts DESC
     LIMIT 100
-  `).all(userId, userId, userId);
+  `).all(userId, userId, userId, userId);
 }
 
 /** List messages for a user+phoneDigits thread ordered by timestamp ASC. */
