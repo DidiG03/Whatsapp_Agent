@@ -158,7 +158,7 @@ export function renderSidebar(activeKey) {
     <aside class="sidebar">
       <div style="display: flex; align-items: center; gap: 12px;">
       <img src="/logo-icon.png" alt="Code Orbit" style="width:30px;height:40px;margin-bottom:12px;"/>
-      <div style="margin-top: 12px;" class="brand">Code Orbit</div>
+      <div style="margin-top: 12px;" class="brand">Code Orbit Agent</div>
       </div>
       <div class="separator"></div>
       ${nav}
@@ -172,7 +172,25 @@ export function renderTopbar(crumbs, email) {
   return `
     <div class="card topbar">
       <div class="crumbs">${crumbs}</div>
-      <div class="small">${email ? `Signed in as: ${email}` : ''}</div>
+      <div style="display: flex; align-items: center; gap: 16px;">
+        <div id="notification-bell" class="notification-bell" onclick="toggleNotifications(event)">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+            <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+          </svg>
+          <span id="notification-badge" class="notification-badge" style="display: none;">0</span>
+          <div id="notification-dropdown" class="notification-dropdown" style="display: none;">
+            <div class="notification-header">
+              <span style="font-weight: 600;">Notifications</span>
+              <button onclick="markAllAsRead(event)" class="mark-all-read">Mark all read</button>
+            </div>
+            <div id="notification-list" class="notification-list">
+              <div class="notification-loading">Loading...</div>
+            </div>
+          </div>
+        </div>
+        <div class="small">${email ? `Signed in as: ${email}` : ''}</div>
+      </div>
     </div>
   `;
 }

@@ -12,6 +12,7 @@ import { normalizePhone } from "../utils.mjs";
 import { generateAiReply } from "../services/ai.mjs";
 import { listAvailability, createBooking, rescheduleBooking, cancelBooking, buildDayRows, buildTimeRows } from "../services/booking.mjs";
 import { recordOutboundMessage } from "../services/messages.mjs";
+import { sendEscalationNotification, sendBookingNotification } from "../services/email.mjs";
 
 function isGreeting(raw) {
   const s = String(raw || "").trim().toLowerCase();
@@ -75,6 +76,12 @@ function levenshtein(a, b) {
     }
   }
   return dp[m][n];
+}
+
+function wantsHuman(raw) {
+  const s = String(raw || '').toLowerCase();
+  if (!s) return false;
+  return /\b(human|agent|representative|real person|support|customer service|talk to (a )?human|speak to (a )?human|live chat)\b/.test(s);
 }
 
 // Helper: send KB item by title (prefers PDF if present), and record outbound message
@@ -319,10 +326,116 @@ export default function registerWebhookRoutes(app) {
         return res.sendStatus(200);
       }
 
-      // If agent handoff is active for this contact, do not auto‑reply at all
+      // If agent handoff is active for this contact and not expired, do not auto‑reply at all
       try {
-        const hs = db.prepare(`SELECT is_human FROM handoff WHERE contact_id = ? AND user_id = ?`).get(from, tenantUserId);
-        if (hs?.is_human) return res.sendStatus(200);
+        const hs = db.prepare(`SELECT is_human, COALESCE(human_expires_ts,0) AS exp FROM handoff WHERE contact_id = ? AND user_id = ?`).get(from, tenantUserId);
+        const now = Math.floor(Date.now()/1000);
+        if (hs?.is_human) {
+          if (!hs.exp || hs.exp > now) {
+            return res.sendStatus(200);
+          } else {
+            // Expired → flip back to AI
+            try { db.prepare(`UPDATE handoff SET is_human = 0, updated_at = strftime('%s','now') WHERE contact_id = ? AND user_id = ?`).run(from, tenantUserId); } catch {}
+          }
+        }
+      } catch {}
+
+      // Escalation state machine: collect name and reason before human handoff
+      try {
+        const state = db.prepare(`SELECT escalation_step, escalation_reason FROM handoff WHERE contact_id = ? AND user_id = ?`).get(from, tenantUserId) || {};
+        const customer = db.prepare(`SELECT display_name FROM customers WHERE user_id = ? AND contact_id = ?`).get(tenantUserId, from) || {};
+
+        // If we are waiting for the user's name
+        if (state.escalation_step === 'ask_name') {
+          const parsed = parseNameFromMessage(text) || String(text || '').trim().slice(0, 80);
+          if (parsed) {
+            try {
+              db.prepare(`INSERT INTO customers (user_id, contact_id, display_name, created_at, updated_at)
+                VALUES (?, ?, ?, strftime('%s','now'), strftime('%s','now'))
+                ON CONFLICT(user_id, contact_id) DO UPDATE SET display_name = excluded.display_name, updated_at = excluded.updated_at`).run(tenantUserId, from, parsed);
+            } catch {}
+            try {
+              db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
+                VALUES (?, ?, 'ask_reason', strftime('%s','now'))
+                ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = 'ask_reason', updated_at = excluded.updated_at`).run(from, tenantUserId);
+            } catch {}
+            await sendWhatsAppText(from, "Thanks, and what’s the reason for contacting a human today?", cfg);
+            return res.sendStatus(200);
+          } else {
+            await sendWhatsAppText(from, "Could you please share your name so I can connect you to a human?", cfg);
+            return res.sendStatus(200);
+          }
+        }
+
+        // If we are waiting for the reason
+        if (state.escalation_step === 'ask_reason') {
+          const reason = String(text || '').trim().slice(0, 300);
+          if (reason) {
+            try {
+              const exp = Math.floor(Date.now()/1000) + 5*60;
+              db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, escalation_reason, is_human, human_expires_ts, updated_at)
+                VALUES (?, ?, NULL, ?, 1, ?, strftime('%s','now'))
+                ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = NULL, escalation_reason = excluded.escalation_reason, is_human = 1, human_expires_ts = excluded.human_expires_ts, updated_at = excluded.updated_at`).run(from, tenantUserId, reason, exp);
+            } catch {}
+            
+            // Send email notification to account owner
+            try {
+              const customerName = customer.display_name || null;
+              await sendEscalationNotification(tenantUserId, {
+                customerName,
+                customerPhone: from,
+                reason,
+                timestamp: new Date().toISOString(),
+              });
+            } catch (e) {
+              console.error('[Webhook] Failed to send escalation email:', e.message);
+            }
+            
+            // Create web notification
+            try {
+              const customerName = customer.display_name || from;
+              db.prepare(`INSERT INTO notifications (user_id, type, title, message, link, metadata) 
+                VALUES (?, ?, ?, ?, ?, ?)`).run(
+                tenantUserId,
+                'escalation',
+                'New Support Escalation',
+                `${customerName} requested to speak with a human: "${reason}"`,
+                `/inbox/${encodeURIComponent(from)}`,
+                JSON.stringify({ contact_id: from, reason, customer_name: customerName })
+              );
+            } catch (e) {
+              console.error('[Webhook] Failed to create notification:', e.message);
+            }
+            
+            await sendWhatsAppText(from, "Got it. I'm connecting you with a human now. Please wait a moment.", cfg);
+            return res.sendStatus(200);
+          } else {
+            await sendWhatsAppText(from, "Could you share a brief reason so I can route you to the right person?", cfg);
+            return res.sendStatus(200);
+          }
+        }
+
+        // Detect explicit user request for a human
+        if (wantsHuman(text)) {
+          const hasName = !!customer.display_name;
+          if (!hasName) {
+            try {
+              db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
+                VALUES (?, ?, 'ask_name', strftime('%s','now'))
+                ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = 'ask_name', updated_at = excluded.updated_at`).run(from, tenantUserId);
+            } catch {}
+            await sendWhatsAppText(from, "Sure — before I connect you with a human, what’s your name?", cfg);
+            return res.sendStatus(200);
+          } else {
+            try {
+              db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
+                VALUES (?, ?, 'ask_reason', strftime('%s','now'))
+                ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = 'ask_reason', updated_at = excluded.updated_at`).run(from, tenantUserId);
+            } catch {}
+            await sendWhatsAppText(from, "Thanks. What’s the reason for escalating to our customer service team today?", cfg);
+            return res.sendStatus(200);
+          }
+        }
       } catch {}
 
       // Handle interactive replies (buttons/lists) BEFORE filtering to text
@@ -767,6 +880,45 @@ export default function registerWebhookRoutes(app) {
           const title = tenant?.business_name ? `Appointment with ${tenant.business_name}` : 'Appointment';
           const icsUrl = `${req.protocol}://${req.get('host')}/ics?title=${encodeURIComponent(title)}&start=${encodeURIComponent(sess.start_iso)}&end=${encodeURIComponent(sess.end_iso)}&desc=${encodeURIComponent('Ref #' + r.id)}`;
           await sendWhatsAppText(from, `Booked: ${new Date(sess.start_iso).toLocaleString()}. Ref #${r.id}\n\nAdd to your calendar: ${icsUrl}`, cfg);
+          
+          // Send email notification to account owner
+          try {
+            const staff = db.prepare(`SELECT name FROM staff WHERE id = ?`).get(sess.staff_id);
+            const customerName = answers[0] || from; // First answer is usually the name
+            await sendBookingNotification(tenantUserId, {
+              customerName,
+              customerPhone: from,
+              startTime: sess.start_iso,
+              endTime: sess.end_iso,
+              notes,
+              appointmentId: r.id,
+              staffName: staff?.name || null
+            });
+          } catch (e) {
+            console.error('[Webhook] Failed to send booking email:', e.message);
+          }
+          
+          // Create web notification
+          try {
+            const customerName = answers[0] || from;
+            const formattedTime = new Date(sess.start_iso).toLocaleString();
+            db.prepare(`INSERT INTO notifications (user_id, type, title, message, link, metadata) 
+              VALUES (?, ?, ?, ?, ?, ?)`).run(
+              tenantUserId,
+              'booking',
+              'New Booking Confirmed',
+              `${customerName} booked an appointment for ${formattedTime} (Ref #${r.id})`,
+              `/dashboard`,
+              JSON.stringify({ 
+                contact_phone: from, 
+                appointment_id: r.id,
+                start_time: sess.start_iso,
+                customer_name: customerName
+              })
+            );
+          } catch (e) {
+            console.error('[Webhook] Failed to create booking notification:', e.message);
+          }
         } catch {
           await sendWhatsAppText(from, "Sorry, that slot could not be booked. Please try another time.", cfg);
         }
@@ -932,12 +1084,19 @@ export default function registerWebhookRoutes(app) {
         const OUT_OF_SCOPE = 'That seems outside my scope. Try choosing one of these topics';
 
         if (normalized && normalized.toLowerCase().startsWith(OUT_OF_SCOPE.toLowerCase())) {
-          // Out of scope → show suggestions with standardized message
-          const suggestions = buildKbSuggestions(tenantUserId, text, 3);
-          if (suggestions.length > 0) {
-            await sendWhatsappButton(from, OUT_OF_SCOPE + ':', suggestions, cfg);
+          // Out of scope → begin human escalation flow (collect name → reason)
+          const customer = db.prepare(`SELECT display_name FROM customers WHERE user_id = ? AND contact_id = ?`).get(tenantUserId, from) || {};
+          const hasName = !!customer.display_name;
+          try {
+            db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
+              VALUES (?, ?, ?, strftime('%s','now'))
+              ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = excluded.escalation_step, updated_at = excluded.updated_at`
+            ).run(from, tenantUserId, hasName ? 'ask_reason' : 'ask_name');
+          } catch {}
+          if (!hasName) {
+            await sendWhatsAppText(from, "I might not have enough info for that. I can connect you with a human — what’s your name?", cfg);
           } else {
-            await sendWhatsAppText(from, OUT_OF_SCOPE + '.', cfg);
+            await sendWhatsAppText(from, "I can connect you with a human. What’s the reason for your request?", cfg);
           }
           return res.sendStatus(200);
         }
@@ -963,15 +1122,26 @@ export default function registerWebhookRoutes(app) {
       // Low/no confidence → offer 3 smart options from KB
       const suggestions = buildKbSuggestions(tenantUserId, text, 3);
       console.log("Suggestions:", suggestions);
+      const customer = db.prepare(`SELECT display_name FROM customers WHERE user_id = ? AND contact_id = ?`).get(tenantUserId, from) || {};
+      const hasName = !!customer.display_name;
+      try {
+        db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
+          VALUES (?, ?, ?, strftime('%s','now'))
+          ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = excluded.escalation_step, updated_at = excluded.updated_at`
+        ).run(from, tenantUserId, hasName ? 'ask_reason' : 'ask_name');
+      } catch {}
       if (suggestions.length > 0) {
         await sendWhatsappButton(
           from,
-          "That seems outside my scope. Try choosing one of these topics:",
+          "That seems outside my scope. I can connect you with a human. First, choose one of these topics if helpful:",
           suggestions,
           cfg
         );
+      }
+      if (!hasName) {
+        await sendWhatsAppText(from, "Before I connect you, what’s your name?", cfg);
       } else {
-        await sendWhatsAppText(from, "I couldn’t find that. Try asking about Hours, Locations, or Payments.", cfg);
+        await sendWhatsAppText(from, "What’s the reason for contacting a human today?", cfg);
       }
 
       return res.sendStatus(200);

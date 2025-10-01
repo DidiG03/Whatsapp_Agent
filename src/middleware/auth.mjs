@@ -8,7 +8,7 @@
  */
 import { clerkMiddleware, getAuth, clerkClient } from "@clerk/express";
 import crypto from "node:crypto";
-import { CLERK_ENABLED, CLERK_PUBLISHABLE, CLERK_SECRET, CLERK_SIGN_IN_URL, CLERK_SIGN_UP_URL } from "../config.mjs";
+import { CLERK_ENABLED, CLERK_PUBLISHABLE, CLERK_SECRET, CLERK_SIGN_IN_URL, CLERK_SIGN_UP_URL, PUBLIC_BASE_URL } from "../config.mjs";
 const SESSION_TOKEN_SECRET = process.env.SESSION_TOKEN_SECRET || CLERK_SECRET || "dev-secret-change";
 
 /**
@@ -20,19 +20,24 @@ export function initClerk(app) {
     console.warn("[Clerk] Disabled: missing CLERK_PUBLISHABLE_KEY or CLERK_SECRET_KEY");
     return;
   }
+  // Always provide a redirect_url so hosted Clerk pages can return to our app
+  const appendRedirect = (url) => {
+    if (!url) return url;
+    return url.includes("redirect_url=") ? url : `${url}${url.includes("?") ? "&" : "?"}redirect_url=${encodeURIComponent(PUBLIC_BASE_URL)}`;
+  };
+  const signInUrl = appendRedirect(CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in");
+  const signUpUrl = appendRedirect(CLERK_SIGN_UP_URL || "https://accounts.clerk.com/sign-up");
   const clerkMWGet = clerkMiddleware({
     publishableKey: CLERK_PUBLISHABLE,
     secretKey: CLERK_SECRET,
-    signInUrl: CLERK_SIGN_IN_URL,
-    signUpUrl: CLERK_SIGN_UP_URL,
-    enableHandshake: true,
+    signInUrl,
+    signUpUrl,
   });
   const clerkMWNoHs = clerkMiddleware({
     publishableKey: CLERK_PUBLISHABLE,
     secretKey: CLERK_SECRET,
-    signInUrl: CLERK_SIGN_IN_URL,
-    signUpUrl: CLERK_SIGN_UP_URL,
-    enableHandshake: true,
+    signInUrl,
+    signUpUrl,
   });
   app.use((req, res, next) => (req.method === 'GET' ? clerkMWGet(req, res, next) : clerkMWNoHs(req, res, next)));
 }
@@ -42,10 +47,18 @@ export function ensureAuthed(req, res, next) {
   if (!CLERK_ENABLED) return next();
   try {
     const { userId } = getAuth(req);
-    if (!userId) return res.redirect(CLERK_SIGN_IN_URL || "/auth");
+    if (!userId) {
+      const signIn = (CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in").includes("redirect_url=")
+        ? (CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in")
+        : `${CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in"}${(CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in").includes("?") ? "&" : "?"}redirect_url=${encodeURIComponent(PUBLIC_BASE_URL)}`;
+      return res.redirect(signIn);
+    }
     return next();
   } catch {
-    return res.redirect(CLERK_SIGN_IN_URL || "/auth");
+    const signIn = (CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in").includes("redirect_url=")
+      ? (CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in")
+      : `${CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in"}${(CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in").includes("?") ? "&" : "?"}redirect_url=${encodeURIComponent(PUBLIC_BASE_URL)}`;
+    return res.redirect(signIn);
   }
 }
 

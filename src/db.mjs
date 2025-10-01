@@ -187,6 +187,21 @@ db.exec(`
     UNIQUE(user_id, contact_id)
   );
   CREATE INDEX IF NOT EXISTS idx_customers_user_contact ON customers(user_id, contact_id);
+
+  -- Notifications for web alerts
+  CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    message TEXT,
+    link TEXT,
+    is_read INTEGER DEFAULT 0,
+    created_at INTEGER DEFAULT (strftime('%s','now')),
+    metadata JSON
+  );
+  CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
+  CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(user_id, is_read);
 `);
 
 /**
@@ -274,6 +289,13 @@ export function ensureAiSettingsColumns() {
     if (need('reminder_windows')) db.prepare("ALTER TABLE settings_multi ADD COLUMN reminder_windows TEXT").run();
     if (need('wa_template_name')) db.prepare('ALTER TABLE settings_multi ADD COLUMN wa_template_name TEXT').run();
     if (need('wa_template_language')) db.prepare('ALTER TABLE settings_multi ADD COLUMN wa_template_language TEXT').run();
+    if (need('escalation_email_enabled')) db.prepare('ALTER TABLE settings_multi ADD COLUMN escalation_email_enabled INTEGER DEFAULT 0').run();
+    if (need('escalation_email')) db.prepare('ALTER TABLE settings_multi ADD COLUMN escalation_email TEXT').run();
+    if (need('smtp_host')) db.prepare('ALTER TABLE settings_multi ADD COLUMN smtp_host TEXT').run();
+    if (need('smtp_port')) db.prepare('ALTER TABLE settings_multi ADD COLUMN smtp_port INTEGER DEFAULT 587').run();
+    if (need('smtp_secure')) db.prepare('ALTER TABLE settings_multi ADD COLUMN smtp_secure INTEGER DEFAULT 0').run();
+    if (need('smtp_user')) db.prepare('ALTER TABLE settings_multi ADD COLUMN smtp_user TEXT').run();
+    if (need('smtp_pass')) db.prepare('ALTER TABLE settings_multi ADD COLUMN smtp_pass TEXT').run();
   } catch {}
 }
 
@@ -292,11 +314,17 @@ function ensureHandoffExtras() {
     const needArchived = !cols.some(c => c.name === 'is_archived');
     const needDeletedAt = !cols.some(c => c.name === 'deleted_at');
     const needLastSeen = !cols.some(c => c.name === 'last_seen_ts');
+    const needEscalationStep = !cols.some(c => c.name === 'escalation_step');
+    const needEscalationReason = !cols.some(c => c.name === 'escalation_reason');
+    const needHumanExpires = !cols.some(c => c.name === 'human_expires_ts');
     // Ensure global UNIQUE on contact_id is removed; rely on composite unique created elsewhere
     try { db.exec("DROP INDEX IF EXISTS sqlite_autoindex_handoff_1"); } catch {}
     if (needArchived) db.prepare('ALTER TABLE handoff ADD COLUMN is_archived INTEGER DEFAULT 0').run();
     if (needDeletedAt) db.prepare('ALTER TABLE handoff ADD COLUMN deleted_at INTEGER').run();
     if (needLastSeen) db.prepare('ALTER TABLE handoff ADD COLUMN last_seen_ts INTEGER DEFAULT 0').run();
+    if (needEscalationStep) db.prepare('ALTER TABLE handoff ADD COLUMN escalation_step TEXT').run();
+    if (needEscalationReason) db.prepare('ALTER TABLE handoff ADD COLUMN escalation_reason TEXT').run();
+    if (needHumanExpires) db.prepare('ALTER TABLE handoff ADD COLUMN human_expires_ts INTEGER DEFAULT 0').run();
   } catch {}
 }
 
@@ -353,6 +381,16 @@ function ensureGuides() {
         created_at INTEGER DEFAULT (strftime('%s','now'))
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_guides_slug ON guides(slug);
+
+      CREATE TABLE IF NOT EXISTS enquiries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        email TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        message TEXT NOT NULL,
+        created_at INTEGER DEFAULT (strftime('%s','now')),
+        status TEXT DEFAULT 'new'
+      );
     `);
   } catch {}
 }
@@ -371,30 +409,37 @@ function seedGuides() {
 
     // Getting started
     const gs = [
-      '# Getting Started with WhatsApp Agent',
       '',
       'This guide walks you through creating a Meta developer setup, connecting WhatsApp Business, verifying the webhook, and sending your first automated reply.',
       '',
+      '![WhatsApp Agent Setup](/ex-mark-icon.png)',
+      '',
       'Prerequisites:',
       '- A Meta Business account and a WhatsApp Business number (or a test number).',
-      '- A public HTTPS domain for this app (e.g., https://yourdomain.com).',
       '- Ability to set environment variables and restart the server.',
       '',
-      'Step 1) Create a Meta Developer account',
-      '1) Go to Meta for Developers and sign up/log in. [Image: Meta Developers logo]',
+      '**Step 1: Getting Started with WhatsApp Agent**',
+      '1) Go to Meta for Developers and sign up/log in: https://developers.facebook.com',
       '2) Create a new App (choose a Business type). [Image: Create App screen]',
+      '![WhatsApp App Create](/whatsapp-business-itegration-2.png)',
+      '',   
       '3) In the App dashboard, add the WhatsApp product. [Image: Add Product → WhatsApp]',
+      '![WhatsApp Product Add](/whatsapp-business-itegration-4.png)',
       '',
-      'Step 2) Generate a long‑lived token and find your App Secret',
+      '**Step 2: Generate a long‑lived token and find your App Secret**',
       '1) In WhatsApp → Getting Started or API Setup, follow the steps to create a System User and generate a long‑lived token with scopes:',
       '   whatsapp_business_messaging, whatsapp_business_management. [Image: Permissions checklist]',
+      '![WhatsApp Permissions](/whatsapp-business-itegration-5.png)',
+      '',
       '2) Note your App Secret from App settings → Basic. [Image: App Secret field]',
       '',
-      'Step 3) Get your Phone Number ID and Business Number',
+      '**Step 3: Get your Phone Number ID and Business Number**',
       '1) In WhatsApp Manager, add or select your number. [Image: WhatsApp Manager numbers]',
+      '![WhatsApp Manager Numbers](/whatsapp-business-itegration-6.png)',
+      '',
       '2) Copy the Phone Number ID and your formatted Business Phone (digits only). [Image: Phone Number ID]',
       '',
-      'Step 4) Configure this app (Settings → WhatsApp Setup)',
+      '**Step 4: Configure this app (Settings → WhatsApp Setup)**',
       '1) Open Settings in the dashboard and paste:',
       '   - Phone Number ID',
       '   - WhatsApp Token (long‑lived)',
@@ -402,17 +447,20 @@ function seedGuides() {
       '   - Business Phone (digits)',
       '2) Choose a Verify Token (any strong string). You will reuse it during webhook setup.',
       '',
-      'Step 5) Set up the Webhook in Meta',
+      '**Step 5: Set up the Webhook in Meta**',
       '1) In your Meta App → WhatsApp → Configuration → Webhooks, click “Configure Webhooks”.',
       '2) Set Callback URL to https://YOUR_DOMAIN/webhook and use the same Verify Token as above.',
       '3) Click Verify & Save. Meta will call GET /webhook and this app will return the challenge if the token matches.',
-      '4) Subscribe to events (messages, message_template_status, message_status). [Image: Subscribed fields]',
+      '![WhatsApp Webhooks](/whatsapp_agent.png)',
       '',
-      'Step 6) Add business info & Knowledge Base',
+      '4) Subscribe to events (messages).',
+      '![WhatsApp Webhooks](/whatsapp_messages_events.png)',
+      '', 
+      '**Step 6: Add business info & Knowledge Base**',
       '1) In Settings → Personal Information, set Business Name and Website URL.',
-      '2) In Knowledge Base, add entries like Hours, Locations, Payments. You can also upload PDFs; the bot will share them when relevant. [Image: KB list]',
+      '2) In Knowledge Base, add entries like Hours, Locations, Payments. You can also upload PDFs; the bot will share them when relevant.',
       '',
-      'Step 7) Test',
+      '**Step 7: Test**',
       '1) From your phone, send a WhatsApp message to the Business number.',
       '2) Try a simple question (e.g., “What are your hours?”). The bot answers from your KB or sends a helpful prompt.',
       '3) For bookings (optional), enable “Enable bookings via WhatsApp & dashboard” and try saying “book”.',
@@ -422,13 +470,13 @@ function seedGuides() {
       '- If replies fail, re‑check Phone Number ID, Token, and App Secret in Settings.',
       '- Use the server logs for “KB Matches” or webhook errors to pinpoint configuration issues.',
       '',
-      'You’re set — add more KB entries over time for richer, more accurate answers. [Image: Celebration graphic]'
+      'You’re set — add more KB entries over time for richer, more accurate answers.'
     ].join('\n');
     upsert('getting-started', 'Getting Started with WhatsApp Agent', 'Create Meta app, connect WhatsApp, verify webhook, and send your first reply.', gs);
 
     // Best practices
     const bp = [
-      '# Best Practices for a Helpful KB',
+      '# Best Practices for a Helpful Knowledge Base',
       '',
       'Your KB powers instant, accurate replies. Use these tips to keep answers tight and useful:',
       '',
@@ -443,7 +491,7 @@ function seedGuides() {
 
     // Booking setup
     const bk = [
-      '# Enable Bookings & Reminders',
+      '# Enable Bookings & Reminders with WhatsApp',
       '',
       'Let customers book appointments via WhatsApp:',
       '',

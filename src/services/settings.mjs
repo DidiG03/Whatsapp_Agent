@@ -36,10 +36,17 @@ export function upsertSettingsForUser(userId, values) {
     reminder_windows: values.reminder_windows ?? current.reminder_windows ?? null,
     wa_template_name: values.wa_template_name ?? current.wa_template_name ?? null,
     wa_template_language: values.wa_template_language ?? current.wa_template_language ?? null,
+    escalation_email_enabled: values.escalation_email_enabled ?? current.escalation_email_enabled ?? 0,
+    escalation_email: values.escalation_email ?? current.escalation_email ?? null,
+    smtp_host: values.smtp_host ?? current.smtp_host ?? null,
+    smtp_port: values.smtp_port ?? current.smtp_port ?? 587,
+    smtp_secure: values.smtp_secure ?? current.smtp_secure ?? 0,
+    smtp_user: values.smtp_user ?? current.smtp_user ?? null,
+    smtp_pass: values.smtp_pass ?? current.smtp_pass ?? null,
   };
   db.prepare(`
-    INSERT INTO settings_multi (user_id, phone_number_id, whatsapp_token, verify_token, app_secret, business_phone, business_name, website_url, ai_tone, ai_blocked_topics, ai_style, entry_greeting, bookings_enabled, booking_questions_json, reschedule_min_lead_minutes, cancel_min_lead_minutes, reminders_enabled, reminder_windows, wa_template_name, wa_template_language, updated_at)
-    VALUES (@user_id, @phone_number_id, @whatsapp_token, @verify_token, @app_secret, @business_phone, @business_name, @website_url, @ai_tone, @ai_blocked_topics, @ai_style, @entry_greeting, @bookings_enabled, @booking_questions_json, @reschedule_min_lead_minutes, @cancel_min_lead_minutes, @reminders_enabled, @reminder_windows, @wa_template_name, @wa_template_language, strftime('%s','now'))
+    INSERT INTO settings_multi (user_id, phone_number_id, whatsapp_token, verify_token, app_secret, business_phone, business_name, website_url, ai_tone, ai_blocked_topics, ai_style, entry_greeting, bookings_enabled, booking_questions_json, reschedule_min_lead_minutes, cancel_min_lead_minutes, reminders_enabled, reminder_windows, wa_template_name, wa_template_language, escalation_email_enabled, escalation_email, smtp_host, smtp_port, smtp_secure, smtp_user, smtp_pass, updated_at)
+    VALUES (@user_id, @phone_number_id, @whatsapp_token, @verify_token, @app_secret, @business_phone, @business_name, @website_url, @ai_tone, @ai_blocked_topics, @ai_style, @entry_greeting, @bookings_enabled, @booking_questions_json, @reschedule_min_lead_minutes, @cancel_min_lead_minutes, @reminders_enabled, @reminder_windows, @wa_template_name, @wa_template_language, @escalation_email_enabled, @escalation_email, @smtp_host, @smtp_port, @smtp_secure, @smtp_user, @smtp_pass, strftime('%s','now'))
     ON CONFLICT(user_id) DO UPDATE SET
       phone_number_id = excluded.phone_number_id,
       whatsapp_token = excluded.whatsapp_token,
@@ -60,6 +67,13 @@ export function upsertSettingsForUser(userId, values) {
       reminder_windows = excluded.reminder_windows,
       wa_template_name = excluded.wa_template_name,
       wa_template_language = excluded.wa_template_language,
+      escalation_email_enabled = excluded.escalation_email_enabled,
+      escalation_email = excluded.escalation_email,
+      smtp_host = excluded.smtp_host,
+      smtp_port = excluded.smtp_port,
+      smtp_secure = excluded.smtp_secure,
+      smtp_user = excluded.smtp_user,
+      smtp_pass = excluded.smtp_pass,
       updated_at = excluded.updated_at
   `).run(merged);
   return merged;

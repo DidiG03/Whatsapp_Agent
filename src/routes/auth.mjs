@@ -1,4 +1,4 @@
-import { CLERK_ENABLED, CLERK_SIGN_IN_URL } from "../config.mjs";
+import { CLERK_ENABLED, CLERK_SIGN_IN_URL, CLERK_SIGN_UP_URL, PUBLIC_BASE_URL } from "../config.mjs";
 import { getAuth, clerkClient } from "@clerk/express";
 
 export default function registerAuthRoutes(app) {
@@ -11,8 +11,8 @@ export default function registerAuthRoutes(app) {
           <h2>Auth</h2>
           <p class="small">Clerk status: ${pub}</p>
           <ul class="list card">
-            <li><a href="${process.env.CLERK_SIGN_IN_URL || 'https://accounts.clerk.com/sign-in'}">Sign In</a></li>
-            <li><a href="${process.env.CLERK_SIGN_UP_URL || 'https://accounts.clerk.com/sign-up'}">Sign Up</a></li>
+            <li><a href="${(() => { const base = CLERK_SIGN_IN_URL || 'https://accounts.clerk.com/sign-in'; return base.includes('redirect_url=') ? base : `${base}${base.includes('?') ? '&' : '?'}redirect_url=${encodeURIComponent(PUBLIC_BASE_URL)}`; })()}">Sign In</a></li>
+            <li><a href="${(() => { const base = CLERK_SIGN_UP_URL || 'https://accounts.clerk.com/sign-up'; return base.includes('redirect_url=') ? base : `${base}${base.includes('?') ? '&' : '?'}redirect_url=${encodeURIComponent(PUBLIC_BASE_URL)}`; })()}">Sign Up</a></li>
             ${CLERK_ENABLED ? '<li><a href="/logout">Sign out</a></li>' : ''}
           </ul>
         </div>

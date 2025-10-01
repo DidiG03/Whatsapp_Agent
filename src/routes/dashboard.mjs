@@ -154,6 +154,7 @@ export default function registerDashboardRoutes(app) {
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.end(`
       <html><head><title>Code Orbit - Dashboard</title><link rel="stylesheet" href="/styles.css"></head><body>
+        <script src="/notifications.js"></script>
         <script>
           async function checkAuthThenSubmit(form){
             try{ const r=await fetch('/auth/status',{credentials:'include'}); const j=await r.json(); if(!j.signedIn){ window.location='/auth'; return false;} }catch(e){ return false; }

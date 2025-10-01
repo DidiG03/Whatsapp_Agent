@@ -161,7 +161,7 @@ export default function registerKbRoutes(app) {
           <div class="layout">
             ${renderSidebar('kb')}
             <main class="main" style="height: calc(100vh - 107px); overflow:auto;">
-              <div class="card kb-toolbar" style="margin-bottom:12px; display:flex; gap:8px; align-items:center;">
+              <div class="card kb-toolbar" style="margin-bottom:12px; display:flex; gap:8px;">
                 <input id="kb-search" class="settings-field" placeholder="Search knowledge items..."/>
                 <button class="btn-ghost" onclick="addKbItem()">Add</button>
               </div>

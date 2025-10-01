@@ -80,6 +80,7 @@ export default function registerInboxRoutes(app) {
     res.end(`
       <html><head><title>Code Orbit - Inbox</title><link rel="stylesheet" href="/styles.css"></head>
       <body>
+        <script src="/notifications.js"></script>
         <div class="container">
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Inbox`, email)}
           <div class="layout">
@@ -162,8 +163,11 @@ export default function registerInboxRoutes(app) {
         )
       ORDER BY ts ASC
     `).all(userId, phoneDigits, phoneDigits, phoneDigits, phoneDigits);
-    const status = db.prepare(`SELECT is_human FROM handoff WHERE contact_id = ? AND user_id = ?`).get(phone, userId);
+    const status = db.prepare(`SELECT is_human, COALESCE(human_expires_ts,0) AS exp FROM handoff WHERE contact_id = ? AND user_id = ?`).get(phone, userId);
     const isHuman = !!status?.is_human;
+    const expTs = Number(status?.exp || 0);
+    const nowSec = Math.floor(Date.now()/1000);
+    const remain = expTs > nowSec ? (expTs - nowSec) : 0;
     const email = await getSignedInEmail(req);
     const items = msgs.map(m => {
       const cls = m.direction === 'inbound' ? 'msg msg-in' : 'msg msg-out';
@@ -214,12 +218,23 @@ export default function registerInboxRoutes(app) {
           }
           window.addEventListener('DOMContentLoaded', setupComposer);
         </script>
+        <script>
+          (function(){
+            try{
+              var secs = ${remain};
+              if(!secs) return;
+              function fmt(s){ var m = Math.floor(s/60), r = s%60; return (''+m)+":"+(''+r).padStart(2,'0'); }
+              function tick(){ var el = document.getElementById('exp_remain'); if(el){ el.textContent = fmt(secs); } if(secs>0){ secs--; setTimeout(tick,1000);} }
+              tick();
+            }catch(_){ }
+          })();
+        </script>
         <div class="container">
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / <a href="/inbox">Inbox</a> / +${String(phone).replace(/^\+/, '')}`, email)}
           <div class="layout">
             ${renderSidebar('inbox')}
             <main class="main">
-              <div style="min-height: calc(100vh - 69px);" class="card">
+              <div style="min-height: calc(100vh - 107px);" class="card">
                 ${toastMsg ? `<div class="toast ${toastType || 'info'}">${toastMsg}</div>` : ''}
                 <div class="wa-chat-header">
                   <a href="/inbox" style="border:none; margin-right:20px;">
@@ -228,7 +243,7 @@ export default function registerInboxRoutes(app) {
                   <div class="wa-avatar">${String(phone).slice(-2)}</div>
                   <div style="flex:1;">
                     <div class="wa-name">${headerName}</div>
-                    <div class="small">${isHuman ? 'Human' : 'AI'}</div>
+                    <div class="small">${isHuman ? ('Human' + (remain ? ' • <span id="exp_remain"></span> left' : '')) : 'AI'}</div>
                   </div>
                   <form method="post" action="/handoff/${phone}" onsubmit="return checkAuthThenSubmit(this)">
                     <input type="hidden" name="is_human" value="${isHuman ? '' : '1'}"/>
@@ -240,6 +255,9 @@ export default function registerInboxRoutes(app) {
                       />
                     </button>
                   </form>
+                  ${isHuman ? `<form method="post" action="/inbox/${phone}/renew" onsubmit="return checkAuthThenSubmit(this)" style="margin-left:8px;">
+                    <button type="submit" class="btn-ghost" title="Renew 5 minutes" style="border:none;"><img src="/restart-onboarding.svg" alt="Renew" style="width:20px;height:20px;vertical-align:middle;"/></button>
+                  </form>` : ''}
                   <form method="post" action="/inbox/${phone}/archive" onsubmit="return checkAuthThenSubmit(this)" style="margin-left:8px;">
                     <button type="submit" class="btn-ghost" style="border:none;"><img src="/archive-icon.svg" alt="Archive" style="width:20px;height:20px;vertical-align:middle;"/></button>
                   </form>
@@ -274,7 +292,6 @@ export default function registerInboxRoutes(app) {
                     <textarea ${!isHuman ? 'disabled' : ''} rows="1" name="text" placeholder="Type a message"></textarea>
                     <button ${!isHuman ? 'disabled' : ''} style="cursor:${!isHuman ? 'not-allowed' : 'pointer'}; background:#dcf8c6; border-radius:100vh;" type="submit" ><img src="/send-whatsapp-icon.svg" alt="Send" style="width:20px;height:20px;vertical-align:middle;"/></button>
                   </form>
-                  <div class="small" style="margin-top:6px; color:#6b7280;">Tip: Calendar invites are included automatically when booking via WhatsApp.</div>
                 </div>
               </div>
             </main>
@@ -288,11 +305,30 @@ export default function registerInboxRoutes(app) {
     const phone = req.params.phone;
     const userId = getCurrentUserId(req);
     const isHuman = req.body?.is_human ? 1 : 0;
+    const now = Math.floor(Date.now()/1000);
+    const exp = isHuman ? (now + 5*60) : 0;
     const upsert = db.prepare(`
-      INSERT INTO handoff (contact_id, user_id, is_human, updated_at) VALUES (?, ?, ?, strftime('%s','now'))
-      ON CONFLICT(contact_id, user_id) DO UPDATE SET is_human = excluded.is_human, updated_at = excluded.updated_at
+      INSERT INTO handoff (contact_id, user_id, is_human, human_expires_ts, updated_at) VALUES (?, ?, ?, ?, strftime('%s','now'))
+      ON CONFLICT(contact_id, user_id) DO UPDATE SET is_human = excluded.is_human, human_expires_ts = excluded.human_expires_ts, updated_at = excluded.updated_at
     `);
-    try { upsert.run(phone, userId, isHuman); } catch {}
+    try { upsert.run(phone, userId, isHuman, exp); } catch {}
+    res.redirect(`/inbox/${phone}`);
+  });
+
+  // Renew 5 more minutes of human mode
+  app.post("/inbox/:phone/renew", ensureAuthed, (req, res) => {
+    const phone = req.params.phone;
+    const userId = getCurrentUserId(req);
+    try {
+      const now = Math.floor(Date.now()/1000);
+      const row = db.prepare(`SELECT COALESCE(human_expires_ts,0) AS exp FROM handoff WHERE contact_id = ? AND user_id = ?`).get(phone, userId) || { exp: 0 };
+      const base = Number(row.exp || 0) > now ? Number(row.exp || 0) : now;
+      const next = base + 5*60;
+      db.prepare(`INSERT INTO handoff (contact_id, user_id, is_human, human_expires_ts, updated_at)
+        VALUES (?, ?, 1, ?, strftime('%s','now'))
+        ON CONFLICT(contact_id, user_id) DO UPDATE SET is_human = 1, human_expires_ts = ?, updated_at = strftime('%s','now')
+      `).run(phone, userId, next, next);
+    } catch {}
     res.redirect(`/inbox/${phone}`);
   });
 

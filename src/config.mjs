@@ -34,3 +34,10 @@ export const STATIC_DIR = "public";
 /** Public base URL used for links sent to users (e.g., ICS downloads). */
 export const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || `http://localhost:${PORT}`;
 
+/** Email/SMTP configuration for notifications */
+export const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
+export const SMTP_PORT = parseInt(process.env.SMTP_PORT || '587', 10);
+export const SMTP_SECURE = process.env.SMTP_SECURE === 'true';
+export const SMTP_USER = process.env.SMTP_USER || null;
+export const SMTP_PASS = process.env.SMTP_PASS || null;
+

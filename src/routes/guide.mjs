@@ -81,8 +81,22 @@ export default function registerGuideRoutes(app) {
       if (/^#\s+/.test(line)) { html.push(`<h1>${escapeHtml(line.replace(/^#\s+/, ''))}</h1>`); continue; }
       if (/^\d+\)\s+/.test(line)) { html.push(`<p>${escapeHtml(line)}</p>`); continue; }
       if (/^\-\s+/.test(line)) { html.push(`<ul><li>${escapeHtml(line.replace(/^\-\s+/, ''))}</li></ul>`); continue; }
+      if (/^https?:\/\/.+/.test(line)) { html.push(`<a href="${line}">${escapeHtml(line)}</a>`); continue; }
       if (line.trim() === '') { html.push('<p></p>'); continue; }
-      html.push(`<p>${escapeHtml(line)}</p>`);
+      if (/^!\[.*\]\(.*\)$/.test(line)) {
+        // Handle images: ![alt](url)
+        const match = line.match(/^!\[(.*)\]\((.*)\)$/);
+        if (match) {
+          const alt = escapeHtml(match[1]);
+          const url = escapeHtml(match[2]);
+          html.push(`<div style="text-align: center; margin: 16px 0;"><img src="${url}" alt="${alt}" style="max-width: 100%; height: auto;" /></div>`);
+          continue;
+        }
+      }
+      const inline = escapeHtml(line)
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1<\/strong>')
+        .replace(/\*([^*]+)\*/g, '<em>$1<\/em>');
+      html.push(`<p>${inline}</p>`);
     }
     const body = html.join('');
     res.setHeader("Content-Type", "text/html; charset=utf-8");

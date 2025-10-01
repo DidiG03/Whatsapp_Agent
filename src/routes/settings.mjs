@@ -18,6 +18,7 @@ export default function registerSettingsRoutes(app) {
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.end(`
       <html><head><title>Code Orbit - Settings</title><link rel="stylesheet" href="/styles.css"></head><body>
+        <script src="/notifications.js"></script>
         <script>
           function checkAuthThenSubmit(){ return true; }
           function toggleReveal(id){
@@ -161,6 +162,52 @@ export default function registerSettingsRoutes(app) {
                           const on = current.includes(w);
                           return `<label><input type="checkbox" name="reminder_windows" value="${w}" ${on ? 'checked' : ''} ${!s.bookings_enabled ? 'disabled' : ''}/> ${w.toUpperCase()}</label>`;
                         }).join('')}
+                      </div>
+                    </div>
+                  </div>
+                  <div class="section">
+                    <h3>Email Notifications</h3>
+                    <label>
+                      <input type="hidden" name="escalation_email_enabled" value="0"/>
+                      <input type="checkbox" name="escalation_email_enabled" value="1" ${s.escalation_email_enabled ? 'checked' : ''}/> Send email when customer escalates to support
+                    </label>
+                    <div class="small" style="margin-top:8px;">Get notified via email when a customer requests to speak with a human.</div>
+                    <label style="margin-top:12px;">Notification Email (optional)
+                      <input placeholder="${email || 'Your account email'}" class="settings-field" name="escalation_email" value="${s.escalation_email || ''}"/>
+                    </label>
+                    <div class="small">Leave blank to use your account email (${email || 'not set'}).</div>
+                    
+                    <div class="section" style="margin-top:16px; border-top: 1px solid #e5e7eb; padding-top:16px;">
+                      <h4 style="margin:0 0 8px 0;">SMTP Configuration</h4>
+                      <div class="small" style="margin-bottom:12px;">Configure your email provider settings. For Gmail, use an App Password.</div>
+                      
+                      <div class="grid-2" style="gap:12px;">
+                        <label>SMTP Host
+                          <input placeholder="smtp.gmail.com" class="settings-field" name="smtp_host" value="${s.smtp_host || ''}"/>
+                        </label>
+                        <label>SMTP Port
+                          <input type="number" placeholder="587" class="settings-field" name="smtp_port" value="${s.smtp_port || '587'}"/>
+                        </label>
+                      </div>
+                      
+                      <label style="margin-top:12px;">
+                        <input type="hidden" name="smtp_secure" value="0"/>
+                        <input type="checkbox" name="smtp_secure" value="1" ${Number(s.smtp_secure) === 1 ? 'checked' : ''}/> Use secure connection (SSL/TLS - port 465)
+                      </label>
+                      <div class="small">Check this if using port 465. Leave unchecked for port 587 (STARTTLS).</div>
+                      
+                      <label style="margin-top:12px;">SMTP Username/Email
+                        <input placeholder="your-email@gmail.com" class="settings-field" name="smtp_user" value="${s.smtp_user || ''}"/>
+                      </label>
+                      
+                      <label style="margin-top:12px;">SMTP Password
+                        <div style="position:relative;">
+                          <input type="password" id="smtp_pass" placeholder="App Password or SMTP password" class="settings-field" name="smtp_pass" value="${s.smtp_pass || ''}" style="padding-right:80px;"/>
+                          <button type="button" onclick="toggleReveal('smtp_pass')" style="position:absolute; right:8px; top:50%; transform:translateY(-50%); background:transparent; border:none; padding:4px 8px; cursor:pointer; color:#6b7280; font-size:12px;">Show</button>
+                        </div>
+                      </label>
+                      <div class="small">
+                        For Gmail: Create an App Password at <a href="https://myaccount.google.com/apppasswords" target="_blank" style="color:#4F46E5;">myaccount.google.com/apppasswords</a>
                       </div>
                     </div>
                   </div>
@@ -421,6 +468,18 @@ export default function registerSettingsRoutes(app) {
       reschedule_min_lead_minutes: req.body?.reschedule_min_lead_minutes ? Number(req.body.reschedule_min_lead_minutes) : null,
       cancel_min_lead_minutes: req.body?.cancel_min_lead_minutes ? Number(req.body.cancel_min_lead_minutes) : null,
       reminders_enabled: (req.body?.reminders_enabled && req.body?.bookings_enabled) ? 1 : 0,
+      escalation_email_enabled: req.body?.escalation_email_enabled ? 1 : 0,
+      escalation_email: req.body?.escalation_email || null,
+      smtp_host: req.body?.smtp_host || null,
+      smtp_port: req.body?.smtp_port ? parseInt(req.body.smtp_port, 10) : 587,
+      smtp_secure: (() => {
+        const val = req.body?.smtp_secure;
+        // Handle array case (when both hidden and checkbox values are sent)
+        if (Array.isArray(val)) return val.includes('1') ? 1 : 0;
+        return val === '1' || val === 1 ? 1 : 0;
+      })(),
+      smtp_user: req.body?.smtp_user || null,
+      smtp_pass: req.body?.smtp_pass || null,
       reminder_windows: (() => {
         const v = req.body?.reminder_windows;
         const arr = Array.isArray(v) ? v : (v ? [v] : []);
