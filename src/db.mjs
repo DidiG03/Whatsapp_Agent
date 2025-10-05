@@ -202,6 +202,34 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
   CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(user_id, is_read);
+
+  -- Usage tracking for billing and plan limits
+  CREATE TABLE IF NOT EXISTS usage_stats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    month_year TEXT NOT NULL, -- Format: "2024-01"
+    inbound_messages INTEGER DEFAULT 0,
+    outbound_messages INTEGER DEFAULT 0,
+    template_messages INTEGER DEFAULT 0,
+    created_at INTEGER DEFAULT (strftime('%s','now')),
+    updated_at INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(user_id, month_year)
+  );
+  CREATE INDEX IF NOT EXISTS idx_usage_stats_user_month ON usage_stats(user_id, month_year);
+
+  -- User plans and billing
+  CREATE TABLE IF NOT EXISTS user_plans (
+    user_id TEXT PRIMARY KEY,
+    plan_name TEXT NOT NULL DEFAULT 'free', -- free, starter, professional, business
+    status TEXT NOT NULL DEFAULT 'active', -- active, cancelled, suspended
+    monthly_limit INTEGER DEFAULT 100, -- Monthly message limit
+    whatsapp_numbers INTEGER DEFAULT 1, -- Number of WhatsApp numbers allowed
+    billing_cycle_start INTEGER, -- Unix timestamp of billing cycle start
+    stripe_customer_id TEXT, -- Stripe customer ID
+    stripe_subscription_id TEXT, -- Stripe subscription ID
+    created_at INTEGER DEFAULT (strftime('%s','now')),
+    updated_at INTEGER DEFAULT (strftime('%s','now'))
+  );
 `);
 
 /**

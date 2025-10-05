@@ -324,6 +324,20 @@ button:hover { filter: brightness(0.95); }
 .wa-name { font-weight: 700; color: #111; }
 .badge-dot { display:inline-block; width:8px; height:8px; background:#ef4444; border-radius:999px; margin-left:6px; vertical-align:middle; }
 
+.live-chip {
+  display: inline-block;
+  background: #ef4444;
+  color: white;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 8px;
+  margin-left: 6px;
+  line-height: 1;
+  vertical-align: middle;
+}
+
 /* Toast/notice banners */
 .toast { margin:8px 0; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:#f9fafb; }
 .toast.info { border-color:#c7d2fe; background:#eef2ff; color:#3730a3; }
@@ -579,3 +593,45 @@ button:hover { filter: brightness(0.95); }
     grid-template-columns: 1fr;
   }
 }
+
+/* Calendar styles */
+.calendar-card { padding: 0; }
+.calendar-toolbar { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid var(--border); }
+.calendar-toolbar .btn-ghost { padding:6px 10px; }
+.calendar-title { font-weight:700; }
+.calendar { padding: 12px; }
+.calendar-grid { display:grid; grid-template-columns: repeat(7, 1fr); gap: 8px; }
+.calendar-dow { font-size:12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; padding: 6px 2px; }
+.calendar-cell { background: #fff; border: 1px solid var(--border); border-radius: 8px; min-height: 100px; padding: 8px; display:flex; flex-direction:column; gap:6px; }
+.calendar-cell.other-month { background: #fafafa; color: #9ca3af; }
+.calendar-cell .day { font-size: 12px; color:#6b7280; align-self:flex-end; }
+.calendar-events { display:flex; flex-direction:column; gap:4px; overflow: hidden; }
+.cal-event { font-size: 12px; padding: 4px 6px; border-radius: 6px; background:#eef2ff; color:#3730a3; border:1px solid #c7d2fe; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cal-event.green { background:#ecfdf5; color:#065f46; border-color:#bbf7d0; }
+.cal-event.gray { background:#f3f4f6; color:#374151; border-color:#e5e7eb; }
+.calendar-legend { display:flex; gap:8px; align-items:center; font-size:12px; color:#6b7280; }
+.calendar-legend .swatch { width:10px; height:10px; border-radius:3px; display:inline-block; }
+.swatch-blue { background:#c7d2fe; border:1px solid #a5b4fc; }
+.swatch-green { background:#bbf7d0; border:1px solid #86efac; }
+
+@media (max-width: 900px) {
+  .calendar-cell { min-height: 80px; }
+  .calendar-grid { gap: 6px; }
+}
+
+/* Day Modal Styles */
+.day-modal { position: fixed; inset: 0; z-index: 1000; display:flex; align-items:center; justify-content:center; padding:20px; }
+.day-modal-overlay { position:absolute; inset:0; background: rgba(0,0,0,0.45); backdrop-filter: blur(3px); }
+.day-modal-content { position:relative; background: var(--surface); border-radius:12px; box-shadow: 0 20px 40px rgba(0,0,0,0.15); max-width:520px; width:100%; max-height:80vh; overflow:hidden; display:flex; flex-direction:column; }
+.day-modal-header { display:flex; align-items:center; justify-content:space-between; padding:16px 18px; border-bottom:1px solid var(--border); }
+.day-modal-header h3 { margin:0; font-size: 18px; font-weight:600; color: var(--fg); }
+.day-modal-close { background:none; border:none; font-size:22px; color:#6b7280; cursor:pointer; padding:4px 6px; border-radius:6px; }
+.day-modal-close:hover { background: var(--bg); }
+.day-modal-body { padding:18px; overflow-y:auto; flex:1; }
+.day-modal-empty { text-align:center; color: var(--muted); font-style: italic; margin: 16px 0; }
+.day-modal-list { display:flex; flex-direction:column; gap:12px; }
+.day-modal-item { background: var(--bg); border:1px solid var(--border); border-radius:8px; padding:12px; }
+.day-modal-time { font-weight:600; color: var(--brand); font-size:13px; margin-bottom:6px; }
+.day-modal-name { font-weight:700; color: var(--fg); font-size:15px; margin-bottom:4px; }
+.day-modal-phone, .day-modal-staff { color: var(--muted); font-size:13px; margin-bottom:4px; }
+.day-modal-notes { color: var(--fg); font-size:13px; line-height:1.4; background: var(--surface); padding:8px; border-radius:6px; border-left:3px solid var(--brand); }

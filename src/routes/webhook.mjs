@@ -13,6 +13,7 @@ import { generateAiReply } from "../services/ai.mjs";
 import { listAvailability, createBooking, rescheduleBooking, cancelBooking, buildDayRows, buildTimeRows } from "../services/booking.mjs";
 import { recordOutboundMessage } from "../services/messages.mjs";
 import { sendEscalationNotification, sendBookingNotification } from "../services/email.mjs";
+import { incrementUsage } from "../services/usage.mjs";
 
 function isGreeting(raw) {
   const s = String(raw || "").trim().toLowerCase();
@@ -290,7 +291,7 @@ export default function registerWebhookRoutes(app) {
       if (businessNumber && message.from === businessNumber) {
         return res.sendStatus(200);
       }
-      const cfg = tenant || {};
+      const cfg = { ...tenant, user_id: tenantUserId };
 
       // Define sender and text early so all branches (including interactive) can use them
       const from = message.from;
@@ -317,6 +318,11 @@ export default function registerWebhookRoutes(app) {
             JSON.stringify(message)
           );
           isFirstTimeInbound = info.changes > 0;
+          
+          // Track inbound message usage
+          if (isFirstTimeInbound) {
+            incrementUsage(tenantUserId, 'inbound_messages');
+          }
         } catch {
           isFirstTimeInbound = false;
         }
@@ -411,28 +417,6 @@ export default function registerWebhookRoutes(app) {
             return res.sendStatus(200);
           } else {
             await sendWhatsAppText(from, "Could you share a brief reason so I can route you to the right person?", cfg);
-            return res.sendStatus(200);
-          }
-        }
-
-        // Detect explicit user request for a human
-        if (wantsHuman(text)) {
-          const hasName = !!customer.display_name;
-          if (!hasName) {
-            try {
-              db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
-                VALUES (?, ?, 'ask_name', strftime('%s','now'))
-                ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = 'ask_name', updated_at = excluded.updated_at`).run(from, tenantUserId);
-            } catch {}
-            await sendWhatsAppText(from, "Sure — before I connect you with a human, what’s your name?", cfg);
-            return res.sendStatus(200);
-          } else {
-            try {
-              db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
-                VALUES (?, ?, 'ask_reason', strftime('%s','now'))
-                ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = 'ask_reason', updated_at = excluded.updated_at`).run(from, tenantUserId);
-            } catch {}
-            await sendWhatsAppText(from, "Thanks. What’s the reason for escalating to our customer service team today?", cfg);
             return res.sendStatus(200);
           }
         }
@@ -662,10 +646,8 @@ export default function registerWebhookRoutes(app) {
                     ON CONFLICT(user_id, contact_id) DO UPDATE SET staff_id=excluded.staff_id, start_iso=excluded.start_iso, end_iso=excluded.end_iso, step='pending', question_index=0, answers_json='[]', updated_at=strftime('%s','now')
                   `).run(tenantUserId, from, staffId, startISO, endISO);
                 } catch {}
-                // Ask first question + attach ICS link for calendar add
-                const title = tenant?.business_name ? `Appointment with ${tenant.business_name}` : 'Appointment';
-                const icsUrl = `${req.protocol}://${req.get('host')}/ics?title=${encodeURIComponent(title)}&start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}&desc=${encodeURIComponent('Booked via WhatsApp')}`;
-                await sendWhatsAppText(from, `${String(questions[0]).slice(0, 200)}\n\nAdd to your calendar: ${icsUrl}`, cfg);
+                // Ask first question
+                await sendWhatsAppText(from, String(questions[0]).slice(0, 200), cfg);
               } else {
                 await sendWhatsAppText(from, "Sorry, I couldn't book that slot.", cfg);
               }
@@ -1057,6 +1039,29 @@ export default function registerWebhookRoutes(app) {
         tone: tenant?.ai_tone,
         style: tenant?.ai_style,
         blockedTopics: tenant?.ai_blocked_topics
+      }
+
+      // Check for escalation requests BEFORE generating AI response
+      if (wantsHuman(text)) {
+        const customer = db.prepare(`SELECT display_name FROM customers WHERE user_id = ? AND contact_id = ?`).get(tenantUserId, from) || {};
+        const hasName = !!customer.display_name;
+        if (!hasName) {
+          try {
+            db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
+              VALUES (?, ?, 'ask_name', strftime('%s','now'))
+              ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = 'ask_name', updated_at = excluded.updated_at`).run(from, tenantUserId);
+          } catch {}
+          await sendWhatsAppText(from, "Sure — before I connect you with a human, what's your name?", cfg);
+          return res.sendStatus(200);
+        } else {
+          try {
+            db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
+              VALUES (?, ?, 'ask_reason', strftime('%s','now'))
+              ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = 'ask_reason', updated_at = excluded.updated_at`).run(from, tenantUserId);
+          } catch {}
+          await sendWhatsAppText(from, "Thanks. What's the reason for escalating to our customer service team today?", cfg);
+          return res.sendStatus(200);
+        }
       }
 
       // Retrieve candidate KB matches (expand to 8 for broader context)

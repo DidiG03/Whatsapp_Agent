@@ -24,6 +24,8 @@ import registerBookingRoutes from "./routes/booking.mjs";
 import registerAssistantRoutes from "./routes/assistant.mjs";
 import registerGuideRoutes from "./routes/guide.mjs";
 import registerNotificationRoutes from "./routes/notifications.mjs";
+import registerPlanRoutes from "./routes/plan.mjs";
+import registerStripeRoutes from "./routes/stripe.mjs";
 /**
  * Create and configure an Express app instance.
  * @returns {import('express').Express}
@@ -57,6 +59,8 @@ export function createApp() {
   registerBookingRoutes(app);
   registerAssistantRoutes(app);
   registerNotificationRoutes(app);
+  registerPlanRoutes(app);
+  registerStripeRoutes(app);
   registerWebhookRoutes(app);
   registerMiscRoutes(app);
 

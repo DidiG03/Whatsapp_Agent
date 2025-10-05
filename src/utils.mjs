@@ -142,6 +142,16 @@ export function renderSidebar(activeKey) {
         </li>
       `;
     }
+    if (key === 'plan') {
+      return `
+        <li>
+          <a ${activeKey === key ? 'class="active"' : ''} href="${href}">
+            <img src="/plan-icon.svg" alt="Plan" style="width:20px;height:20px;vertical-align:middle;margin-right:6px;"/>
+            <span style="color: grey;">${label}</span>
+          </a>
+        </li>
+      `;
+    }
     return `<li><a ${activeKey === key ? 'class="active"' : ''} href="${href}"><span style="color: grey;">${label}</span></a></li>`;
   };
   const nav = `
@@ -150,6 +160,7 @@ export function renderSidebar(activeKey) {
       ${link('/inbox', 'Inbox', 'inbox')}
       ${link('/settings', 'Settings', 'settings')}
       ${link('/kb/ui', 'Knowledge Base', 'kb')}
+      ${link('/plan', 'Plan', 'plan')}
       ${link('/guide', 'Guide', 'guide')}
     </ul>
   `;

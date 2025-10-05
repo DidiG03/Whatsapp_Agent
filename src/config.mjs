@@ -41,3 +41,8 @@ export const SMTP_SECURE = process.env.SMTP_SECURE === 'true';
 export const SMTP_USER = process.env.SMTP_USER || null;
 export const SMTP_PASS = process.env.SMTP_PASS || null;
 
+/** Stripe configuration for payments */
+export const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || null;
+export const STRIPE_PUBLISHABLE_KEY = process.env.STRIPE_PUBLISHABLE_KEY || null;
+export const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || null;
+

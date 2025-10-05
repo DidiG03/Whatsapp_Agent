@@ -15,6 +15,32 @@ export default function registerInboxRoutes(app) {
     const customerNameByContact = new Map(customers.map(r => [String(r.contact_id), r.display_name]));
     const lastSeenRows = db.prepare(`SELECT contact_id, COALESCE(last_seen_ts,0) AS seen FROM handoff WHERE user_id = ?`).all(userId);
     const lastSeenByContact = new Map(lastSeenRows.map(r => [String(r.contact_id), Number(r.seen||0)]));
+    // Get escalations and check if support has handled them
+    const escalationRows = db.prepare(`
+      SELECT h.contact_id, h.escalation_reason, h.updated_at as escalation_ts, 
+             h.is_human, h.human_expires_ts
+      FROM handoff h 
+      WHERE h.user_id = ? AND h.escalation_reason IS NOT NULL
+    `).all(userId);
+    
+    const escalationByContact = new Map();
+    const now = Math.floor(Date.now()/1000);
+    
+    escalationRows.forEach(row => {
+      const contactId = String(row.contact_id);
+      const escalationTs = Number(row.escalation_ts || 0);
+      const isHuman = Number(row.is_human || 0);
+      const humanExpiresTs = Number(row.human_expires_ts || 0);
+      
+      // Check if human mode is still active (not expired and not manually turned off)
+      const isHumanModeActive = isHuman && humanExpiresTs > now;
+      
+      // Only show live chip if human mode is still active (escalation not handled yet)
+      // If human mode is off or expired, the escalation has been handled
+      if (isHumanModeActive) {
+        escalationByContact.set(contactId, row.escalation_reason);
+      }
+    });
     const list = contacts.map(c => {
       const lastTs = Number(c.last_ts||0);
       const ts = new Date(lastTs*1000).toLocaleString();
@@ -24,6 +50,7 @@ export default function registerInboxRoutes(app) {
       const displayName = customerNameByContact.get(String(c.contact)) || displayDefault;
       const seenTs = lastSeenByContact.get(String(c.contact)) || 0;
       const hasNew = lastTs > seenTs;
+      const hasEscalation = escalationByContact.has(String(c.contact));
       const dropdownId = `menu_${c.contact}`;
       const menu = `
         <div class="dropdown" style="position:relative;">
@@ -60,7 +87,7 @@ export default function registerInboxRoutes(app) {
             <div class="wa-row">
               <div class="wa-avatar">${initials}</div>
               <div class="wa-col">
-                <div class="wa-name">${displayName}${hasNew ? '<span class="badge-dot"></span>' : ''}</div>
+                <div class="wa-name">${displayName}${hasNew ? '<span class="badge-dot"></span>' : ''}${hasEscalation ? '<span class="live-chip">live</span>' : ''}</div>
                 <div class="wa-top">
                   <div class="item-preview small">${preview}</div>
                   <div style="display:flex; align-items:center; gap:8px;">
@@ -428,8 +455,13 @@ export default function registerInboxRoutes(app) {
     if (var1) bodyParams.push({ type: 'text', text: var1 });
     if (var2) bodyParams.push({ type: 'text', text: var2 });
     if (bodyParams.length) components.push({ type: 'body', parameters: bodyParams });
-    try { await sendWhatsAppTemplate(to, tname, tlang, components, cfg); } catch (e) { console.error('Template send error:', e?.message || e); }
-    return res.redirect(`/inbox/${to}`);
+    try { 
+      await sendWhatsAppTemplate(to, tname, tlang, components, cfg);
+      return res.redirect(`/inbox/${to}?toast=${encodeURIComponent('Template sent successfully')}&type=success`);
+    } catch (e) { 
+      console.error('Template send error:', e?.message || e);
+      return res.redirect(`/inbox/${to}?toast=${encodeURIComponent('Template send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
+    }
   });
 
   app.post("/inbox/:phone/nameCustomer", ensureAuthed, (req, res) => {

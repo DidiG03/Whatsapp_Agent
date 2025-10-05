@@ -2,13 +2,56 @@ import { ensureAuthed, getSignedInEmail, getCurrentUserId, signSessionToken } fr
 import { renderSidebar, escapeHtml, renderTopbar } from "../utils.mjs";
 import { db } from "../db.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
+import { getCurrentUsage, getUserPlan } from "../services/usage.mjs";
 
 export default function registerDashboardRoutes(app) {
   app.get("/dashboard", ensureAuthed, async (req, res) => {
     const email = await getSignedInEmail(req);
     const userId = getCurrentUserId(req);
     const s = getSettingsForUser(userId);
+    
+    // Get usage and plan info
+    const usage = getCurrentUsage(userId);
+    const plan = getUserPlan(userId);
+    const totalMessages = usage.inbound_messages + usage.outbound_messages + usage.template_messages;
+    const usagePercentage = plan.monthly_limit > 0 ? Math.round((totalMessages / plan.monthly_limit) * 100) : 0;
+    
+    // Create usage summary HTML
+    const usageHtml = `
+      <div class="card">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
+          <h3 style="margin: 0;">Monthly Usage</h3>
+          <a href="/plan" class="btn-ghost" style="font-size: 14px;">View Details</a>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 16px;">
+          <div style="text-align: center;">
+            <div style="font-size: 24px; font-weight: bold; color: #111827;">${totalMessages}</div>
+            <div style="font-size: 14px; color: #6b7280;">of ${plan.monthly_limit}</div>
+            <div style="font-size: 12px; color: #6b7280;">messages</div>
+          </div>
+          <div style="text-align: center;">
+            <div style="font-size: 24px; font-weight: bold; color: #111827;">${usagePercentage}%</div>
+            <div style="font-size: 14px; color: #6b7280;">used</div>
+            <div class="usage-progress" style="width: 100%; height: 6px; background: #e5e7eb; border-radius: 3px; margin-top: 4px; overflow: hidden;">
+              <div style="height: 100%; width: ${Math.min(usagePercentage, 100)}%; background-color: ${usagePercentage > 90 ? '#ef4444' : usagePercentage > 75 ? '#f59e0b' : '#10b981'}; transition: width 0.3s ease;"></div>
+            </div>
+          </div>
+          <div style="text-align: center;">
+            <div style="font-size: 24px; font-weight: bold; color: #111827;">${plan.plan_name}</div>
+            <div style="font-size: 14px; color: #6b7280;">plan</div>
+            <div style="font-size: 12px; color: #6b7280;">$${plan.plan_name === 'free' ? '0' : '29'}/month</div>
+          </div>
+        </div>
+        ${usagePercentage > 90 ? `
+          <div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; padding: 8px; margin-top: 12px; text-align: center;">
+            <span style="color: #dc2626; font-size: 14px;">⚠️ ${usagePercentage}% usage reached</span>
+          </div>
+        ` : ''}
+      </div>
+    `;
+    
     let apptHtml = '';
+    let apptJson = '[]';
     let intakeHtml = '';
     if (s?.bookings_enabled) {
       const rows = db.prepare(`
@@ -20,6 +63,7 @@ export default function registerDashboardRoutes(app) {
         ORDER BY a.start_ts ASC
         LIMIT 20
       `).all(userId);
+      apptJson = JSON.stringify(rows);
       const items = rows.map(r => {
         const start = new Date((r.start_ts||0)*1000).toLocaleString();
         const phone = (r.contact_phone||'').replace(/\D/g,'');
@@ -63,10 +107,33 @@ export default function registerDashboardRoutes(app) {
         `;
       }).join("");
       apptHtml = `
-        <div class="card" style="margin-top:12px;">
-          <h3 style="margin:0 0 8px 0;">Upcoming Appointments</h3>
-          ${items ? `<ul class="list">${items}</ul>` : '<div class="small">No upcoming appointments</div>'}
+        <div class="card">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+            <h3 style="margin:0 0 8px 0;">Appointments</h3>
+            <div style="display:flex; gap:8px;">
+              <button id="btnList" class="btn-ghost" style="border:none;">List</button>
+              <button id="btnCalendar" class="btn-ghost" style="border:none;">Calendar</button>
+            </div>
+          </div>
+          <div id="listView">${items ? `<ul class=\"list\">${items}</ul>` : '<div class=\"small\">No upcoming appointments</div>'}</div>
+          <div id="calendarView" style="display:none;">
+            <div id="calendarRoot"></div>
+          </div>
         </div>
+        <script id="appointments-json" type="application/json">${apptJson.replace(/</g, '\\u003c')}</script>
+        <script src="/calendar.js"></script>
+        <script>
+          (function(){
+            var btnL = document.getElementById('btnList');
+            var btnC = document.getElementById('btnCalendar');
+            var list = document.getElementById('listView');
+            var cal = document.getElementById('calendarView');
+            if(btnL && btnC && list && cal){
+              btnL.addEventListener('click', function(){ list.style.display='block'; cal.style.display='none'; });
+              btnC.addEventListener('click', function(){ list.style.display='none'; cal.style.display='block'; });
+            }
+          })();
+        </script>
       `;
 
       const q = (s.booking_questions_json || '["What\'s your name?","What\'s the reason for the booking?"]');
@@ -171,15 +238,16 @@ export default function registerDashboardRoutes(app) {
           ${renderTopbar('Dashboard', email)}
           <div class="layout">
             ${renderSidebar('dashboard')}
-            <main class="main">
+            <main class="main" style="height: calc(100vh - 119px); overflow:auto;">
+              ${usageHtml}
               ${apptHtml}
               ${intakeHtml}
-              <div id="mini-onboard" class="card" style="position:fixed; right:24px; bottom:92px; width:360px; display:none; padding:0; overflow:hidden;">
+              <div id="mini-onboard" class="card" style="position:fixed; right:24px; bottom:92px; width:400px; display:none; padding:0; overflow:hidden;">
                 <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-bottom:1px solid #eee;">
                   <div class="small">KB Assistant</div>
                   <button onclick="toggleMiniOnboard(false)" class="btn-ghost">×</button>
                 </div>
-                <iframe src="/assistant?token=${encodeURIComponent(signSessionToken(userId))}" style="width:100%; height:360px; border:0; background:#fff;" sandbox="allow-forms allow-scripts allow-same-origin"></iframe>
+                <iframe src="/assistant?token=${encodeURIComponent(signSessionToken(userId))}" style="width:100%; height:660px; border:0; background:white;" sandbox="allow-forms allow-scripts allow-same-origin"></iframe>
               </div>
               <button onclick="toggleMiniOnboard()" style="position:fixed; right:24px; bottom:24px; width:56px; height:56px; border-radius:50%; background:#4f46e5; color:#fff; border:none; box-shadow:0 6px 18px rgba(0,0,0,0.15); display:flex; align-items:center; justify-content:center; font-size:28px; line-height:0; cursor:pointer;" aria-label="Chat" title="Chat">+
               </button>

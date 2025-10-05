@@ -48,12 +48,24 @@ async function postWhatsAppMessage(cfg, payload, { retry = false } = {}) {
  * Retries transient errors with exponential backoff up to 3 attempts.
  * @param {string} to Recipient phone number (digits or E.164 accepted by API)
  * @param {string} body Message text content
- * @param {{ phone_number_id?: string, whatsapp_token?: string }} cfg Tenant configuration
+ * @param {{ phone_number_id?: string, whatsapp_token?: string, user_id?: string }} cfg Tenant configuration
  * @returns {Promise<any>} Raw JSON response from the Graph API
  */
 export async function sendWhatsAppText(to, body, cfg) {
   const payload = { messaging_product: "whatsapp", to, text: { body } };
-  return await postWhatsAppMessage(cfg, payload, { retry: true });
+  const result = await postWhatsAppMessage(cfg, payload, { retry: true });
+  
+  // Track outbound message usage
+  if (cfg.user_id && result?.messages?.[0]?.id) {
+    try {
+      const { incrementUsage } = await import('./usage.mjs');
+      incrementUsage(cfg.user_id, 'outbound_messages');
+    } catch (e) {
+      console.error('Failed to track outbound message usage:', e.message);
+    }
+  }
+  
+  return result;
 }
 
 
@@ -163,6 +175,7 @@ export async function sendWhatsappDocument(to, docUrl, filename, cfg) {
  * @param {string} templateName approved template name (e.g., "hello_world")
  * @param {string} language language code (e.g., "en_US")
  * @param {Array} components optional components (header/body/buttons)
+ * @param {{ user_id?: string }} cfg Tenant configuration
  */
 export async function sendWhatsAppTemplate(to, templateName, language, components = [], cfg) {
   const payload = {
@@ -175,5 +188,17 @@ export async function sendWhatsAppTemplate(to, templateName, language, component
       ...(components && components.length ? { components } : {})
     }
   };
-  return await postWhatsAppMessage(cfg, payload, { retry: false });
+  const result = await postWhatsAppMessage(cfg, payload, { retry: false });
+  
+  // Track template message usage
+  if (cfg.user_id && result?.messages?.[0]?.id) {
+    try {
+      const { incrementUsage } = await import('./usage.mjs');
+      incrementUsage(cfg.user_id, 'template_messages');
+    } catch (e) {
+      console.error('Failed to track template message usage:', e.message);
+    }
+  }
+  
+  return result;
 }
