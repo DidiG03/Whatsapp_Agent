@@ -1,4 +1,4 @@
-import { ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
+import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
 import { ONBOARD_STEPS, getOnboarding, setOnboarding } from "../services/onboarding.mjs";
 import { renderSidebar, renderTranscriptAsBubbles, renderTopbar } from "../utils.mjs";
 import { upsertKbItem } from "../services/kb.mjs";
@@ -7,17 +7,26 @@ import { onboardingCoachReply } from "../services/ai.mjs";
 import { db } from "../db.mjs";
 
 export default function registerOnboardingRoutes(app) {
-  app.get("/onboarding", ensureAuthed, (req, res) => {
+  app.get("/onboarding", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
-    const email = getEmailForUser(userId);
+    const email = await getSignedInEmail(req);
     const state = getOnboarding(userId) || setOnboarding(userId, { step: 0, transcript: '' });
     const stepDef = ONBOARD_STEPS[state.step];
     const prompt = 'Ask me to add or improve your KB...';
     const chat = renderTranscriptAsBubbles(state.transcript);
+    // Prevent caching to avoid showing cached authenticated pages after logout
     res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
     res.end(`
       <html><head><link rel="stylesheet" href="/styles.css"></head><body>
         <script>
+          // Check authentication on page load
+          (async function checkAuthOnLoad(){
+            try{ const r=await fetch('/auth/status',{credentials:'include'}); const j=await r.json(); if(!j.signedIn){ window.location='/auth'; return; } }catch(e){ window.location='/auth'; }
+          })();
+          
           async function checkAuthThenSubmit(form){
             try{ const r=await fetch('/auth/status',{credentials:'include'}); const j=await r.json(); if(!j.signedIn){ window.location='/auth'; return false;} }catch(e){ return false; }
             return true;

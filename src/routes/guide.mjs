@@ -15,10 +15,20 @@ export default function registerGuideRoutes(app) {
         <div class="guide-card-cta">Read more →</div>
       </a>
     `).join('');
+    // Prevent caching to avoid showing cached authenticated pages after logout
     res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
     res.end(`
       <html><head><title>Code Orbit - Guide</title><link rel="stylesheet" href="/styles.css"></head>
         <body>
+            <script>
+              // Check authentication on page load
+              (async function checkAuthOnLoad(){
+                try{ const r=await fetch('/auth/status',{credentials:'include'}); const j=await r.json(); if(!j.signedIn){ window.location='/auth'; return; } }catch(e){ window.location='/auth'; }
+              })();
+            </script>
             <div class="container">
                 ${renderTopbar("Dashboard / Guide", email)}
                 <div class="layout">
@@ -99,9 +109,18 @@ export default function registerGuideRoutes(app) {
       html.push(`<p>${inline}</p>`);
     }
     const body = html.join('');
+    // Prevent caching to avoid showing cached authenticated pages after logout
     res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
     res.end(`
-      <html><head><link rel="stylesheet" href="/styles.css"><style>
+      <html><head><link rel="stylesheet" href="/styles.css"><script>
+          // Check authentication on page load
+          (async function checkAuthOnLoad(){
+            try{ const r=await fetch('/auth/status',{credentials:'include'}); const j=await r.json(); if(!j.signedIn){ window.location='/auth'; return; } }catch(e){ window.location='/auth'; }
+          })();
+        </script><style>
         .guide-detail{ display:grid; grid-template-columns: minmax(0,1fr) 320px; gap:16px; }
         .related .related-heading{ font-weight:700; margin-bottom:8px; }
         .related-list{ list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:10px; }

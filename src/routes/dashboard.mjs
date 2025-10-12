@@ -218,11 +218,20 @@ export default function registerDashboardRoutes(app) {
         </div>
       `;
     }
+    // Prevent caching to avoid showing cached authenticated pages after logout
     res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
     res.end(`
       <html><head><title>Code Orbit - Dashboard</title><link rel="stylesheet" href="/styles.css"></head><body>
         <script src="/notifications.js"></script>
         <script>
+          // Check authentication on page load
+          (async function checkAuthOnLoad(){
+            try{ const r=await fetch('/auth/status',{credentials:'include'}); const j=await r.json(); if(!j.signedIn){ window.location='/auth'; return; } }catch(e){ window.location='/auth'; }
+          })();
+          
           async function checkAuthThenSubmit(form){
             try{ const r=await fetch('/auth/status',{credentials:'include'}); const j=await r.json(); if(!j.signedIn){ window.location='/auth'; return false;} }catch(e){ return false; }
             return true;

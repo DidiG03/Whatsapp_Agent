@@ -35,6 +35,9 @@ export default function registerAuthRoutes(app) {
       const { sessionId } = getAuth(req) || {};
       if (sessionId) await clerkClient.sessions.revokeSession(sessionId);
     } catch {}
+    // Clear any clerk session cookies
+    res.setHeader("Clear-Site-Data", '"cache", "cookies", "storage"');
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
     return res.redirect(CLERK_SIGN_IN_URL || "/");
   });
 }

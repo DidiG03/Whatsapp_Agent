@@ -15,11 +15,20 @@ export default function registerSettingsRoutes(app) {
     const q = req.query || {};
     const calendars = db.prepare(`SELECT id, display_name, account_email, calendar_id FROM calendars WHERE user_id = ? ORDER BY id`).all(userId);
     const staff = db.prepare(`SELECT id, name, timezone, slot_minutes, calendar_id FROM staff WHERE user_id = ? ORDER BY id DESC LIMIT 50`).all(userId);
+    // Prevent caching to avoid showing cached authenticated pages after logout
     res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
     res.end(`
       <html><head><title>Code Orbit - Settings</title><link rel="stylesheet" href="/styles.css"></head><body>
         <script src="/notifications.js"></script>
         <script>
+          // Check authentication on page load
+          (async function checkAuthOnLoad(){
+            try{ const r=await fetch('/auth/status',{credentials:'include'}); const j=await r.json(); if(!j.signedIn){ window.location='/auth'; return; } }catch(e){ window.location='/auth'; }
+          })();
+          
           function checkAuthThenSubmit(){ return true; }
           function toggleReveal(id){
             const el=document.getElementById(id);

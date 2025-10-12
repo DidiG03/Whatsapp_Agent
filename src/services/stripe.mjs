@@ -3,8 +3,8 @@
  */
 import Stripe from 'stripe';
 
-// Initialize Stripe
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+// Initialize Stripe (only if API key is provided)
+const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
 
 /**
  * Check if Stripe is properly configured
@@ -24,7 +24,7 @@ export function getStripePublishableKey() {
  * Create a Stripe checkout session for plan subscription
  */
 export async function createCheckoutSession(userId, planName, customerEmail = null) {
-  if (!isStripeEnabled()) {
+  if (!isStripeEnabled() || !stripe) {
     throw new Error('Stripe is not configured');
   }
 
@@ -101,7 +101,7 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
  * Retrieve a checkout session
  */
 export async function getCheckoutSession(sessionId) {
-  if (!isStripeEnabled()) {
+  if (!isStripeEnabled() || !stripe) {
     throw new Error('Stripe is not configured');
   }
 
@@ -117,7 +117,7 @@ export async function getCheckoutSession(sessionId) {
  * Cancel a subscription
  */
 export async function cancelSubscription(subscriptionId) {
-  if (!isStripeEnabled()) {
+  if (!isStripeEnabled() || !stripe) {
     throw new Error('Stripe is not configured');
   }
 
@@ -133,7 +133,7 @@ export async function cancelSubscription(subscriptionId) {
  * Get subscription details
  */
 export async function getSubscription(subscriptionId) {
-  if (!isStripeEnabled()) {
+  if (!isStripeEnabled() || !stripe) {
     throw new Error('Stripe is not configured');
   }
 

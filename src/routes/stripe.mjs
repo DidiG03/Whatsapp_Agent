@@ -1,11 +1,11 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
-import { createCheckoutSession, getCheckoutSession, handleSuccessfulPayment, handleSubscriptionCanceled } from "../services/stripe.mjs";
+import { createCheckoutSession, getCheckoutSession, handleSuccessfulPayment, handleSubscriptionCanceled, isStripeEnabled } from "../services/stripe.mjs";
 import { updateUserPlan } from "../services/usage.mjs";
 import { renderSidebar, renderTopbar } from "../utils.mjs";
 import Stripe from 'stripe';
 import crypto from 'node:crypto';
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
 
 export default function registerStripeRoutes(app) {
   // Create checkout session for plan upgrade
@@ -75,6 +75,11 @@ export default function registerStripeRoutes(app) {
 
   // Stripe webhook endpoint
   app.post("/stripe/webhook", async (req, res) => {
+    if (!isStripeEnabled() || !stripe) {
+      console.error('Stripe is not configured');
+      return res.status(400).send('Stripe not configured');
+    }
+    
     const sig = req.headers['stripe-signature'];
     const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
     
@@ -138,6 +143,10 @@ export default function registerStripeRoutes(app) {
     }
     
     try {
+      if (!stripe) {
+        return res.status(500).json({ error: 'Stripe not configured' });
+      }
+      
       await stripe.subscriptions.cancel(subscription_id);
       
       // Update user plan to free

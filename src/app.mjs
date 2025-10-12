@@ -26,6 +26,7 @@ import registerGuideRoutes from "./routes/guide.mjs";
 import registerNotificationRoutes from "./routes/notifications.mjs";
 import registerPlanRoutes from "./routes/plan.mjs";
 import registerStripeRoutes from "./routes/stripe.mjs";
+import registerOnboardingRoutes from "./routes/onboarding.mjs";
 /**
  * Create and configure an Express app instance.
  * @returns {import('express').Express}
@@ -45,6 +46,16 @@ export function createApp() {
 
   app.use((req, res, next) => {
     res.setHeader("Cache-Control", "no-store");
+    // Security headers
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    // Allow /assistant route to be framed (for KB Assistant iframe), deny for others
+    if (req.path.startsWith('/assistant')) {
+      res.setHeader("X-Frame-Options", "SAMEORIGIN");
+    } else {
+      res.setHeader("X-Frame-Options", "DENY");
+    }
+    res.setHeader("X-XSS-Protection", "1; mode=block");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
     next();
   });
 
@@ -58,6 +69,7 @@ export function createApp() {
   registerKbRoutes(app);
   registerBookingRoutes(app);
   registerAssistantRoutes(app);
+  registerOnboardingRoutes(app);
   registerNotificationRoutes(app);
   registerPlanRoutes(app);
   registerStripeRoutes(app);
