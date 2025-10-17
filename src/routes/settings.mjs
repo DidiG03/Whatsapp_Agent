@@ -5,6 +5,7 @@ import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.
 import { renderSidebar, renderTopbar } from "../utils.mjs";
 import { getSignedInEmail } from "../middleware/auth.mjs";
 import { db } from "../db.mjs";
+import { getQuickReplies, getQuickReplyCategories, createQuickReply, updateQuickReply, deleteQuickReply, reorderQuickReplies } from "../services/quickReplies.mjs";
 
 export default function registerSettingsRoutes(app) {
   app.get("/settings", ensureAuthed, async (req, res) => {
@@ -15,6 +16,8 @@ export default function registerSettingsRoutes(app) {
     const q = req.query || {};
     const calendars = db.prepare(`SELECT id, display_name, account_email, calendar_id FROM calendars WHERE user_id = ? ORDER BY id`).all(userId);
     const staff = db.prepare(`SELECT id, name, timezone, slot_minutes, calendar_id FROM staff WHERE user_id = ? ORDER BY id DESC LIMIT 50`).all(userId);
+    const quickReplies = getQuickReplies(userId);
+    const quickReplyCategories = getQuickReplyCategories(userId);
     // Prevent caching to avoid showing cached authenticated pages after logout
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
@@ -29,7 +32,11 @@ export default function registerSettingsRoutes(app) {
             try{ const r=await fetch('/auth/status',{credentials:'include'}); const j=await r.json(); if(!j.signedIn){ window.location='/auth'; return; } }catch(e){ window.location='/auth'; }
           })();
           
-          function checkAuthThenSubmit(){ return true; }
+          function checkAuthThenSubmit(){
+            // For form submission, we'll let the server handle auth
+            // The server will redirect to auth if needed
+            return true;
+          }
           function toggleReveal(id){
             const el=document.getElementById(id);
             if(!el) return; el.type = el.type === 'password' ? 'text' : 'password';
@@ -45,7 +52,7 @@ export default function registerSettingsRoutes(app) {
             ${renderSidebar('settings')}
             <main class="main" style="height: calc(100vh - 106px);">
               <div class="card chat-box-settings">
-                <form method="post" action="/settings" onsubmit="return checkAuthThenSubmit(this)">
+                <form method="post" action="/settings" onsubmit="return checkAuthThenSubmit();">
                   <div class="section">
                     <h3>Personal Information</h3>
                     <div class="grid-2">
@@ -139,12 +146,59 @@ export default function registerSettingsRoutes(app) {
                     </label>
                   </div>
                   <div class="section">
+                    <h3>Conversation Mode</h3>
+                    <div class="small" style="margin-bottom:12px;">Choose how the chatbot should respond to customer messages:</div>
+                    <label style="display:block; margin-bottom:12px; padding:12px; border:1px solid #e5e7eb; border-radius:6px; cursor:pointer; ${(s.conversation_mode || 'full') === 'full' ? 'background:#f0f9ff; border-color:#3b82f6;' : ''}">
+                      <input type="radio" name="conversation_mode" value="full" ${(s.conversation_mode || 'full') === 'full' ? 'checked' : ''} style="margin-right:8px;"/>
+                      <strong>Full AI Assistant (Knowledge Base + Bookings)</strong>
+                      <div class="small" style="margin-top:4px; margin-left:24px;">The chatbot uses your knowledge base to answer questions and handles reservations, bookings, and complex interactions automatically.</div>
+                    </label>
+                    <label style="display:block; margin-bottom:12px; padding:12px; border:1px solid #e5e7eb; border-radius:6px; cursor:pointer; ${s.conversation_mode === 'escalation' ? 'background:#f0f9ff; border-color:#3b82f6;' : ''}">
+                      <input type="radio" name="conversation_mode" value="escalation" ${s.conversation_mode === 'escalation' ? 'checked' : ''} style="margin-right:8px;"/>
+                      <strong>Simple Escalation Mode</strong>
+                      <div class="small" style="margin-top:4px; margin-left:24px;">The chatbot immediately escalates customers to human support. If support is available (within working hours), it escalates right away. If not, it informs the customer when support will be available next.</div>
+                    </label>
+          <div class="small" style="margin-top:12px; padding:12px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; ${s.conversation_mode === 'escalation' ? '' : 'display:none;'}" id="escalation_info">
+            <strong>Note:</strong> In Simple Escalation Mode, the bot will use your <strong>Staff working hours</strong> (configured below) to determine when customer support is available. Make sure you have at least one staff member configured with working hours.
+          </div>
+          
+          <!-- Escalation Mode Messages -->
+          <div style="margin-top:16px; padding:12px; background:#f0f9ff; border:1px solid #bfdbfe; border-radius:6px; ${s.conversation_mode === 'escalation' ? '' : 'display:none;'}" id="escalation_messages">
+            <h4 style="margin:0 0 12px 0;">Escalation Messages</h4>
+            
+            <label style="display:block; margin-bottom:8px;">
+              <div class="small" style="margin-bottom:4px;">Additional Message (during working hours)</div>
+              <input class="settings-field" type="text" name="escalation_additional_message" placeholder="Got it. I'm connecting you with a human. Please wait a moment." value="${s.escalation_additional_message || ''}" style="margin-bottom:8px;"/>
+              <div class="small" style="color:#6b7280;">This message will be sent after the greeting when support is available.</div>
+            </label>
+            
+            <label style="display:block; margin-bottom:8px;">
+              <div class="small" style="margin-bottom:4px;">Out of Hours Message</div>
+              <input class="settings-field" type="text" name="escalation_out_of_hours_message" placeholder="We are out of our working time we will reach you as soon as we can" value="${s.escalation_out_of_hours_message || ''}" style="margin-bottom:8px;"/>
+              <div class="small" style="color:#6b7280;">This message will be sent when support is not available.</div>
+            </label>
+            
+            <label style="display:block; margin-bottom:8px;">
+              <div class="small" style="margin-bottom:4px;">Escalation Questions (one per line)</div>
+              <textarea class="settings-field" name="escalation_questions_json" placeholder="What's your name?&#10;What's the reason for contacting support today?&#10;What's your phone number?" rows="4" style="margin-bottom:8px;">${(() => {
+                try {
+                  const questions = JSON.parse(s.escalation_questions_json || '[]');
+                  return questions.join('\n');
+                } catch {
+                  return '';
+                }
+              })()}</textarea>
+              <div class="small" style="color:#6b7280;">Enter each question on a new line. These questions will be asked during the escalation process.</div>
+            </label>
+          </div>
+                  </div>
+                  <div class="section">
                     <h3>Greeting</h3>
                     <label>Entry Greeting
                       <input placeholder="Hello! How can I help you today?" class="settings-field" name="entry_greeting" value="${s.entry_greeting || 'Hello! How can I help you today?'}"/>
                     </label>
                   </div>
-                  <div class="section">
+                  <div class="section" id="bookings_section" style="${s.conversation_mode === 'escalation' ? 'display:none;' : ''}">
                     <h3>Bookings</h3>
                     <label>
                       <input type="hidden" name="bookings_enabled" value="0"/>
@@ -363,7 +417,209 @@ export default function registerSettingsRoutes(app) {
                         hidden.value = JSON.stringify(out);
                       });
                     })();
+                    
+                    // Toggle escalation info, escalation messages, and bookings section based on mode selection
+                    var radios = document.querySelectorAll('input[name="conversation_mode"]');
+                    var infoBox = document.getElementById('escalation_info');
+                    var escalationMessages = document.getElementById('escalation_messages');
+                    var bookingsSection = document.getElementById('bookings_section');
+                    radios.forEach(function(r){
+                      r.addEventListener('change', function(){
+                        if(infoBox) infoBox.style.display = r.value === 'escalation' ? '' : 'none';
+                        if(escalationMessages) escalationMessages.style.display = r.value === 'escalation' ? '' : 'none';
+                        if(bookingsSection) bookingsSection.style.display = r.value === 'escalation' ? 'none' : '';
+                      });
+                    });
                   </script>
+                  
+                  <!-- Quick Replies JavaScript -->
+                  <script>
+                    let editingReplyId = null;
+                    
+                    function addQuickReply(event) {
+                      event.preventDefault();
+                      const form = event.target;
+                      const formData = new FormData(form);
+                      
+                      // Check authentication first
+                      fetch('/auth/status', { credentials: 'include' })
+                        .then(response => response.json())
+                        .then(authData => {
+                          if (!authData.signedIn) {
+                            alert('Please sign in to add quick replies');
+                            window.location = '/auth';
+                            return;
+                          }
+                          
+                          // Proceed with adding quick reply
+                          return fetch('/api/quick-replies', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            credentials: 'include',
+                            body: JSON.stringify({
+                              text: formData.get('text'),
+                              category: formData.get('category')
+                            })
+                          });
+                        })
+                        .then(response => {
+                          console.log('Quick reply response status:', response.status);
+                          if (response && response.json) {
+                            return response.json();
+                          }
+                          throw new Error('No response received');
+                        })
+                        .then(data => {
+                          console.log('Quick reply response data:', data);
+                          if (data && data.success) {
+                            location.reload();
+                          } else {
+                            alert('Error: ' + (data?.error || 'Failed to add quick reply'));
+                          }
+                        })
+                        .catch(error => {
+                          console.error('Error:', error);
+                          alert('Error adding quick reply: ' + error.message);
+                        });
+                    }
+                    
+                    function editQuickReply(id, text, category) {
+                      editingReplyId = id;
+                      const form = document.getElementById('quick-reply-form');
+                      const textField = form.querySelector('textarea[name="text"]');
+                      const categoryField = form.querySelector('select[name="category"]');
+                      const submitButton = form.querySelector('button[type="submit"]');
+                      
+                      textField.value = text;
+                      categoryField.value = category;
+                      submitButton.textContent = 'Update Reply';
+                      submitButton.onclick = function(e) { e.preventDefault(); updateQuickReply(); };
+                      
+                      textField.focus();
+                      textField.scrollIntoView({ behavior: 'smooth' });
+                    }
+                    
+                    function updateQuickReply() {
+                      if (!editingReplyId) return;
+                      
+                      const form = document.getElementById('quick-reply-form');
+                      const formData = new FormData(form);
+                      
+                      // Check authentication first
+                      fetch('/auth/status', { credentials: 'include' })
+                        .then(response => response.json())
+                        .then(authData => {
+                          if (!authData.signedIn) {
+                            alert('Please sign in to update quick replies');
+                            window.location = '/auth';
+                            return;
+                          }
+                          
+                          return fetch(\`/api/quick-replies/\${editingReplyId}\`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            credentials: 'include',
+                            body: JSON.stringify({
+                              text: formData.get('text'),
+                              category: formData.get('category')
+                            })
+                          });
+                        })
+                        .then(response => {
+                          if (response && response.json) {
+                            return response.json();
+                          }
+                          throw new Error('No response received');
+                        })
+                        .then(data => {
+                          if (data && data.success) {
+                            location.reload();
+                          } else {
+                            alert('Error: ' + (data?.error || 'Failed to update quick reply'));
+                          }
+                        })
+                        .catch(error => {
+                          console.error('Error:', error);
+                          alert('Error updating quick reply: ' + error.message);
+                        });
+                    }
+                    
+                    function deleteQuickReply(id) {
+                      if (!confirm('Are you sure you want to delete this quick reply?')) return;
+                      
+                      // Check authentication first
+                      fetch('/auth/status', { credentials: 'include' })
+                        .then(response => response.json())
+                        .then(authData => {
+                          if (!authData.signedIn) {
+                            alert('Please sign in to delete quick replies');
+                            window.location = '/auth';
+                            return;
+                          }
+                          
+                          return fetch(\`/api/quick-replies/\${id}\`, {
+                            method: 'DELETE',
+                            credentials: 'include'
+                          });
+                        })
+                        .then(response => {
+                          if (response && response.json) {
+                            return response.json();
+                          }
+                          throw new Error('No response received');
+                        })
+                        .then(data => {
+                          if (data && data.success) {
+                            location.reload();
+                          } else {
+                            alert('Error: ' + (data?.error || 'Failed to delete quick reply'));
+                          }
+                        })
+                        .catch(error => {
+                          console.error('Error:', error);
+                          alert('Error deleting quick reply: ' + error.message);
+                        });
+                    }
+                    
+                    function filterQuickRepliesSettings(category) {
+                      const items = document.querySelectorAll('.quick-reply-item');
+                      const buttons = document.querySelectorAll('.quick-reply-category');
+                      
+                      // Update button styles
+                      buttons.forEach(btn => {
+                        btn.style.background = '#e9ecef';
+                        btn.style.color = '#495057';
+                      });
+                      
+                      const activeButton = document.querySelector(\`[onclick="filterQuickRepliesSettings('\${category}')"]\`);
+                      if (activeButton) {
+                        activeButton.style.background = '#007bff';
+                        activeButton.style.color = 'white';
+                      }
+                      
+                      // Show/hide items
+                      items.forEach(item => {
+                        if (category === 'All' || item.dataset.category === category) {
+                          item.style.display = 'block';
+                        } else {
+                          item.style.display = 'none';
+                        }
+                      });
+                    }
+                    
+                    // Reset form when clicking outside edit mode
+                    document.addEventListener('click', function(e) {
+                      if (!e.target.closest('#quick-reply-form') && editingReplyId) {
+                        editingReplyId = null;
+                        const form = document.getElementById('quick-reply-form');
+                        const submitButton = form.querySelector('button[type="submit"]');
+                        submitButton.textContent = 'Add Reply';
+                        submitButton.onclick = null;
+                        form.reset();
+                      }
+                    });
+                  </script>
+                  
                   <div class="card">
                     <div class="small" style="margin-bottom:8px;">Existing staff</div>
                     ${staff.length ? `<ul class="list">${staff.map(r => `
@@ -380,6 +636,69 @@ export default function registerSettingsRoutes(app) {
                       </li>
                     `).join('')}</ul>` : '<div class="small">No staff yet</div>'}
                   </div>
+                </div>
+              </div>
+              
+              <!-- Quick Replies Section -->
+              <div class="section">
+                <h3>Quick Replies</h3>
+                <div class="card" style="margin-bottom:12px;">
+                  <form id="quick-reply-form" onsubmit="return addQuickReply(event)" style="display:grid; grid-template-columns: 1fr auto auto; gap:8px; align-items:end;">
+                    <div>
+                      <label>Quick Reply Text
+                        <textarea class="settings-field" name="text" placeholder="Thank you for your message! I'll get back to you shortly." required rows="2"></textarea>
+                      </label>
+                    </div>
+                    <div>
+                      <label>Category
+                        <select class="settings-field" name="category">
+                          <option value="General">General</option>
+                          <option value="Confirmations">Confirmations</option>
+                          <option value="Greetings">Greetings</option>
+                          <option value="Questions">Questions</option>
+                          <option value="Appointments">Appointments</option>
+                          <option value="Support">Support</option>
+                        </select>
+                      </label>
+                    </div>
+                    <button type="submit" class="btn-primary">Add Reply</button>
+                  </form>
+                </div>
+                <div class="card">
+                  <div class="small" style="margin-bottom:8px;">Your Quick Replies</div>
+                  ${quickReplies.length ? `
+                    <div class="quick-replies-list">
+                      ${quickReplyCategories.length > 0 ? `
+                        <div class="quick-replies-categories" style="margin-bottom: 12px;">
+                          <button type="button" class="quick-reply-category active" onclick="filterQuickRepliesSettings('All')" style="background: #007bff; color: white; border: none; padding: 4px 8px; margin-right: 4px; border-radius: 4px; font-size: 0.8em; cursor: pointer;">
+                            All (${quickReplies.length})
+                          </button>
+                          ${quickReplyCategories.map(cat => `
+                            <button type="button" class="quick-reply-category" onclick="filterQuickRepliesSettings('${cat.category}')" style="background: #e9ecef; color: #495057; border: none; padding: 4px 8px; margin-right: 4px; border-radius: 4px; font-size: 0.8em; cursor: pointer;">
+                              ${cat.category} (${cat.count})
+                            </button>
+                          `).join('')}
+                        </div>
+                      ` : ''}
+                      <div id="quick-replies-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 8px;">
+                        ${quickReplies.map(reply => `
+                          <div class="quick-reply-item" data-category="${reply.category || 'General'}" style="background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 6px; padding: 12px; position: relative;">
+                            <div style="display: flex; justify-content: between; align-items: start; gap: 8px;">
+                              <div style="flex: 1;">
+                                <div style="font-weight: 500; color: #495057; margin-bottom: 4px;">${reply.category || 'General'}</div>
+                                <div style="color: #666; font-size: 0.9em; line-height: 1.4;">${reply.text}</div>
+                                ${reply.usage_count > 0 ? `<div style="font-size: 0.8em; color: #6c757d; margin-top: 4px;">Used ${reply.usage_count} times</div>` : ''}
+                              </div>
+                              <div style="display: flex; gap: 4px;">
+                                <button type="button" onclick="editQuickReply(${reply.id}, '${reply.text.replace(/'/g, '\\\'').replace(/"/g, '&quot;')}', '${reply.category || 'General'}')" style="background: #007bff; color: white; border: none; padding: 4px 8px; border-radius: 4px; font-size: 0.8em; cursor: pointer;">Edit</button>
+                                <button type="button" onclick="deleteQuickReply(${reply.id})" style="background: #dc3545; color: white; border: none; padding: 4px 8px; border-radius: 4px; font-size: 0.8em; cursor: pointer;">Delete</button>
+                              </div>
+                            </div>
+                          </div>
+                        `).join('')}
+                      </div>
+                    </div>
+                  ` : '<div class="small">No quick replies yet. Add your first one above!</div>'}
                 </div>
               </div>
             </main>
@@ -452,6 +771,12 @@ export default function registerSettingsRoutes(app) {
         try { db.prepare(`DELETE FROM kb_items WHERE user_id = ?`).run(uid); } catch {}
         try { db.prepare(`DELETE FROM onboarding_state WHERE user_id = ?`).run(uid); } catch {}
         try { db.prepare(`DELETE FROM settings_multi WHERE user_id = ?`).run(uid); } catch {}
+
+        // 6) Notifications, usage stats, user plans, and quick replies
+        try { db.prepare(`DELETE FROM notifications WHERE user_id = ?`).run(uid); } catch {}
+        try { db.prepare(`DELETE FROM usage_stats WHERE user_id = ?`).run(uid); } catch {}
+        try { db.prepare(`DELETE FROM user_plans WHERE user_id = ?`).run(uid); } catch {}
+        try { db.prepare(`DELETE FROM quick_replies WHERE user_id = ?`).run(uid); } catch {}
       });
       wipe(userId);
     } catch (e) {
@@ -473,10 +798,10 @@ export default function registerSettingsRoutes(app) {
       ai_blocked_topics: req.body?.ai_blocked_topics || null,
       ai_style: req.body?.ai_style || null,
       entry_greeting: req.body?.entry_greeting || null,
-      bookings_enabled: req.body?.bookings_enabled ? 1 : 0,
+      bookings_enabled: (req.body?.bookings_enabled && req.body?.conversation_mode !== 'escalation') ? 1 : 0,
       reschedule_min_lead_minutes: req.body?.reschedule_min_lead_minutes ? Number(req.body.reschedule_min_lead_minutes) : null,
       cancel_min_lead_minutes: req.body?.cancel_min_lead_minutes ? Number(req.body.cancel_min_lead_minutes) : null,
-      reminders_enabled: (req.body?.reminders_enabled && req.body?.bookings_enabled) ? 1 : 0,
+      reminders_enabled: (req.body?.reminders_enabled && req.body?.bookings_enabled && req.body?.conversation_mode !== 'escalation') ? 1 : 0,
       escalation_email_enabled: req.body?.escalation_email_enabled ? 1 : 0,
       escalation_email: req.body?.escalation_email || null,
       smtp_host: req.body?.smtp_host || null,
@@ -497,6 +822,15 @@ export default function registerSettingsRoutes(app) {
       })(),
       wa_template_name: req.body?.wa_template_name || null,
       wa_template_language: req.body?.wa_template_language || null,
+      conversation_mode: req.body?.conversation_mode || 'full',
+      escalation_additional_message: req.body?.escalation_additional_message || null,
+      escalation_out_of_hours_message: req.body?.escalation_out_of_hours_message || null,
+      escalation_questions_json: (() => {
+        const questions = String(req.body?.escalation_questions_json || '').trim();
+        if (!questions) return null;
+        const questionArray = questions.split('\n').map(q => q.trim()).filter(q => q.length > 0);
+        return questionArray.length > 0 ? JSON.stringify(questionArray) : null;
+      })(),
     };
     upsertSettingsForUser(userId, values);
     res.redirect("/settings");

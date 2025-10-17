@@ -58,17 +58,17 @@ export default function registerInboxRoutes(app) {
             <img src="/menu-icon.svg" alt="Menu" style="width:20px;height:20px;vertical-align:middle;border:none;"/>
           </button>
           <div id="${dropdownId}" class="dropdown-menu" style="position:absolute; right:0; top:28px; background:#fff; border:1px solid var(--border); border-radius:8px; padding:6px; min-width:140px; display:none; box-shadow:0 6px 20px rgba(0,0,0,0.12); z-index:10;" onclick="event.stopPropagation()">
-            <form method="post" action="/inbox/${c.contact}/archive" style="margin:0;">
+            <form method="post" action="/inbox/${c.contact}/archive" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
               <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;">
                 <img src="/archive-icon.svg" alt="Archive"/> Archive
               </button>
             </form>
-            <form method="post" action="/inbox/${c.contact}/clear" style="margin:0;">
+            <form method="post" action="/inbox/${c.contact}/clear" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
               <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;">
                 <img src="/clear-icon.svg" alt="Clear"/> Clear
               </button>
             </form>
-            <form method="post" action="/inbox/${c.contact}/delete" style="margin:0;">
+            <form method="post" action="/inbox/${c.contact}/delete" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
               <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; color:#c00; border:none;">
                 <img src="/delete-icon.svg" alt="Delete"/> Delete
               </button>
@@ -130,7 +130,7 @@ export default function registerInboxRoutes(app) {
               <div id="nameModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.35); z-index:1000; align-items:center; justify-content:center;">
                 <div class="card" style="width:420px; max-width:95vw;">
                   <div class="small" style="margin-bottom:8px;">Name Customer</div>
-                  <form id="nameForm" method="post" action="" style="display:grid; gap:8px;">
+                  <form id="nameForm" method="post" action="" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;" style="display:grid; gap:8px;">
                     <input class="settings-field" type="text" name="display_name" placeholder="Customer name" required />
                     <textarea class="settings-field" name="notes" rows="3" placeholder="Notes (optional)"></textarea>
                     <div style="display:flex; gap:8px; justify-content:flex-end;">
@@ -254,8 +254,23 @@ export default function registerInboxRoutes(app) {
             try{ const r=await fetch('/auth/status',{credentials:'include'}); const j=await r.json(); if(!j.signedIn){ window.location='/auth'; return; } }catch(e){ window.location='/auth'; }
           })();
           
-          // Avoid preflight auth redirects on form submit; rely on server guards instead
-          function checkAuthThenSubmit(){ return true; }
+          // Check authentication before form submission to prevent redirects
+          async function checkAuthThenSubmit(form){
+            try {
+              const response = await fetch('/auth/status', { credentials: 'include' });
+              const authData = await response.json();
+              if (!authData.signedIn) {
+                alert('Your session has expired. Please sign in again.');
+                window.location = '/auth';
+                return false;
+              }
+              return true;
+            } catch (error) {
+              console.error('Auth check failed:', error);
+              alert('Authentication check failed. Please try again.');
+              return false;
+            }
+          }
           function setupComposer(){
             const ta=document.querySelector('.wa-composer textarea');
             if(!ta) return; ta.addEventListener('keydown', function(e){
@@ -291,7 +306,7 @@ export default function registerInboxRoutes(app) {
                     <div class="wa-name">${headerName}</div>
                     <div class="small">${isHuman ? ('Human' + (remain ? ' • <span id="exp_remain"></span> left' : '')) : 'AI'}</div>
                   </div>
-                  <form method="post" action="/handoff/${phone}" onsubmit="return checkAuthThenSubmit(this)">
+                  <form method="post" action="/handoff/${phone}" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;">
                     <input type="hidden" name="is_human" value="${isHuman ? '' : '1'}"/>
                     <button type="submit" class="btn-ghost" style="border:none; background:transparent; padding:0; margin:0;">
                       <img 
@@ -301,16 +316,16 @@ export default function registerInboxRoutes(app) {
                       />
                     </button>
                   </form>
-                  ${isHuman ? `<form method="post" action="/inbox/${phone}/renew" onsubmit="return checkAuthThenSubmit(this)" style="margin-left:8px;">
+                  ${isHuman ? `<form method="post" action="/inbox/${phone}/renew" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
                     <button type="submit" class="btn-ghost" title="Renew 5 minutes" style="border:none;"><img src="/restart-onboarding.svg" alt="Renew" style="width:20px;height:20px;vertical-align:middle;"/></button>
                   </form>` : ''}
-                  <form method="post" action="/inbox/${phone}/archive" onsubmit="return checkAuthThenSubmit(this)" style="margin-left:8px;">
+                  <form method="post" action="/inbox/${phone}/archive" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
                     <button type="submit" class="btn-ghost" style="border:none;"><img src="/archive-icon.svg" alt="Archive" style="width:20px;height:20px;vertical-align:middle;"/></button>
                   </form>
-                  <form method="post" action="/inbox/${phone}/clear" onsubmit="return checkAuthThenSubmit(this)" style="margin-left:8px;">
+                  <form method="post" action="/inbox/${phone}/clear" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
                     <button type="submit" class="btn-ghost" style="border:none;"><img src="/clear-icon.svg" alt="Clear" style="width:24px;height:24px;vertical-align:middle;"/></button>
                   </form>
-                  <form method="post" action="/inbox/${phone}/delete" onsubmit="return checkAuthThenSubmit(this)" style="margin-left:8px;">
+                  <form method="post" action="/inbox/${phone}/delete" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
                     <button type="submit" class="btn-ghost" style="color:#c00; border:none;"><img src="/delete-icon.svg" alt="Delete" style="width:20px;height:20px;vertical-align:middle;"/></button>
                   </form>
                 </div>
@@ -320,7 +335,7 @@ export default function registerInboxRoutes(app) {
                     const over24 = lastInbound && (Math.floor(Date.now()/1000)-lastInbound) > 24*3600;
                     if (over24) {
                       return `<div class=\"small\" style=\"margin:8px 0; padding:8px; background:#fff8e1; border:1px solid #fde68a; border-radius:8px;\">Session expired (>24h). Send template to reopen window.
-                        <form method=\"post\" action=\"/inbox/${phone}/send-template\" style=\"display:flex; gap:6px; align-items:center; margin-top:6px;\">
+                        <form method=\"post\" action=\"/inbox/${phone}/send-template\" onsubmit=\"event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;\" style=\"display:flex; gap:6px; align-items:center; margin-top:6px;\">
                           <input class=\"settings-field\" name=\"var1\" placeholder=\"{{1}} (optional)\" style=\"height:32px;\"/>
                           <input class=\"settings-field\" name=\"var2\" placeholder=\"{{2}} (optional)\" style=\"height:32px;\"/>
                           <button class=\"btn-ghost\" type=\"submit\" style=\"border:none;\">Send Template</button>
@@ -334,7 +349,7 @@ export default function registerInboxRoutes(app) {
                   ${items || '<div class="small" style="text-align:center;padding:16px;">No messages</div>'}
                 </div>
                 <div style="margin-top:2vh;" class="composer wa-composer">
-                  <form method="post" action="/send/${phone}" onsubmit="return checkAuthThenSubmit(this)" style="display:grid; grid-template-columns: 1fr auto; gap:8px; align-items:center;">
+                  <form method="post" action="/send/${phone}" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;" style="display:grid; grid-template-columns: 1fr auto; gap:8px; align-items:center;">
                     <textarea ${!isHuman ? 'disabled' : ''} rows="1" name="text" placeholder="Type a message"></textarea>
                     <button ${!isHuman ? 'disabled' : ''} style="cursor:${!isHuman ? 'not-allowed' : 'pointer'}; background:#dcf8c6; border-radius:100vh;" type="submit" ><img src="/send-whatsapp-icon.svg" alt="Send" style="width:20px;height:20px;vertical-align:middle;"/></button>
                   </form>

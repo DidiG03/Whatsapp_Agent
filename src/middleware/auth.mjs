@@ -27,37 +27,41 @@ export function initClerk(app) {
   };
   const signInUrl = appendRedirect(CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in");
   const signUpUrl = appendRedirect(CLERK_SIGN_UP_URL || "https://accounts.clerk.com/sign-up");
-  const clerkMWGet = clerkMiddleware({
+  // Use a single Clerk middleware for all requests to ensure consistent session handling
+  const clerkMW = clerkMiddleware({
     publishableKey: CLERK_PUBLISHABLE,
     secretKey: CLERK_SECRET,
     signInUrl,
     signUpUrl,
   });
-  const clerkMWNoHs = clerkMiddleware({
-    publishableKey: CLERK_PUBLISHABLE,
-    secretKey: CLERK_SECRET,
-    signInUrl,
-    signUpUrl,
-  });
-  app.use((req, res, next) => (req.method === 'GET' ? clerkMWGet(req, res, next) : clerkMWNoHs(req, res, next)));
+  app.use(clerkMW);
 }
 
 /** Require an authenticated session for protected routes. */
 export function ensureAuthed(req, res, next) {
   if (!CLERK_ENABLED) return next();
   try {
-    const { userId } = getAuth(req);
+    const { userId, sessionId } = getAuth(req);
     if (!userId) {
+      // For AJAX requests, return JSON error instead of redirect
+      if (req.xhr || req.headers.accept?.includes('application/json')) {
+        return res.status(401).json({ error: 'Authentication required' });
+      }
       const signIn = (CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in").includes("redirect_url=")
         ? (CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in")
-        : `${CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in"}${(CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in").includes("?") ? "&" : "?"}redirect_url=${encodeURIComponent(PUBLIC_BASE_URL)}`;
+        : `${CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in"}${(CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in").includes("?") ? "&" : "?"}redirect_url=${encodeURIComponent(req.originalUrl || PUBLIC_BASE_URL)}`;
       return res.redirect(signIn);
     }
     return next();
-  } catch {
+  } catch (error) {
+    console.error('Auth middleware error:', error);
+    // For AJAX requests, return JSON error instead of redirect
+    if (req.xhr || req.headers.accept?.includes('application/json')) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
     const signIn = (CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in").includes("redirect_url=")
       ? (CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in")
-      : `${CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in"}${(CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in").includes("?") ? "&" : "?"}redirect_url=${encodeURIComponent(PUBLIC_BASE_URL)}`;
+      : `${CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in"}${(CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in").includes("?") ? "&" : "?"}redirect_url=${encodeURIComponent(req.originalUrl || PUBLIC_BASE_URL)}`;
     return res.redirect(signIn);
   }
 }

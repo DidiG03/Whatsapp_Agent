@@ -230,6 +230,18 @@ db.exec(`
     created_at INTEGER DEFAULT (strftime('%s','now')),
     updated_at INTEGER DEFAULT (strftime('%s','now'))
   );
+
+  -- Quick replies for users
+  CREATE TABLE IF NOT EXISTS quick_replies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    category TEXT DEFAULT 'General',
+    display_order INTEGER DEFAULT 0,
+    created_at INTEGER DEFAULT (strftime('%s','now')),
+    updated_at INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(user_id, text)
+  );
 `);
 
 /**

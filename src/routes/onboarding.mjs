@@ -28,8 +28,20 @@ export default function registerOnboardingRoutes(app) {
           })();
           
           async function checkAuthThenSubmit(form){
-            try{ const r=await fetch('/auth/status',{credentials:'include'}); const j=await r.json(); if(!j.signedIn){ window.location='/auth'; return false;} }catch(e){ return false; }
-            return true;
+            try {
+              const response = await fetch('/auth/status', { credentials: 'include' });
+              const authData = await response.json();
+              if (!authData.signedIn) {
+                alert('Your session has expired. Please sign in again.');
+                window.location = '/auth';
+                return false;
+              }
+              return true;
+            } catch (error) {
+              console.error('Auth check failed:', error);
+              alert('Authentication check failed. Please try again.');
+              return false;
+            }
           }
         </script>
         <div class="container">
@@ -40,13 +52,13 @@ export default function registerOnboardingRoutes(app) {
               <div class="card chat-box">
                 <div class="small" style="display:flex; align-items:center; gap:12px;">
                   ${stepDef ? '' : '<span><img src="/onboarding-complete.svg" alt="Onboarding complete" style="width:20px;height:20px;vertical-align:middle;margin-right:6px;"/>Onboarding complete.</span>'}
-                  <form method="post" action="/onboarding/reset" style="margin:0;">
+                  <form method="post" action="/onboarding/reset" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
                     <button type="submit" style="background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe">
                       <img src="/restart-onboarding.svg" alt="Restart onboarding" style="width:20px;height:20px;vertical-align:middle;margin-right:6px;"/>
                       Restart onboarding
                     </button>
                   </form>
-                  <form method="post" action="/onboarding/clear" style="margin:0;">
+                  <form method="post" action="/onboarding/clear" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
                     <button type="submit" style="background:#f3f4f6;color:#111827;border:1px solid #e5e7eb">
                       <img src="/clear-chat-icon.svg" alt="Clear chat" style="width:20px;height:20px;vertical-align:middle;margin-right:6px;"/>
                       Clear chat

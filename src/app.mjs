@@ -1,12 +1,14 @@
 /**
  * App factory: constructs and configures the Express application.
- * Mounts logging, body parsers, static assets, Clerk auth, and all routes.
+ * Mounts logging, body parsers, static assets, Clerk auth, security middleware, and all routes.
  */
 import express from "express";
-import bodyParser from "body-parser";
 import { httpLogger } from "./logger.mjs";
 import { STATIC_DIR } from "./config.mjs";
 import { initClerk } from "./middleware/auth.mjs";
+import { securityHeaders, createRateLimiters } from "./middleware/security.mjs";
+import { errorHandler, requestLogger } from "./middleware/errors.mjs";
+import { runHealthChecks, collectMetrics } from "./middleware/health.mjs";
 
 // Ensure DB side-effects are applied by importing db module
 import "./db.mjs";
@@ -27,36 +29,56 @@ import registerNotificationRoutes from "./routes/notifications.mjs";
 import registerPlanRoutes from "./routes/plan.mjs";
 import registerStripeRoutes from "./routes/stripe.mjs";
 import registerOnboardingRoutes from "./routes/onboarding.mjs";
+import registerAdminRoutes from "./routes/admin.mjs";
+import registerRealtimeRoutes from "./routes/realtime.mjs";
 /**
  * Create and configure an Express app instance.
  * @returns {import('express').Express}
  */
 export function createApp() {
   const app = express();
+  
+  // Trust proxy for accurate IP addresses
+  app.set('trust proxy', 1);
+  
+  // Security middleware
+  app.use(securityHeaders);
+  
+  // Rate limiting
+  const { generalLimiter, strictLimiter, webhookLimiter } = createRateLimiters();
+  app.use(generalLimiter);
+  
+  // Request logging
+  // app.use(requestLogger);
+  
   // rawBody capture for signature verification
-  app.use(bodyParser.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
-  app.use(bodyParser.urlencoded({ extended: true }));
+  app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
+  app.use(express.urlencoded({ extended: true }));
 
-  // HTTP request logging
-
+  // Static file serving with security headers
   app.use(express.static(STATIC_DIR));
+  app.use('/uploads', express.static('uploads'));
 
   // Clerk (if configured)
   initClerk(app);
 
+  // Additional security headers
   app.use((req, res, next) => {
     res.setHeader("Cache-Control", "no-store");
-    // Security headers
-    res.setHeader("X-Content-Type-Options", "nosniff");
-    // Allow /assistant route to be framed (for KB Assistant iframe), deny for others
-    if (req.path.startsWith('/assistant')) {
-      res.setHeader("X-Frame-Options", "SAMEORIGIN");
-    } else {
-      res.setHeader("X-Frame-Options", "DENY");
-    }
-    res.setHeader("X-XSS-Protection", "1; mode=block");
-    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    // X-Frame-Options disabled as requested
     next();
+  });
+  
+  // Health check endpoints (before rate limiting)
+  app.get('/health', async (req, res) => {
+    const health = await runHealthChecks();
+    const statusCode = health.status === 'healthy' ? 200 : 503;
+    res.status(statusCode).json(health);
+  });
+  
+  app.get('/metrics', (req, res) => {
+    const metrics = collectMetrics();
+    res.json(metrics);
   });
 
   // Register routes
@@ -73,8 +95,17 @@ export function createApp() {
   registerNotificationRoutes(app);
   registerPlanRoutes(app);
   registerStripeRoutes(app);
+  registerAdminRoutes(app);
+  registerRealtimeRoutes(app);
   registerWebhookRoutes(app);
   registerMiscRoutes(app);
+  
+  // Apply specific rate limits to sensitive endpoints
+  app.use('/admin', strictLimiter);
+  app.use('/webhook', webhookLimiter);
+  
+  // Global error handler (must be last)
+  app.use(errorHandler);
 
   return app;
 }
