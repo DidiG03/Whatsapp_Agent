@@ -38,6 +38,27 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_status_message_id ON message_statuses(message_id);
 
+  CREATE TABLE IF NOT EXISTS message_reactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    emoji TEXT NOT NULL,
+    created_at INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(message_id, user_id, emoji)
+  );
+  CREATE INDEX IF NOT EXISTS idx_reactions_message_id ON message_reactions(message_id);
+  CREATE INDEX IF NOT EXISTS idx_reactions_user_id ON message_reactions(user_id);
+
+  CREATE TABLE IF NOT EXISTS message_replies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    original_message_id TEXT NOT NULL,
+    reply_message_id TEXT NOT NULL,
+    created_at INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(original_message_id, reply_message_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_replies_original ON message_replies(original_message_id);
+  CREATE INDEX IF NOT EXISTS idx_replies_reply ON message_replies(reply_message_id);
+
   CREATE TABLE IF NOT EXISTS kb_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT,

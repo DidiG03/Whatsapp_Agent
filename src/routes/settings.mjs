@@ -916,4 +916,57 @@ export default function registerSettingsRoutes(app) {
     try { db.prepare(`DELETE FROM staff WHERE id = ? AND user_id = ?`).run(id, userId); } catch {}
     return res.redirect('/settings');
   });
+
+  // Quick Replies API endpoints
+  app.post("/api/quick-replies", ensureAuthed, (req, res) => {
+    const userId = getCurrentUserId(req);
+    const { text, category } = req.body;
+    
+    if (!text || !text.trim()) {
+      return res.status(400).json({ success: false, error: 'Quick reply text is required' });
+    }
+    
+    try {
+      const result = createQuickReply(userId, text.trim(), category || 'General');
+      res.json({ success: true, id: result.id });
+    } catch (error) {
+      console.error('Error creating quick reply:', error);
+      res.status(500).json({ success: false, error: 'Failed to create quick reply' });
+    }
+  });
+
+  app.put("/api/quick-replies/:id", ensureAuthed, (req, res) => {
+    const userId = getCurrentUserId(req);
+    const id = Number(req.params.id);
+    const { text, category } = req.body;
+    
+    if (!id || !text || !text.trim()) {
+      return res.status(400).json({ success: false, error: 'Quick reply ID and text are required' });
+    }
+    
+    try {
+      updateQuickReply(id, userId, text.trim(), category || 'General');
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error updating quick reply:', error);
+      res.status(500).json({ success: false, error: 'Failed to update quick reply' });
+    }
+  });
+
+  app.delete("/api/quick-replies/:id", ensureAuthed, (req, res) => {
+    const userId = getCurrentUserId(req);
+    const id = Number(req.params.id);
+    
+    if (!id) {
+      return res.status(400).json({ success: false, error: 'Quick reply ID is required' });
+    }
+    
+    try {
+      deleteQuickReply(id, userId);
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error deleting quick reply:', error);
+      res.status(500).json({ success: false, error: 'Failed to delete quick reply' });
+    }
+  });
 }

@@ -21,9 +21,9 @@ export function initClerk(app) {
     return;
   }
   // Always provide a redirect_url so hosted Clerk pages can return to our app
-  const appendRedirect = (url) => {
+  const appendRedirect = (url, baseUrl = PUBLIC_BASE_URL) => {
     if (!url) return url;
-    return url.includes("redirect_url=") ? url : `${url}${url.includes("?") ? "&" : "?"}redirect_url=${encodeURIComponent(PUBLIC_BASE_URL)}`;
+    return url.includes("redirect_url=") ? url : `${url}${url.includes("?") ? "&" : "?"}redirect_url=${encodeURIComponent(baseUrl)}`;
   };
   const signInUrl = appendRedirect(CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in");
   const signUpUrl = appendRedirect(CLERK_SIGN_UP_URL || "https://accounts.clerk.com/sign-up");
@@ -47,9 +47,12 @@ export function ensureAuthed(req, res, next) {
       if (req.xhr || req.headers.accept?.includes('application/json')) {
         return res.status(401).json({ error: 'Authentication required' });
       }
+      // Use the current request's host to preserve ngrok URL
+      const currentBaseUrl = `${req.protocol}://${req.get('host')}`;
+      const redirectUrl = req.originalUrl ? `${currentBaseUrl}${req.originalUrl}` : currentBaseUrl;
       const signIn = (CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in").includes("redirect_url=")
         ? (CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in")
-        : `${CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in"}${(CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in").includes("?") ? "&" : "?"}redirect_url=${encodeURIComponent(req.originalUrl || PUBLIC_BASE_URL)}`;
+        : `${CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in"}${(CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in").includes("?") ? "&" : "?"}redirect_url=${encodeURIComponent(redirectUrl)}`;
       return res.redirect(signIn);
     }
     return next();
@@ -59,9 +62,12 @@ export function ensureAuthed(req, res, next) {
     if (req.xhr || req.headers.accept?.includes('application/json')) {
       return res.status(401).json({ error: 'Authentication required' });
     }
+    // Use the current request's host to preserve ngrok URL
+    const currentBaseUrl = `${req.protocol}://${req.get('host')}`;
+    const redirectUrl = req.originalUrl ? `${currentBaseUrl}${req.originalUrl}` : currentBaseUrl;
     const signIn = (CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in").includes("redirect_url=")
       ? (CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in")
-      : `${CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in"}${(CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in").includes("?") ? "&" : "?"}redirect_url=${encodeURIComponent(req.originalUrl || PUBLIC_BASE_URL)}`;
+      : `${CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in"}${(CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in").includes("?") ? "&" : "?"}redirect_url=${encodeURIComponent(redirectUrl)}`;
     return res.redirect(signIn);
   }
 }

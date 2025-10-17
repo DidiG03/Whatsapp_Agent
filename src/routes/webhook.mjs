@@ -14,6 +14,7 @@ import { listAvailability, createBooking, rescheduleBooking, cancelBooking, buil
 import { recordOutboundMessage } from "../services/messages.mjs";
 import { sendEscalationNotification, sendBookingNotification } from "../services/email.mjs";
 import { incrementUsage } from "../services/usage.mjs";
+import { addReaction } from "../services/reactions.mjs";
 
 function isGreeting(raw) {
   const s = String(raw || "").trim().toLowerCase();
@@ -420,6 +421,77 @@ export default function registerWebhookRoutes(app) {
       }
       
       console.log("Processing message:", message);
+
+      // Handle reaction messages - don't process them as regular messages
+      if (message.type === 'reaction') {
+        console.log("Received reaction message, skipping bot processing");
+        
+        // Store the reaction in our database for the agent to see
+        try {
+          const metadata = change?.metadata;
+          const tenant = findSettingsByPhoneNumberId(metadata?.phone_number_id) || findSettingsByBusinessPhone(metadata?.display_phone_number?.replace(/\D/g, ""));
+          const tenantUserId = tenant?.user_id || null;
+          
+          if (tenantUserId && message.reaction && message.reaction.message_id && message.reaction.emoji) {
+            // Add the customer's reaction to the database with special customer identifier
+            const customerUserId = `customer_${message.from}`;
+            const result = addReaction(message.reaction.message_id, customerUserId, message.reaction.emoji);
+            console.log("Stored customer reaction:", result);
+          }
+        } catch (error) {
+          console.error("Error storing customer reaction:", error);
+        }
+        
+        return res.sendStatus(200);
+      }
+
+      // Handle reply messages - don't process them as regular messages in live mode
+      if (message.context && message.context.id) {
+        console.log("Received reply message, skipping bot processing");
+        
+        // Store the reply message normally but don't trigger bot responses
+        try {
+          const metadata = change?.metadata;
+          const tenant = findSettingsByPhoneNumberId(metadata?.phone_number_id) || findSettingsByBusinessPhone(metadata?.display_phone_number?.replace(/\D/g, ""));
+          const tenantUserId = tenant?.user_id || null;
+          
+          if (tenantUserId && message.from && message.text?.body) {
+            // Store the reply message in the database
+            const messageId = message.id;
+            const textBody = message.text.body;
+            const timestamp = message.timestamp;
+            
+            // Insert the message into the database
+            const db = (await import('../db.mjs')).db;
+            const stmt = db.prepare(`
+              INSERT OR IGNORE INTO messages (id, user_id, direction, from_id, to_id, from_digits, to_digits, type, text_body, timestamp, raw)
+              VALUES (?, ?, 'inbound', ?, ?, ?, ?, 'text', ?, ?, ?)
+            `);
+            
+            const businessPhone = metadata?.display_phone_number?.replace(/\D/g, "");
+            const fromDigits = message.from.replace(/\D/g, "");
+            const toDigits = businessPhone;
+            
+            stmt.run(messageId, tenantUserId, message.from, businessPhone, fromDigits, toDigits, textBody, timestamp, JSON.stringify(message));
+            console.log("Stored customer reply message:", messageId);
+            
+            // Create reply relationship
+            if (message.context && message.context.id) {
+              try {
+                const { createReply } = await import('../services/replies.mjs');
+                const replyResult = createReply(message.context.id, messageId);
+                console.log("Created customer reply relationship:", replyResult);
+              } catch (error) {
+                console.error("Error creating customer reply relationship:", error);
+              }
+            }
+          }
+        } catch (error) {
+          console.error("Error storing customer reply message:", error);
+        }
+        
+        return res.sendStatus(200);
+      }
 
       const metadata = change?.metadata;
       const tenant = findSettingsByPhoneNumberId(metadata?.phone_number_id) || findSettingsByBusinessPhone(metadata?.display_phone_number?.replace(/\D/g, ""));
