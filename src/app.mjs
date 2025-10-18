@@ -31,6 +31,7 @@ import registerStripeRoutes from "./routes/stripe.mjs";
 import registerOnboardingRoutes from "./routes/onboarding.mjs";
 import registerAdminRoutes from "./routes/admin.mjs";
 import registerRealtimeRoutes from "./routes/realtime.mjs";
+import registerContactRoutes from "./routes/contacts.mjs";
 /**
  * Create and configure an Express app instance.
  * @returns {import('express').Express}
@@ -97,6 +98,7 @@ export function createApp() {
   registerStripeRoutes(app);
   registerAdminRoutes(app);
   registerRealtimeRoutes(app);
+  registerContactRoutes(app);
   registerWebhookRoutes(app);
   registerMiscRoutes(app);
   

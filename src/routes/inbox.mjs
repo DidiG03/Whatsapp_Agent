@@ -7,6 +7,7 @@ import { sendWhatsAppText, sendWhatsAppTemplate, sendWhatsappImage, sendWhatsapp
 import { getQuickReplies } from "../services/quickReplies.mjs";
 import { getMessageReactions, toggleReaction, removeReaction, getMessagesReactions, getUserReactionsForMessages } from "../services/reactions.mjs";
 import { createReply, getMessagesReplies, getReplyOriginals } from "../services/replies.mjs";
+import { updateContactActivity, upsertContactProfile } from "../services/contacts.mjs";
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
@@ -66,11 +67,186 @@ const uploadDocument = multer({
   }
 });
 
+// Advanced search function for messages and conversations
+async function performAdvancedSearch(userId, filters) {
+  const { q, messageType, direction, dateFrom, dateTo } = filters;
+  
+  // Build the search query
+  let whereConditions = ['m.user_id = ?'];
+  let queryParams = [userId];
+  
+  // Text search in message content
+  if (q) {
+    whereConditions.push(`(m.text_body LIKE ? OR m.raw LIKE ?)`);
+    const searchTerm = `%${q}%`;
+    queryParams.push(searchTerm, searchTerm);
+  }
+  
+  // Message type filter
+  if (messageType) {
+    whereConditions.push('m.type = ?');
+    queryParams.push(messageType);
+  }
+  
+  // Direction filter
+  if (direction) {
+    whereConditions.push('m.direction = ?');
+    queryParams.push(direction);
+  }
+  
+  // Date range filters
+  if (dateFrom) {
+    whereConditions.push('m.timestamp >= ?');
+    queryParams.push(Math.floor(new Date(dateFrom).getTime() / 1000));
+  }
+  
+  if (dateTo) {
+    whereConditions.push('m.timestamp <= ?');
+    queryParams.push(Math.floor(new Date(dateTo + 'T23:59:59').getTime() / 1000));
+  }
+  
+  // Get contacts that have matching messages
+  const searchQuery = `
+    SELECT DISTINCT 
+      CASE 
+        WHEN m.direction = 'inbound' THEN m.from_digits
+        WHEN m.direction = 'outbound' THEN m.to_digits
+      END as contact,
+      MAX(m.timestamp) as last_message_ts,
+      COUNT(*) as message_count
+    FROM messages m
+    WHERE ${whereConditions.join(' AND ')}
+    GROUP BY contact
+    ORDER BY last_message_ts DESC
+  `;
+  
+  const searchResults = db.prepare(searchQuery).all(...queryParams);
+  
+  // Convert to contact format expected by the UI
+  return searchResults.map(result => ({
+    contact: result.contact,
+    last_message_ts: result.last_message_ts,
+    message_count: result.message_count
+  }));
+}
+
+// Advanced message search function for individual messages
+async function performMessageSearch(userId, filters) {
+  const { q, messageType, direction, dateFrom, dateTo, contact, limit, offset } = filters;
+  
+  // Build the search query
+  let whereConditions = ['m.user_id = ?'];
+  let queryParams = [userId];
+  
+  // Text search in message content
+  if (q) {
+    whereConditions.push(`(m.text_body LIKE ? OR m.raw LIKE ?)`);
+    const searchTerm = `%${q}%`;
+    queryParams.push(searchTerm, searchTerm);
+  }
+  
+  // Message type filter
+  if (messageType) {
+    whereConditions.push('m.type = ?');
+    queryParams.push(messageType);
+  }
+  
+  // Direction filter
+  if (direction) {
+    whereConditions.push('m.direction = ?');
+    queryParams.push(direction);
+  }
+  
+  // Contact filter
+  if (contact) {
+    whereConditions.push('(m.from_digits = ? OR m.to_digits = ?)');
+    queryParams.push(contact, contact);
+  }
+  
+  // Date range filters
+  if (dateFrom) {
+    whereConditions.push('m.timestamp >= ?');
+    queryParams.push(Math.floor(new Date(dateFrom).getTime() / 1000));
+  }
+  
+  if (dateTo) {
+    whereConditions.push('m.timestamp <= ?');
+    queryParams.push(Math.floor(new Date(dateTo + 'T23:59:59').getTime() / 1000));
+  }
+  
+  // Get total count for pagination
+  const countQuery = `
+    SELECT COUNT(*) as total
+    FROM messages m
+    WHERE ${whereConditions.join(' AND ')}
+  `;
+  const totalResult = db.prepare(countQuery).get(...queryParams);
+  const total = totalResult.total;
+  
+  // Get messages with pagination
+  const messagesQuery = `
+    SELECT 
+      m.id,
+      m.direction,
+      m.type,
+      m.text_body,
+      m.timestamp,
+      m.from_digits,
+      m.to_digits,
+      m.raw,
+      c.display_name as contact_name
+    FROM messages m
+    LEFT JOIN customers c ON (
+      (m.direction = 'inbound' AND c.contact_id = m.from_digits) OR
+      (m.direction = 'outbound' AND c.contact_id = m.to_digits)
+    ) AND c.user_id = ?
+    WHERE ${whereConditions.join(' AND ')}
+    ORDER BY m.timestamp DESC
+    LIMIT ? OFFSET ?
+  `;
+  
+  const messages = db.prepare(messagesQuery).all(userId, ...queryParams, limit, offset);
+  
+  // Format messages for API response
+  const formattedMessages = messages.map(msg => ({
+    id: msg.id,
+    direction: msg.direction,
+    type: msg.type,
+    text_body: msg.text_body,
+    timestamp: msg.timestamp,
+    from_digits: msg.from_digits,
+    to_digits: msg.to_digits,
+    contact_name: msg.contact_name,
+    contact: msg.direction === 'inbound' ? msg.from_digits : msg.to_digits,
+    raw: msg.raw ? JSON.parse(msg.raw) : null,
+    formatted_time: new Date(msg.timestamp * 1000).toLocaleString()
+  }));
+  
+  return {
+    messages: formattedMessages,
+    total: total,
+    hasMore: (offset + limit) < total
+  };
+}
+
 export default function registerInboxRoutes(app) {
   app.get("/inbox", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const q = (req.query.q || "").toString().trim();
-    const contacts = listContactsForUser(userId).filter(c => !q || String(c.contact).includes(q));
+    const messageType = (req.query.type || "").toString().trim();
+    const direction = (req.query.direction || "").toString().trim();
+    const dateFrom = (req.query.date_from || "").toString().trim();
+    const dateTo = (req.query.date_to || "").toString().trim();
+    
+    // Enhanced search logic
+    let contacts;
+    if (q || messageType || direction || dateFrom || dateTo) {
+      // Advanced search with message content filtering
+      contacts = await performAdvancedSearch(userId, { q, messageType, direction, dateFrom, dateTo });
+    } else {
+      // Regular contact list
+      contacts = listContactsForUser(userId);
+    }
     const email = await getSignedInEmail(req);
     const customers = db.prepare(`SELECT contact_id, display_name FROM customers WHERE user_id = ?`).all(userId);
     const customerNameByContact = new Map(customers.map(r => [String(r.contact_id), r.display_name]));
@@ -164,6 +340,11 @@ export default function registerInboxRoutes(app) {
         </li>
       `;
     }).join("");
+    
+    // Add search results count
+    const searchResultsCount = (q || messageType || direction || dateFrom || dateTo) ? 
+      `<div class="search-result-count">Found ${contacts.length} conversation${contacts.length !== 1 ? 's' : ''} matching your search criteria</div>` : '';
+    
     // Prevent caching to avoid showing cached authenticated pages after logout
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
@@ -172,6 +353,7 @@ export default function registerInboxRoutes(app) {
     res.end(`
       <html><head><title>Code Orbit - Inbox</title><link rel="stylesheet" href="/styles.css"></head>
       <body>
+        <script src="/toast.js"></script>
         <script src="/notifications.js"></script>
         <script>
           // Check authentication on page load
@@ -184,10 +366,61 @@ export default function registerInboxRoutes(app) {
           <div class="layout">
             ${renderSidebar('inbox')}
             <main class="main">
-              <form method="get" action="/inbox" style="display:flex; gap:8px; align-items:center;">
-                <input class="settings-field" type="text" name="q" placeholder='Search...' style="background-image: url('/search-icon-black.svg'); background-repeat: no-repeat; background-position: 8px center; background-size: 16px 16px; padding-left: 36px;" value="${q}"/>
-                <button type="submit"><img src="/search-icon.svg" alt="Search" style="width:20px;height:20px;vertical-align:middle;"/></button>
+              <div class="search-container">
+                <form method="get" action="/inbox" class="search-form">
+                  <div class="search-input-group">
+                    <input class="search-input" type="text" name="q" placeholder='Search conversations...' value="${q}"/>
+                    <button type="submit" class="search-btn">
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+                        <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+                      </svg>
+                    </button>
+                  </div>
+                  <div class="search-filters" id="searchFilters" style="display: none;">
+                    <div class="filter-group">
+                      <label>Message Type:</label>
+                      <select name="type" class="filter-select">
+                        <option value="">All Types</option>
+                        <option value="text" ${req.query.type === 'text' ? 'selected' : ''}>Text</option>
+                        <option value="image" ${req.query.type === 'image' ? 'selected' : ''}>Images</option>
+                        <option value="document" ${req.query.type === 'document' ? 'selected' : ''}>Documents</option>
+                        <option value="interactive" ${req.query.type === 'interactive' ? 'selected' : ''}>Interactive</option>
+                      </select>
+                    </div>
+                    <div class="filter-group">
+                      <label>Direction:</label>
+                      <select name="direction" class="filter-select">
+                        <option value="">All Messages</option>
+                        <option value="inbound" ${req.query.direction === 'inbound' ? 'selected' : ''}>Incoming</option>
+                        <option value="outbound" ${req.query.direction === 'outbound' ? 'selected' : ''}>Outgoing</option>
+                      </select>
+                    </div>
+                    <div class="filter-group">
+                      <label>Date Range:</label>
+                      <input type="date" name="date_from" class="filter-date" value="${req.query.date_from || ''}" placeholder="From"/>
+                      <input type="date" name="date_to" class="filter-date" value="${req.query.date_to || ''}" placeholder="To"/>
+                    </div>
+                    <div class="filter-actions">
+                      <button type="button" onclick="clearFilters()" class="btn-ghost">Clear</button>
+                      <button type="submit" class="btn-primary">Search</button>
+                    </div>
+                  </div>
+                  <div class="search-actions">
+                    <button type="button" onclick="toggleSearchFilters()" class="filter-toggle-btn">
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+                        <path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/>
+                      </svg>
+                      Filters
+                    </button>
+                    <a href="/search" class="btn-primary">
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" style="margin-right: 6px;">
+                        <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+                      </svg>
+                      Advanced Search
+                    </a>
+                  </div>
               </form>
+              </div>
               <div id="nameModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.35); z-index:1000; align-items:center; justify-content:center;">
                 <div class="card" style="width:420px; max-width:95vw;">
                   <div class="small" style="margin-bottom:8px;">Name Customer</div>
@@ -220,6 +453,105 @@ export default function registerInboxRoutes(app) {
                   var m = document.getElementById('imageModal');
                   if (m){ m.style.display = 'none'; }
                 }
+                function toggleSearchFilters(){
+                  var filters = document.getElementById('searchFilters');
+                  if (filters.style.display === 'none') {
+                    filters.style.display = 'block';
+                  } else {
+                    filters.style.display = 'none';
+                  }
+                }
+                function clearFilters(){
+                  document.querySelector('input[name="q"]').value = '';
+                  document.querySelector('select[name="type"]').value = '';
+                  document.querySelector('select[name="direction"]').value = '';
+                  document.querySelector('input[name="date_from"]').value = '';
+                  document.querySelector('input[name="date_to"]').value = '';
+                }
+                
+                // Search history functionality
+                function saveSearchHistory(query) {
+                  if (!query.trim()) return;
+                  
+                  let history = JSON.parse(localStorage.getItem('searchHistory') || '[]');
+                  // Remove if already exists
+                  history = history.filter(item => item !== query);
+                  // Add to beginning
+                  history.unshift(query);
+                  // Keep only last 10 searches
+                  history = history.slice(0, 10);
+                  localStorage.setItem('searchHistory', JSON.stringify(history));
+                }
+                
+                function loadSearchHistory() {
+                  const history = JSON.parse(localStorage.getItem('searchHistory') || '[]');
+                  return history;
+                }
+                
+                function showSearchSuggestions() {
+                  const history = loadSearchHistory();
+                  if (history.length === 0) return;
+                  
+                  const input = document.querySelector('input[name="q"]');
+                  const container = document.querySelector('.search-container');
+                  
+                  // Remove existing suggestions
+                  const existingSuggestions = document.querySelector('.search-suggestions');
+                  if (existingSuggestions) existingSuggestions.remove();
+                  
+                  if (input.value.trim() === '') {
+                    const suggestionsDiv = document.createElement('div');
+                    suggestionsDiv.className = 'search-suggestions';
+                    
+                    let suggestionsHtml = '<div class="suggestions-header">Recent Searches</div>';
+                    history.forEach(item => {
+                      const escapedItem = item.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+                      suggestionsHtml += '<div class="suggestion-item" onclick="selectSuggestion(\'' + escapedItem + '\')">' + item + '</div>';
+                    });
+                    
+                    suggestionsDiv.innerHTML = suggestionsHtml;
+                    container.appendChild(suggestionsDiv);
+                  }
+                }
+                
+                function selectSuggestion(query) {
+                  document.querySelector('input[name="q"]').value = query;
+                  hideSearchSuggestions();
+                }
+                
+                function hideSearchSuggestions() {
+                  const suggestions = document.querySelector('.search-suggestions');
+                  if (suggestions) suggestions.remove();
+                }
+                
+                // Add event listeners for search history
+                document.addEventListener('DOMContentLoaded', function() {
+                  const searchInput = document.querySelector('input[name="q"]');
+                  const searchForm = document.querySelector('.search-form');
+                  
+                  if (searchInput) {
+                    searchInput.addEventListener('focus', showSearchSuggestions);
+                    searchInput.addEventListener('blur', function() {
+                      setTimeout(hideSearchSuggestions, 200);
+                    });
+                    searchInput.addEventListener('input', function() {
+                      if (this.value.trim() === '') {
+                        showSearchSuggestions();
+                      } else {
+                        hideSearchSuggestions();
+                      }
+                    });
+                  }
+                  
+                  if (searchForm) {
+                    searchForm.addEventListener('submit', function() {
+                      const query = searchInput.value.trim();
+                      if (query) {
+                        saveSearchHistory(query);
+                      }
+                    });
+                  }
+                });
                 function switchImageTab(tab){
                   var urlTab = document.getElementById('urlTab');
                   var uploadTab = document.getElementById('uploadTab');
@@ -256,7 +588,7 @@ export default function registerInboxRoutes(app) {
                   document.querySelectorAll('.dropdown-menu').forEach(el=>{ el.style.display='none'; });
                 });
               </script>
-              <ul class="list card">${list || '<div class="small" style="margin-top:16px;">No conversations yet</div>'}</ul>
+              <ul class="list card">${searchResultsCount}${list || '<div class="small" style="margin-top:16px;">No conversations yet</div>'}</ul>
             </main>
           </div>
         </div>
@@ -264,8 +596,221 @@ export default function registerInboxRoutes(app) {
     `);
   });
 
+  // Advanced search API endpoint
+  app.get("/api/search", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
+    const q = (req.query.q || "").toString().trim();
+    const messageType = (req.query.type || "").toString().trim();
+    const direction = (req.query.direction || "").toString().trim();
+    const dateFrom = (req.query.date_from || "").toString().trim();
+    const dateTo = (req.query.date_to || "").toString().trim();
+    const contact = (req.query.contact || "").toString().trim();
+    const limit = parseInt(req.query.limit) || 50;
+    const offset = parseInt(req.query.offset) || 0;
+    
+    if (!q && !messageType && !direction && !dateFrom && !dateTo && !contact) {
+      return res.json({ 
+        success: false, 
+        error: "At least one search parameter is required" 
+      });
+    }
+    
+    try {
+      const results = await performMessageSearch(userId, {
+        q, messageType, direction, dateFrom, dateTo, contact, limit, offset
+      });
+      
+      res.json({
+        success: true,
+        results: results.messages,
+        total: results.total,
+        hasMore: results.hasMore
+      });
+    } catch (error) {
+      console.error('Search API error:', error);
+      res.status(500).json({
+        success: false,
+        error: "Search failed"
+      });
+    }
+  });
+
+  // Search results page
+  app.get("/search", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
+    const q = (req.query.q || "").toString().trim();
+    const messageType = (req.query.type || "").toString().trim();
+    const direction = (req.query.direction || "").toString().trim();
+    const dateFrom = (req.query.date_from || "").toString().trim();
+    const dateTo = (req.query.date_to || "").toString().trim();
+    const contact = (req.query.contact || "").toString().trim();
+    const page = parseInt(req.query.page) || 1;
+    const limit = 20;
+    const offset = (page - 1) * limit;
+    
+    const email = await getSignedInEmail(req);
+    
+    let searchResults = { messages: [], total: 0, hasMore: false };
+    
+    if (q || messageType || direction || dateFrom || dateTo || contact) {
+      try {
+        searchResults = await performMessageSearch(userId, {
+          q, messageType, direction, dateFrom, dateTo, contact, limit, offset
+        });
+      } catch (error) {
+        console.error('Search error:', error);
+      }
+    }
+    
+    // Render search results
+    const resultsHtml = searchResults.messages.map(msg => {
+      const contactName = msg.contact_name || `+${msg.contact.replace(/^\+/, '')}`;
+      const directionIcon = msg.direction === 'inbound' ? '←' : '→';
+      const typeIcon = msg.type === 'image' ? '🖼️' : msg.type === 'document' ? '📄' : msg.type === 'interactive' ? '🔘' : '💬';
+      
+      // Highlight search terms in text
+      let highlightedText = msg.text_body || '';
+      if (q) {
+        const regex = new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+        highlightedText = highlightedText.replace(regex, '<span class="search-highlight">$1</span>');
+      }
+      
+      return `
+        <div class="search-result-item">
+          <div class="search-result-header">
+            <div class="search-result-contact">
+              <span class="direction-icon">${directionIcon}</span>
+              <span class="contact-name">${contactName}</span>
+              <span class="message-type">${typeIcon}</span>
+            </div>
+            <div class="search-result-time">${msg.formatted_time}</div>
+          </div>
+          <div class="search-result-content">
+            <div class="search-result-text">${highlightedText}</div>
+            <div class="search-result-actions">
+              <a href="/inbox/${msg.contact}" class="btn-primary">Open Chat</a>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('');
+    
+    const paginationHtml = searchResults.total > limit ? `
+      <div class="pagination">
+        ${page > 1 ? `<a href="/search?${new URLSearchParams({...req.query, page: page - 1})}" class="btn-ghost">← Previous</a>` : ''}
+        <span class="pagination-info">Page ${page} of ${Math.ceil(searchResults.total / limit)}</span>
+        ${searchResults.hasMore ? `<a href="/search?${new URLSearchParams({...req.query, page: page + 1})}" class="btn-ghost">Next →</a>` : ''}
+      </div>
+    ` : '';
+    
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+    res.end(`
+      <html><head><title>Code Orbit - Search Results</title><link rel="stylesheet" href="/styles.css"></head>
+      <body>
+        <script>
+          // Check authentication on page load
+          (async function checkAuthOnLoad(){
+            try{ const r=await fetch('/auth/status',{credentials:'include'}); const j=await r.json(); if(!j.signedIn){ window.location='/auth'; return; } }catch(e){ window.location='/auth'; }
+          })();
+        </script>
+        <div class="container">
+          ${renderTopbar(`<a href="/dashboard">Dashboard</a> / <a href="/inbox">Inbox</a> / Search Results`, email)}
+          <div class="layout">
+            ${renderSidebar('inbox')}
+            <main class="main">
+              <div class="search-container">
+                <form method="get" action="/search" class="search-form">
+                  <div class="search-input-group">
+                    <input class="search-input" type="text" name="q" placeholder='Search messages...' value="${q}"/>
+                    <button type="submit" class="search-btn">
+                      <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+                        <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+                      </svg>
+                    </button>
+                  </div>
+                  <div class="search-filters" id="searchFilters" style="display: none;">
+                    <div class="filter-group">
+                      <label>Message Type:</label>
+                      <select name="type" class="filter-select">
+                        <option value="">All Types</option>
+                        <option value="text" ${messageType === 'text' ? 'selected' : ''}>Text</option>
+                        <option value="image" ${messageType === 'image' ? 'selected' : ''}>Images</option>
+                        <option value="document" ${messageType === 'document' ? 'selected' : ''}>Documents</option>
+                        <option value="interactive" ${messageType === 'interactive' ? 'selected' : ''}>Interactive</option>
+                      </select>
+                    </div>
+                    <div class="filter-group">
+                      <label>Direction:</label>
+                      <select name="direction" class="filter-select">
+                        <option value="">All Messages</option>
+                        <option value="inbound" ${direction === 'inbound' ? 'selected' : ''}>Incoming</option>
+                        <option value="outbound" ${direction === 'outbound' ? 'selected' : ''}>Outgoing</option>
+                      </select>
+                    </div>
+                    <div class="filter-group">
+                      <label>Contact:</label>
+                      <input type="text" name="contact" class="filter-select" value="${contact}" placeholder="Phone number"/>
+                    </div>
+                    <div class="filter-group">
+                      <label>Date Range:</label>
+                      <input type="date" name="date_from" class="filter-date" value="${dateFrom}" placeholder="From"/>
+                      <input type="date" name="date_to" class="filter-date" value="${dateTo}" placeholder="To"/>
+                    </div>
+                    <div class="filter-actions">
+                      <button type="button" onclick="clearFilters()" class="btn-ghost">Clear</button>
+                      <button type="submit" class="btn-primary">Search</button>
+                    </div>
+                  </div>
+                  <button type="button" onclick="toggleSearchFilters()" class="filter-toggle-btn">
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+                      <path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/>
+                    </svg>
+                    Filters
+                  </button>
+                </form>
+              </div>
+              
+              ${searchResults.total > 0 ? `
+                <div class="search-result-count">Found ${searchResults.total} message${searchResults.total !== 1 ? 's' : ''} matching your search criteria</div>
+                <div class="search-results">
+                  ${resultsHtml}
+                </div>
+                ${paginationHtml}
+              ` : q || messageType || direction || dateFrom || dateTo || contact ? `
+                <div class="search-result-count">No messages found matching your search criteria</div>
+              ` : `
+                <div class="search-result-count">Enter search terms to find messages</div>
+              `}
+            </main>
+          </div>
+        </div>
+        <script>
+          function toggleSearchFilters(){
+            var filters = document.getElementById('searchFilters');
+            if (filters.style.display === 'none') {
+              filters.style.display = 'block';
+            } else {
+              filters.style.display = 'none';
+            }
+          }
+          function clearFilters(){
+            document.querySelector('input[name="q"]').value = '';
+            document.querySelector('select[name="type"]').value = '';
+            document.querySelector('select[name="direction"]').value = '';
+            document.querySelector('input[name="contact"]').value = '';
+            document.querySelector('input[name="date_from"]').value = '';
+            document.querySelector('input[name="date_to"]').value = '';
+          }
+        </script>
+      </body></html>
+    `);
+  });
+
   app.get("/inbox/:phone", ensureAuthed, async (req, res) => {
-    const phone = req.params.phone;
+    const phone = req.params.phone.split('?')[0]; // Remove any query parameters from phone
     const userId = getCurrentUserId(req);
     const phoneDigits = normalizePhone(phone);
     // Mark as seen
@@ -284,7 +829,7 @@ export default function registerInboxRoutes(app) {
       LEFT JOIN (
         SELECT message_id, status, timestamp, ROW_NUMBER() OVER (PARTITION BY message_id ORDER BY timestamp DESC) as rn
         FROM message_statuses 
-        WHERE user_id = ?
+      WHERE user_id = ?
       ) ms ON m.id = ms.message_id AND ms.rn = 1
       WHERE m.user_id = ?
         AND (
@@ -455,6 +1000,7 @@ export default function registerInboxRoutes(app) {
     res.end(`
       <html><head><title>Code Orbit - Chat +${String(phone).replace(/^\+/, '')}</title><link rel="stylesheet" href="/styles.css"></head>
       <body>
+        <script src="/toast.js"></script>
         <script>
           // Check authentication on page load
           (async function checkAuthOnLoad(){
@@ -1116,7 +1662,6 @@ export default function registerInboxRoutes(app) {
             ${renderSidebar('inbox')}
             <main class="main">
               <div style="min-height: calc(100vh - 107px);" class="card">
-                ${toastMsg ? `<div class="toast ${toastType || 'info'}">${toastMsg}</div>` : ''}
                 <div class="wa-chat-header">
                   <a href="/inbox" style="border:none; margin-right:20px;">
                     <img src="/left-arrow-icon.svg" alt="Back" style="width:20px;height:20px;vertical-align:middle;"/>
@@ -1174,7 +1719,7 @@ export default function registerInboxRoutes(app) {
                           <span></span>
                           <span></span>
                           <span></span>
-                        </div>
+                </div>
                         <div class="meta">Typing...</div>
                       </div>
                     </div>
@@ -1213,9 +1758,9 @@ export default function registerInboxRoutes(app) {
                   </div>
                   
                   <form id="imageUploadForm" method="post" action="/upload-image/${phone}" enctype="multipart/form-data" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) { this.submit(); setTimeout(scrollToBottom, 500); } }); return false;" style="display:none;">
-                    <input type="file" name="image" accept="image/*" id="imageFileInput" onchange="handleImageSelect(event)" />
-                    <textarea name="caption" id="hiddenCaption" style="display:none;"></textarea>
-                  </form>
+                      <input type="file" name="image" accept="image/*" id="imageFileInput" onchange="handleImageSelect(event)" />
+                      <textarea name="caption" id="hiddenCaption" style="display:none;"></textarea>
+                    </form>
                   
                   <form id="documentUploadForm" method="post" action="/upload-document/${phone}" enctype="multipart/form-data" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) { this.submit(); setTimeout(scrollToBottom, 500); } }); return false;" style="display:none;">
                     <input type="file" name="document" accept=".pdf,.doc,.docx,.txt,.rtf,.odt,.ppt,.pptx,.xls,.xlsx,.csv,.zip,.rar" id="documentFileInput" onchange="handleDocumentSelect(event)" />
@@ -1268,9 +1813,9 @@ export default function registerInboxRoutes(app) {
                           <line x1="16" y1="13" x2="8" y2="13"></line>
                           <line x1="16" y1="17" x2="8" y2="17"></line>
                           <polyline points="10,9 9,9 8,9"></polyline>
-                        </svg>
+                      </svg>
                         <span>Document</span>
-                      </button>
+                    </button>
                       <button type="button" class="wa-attach-option" id="attachImageBtn" title="Send photo">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                           <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
@@ -1279,7 +1824,7 @@ export default function registerInboxRoutes(app) {
                         </svg>
                         <span>Photo</span>
                       </button>
-                    </div>
+                  </div>
                     
                     <div class="wa-input-container">
                       <button type="button" ${!isHuman ? 'disabled' : ''} onclick="toggleAttachmentMenu()" class="wa-attach-btn" title="Attach">
@@ -1418,10 +1963,10 @@ export default function registerInboxRoutes(app) {
         try {
           await sendWhatsAppTemplate(to, 'hello_world', 'en_US', [], cfg);
           // Optionally queue the freeform reply AFTER user responds to the template
-          return res.redirect(`/inbox/${to}?toast=Template sent. Ask the user to reply to reopen the session.&type=success`);
+          return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=Template sent. Ask the user to reply to reopen the session.&type=success`);
         } catch (e) {
           console.error('Template send failed, falling back to text within 24h only:', e?.message || e);
-          return res.redirect(`/inbox/${to}?toast=${encodeURIComponent('Template send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
+          return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Template send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
         }
       }
     } catch {}
@@ -1445,6 +1990,13 @@ export default function registerInboxRoutes(app) {
         `);
         try { stmt.run(outboundId, userId, fromBiz, to, normalizePhone(fromBiz), normalizePhone(to), text, JSON.stringify({ to, text })); } catch {}
         
+        // Update contact activity
+        try {
+          updateContactActivity(userId, to);
+        } catch (error) {
+          console.error('Error updating contact activity:', error);
+        }
+        
         // Handle reply relationship if this is a reply to another message
         const replyTo = req.body?.replyTo;
         if (replyTo && outboundId) {
@@ -1460,9 +2012,9 @@ export default function registerInboxRoutes(app) {
       }
     } catch (e) {
       console.error("Manual send error:", e);
-      return res.redirect(`/inbox/${to}?toast=${encodeURIComponent('Send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
+      return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
     }
-    res.redirect(`/inbox/${to}?toast=${encodeURIComponent('Message sent')}&type=success`);
+    res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Message sent')}&type=success`);
   });
 
   // Upload and send image route
@@ -1473,7 +2025,7 @@ export default function registerInboxRoutes(app) {
     const caption = (req.body?.caption || "").toString().trim();
     
     if (!req.file) {
-      return res.redirect(`/inbox/${to}?toast=${encodeURIComponent('No image file provided')}&type=error`);
+      return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('No image file provided')}&type=error`);
     }
 
     // Create a public URL for the uploaded image
@@ -1512,10 +2064,10 @@ export default function registerInboxRoutes(app) {
       if (over24h) {
         try {
           await sendWhatsAppTemplate(to, 'hello_world', 'en_US', [], cfg);
-          return res.redirect(`/inbox/${to}?toast=${encodeURIComponent('Template sent. Ask the user to reply to reopen the session.')}&type=success`);
+          return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Template sent. Ask the user to reply to reopen the session.')}&type=success`);
         } catch (e) {
           console.error('Template send failed, falling back to image within 24h only:', e?.message || e);
-          return res.redirect(`/inbox/${to}?toast=${encodeURIComponent('Template send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
+          return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Template send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
         }
       }
     } catch {}
@@ -1581,10 +2133,10 @@ export default function registerInboxRoutes(app) {
       }
     } catch (e) {
       console.error("Image upload send error:", e);
-      return res.redirect(`/inbox/${to}?toast=${encodeURIComponent('Image send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
+      return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Image send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
     }
     
-    res.redirect(`/inbox/${to}?toast=${encodeURIComponent('Image sent')}&type=success`);
+    res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Image sent')}&type=success`);
   });
 
   // Upload and send document route
@@ -1595,7 +2147,7 @@ export default function registerInboxRoutes(app) {
     const caption = (req.body?.caption || "").toString().trim();
     
     if (!req.file) {
-      return res.redirect(`/inbox/${to}?toast=${encodeURIComponent('No document file provided')}&type=error`);
+      return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('No document file provided')}&type=error`);
     }
 
     // Create a public URL for the uploaded document
@@ -1626,10 +2178,10 @@ export default function registerInboxRoutes(app) {
       if (over24h) {
         try {
           await sendWhatsAppTemplate(to, 'hello_world', 'en_US', [], cfg);
-          return res.redirect(`/inbox/${to}?toast=${encodeURIComponent('Template sent. Ask the user to reply to reopen the session.')}&type=success`);
+          return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Template sent. Ask the user to reply to reopen the session.')}&type=success`);
         } catch (e) {
           console.error('Template send failed, falling back to document within 24h only:', e?.message || e);
-          return res.redirect(`/inbox/${to}?toast=${encodeURIComponent('Template send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
+          return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Template send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
         }
       }
     } catch {}
@@ -1687,10 +2239,10 @@ export default function registerInboxRoutes(app) {
       }
     } catch (e) {
       console.error("Document upload send error:", e);
-      return res.redirect(`/inbox/${to}?toast=${encodeURIComponent('Document send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
+      return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Document send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
     }
     
-    res.redirect(`/inbox/${to}?toast=${encodeURIComponent('Document sent')}&type=success`);
+    res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Document sent')}&type=success`);
   });
 
   app.post("/inbox/:phone/send-template", ensureAuthed, async (req, res) => {
@@ -1708,10 +2260,10 @@ export default function registerInboxRoutes(app) {
     if (bodyParams.length) components.push({ type: 'body', parameters: bodyParams });
     try { 
       await sendWhatsAppTemplate(to, tname, tlang, components, cfg);
-      return res.redirect(`/inbox/${to}?toast=${encodeURIComponent('Template sent successfully')}&type=success`);
+      return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Template sent successfully')}&type=success`);
     } catch (e) { 
       console.error('Template send error:', e?.message || e);
-      return res.redirect(`/inbox/${to}?toast=${encodeURIComponent('Template send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
+      return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Template send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
     }
   });
 

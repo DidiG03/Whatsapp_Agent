@@ -77,7 +77,7 @@ export function renderTranscriptAsBubbles(transcript) {
 /**
  * Render the left-hand sidebar with navigation links.
  * Adds an "active" class on the current section.
- * @param {"dashboard"|"inbox"|"onboarding"|"settings"|"kb"} activeKey
+ * @param {"dashboard"|"inbox"|"contacts"|"onboarding"|"settings"|"kb"} activeKey
  * @returns {string} sidebar HTML
  */
 export function renderSidebar(activeKey) {
@@ -97,6 +97,16 @@ export function renderSidebar(activeKey) {
         <li>
           <a ${activeKey === key ? 'class="active"' : ''} href="${href}">
             <img src="/inbox-icon.svg" alt="Inbox" style="width:20px;height:20px;vertical-align:middle;margin-right:6px;"/>
+            <span style="color: grey;">${label}</span>
+          </a>
+        </li>
+      `;
+    }
+    if (key === 'contacts') {
+      return `
+        <li>
+          <a ${activeKey === key ? 'class="active"' : ''} href="${href}">
+            <img src="/name-person-icon.svg" alt="Contacts" style="width:20px;height:20px;vertical-align:middle;margin-right:6px;"/>
             <span style="color: grey;">${label}</span>
           </a>
         </li>
@@ -158,6 +168,7 @@ export function renderSidebar(activeKey) {
     <ul class="nav">
       ${link('/dashboard', 'Dashboard', 'dashboard')}
       ${link('/inbox', 'Inbox', 'inbox')}
+      ${link('/contacts', 'Contacts', 'contacts')}
       ${link('/settings', 'Settings', 'settings')}
       ${link('/kb/ui', 'Knowledge Base', 'kb')}
       ${link('/plan', 'Plan', 'plan')}

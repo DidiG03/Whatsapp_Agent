@@ -196,7 +196,7 @@ db.exec(`
     PRIMARY KEY (user_id, contact_id)
   );
 
-  -- Named customers for contacts (per user)
+  -- Enhanced customer profiles for contacts (per user)
   CREATE TABLE IF NOT EXISTS customers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT NOT NULL,
@@ -208,6 +208,31 @@ db.exec(`
     UNIQUE(user_id, contact_id)
   );
   CREATE INDEX IF NOT EXISTS idx_customers_user_contact ON customers(user_id, contact_id);
+
+  -- Contact tags for categorization
+  CREATE TABLE IF NOT EXISTS contact_tags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    color TEXT DEFAULT '#3B82F6', -- Hex color for tag display
+    description TEXT,
+    created_at INTEGER DEFAULT (strftime('%s','now')),
+    updated_at INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(user_id, name)
+  );
+  CREATE INDEX IF NOT EXISTS idx_contact_tags_user ON contact_tags(user_id);
+
+  -- Contact interaction history for analytics
+  CREATE TABLE IF NOT EXISTS contact_interactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    contact_id TEXT NOT NULL,
+    interaction_type TEXT NOT NULL, -- message, call, meeting, note
+    interaction_data TEXT, -- JSON field for interaction details
+    created_at INTEGER DEFAULT (strftime('%s','now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_contact_interactions_user_contact ON contact_interactions(user_id, contact_id);
+  CREATE INDEX IF NOT EXISTS idx_contact_interactions_type ON contact_interactions(user_id, interaction_type);
 
   -- Notifications for web alerts
   CREATE TABLE IF NOT EXISTS notifications (
@@ -290,6 +315,48 @@ export function ensureUserScopedColumns() {
 }
 
 /**
+ * Migrate existing customers table to enhanced structure
+ */
+export function migrateCustomersTable() {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(customers)`).all();
+    const existingColumns = cols.map(c => c.name);
+    
+    const newColumns = [
+      'first_name', 'last_name', 'email', 'company', 'job_title',
+      'profile_photo_url', 'phone_alternative', 'address', 'city', 'state',
+      'country', 'postal_code', 'website', 'social_media', 'custom_fields',
+      'tags', 'status', 'source', 'last_contacted', 'total_messages'
+    ];
+    
+    for (const col of newColumns) {
+      if (!existingColumns.includes(col)) {
+        let colDef = 'TEXT';
+        if (col === 'total_messages') colDef = 'INTEGER DEFAULT 0';
+        if (col === 'status') colDef = "TEXT DEFAULT 'active'";
+        if (col === 'last_contacted') colDef = 'INTEGER';
+        
+        try {
+          db.prepare(`ALTER TABLE customers ADD COLUMN ${col} ${colDef}`).run();
+        } catch (e) {
+          console.log(`Column ${col} already exists or could not be added:`, e.message);
+        }
+      }
+    }
+    
+    // Create new indexes
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_customers_email ON customers(user_id, email);
+      CREATE INDEX IF NOT EXISTS idx_customers_company ON customers(user_id, company);
+      CREATE INDEX IF NOT EXISTS idx_customers_status ON customers(user_id, status);
+    `);
+    
+  } catch (e) {
+    console.log('Error migrating customers table:', e.message);
+  }
+}
+
+/**
  * Ensure KB supports optional file attachments (e.g., PDF menus).
  */
 function ensureKbFileColumns() {
@@ -365,6 +432,7 @@ ensureUserScopedColumns();
 ensureDigitColumns();
 ensureAiSettingsColumns();
 ensureKbFileColumns();
+migrateCustomersTable();
 
 /**
  * Ensure extra columns on handoff for inbox management (archive/delete flags).
