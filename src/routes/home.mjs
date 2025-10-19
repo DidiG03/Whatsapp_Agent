@@ -1,5 +1,5 @@
 import { isAuthenticated, getSignedInEmail } from "../middleware/auth.mjs";
-import { renderTopbar, renderSidebar } from "../utils.mjs";
+import { renderTopbar, renderSidebar, getProfessionalHead } from "../utils.mjs";
 
 export default function registerHomeRoutes(app) {
   app.get("/", async (req, res) => {
@@ -10,13 +10,14 @@ export default function registerHomeRoutes(app) {
       // Show home page for signed-in users
       const email = await getSignedInEmail(req);
       res.end(`
-        <html><head><title>WhatsApp Agent - Home</title><link rel="stylesheet" href="/styles.css"></head><body>
+        <html>${getProfessionalHead('Home')}<body>
           <div class="container">
             ${renderTopbar('Home', email)}
             <div class="layout">
               ${renderSidebar('home')}
               <main class="main">
-                <div class="card">
+                <div class="main-content">
+                  <div class="card">
                   <h2>Welcome to WhatsApp Agent</h2>
                   <p>Manage your WhatsApp business conversations and automate customer interactions.</p>
                   
@@ -45,6 +46,7 @@ export default function registerHomeRoutes(app) {
                       <a href="/kb" class="btn" style="margin-top: 12px; display: inline-block;">Manage KB</a>
                     </div>
                   </div>
+                </div>
                 </div>
               </main>
             </div>

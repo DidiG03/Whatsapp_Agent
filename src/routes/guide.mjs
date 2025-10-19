@@ -34,7 +34,8 @@ export default function registerGuideRoutes(app) {
                 <div class="layout">
                     ${renderSidebar("guide")}
                     <main class="main">
-                        <div class="card">
+                        <div class="main-content">
+                          <div class="card">
                         <div class="hero">
                             <div>
                             <h3>Help Center</h3>
@@ -60,6 +61,7 @@ export default function registerGuideRoutes(app) {
                           </div>
                         </div>
                         </div>
+                          </div>
                     </main>
                 </div>
             </div>

@@ -50,8 +50,9 @@ export default function registerSettingsRoutes(app) {
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Settings`, email)}
           <div class="layout">
             ${renderSidebar('settings')}
-            <main class="main" style="height: calc(100vh - 106px);">
-              <div class="card chat-box-settings">
+            <main class="main">
+              <div class="main-content">
+                <div class="card chat-box-settings">
                 <form method="post" action="/settings" onsubmit="return checkAuthThenSubmit();">
                   <div class="section">
                     <h3>Personal Information</h3>
@@ -700,6 +701,7 @@ export default function registerSettingsRoutes(app) {
                     </div>
                   ` : '<div class="small">No quick replies yet. Add your first one above!</div>'}
                 </div>
+              </div>
               </div>
             </main>
           </div>

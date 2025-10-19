@@ -5,8 +5,37 @@
  * - HTML escaping
  * - Transcript-to-chat-bubbles renderer
  * - Sidebar HTML renderer with current active nav
+ * - Professional enhancements script inclusion
  */
 import { CLERK_ENABLED } from "./config.mjs";
+
+/**
+ * Get the professional enhancements script tag for all pages
+ * @returns {string} HTML script tag for enhancements
+ */
+export function getEnhancementsScript() {
+  return `<script src="/enhancements.js"></script>`;
+}
+
+/**
+ * Get the complete head section with all necessary scripts and styles
+ * @param {string} title - Page title
+ * @returns {string} Complete HTML head section
+ */
+export function getProfessionalHead(title) {
+  return `
+    <head>
+      <title>WhatsApp Agent - ${title}</title>
+      <link rel="stylesheet" href="/styles.css">
+      <link rel="preconnect" href="https://fonts.googleapis.com">
+      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <meta name="theme-color" content="#2563eb">
+      ${getEnhancementsScript()}
+    </head>
+  `;
+}
 
 /**
  * Normalize phone-like strings to digits-only. Used for consistent lookups.

@@ -170,12 +170,14 @@ export default function registerKbRoutes(app) {
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / KB`, email)}
           <div class="layout">
             ${renderSidebar('kb')}
-            <main class="main" style="height: calc(100vh - 107px); overflow:auto;">
-              <div class="card kb-toolbar" style="margin-bottom:12px; display:flex; gap:8px;">
-                <input id="kb-search" class="settings-field" placeholder="Search knowledge items..."/>
-                <button class="btn-ghost" onclick="addKbItem()">Add</button>
+            <main class="main">
+              <div class="main-content">
+                <div class="card kb-toolbar" style="margin-bottom:12px; display:flex; gap:8px;">
+                  <input id="kb-search" class="settings-field" placeholder="Search knowledge items..."/>
+                  <button class="btn-ghost" onclick="addKbItem()">Add</button>
+                </div>
+                <div class="card kb-list">${html || '<div class="small" style="margin-top:16px;">No KB items yet</div>'}</div>
               </div>
-              <div class="card kb-list">${html || '<div class="small" style="margin-top:16px;">No KB items yet</div>'}</div>
             </main>
           </div>
         </div>

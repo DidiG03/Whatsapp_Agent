@@ -1,5 +1,5 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
-import { renderSidebar, normalizePhone, escapeHtml, renderTopbar } from "../utils.mjs";
+import { renderSidebar, normalizePhone, escapeHtml, renderTopbar, getProfessionalHead } from "../utils.mjs";
 import { listContactsForUser, listMessagesForThread } from "../services/conversations.mjs";
 import { db } from "../db.mjs";
 import { getSettingsForUser } from "../services/settings.mjs";
@@ -351,8 +351,7 @@ export default function registerInboxRoutes(app) {
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     res.end(`
-      <html><head><title>Code Orbit - Inbox</title><link rel="stylesheet" href="/styles.css"></head>
-      <body>
+      <html>${getProfessionalHead('Inbox')}<body>
         <script src="/toast.js"></script>
         <script src="/notifications.js"></script>
         <script>
@@ -366,8 +365,9 @@ export default function registerInboxRoutes(app) {
           <div class="layout">
             ${renderSidebar('inbox')}
             <main class="main">
-              <div class="search-container">
-                <form method="get" action="/inbox" class="search-form">
+              <div class="main-content">
+                <div class="search-container">
+                  <form method="get" action="/inbox" class="search-form">
                   <div class="search-input-group">
                     <input class="search-input" type="text" name="q" placeholder='Search conversations...' value="${q}"/>
                     <button type="submit" class="search-btn">
@@ -588,7 +588,8 @@ export default function registerInboxRoutes(app) {
                   document.querySelectorAll('.dropdown-menu').forEach(el=>{ el.style.display='none'; });
                 });
               </script>
-              <ul class="list card">${searchResultsCount}${list || '<div class="small" style="margin-top:16px;">No conversations yet</div>'}</ul>
+                <ul class="list card">${searchResultsCount}${list || '<div class="small" style="margin-top:16px;">No conversations yet</div>'}</ul>
+              </div>
             </main>
           </div>
         </div>
@@ -1661,7 +1662,8 @@ export default function registerInboxRoutes(app) {
           <div class="layout">
             ${renderSidebar('inbox')}
             <main class="main">
-              <div style="min-height: calc(100vh - 107px);" class="card">
+              <div class="main-content">
+                <div style="min-height: calc(100vh - 107px);" class="card">
                 <div class="wa-chat-header">
                   <a href="/inbox" style="border:none; margin-right:20px;">
                     <img src="/left-arrow-icon.svg" alt="Back" style="width:20px;height:20px;vertical-align:middle;"/>
@@ -1866,6 +1868,7 @@ export default function registerInboxRoutes(app) {
                     </div>
                   </form>
                 </div>
+              </div>
               </div>
             </main>
           </div>

@@ -1,5 +1,5 @@
 import { ensureAuthed, getSignedInEmail, getCurrentUserId, signSessionToken } from "../middleware/auth.mjs";
-import { renderSidebar, escapeHtml, renderTopbar } from "../utils.mjs";
+import { renderSidebar, escapeHtml, renderTopbar, getProfessionalHead } from "../utils.mjs";
 import { db } from "../db.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
 import { getCurrentUsage, getUserPlan } from "../services/usage.mjs";
@@ -224,7 +224,8 @@ export default function registerDashboardRoutes(app) {
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     res.end(`
-      <html><head><title>Code Orbit - Dashboard</title><link rel="stylesheet" href="/styles.css"></head><body>
+      <html>${getProfessionalHead('Dashboard')}<body>
+        <script src="/toast.js"></script>
         <script src="/notifications.js"></script>
         <script>
           // Check authentication on page load
@@ -247,10 +248,12 @@ export default function registerDashboardRoutes(app) {
           ${renderTopbar('Dashboard', email)}
           <div class="layout">
             ${renderSidebar('dashboard')}
-            <main class="main" style="height: calc(100vh - 119px); overflow:auto;">
-              ${usageHtml}
-              ${apptHtml}
-              ${intakeHtml}
+            <main class="main">
+              <div class="main-content">
+                ${usageHtml}
+                ${apptHtml}
+                ${intakeHtml}
+              </div>
               <div id="mini-onboard" class="card" style="position:fixed; right:24px; bottom:92px; width:400px; display:none; padding:0; overflow:hidden;">
                 <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-bottom:1px solid #eee;">
                   <div class="small">KB Assistant</div>

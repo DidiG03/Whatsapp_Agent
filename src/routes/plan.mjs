@@ -56,7 +56,8 @@ export default function registerPlanRoutes(app) {
           <div class="layout">
             ${renderSidebar('plan')}
             <main class="main">
-              <div class="card">
+              <div class="main-content">
+                <div class="card">
                 <h2>Current Plan: ${currentPlanDetails.name}</h2>
                 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin: 16px 0;">
                   <div class="usage-stat">
@@ -330,6 +331,11 @@ export default function registerPlanRoutes(app) {
             position: relative;
           }
         </style>
+                </div>
+              </div>
+            </main>
+          </div>
+        </div>
       </body></html>
     `);
   });
