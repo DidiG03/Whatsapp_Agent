@@ -22,10 +22,74 @@ export default function registerAuthRoutes(app) {
 
   app.get("/auth/status", (req, res) => {
     try {
-      const { userId } = getAuth(req) || {};
-      return res.json({ signedIn: !!userId });
-    } catch {
-      return res.json({ signedIn: false });
+      const auth = getAuth(req) || {};
+      const { userId, sessionId } = auth;
+      
+      // Return detailed auth status including session info
+      return res.json({ 
+        signedIn: !!userId,
+        userId: userId || null,
+        sessionId: sessionId || null,
+        needsRefresh: false // We'll determine this based on session age
+      });
+    } catch (error) {
+      console.error('Auth status check failed:', error);
+      return res.json({ 
+        signedIn: false, 
+        userId: null, 
+        sessionId: null,
+        needsRefresh: false,
+        error: 'Auth check failed'
+      });
+    }
+  });
+
+  // New endpoint to refresh session
+  app.post("/auth/refresh", async (req, res) => {
+    try {
+      const auth = getAuth(req) || {};
+      const { userId, sessionId } = auth;
+      
+      if (!userId) {
+        return res.status(401).json({ 
+          success: false, 
+          error: 'No active session to refresh',
+          redirectTo: '/auth'
+        });
+      }
+
+      // Check if we can refresh the session
+      if (sessionId) {
+        try {
+          // Verify the session is still valid
+          const session = await clerkClient.sessions.getSession(sessionId);
+          if (session && session.status === 'active') {
+            return res.json({ 
+              success: true, 
+              message: 'Session is still valid',
+              userId,
+              sessionId
+            });
+          }
+        } catch (sessionError) {
+          console.log('Session verification failed, may need refresh:', sessionError.message);
+        }
+      }
+
+      // If we get here, the session needs refresh
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Session expired, please sign in again',
+        redirectTo: '/auth'
+      });
+      
+    } catch (error) {
+      console.error('Session refresh failed:', error);
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Session refresh failed',
+        redirectTo: '/auth'
+      });
     }
   });
 

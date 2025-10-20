@@ -45,8 +45,23 @@ export function ensureAuthed(req, res, next) {
     if (!userId) {
       // For AJAX requests, return JSON error instead of redirect
       if (req.xhr || req.headers.accept?.includes('application/json')) {
-        return res.status(401).json({ error: 'Authentication required' });
+        return res.status(401).json({ 
+          error: 'Authentication required',
+          code: 'AUTH_REQUIRED',
+          redirectTo: '/auth'
+        });
       }
+      
+      // For form submissions, try to handle gracefully
+      if (req.method === 'POST' && req.headers['content-type']?.includes('application/x-www-form-urlencoded')) {
+        // Return a special response that the client can handle
+        return res.status(401).json({ 
+          error: 'Session expired, please refresh and try again',
+          code: 'SESSION_EXPIRED',
+          redirectTo: '/auth'
+        });
+      }
+      
       // Use the current request's host to preserve ngrok URL
       const currentBaseUrl = `${req.protocol}://${req.get('host')}`;
       const redirectUrl = req.originalUrl ? `${currentBaseUrl}${req.originalUrl}` : currentBaseUrl;
@@ -58,10 +73,25 @@ export function ensureAuthed(req, res, next) {
     return next();
   } catch (error) {
     console.error('Auth middleware error:', error);
+    
     // For AJAX requests, return JSON error instead of redirect
     if (req.xhr || req.headers.accept?.includes('application/json')) {
-      return res.status(401).json({ error: 'Authentication required' });
+      return res.status(401).json({ 
+        error: 'Authentication check failed',
+        code: 'AUTH_ERROR',
+        redirectTo: '/auth'
+      });
     }
+    
+    // For form submissions, try to handle gracefully
+    if (req.method === 'POST' && req.headers['content-type']?.includes('application/x-www-form-urlencoded')) {
+      return res.status(401).json({ 
+        error: 'Session expired, please refresh and try again',
+        code: 'SESSION_EXPIRED',
+        redirectTo: '/auth'
+      });
+    }
+    
     // Use the current request's host to preserve ngrok URL
     const currentBaseUrl = `${req.protocol}://${req.get('host')}`;
     const redirectUrl = req.originalUrl ? `${currentBaseUrl}${req.originalUrl}` : currentBaseUrl;
@@ -138,5 +168,63 @@ export function verifySessionToken(token) {
     if (now > Number(payload.exp)) return null;
     return String(payload.uid);
   } catch { return null; }
+}
+
+/** Check if the current user is an admin */
+export function ensureAdmin(req, res, next) {
+  if (!CLERK_ENABLED) {
+    // In development, allow access if no Clerk is configured
+    return next();
+  }
+  
+  try {
+    const { userId } = getAuth(req);
+    if (!userId) {
+      return res.status(401).json({ 
+        error: 'Authentication required',
+        code: 'AUTH_REQUIRED'
+      });
+    }
+    
+    // Check if user email is in admin list
+    const adminEmails = process.env.ADMIN_EMAILS?.split(',') || [];
+    if (adminEmails.length === 0) {
+      // If no admin emails configured, deny access
+      return res.status(403).json({ 
+        error: 'Admin access not configured',
+        code: 'ADMIN_NOT_CONFIGURED'
+      });
+    }
+    
+    // Get user email from Clerk
+    clerkClient.users.getUser(userId)
+      .then(user => {
+        const userEmail = user.emailAddresses.find(email => email.id === user.primaryEmailAddressId)?.emailAddress;
+        
+        if (!userEmail || !adminEmails.includes(userEmail)) {
+          return res.status(403).json({ 
+            error: 'Admin access required',
+            code: 'ADMIN_REQUIRED'
+          });
+        }
+        
+        // User is admin, proceed
+        next();
+      })
+      .catch(error => {
+        console.error('Admin check error:', error);
+        return res.status(500).json({ 
+          error: 'Failed to verify admin status',
+          code: 'ADMIN_CHECK_ERROR'
+        });
+      });
+      
+  } catch (error) {
+    console.error('Admin middleware error:', error);
+    return res.status(500).json({ 
+      error: 'Admin authentication failed',
+      code: 'ADMIN_AUTH_ERROR'
+    });
+  }
 }
 

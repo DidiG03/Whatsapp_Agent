@@ -1,0 +1,275 @@
+/**
+ * Integration tests for API endpoints
+ */
+
+import { describe, test, expect, beforeEach, jest } from '@jest/globals';
+import request from 'supertest';
+import { createApp } from '../../src/app.mjs';
+import { initTestDatabase, seedTestDatabase, clearTestDatabase } from '../helpers/database.js';
+import { testContacts, testMessages, testNotifications } from '../fixtures/testData.js';
+
+describe('API Endpoints Integration Tests', () => {
+  let app;
+  let testDb;
+  const testUserId = 'test-user-123';
+
+  beforeEach(async () => {
+    // Initialize test database
+    testDb = initTestDatabase();
+    
+    // Set the mocked database
+    const { db } = require('../../src/db.mjs');
+    Object.defineProperty(require('../../src/db.mjs'), 'db', {
+      value: testDb,
+      writable: true
+    });
+    
+    // Seed test data
+    seedTestDatabase(testDb, testUserId);
+    
+    // Create app instance
+    app = createApp();
+  });
+
+  afterEach(() => {
+    clearTestDatabase(testDb);
+    cleanupTestDatabase();
+  });
+
+  describe('Authentication Endpoints', () => {
+    test('should return auth status for authenticated user', async () => {
+      const response = await request(app)
+        .get('/auth/status');
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('signedIn');
+      expect(response.body.signedIn).toBe(true);
+    });
+
+    test('should handle session refresh', async () => {
+      const response = await request(app)
+        .post('/auth/refresh');
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('success');
+      expect(response.body.success).toBe(true);
+    });
+  });
+
+  describe('Notifications API', () => {
+    beforeEach(() => {
+      // Insert test notifications
+      testDb.prepare(`
+        INSERT INTO notifications (user_id, type, title, message, link, metadata)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        testUserId,
+        testNotifications.escalation.type,
+        testNotifications.escalation.title,
+        testNotifications.escalation.message,
+        testNotifications.escalation.link,
+        testNotifications.escalation.metadata
+      );
+    });
+
+    test('should get user notifications', async () => {
+      const response = await request(app)
+        .get('/api/notifications');
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('success', true);
+      expect(response.body).toHaveProperty('notifications');
+      expect(response.body).toHaveProperty('unreadCount');
+      expect(response.body.notifications).toHaveLength(1);
+    });
+
+    test('should mark notification as read', async () => {
+      // Get the notification ID
+      const notification = testDb.prepare(`
+        SELECT id FROM notifications WHERE user_id = ? LIMIT 1
+      `).get(testUserId);
+
+      const response = await request(app)
+        .post(`/api/notifications/${notification.id}/read`);
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('success', true);
+
+      // Verify notification was marked as read
+      const updatedNotification = testDb.prepare(`
+        SELECT is_read FROM notifications WHERE id = ?
+      `).get(notification.id);
+
+      expect(updatedNotification.is_read).toBe(1);
+    });
+
+    test('should mark all notifications as read', async () => {
+      const response = await request(app)
+        .post('/api/notifications/read-all');
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('success', true);
+
+      // Verify all notifications were marked as read
+      const unreadCount = testDb.prepare(`
+        SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = 0
+      `).get(testUserId);
+
+      expect(unreadCount.count).toBe(0);
+    });
+  });
+
+  describe('Contacts API', () => {
+    test('should get contacts list', async () => {
+      const response = await request(app)
+        .get('/api/contacts');
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('success', true);
+      expect(response.body).toHaveProperty('contacts');
+    });
+
+    test('should create a new contact', async () => {
+      const newContact = {
+        contact_id: '+9876543210',
+        display_name: 'New Contact',
+        notes: 'Test notes'
+      };
+
+      const response = await request(app)
+        .post('/api/contacts')
+        .send(newContact);
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('success', true);
+
+      // Verify contact was created
+      const contact = testDb.prepare(`
+        SELECT * FROM customers WHERE user_id = ? AND contact_id = ?
+      `).get(testUserId, newContact.contact_id);
+
+      expect(contact).toBeDefined();
+      expect(contact.display_name).toBe(newContact.display_name);
+    });
+
+    test('should update existing contact', async () => {
+      const contactId = '+1234567890';
+      const updateData = {
+        display_name: 'Updated Name',
+        notes: 'Updated notes'
+      };
+
+      const response = await request(app)
+        .put(`/api/contacts/${contactId}`)
+        .send(updateData);
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('success', true);
+
+      // Verify contact was updated
+      const contact = testDb.prepare(`
+        SELECT * FROM customers WHERE user_id = ? AND contact_id = ?
+      `).get(testUserId, contactId);
+
+      expect(contact.display_name).toBe(updateData.display_name);
+      expect(contact.notes).toBe(updateData.notes);
+    });
+
+    test('should delete contact', async () => {
+      const contactId = '+1234567890';
+
+      const response = await request(app)
+        .delete(`/api/contacts/${contactId}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('success', true);
+
+      // Verify contact was deleted
+      const contact = testDb.prepare(`
+        SELECT * FROM customers WHERE user_id = ? AND contact_id = ?
+      `).get(testUserId, contactId);
+
+      expect(contact).toBeUndefined();
+    });
+  });
+
+  describe('Knowledge Base API', () => {
+    test('should get KB items', async () => {
+      const response = await request(app)
+        .get('/api/kb');
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('success', true);
+      expect(response.body).toHaveProperty('items');
+    });
+
+    test('should create KB item', async () => {
+      const newItem = {
+        title: 'Test KB Item',
+        content: 'This is test content for the knowledge base.'
+      };
+
+      const response = await request(app)
+        .post('/api/kb')
+        .send(newItem);
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('success', true);
+
+      // Verify KB item was created
+      const item = testDb.prepare(`
+        SELECT * FROM kb_items WHERE user_id = ? AND title = ?
+      `).get(testUserId, newItem.title);
+
+      expect(item).toBeDefined();
+      expect(item.content).toBe(newItem.content);
+    });
+
+    test('should search KB items', async () => {
+      const response = await request(app)
+        .get('/api/kb/search')
+        .query({ q: 'hours' });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('success', true);
+      expect(response.body).toHaveProperty('results');
+    });
+  });
+
+  describe('Usage Stats API', () => {
+    test('should get usage statistics', async () => {
+      const response = await request(app)
+        .get('/api/usage');
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('success', true);
+      expect(response.body).toHaveProperty('stats');
+    });
+
+    test('should get current month usage', async () => {
+      const response = await request(app)
+        .get('/api/usage/current');
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('success', true);
+      expect(response.body).toHaveProperty('usage');
+    });
+  });
+
+  describe('Error Handling', () => {
+    test('should return 404 for non-existent endpoints', async () => {
+      const response = await request(app)
+        .get('/api/nonexistent');
+
+      expect(response.status).toBe(404);
+    });
+
+    test('should handle invalid request data', async () => {
+      const response = await request(app)
+        .post('/api/contacts')
+        .send({ invalid: 'data' });
+
+      expect(response.status).toBe(400);
+    });
+  });
+});

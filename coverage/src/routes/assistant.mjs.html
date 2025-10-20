@@ -1,0 +1,508 @@
+
+<!doctype html>
+<html lang="en">
+
+<head>
+    <title>Code coverage report for src/routes/assistant.mjs</title>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="../../prettify.css" />
+    <link rel="stylesheet" href="../../base.css" />
+    <link rel="shortcut icon" type="image/x-icon" href="../../favicon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style type='text/css'>
+        .coverage-summary .sorter {
+            background-image: url(../../sort-arrow-sprite.png);
+        }
+    </style>
+</head>
+    
+<body>
+<div class='wrapper'>
+    <div class='pad1'>
+        <h1><a href="../../index.html">All files</a> / <a href="index.html">src/routes</a> assistant.mjs</h1>
+        <div class='clearfix'>
+            
+            <div class='fl pad1y space-right2'>
+                <span class="strong">0% </span>
+                <span class="quiet">Statements</span>
+                <span class='fraction'>0/146</span>
+            </div>
+        
+            
+            <div class='fl pad1y space-right2'>
+                <span class="strong">0% </span>
+                <span class="quiet">Branches</span>
+                <span class='fraction'>0/155</span>
+            </div>
+        
+            
+            <div class='fl pad1y space-right2'>
+                <span class="strong">0% </span>
+                <span class="quiet">Functions</span>
+                <span class='fraction'>0/12</span>
+            </div>
+        
+            
+            <div class='fl pad1y space-right2'>
+                <span class="strong">0% </span>
+                <span class="quiet">Lines</span>
+                <span class='fraction'>0/92</span>
+            </div>
+        
+            
+        </div>
+        <p class="quiet">
+            Press <em>n</em> or <em>j</em> to go to the next uncovered block, <em>b</em>, <em>p</em> or <em>k</em> for the previous block.
+        </p>
+        <template id="filterTemplate">
+            <div class="quiet">
+                Filter:
+                <input type="search" id="fileSearch">
+            </div>
+        </template>
+    </div>
+    <div class='status-line low'></div>
+    <pre><table class="coverage">
+<tr><td class="line-count quiet"><a name='L1'></a><a href='#L1'>1</a>
+<a name='L2'></a><a href='#L2'>2</a>
+<a name='L3'></a><a href='#L3'>3</a>
+<a name='L4'></a><a href='#L4'>4</a>
+<a name='L5'></a><a href='#L5'>5</a>
+<a name='L6'></a><a href='#L6'>6</a>
+<a name='L7'></a><a href='#L7'>7</a>
+<a name='L8'></a><a href='#L8'>8</a>
+<a name='L9'></a><a href='#L9'>9</a>
+<a name='L10'></a><a href='#L10'>10</a>
+<a name='L11'></a><a href='#L11'>11</a>
+<a name='L12'></a><a href='#L12'>12</a>
+<a name='L13'></a><a href='#L13'>13</a>
+<a name='L14'></a><a href='#L14'>14</a>
+<a name='L15'></a><a href='#L15'>15</a>
+<a name='L16'></a><a href='#L16'>16</a>
+<a name='L17'></a><a href='#L17'>17</a>
+<a name='L18'></a><a href='#L18'>18</a>
+<a name='L19'></a><a href='#L19'>19</a>
+<a name='L20'></a><a href='#L20'>20</a>
+<a name='L21'></a><a href='#L21'>21</a>
+<a name='L22'></a><a href='#L22'>22</a>
+<a name='L23'></a><a href='#L23'>23</a>
+<a name='L24'></a><a href='#L24'>24</a>
+<a name='L25'></a><a href='#L25'>25</a>
+<a name='L26'></a><a href='#L26'>26</a>
+<a name='L27'></a><a href='#L27'>27</a>
+<a name='L28'></a><a href='#L28'>28</a>
+<a name='L29'></a><a href='#L29'>29</a>
+<a name='L30'></a><a href='#L30'>30</a>
+<a name='L31'></a><a href='#L31'>31</a>
+<a name='L32'></a><a href='#L32'>32</a>
+<a name='L33'></a><a href='#L33'>33</a>
+<a name='L34'></a><a href='#L34'>34</a>
+<a name='L35'></a><a href='#L35'>35</a>
+<a name='L36'></a><a href='#L36'>36</a>
+<a name='L37'></a><a href='#L37'>37</a>
+<a name='L38'></a><a href='#L38'>38</a>
+<a name='L39'></a><a href='#L39'>39</a>
+<a name='L40'></a><a href='#L40'>40</a>
+<a name='L41'></a><a href='#L41'>41</a>
+<a name='L42'></a><a href='#L42'>42</a>
+<a name='L43'></a><a href='#L43'>43</a>
+<a name='L44'></a><a href='#L44'>44</a>
+<a name='L45'></a><a href='#L45'>45</a>
+<a name='L46'></a><a href='#L46'>46</a>
+<a name='L47'></a><a href='#L47'>47</a>
+<a name='L48'></a><a href='#L48'>48</a>
+<a name='L49'></a><a href='#L49'>49</a>
+<a name='L50'></a><a href='#L50'>50</a>
+<a name='L51'></a><a href='#L51'>51</a>
+<a name='L52'></a><a href='#L52'>52</a>
+<a name='L53'></a><a href='#L53'>53</a>
+<a name='L54'></a><a href='#L54'>54</a>
+<a name='L55'></a><a href='#L55'>55</a>
+<a name='L56'></a><a href='#L56'>56</a>
+<a name='L57'></a><a href='#L57'>57</a>
+<a name='L58'></a><a href='#L58'>58</a>
+<a name='L59'></a><a href='#L59'>59</a>
+<a name='L60'></a><a href='#L60'>60</a>
+<a name='L61'></a><a href='#L61'>61</a>
+<a name='L62'></a><a href='#L62'>62</a>
+<a name='L63'></a><a href='#L63'>63</a>
+<a name='L64'></a><a href='#L64'>64</a>
+<a name='L65'></a><a href='#L65'>65</a>
+<a name='L66'></a><a href='#L66'>66</a>
+<a name='L67'></a><a href='#L67'>67</a>
+<a name='L68'></a><a href='#L68'>68</a>
+<a name='L69'></a><a href='#L69'>69</a>
+<a name='L70'></a><a href='#L70'>70</a>
+<a name='L71'></a><a href='#L71'>71</a>
+<a name='L72'></a><a href='#L72'>72</a>
+<a name='L73'></a><a href='#L73'>73</a>
+<a name='L74'></a><a href='#L74'>74</a>
+<a name='L75'></a><a href='#L75'>75</a>
+<a name='L76'></a><a href='#L76'>76</a>
+<a name='L77'></a><a href='#L77'>77</a>
+<a name='L78'></a><a href='#L78'>78</a>
+<a name='L79'></a><a href='#L79'>79</a>
+<a name='L80'></a><a href='#L80'>80</a>
+<a name='L81'></a><a href='#L81'>81</a>
+<a name='L82'></a><a href='#L82'>82</a>
+<a name='L83'></a><a href='#L83'>83</a>
+<a name='L84'></a><a href='#L84'>84</a>
+<a name='L85'></a><a href='#L85'>85</a>
+<a name='L86'></a><a href='#L86'>86</a>
+<a name='L87'></a><a href='#L87'>87</a>
+<a name='L88'></a><a href='#L88'>88</a>
+<a name='L89'></a><a href='#L89'>89</a>
+<a name='L90'></a><a href='#L90'>90</a>
+<a name='L91'></a><a href='#L91'>91</a>
+<a name='L92'></a><a href='#L92'>92</a>
+<a name='L93'></a><a href='#L93'>93</a>
+<a name='L94'></a><a href='#L94'>94</a>
+<a name='L95'></a><a href='#L95'>95</a>
+<a name='L96'></a><a href='#L96'>96</a>
+<a name='L97'></a><a href='#L97'>97</a>
+<a name='L98'></a><a href='#L98'>98</a>
+<a name='L99'></a><a href='#L99'>99</a>
+<a name='L100'></a><a href='#L100'>100</a>
+<a name='L101'></a><a href='#L101'>101</a>
+<a name='L102'></a><a href='#L102'>102</a>
+<a name='L103'></a><a href='#L103'>103</a>
+<a name='L104'></a><a href='#L104'>104</a>
+<a name='L105'></a><a href='#L105'>105</a>
+<a name='L106'></a><a href='#L106'>106</a>
+<a name='L107'></a><a href='#L107'>107</a>
+<a name='L108'></a><a href='#L108'>108</a>
+<a name='L109'></a><a href='#L109'>109</a>
+<a name='L110'></a><a href='#L110'>110</a>
+<a name='L111'></a><a href='#L111'>111</a>
+<a name='L112'></a><a href='#L112'>112</a>
+<a name='L113'></a><a href='#L113'>113</a>
+<a name='L114'></a><a href='#L114'>114</a>
+<a name='L115'></a><a href='#L115'>115</a>
+<a name='L116'></a><a href='#L116'>116</a>
+<a name='L117'></a><a href='#L117'>117</a>
+<a name='L118'></a><a href='#L118'>118</a>
+<a name='L119'></a><a href='#L119'>119</a>
+<a name='L120'></a><a href='#L120'>120</a>
+<a name='L121'></a><a href='#L121'>121</a>
+<a name='L122'></a><a href='#L122'>122</a>
+<a name='L123'></a><a href='#L123'>123</a>
+<a name='L124'></a><a href='#L124'>124</a>
+<a name='L125'></a><a href='#L125'>125</a>
+<a name='L126'></a><a href='#L126'>126</a>
+<a name='L127'></a><a href='#L127'>127</a>
+<a name='L128'></a><a href='#L128'>128</a>
+<a name='L129'></a><a href='#L129'>129</a>
+<a name='L130'></a><a href='#L130'>130</a>
+<a name='L131'></a><a href='#L131'>131</a>
+<a name='L132'></a><a href='#L132'>132</a>
+<a name='L133'></a><a href='#L133'>133</a>
+<a name='L134'></a><a href='#L134'>134</a>
+<a name='L135'></a><a href='#L135'>135</a>
+<a name='L136'></a><a href='#L136'>136</a>
+<a name='L137'></a><a href='#L137'>137</a>
+<a name='L138'></a><a href='#L138'>138</a>
+<a name='L139'></a><a href='#L139'>139</a>
+<a name='L140'></a><a href='#L140'>140</a>
+<a name='L141'></a><a href='#L141'>141</a>
+<a name='L142'></a><a href='#L142'>142</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js">import { getCurrentUserId, verifySessionToken } from "../middleware/auth.mjs";
+import { ONBOARD_STEPS, getOnboarding, setOnboarding } from "../services/onboarding.mjs";
+import { renderTranscriptAsBubbles } from "../utils.mjs";
+import { upsertKbItem } from "../services/kb.mjs";
+import { upsertSettingsForUser, getSettingsForUser } from "../services/settings.mjs";
+import { onboardingCoachReply } from "../services/ai.mjs";
+import { db } from "../db.mjs";
+&nbsp;
+export default function <span class="fstat-no" title="function not covered" >registerAssistantRoutes(</span>app) {
+<span class="cstat-no" title="statement not covered" >  app.get("/assistant", <span class="fstat-no" title="function not covered" >(r</span>eq, res) =&gt; {</span>
+    const token = <span class="cstat-no" title="statement not covered" >req.query?.token;</span>
+    const userId = <span class="cstat-no" title="statement not covered" >token ? verifySessionToken(token) : (req.query?.uid || getCurrentUserId(req));</span>
+<span class="cstat-no" title="statement not covered" >    if (!userId) {</span>
+<span class="cstat-no" title="statement not covered" >      res.setHeader("Content-Type", "text/html; charset=utf-8");</span>
+<span class="cstat-no" title="statement not covered" >      return res.end(`&lt;html&gt;&lt;head&gt;&lt;link rel="stylesheet" href=\"/styles.css\"&gt;&lt;/head&gt;&lt;body&gt;&lt;div class=\"small\" style=\"padding:12px;\"&gt;Please open the dashboard to sign in.&lt;/div&gt;&lt;/body&gt;&lt;/html&gt;`);</span>
+    }
+    const state = <span class="cstat-no" title="statement not covered" >getOnboarding(userId) || setOnboarding(userId, { step: 0, transcript: '' });</span>
+    const chat = <span class="cstat-no" title="statement not covered" >renderTranscriptAsBubbles(state.transcript);</span>
+<span class="cstat-no" title="statement not covered" >    res.setHeader("Content-Type", "text/html; charset=utf-8");</span>
+<span class="cstat-no" title="statement not covered" >    res.end(`</span>
+      &lt;html&gt;&lt;head&gt;&lt;link rel="stylesheet" href="/styles.css"&gt;&lt;/head&gt;&lt;body&gt;
+        &lt;div class="chat-box" style="padding:12px;"&gt;
+          ${chat}
+        &lt;/div&gt;
+        &lt;form method="post" action="/assistant?token=${encodeURIComponent(String(token||''))}" style="display:grid; grid-template-columns: 1fr auto; gap:8px; padding:12px;"&gt;
+          &lt;input type="text" name="message" class="settings-field" placeholder="Ask me to add or improve your KB..."/&gt;
+          &lt;button type="submit" class="send"&gt;Send&lt;/button&gt;
+        &lt;/form&gt;
+      &lt;/body&gt;&lt;/html&gt;
+    `);
+  });
+&nbsp;
+<span class="cstat-no" title="statement not covered" >  app.post("/assistant", <span class="fstat-no" title="function not covered" >as</span>ync (req, res) =&gt; {</span>
+    const token = <span class="cstat-no" title="statement not covered" >req.query?.token || req.body?.token;</span>
+    const userId = <span class="cstat-no" title="statement not covered" >token ? verifySessionToken(token) : (req.query?.uid || req.body?.uid || getCurrentUserId(req));</span>
+<span class="cstat-no" title="statement not covered" >    if (!userId) <span class="cstat-no" title="statement not covered" >return res.redirect('/auth');</span></span>
+    const userMsg = <span class="cstat-no" title="statement not covered" >(req.body?.message || '').toString().trim();</span>
+    const state = <span class="cstat-no" title="statement not covered" >getOnboarding(userId) || { step: 0, transcript: '' };</span>
+<span class="cstat-no" title="statement not covered" >    if (!userMsg) <span class="cstat-no" title="statement not covered" >return res.redirect("/assistant");</span></span>
+<span class="cstat-no" title="statement not covered" >    try {</span>
+      const titles = <span class="cstat-no" title="statement not covered" >db.prepare(`SELECT title FROM kb_items WHERE user_id = ? AND title IS NOT NULL`).all(userId).map(<span class="fstat-no" title="function not covered" >r </span>=&gt; <span class="cstat-no" title="statement not covered" >r.title)</span>;</span>
+      const history = <span class="cstat-no" title="statement not covered" >state.transcript || "";</span>
+      let coach = <span class="cstat-no" title="statement not covered" >await onboardingCoachReply(userMsg, titles, history);</span>
+<span class="cstat-no" title="statement not covered" >      coach = coach || "Got it.";</span>
+&nbsp;
+      const lines = <span class="cstat-no" title="statement not covered" >coach.split('\n');</span>
+      const trimmed = <span class="cstat-no" title="statement not covered" >lines.map(<span class="fstat-no" title="function not covered" >l </span>=&gt; <span class="cstat-no" title="statement not covered" >l.trim())</span>;</span>
+      const addLines = <span class="cstat-no" title="statement not covered" >trimmed.filter(<span class="fstat-no" title="function not covered" >l </span>=&gt; <span class="cstat-no" title="statement not covered" >/^ADD_KB\|/.test(l))</span>;</span>
+      const askLine = <span class="cstat-no" title="statement not covered" >trimmed.find(<span class="fstat-no" title="function not covered" >l </span>=&gt; <span class="cstat-no" title="statement not covered" >/^ASK_MORE\|/.test(l))</span>;</span>
+      const setLines = <span class="cstat-no" title="statement not covered" >trimmed.filter(<span class="fstat-no" title="function not covered" >l </span>=&gt; <span class="cstat-no" title="statement not covered" >/^SET\|/.test(l))</span>;</span>
+&nbsp;
+      let visible = <span class="cstat-no" title="statement not covered" >lines</span>
+        .filter(<span class="fstat-no" title="function not covered" >l </span>=&gt; { const t = <span class="cstat-no" title="statement not covered" >l.trim();</span> <span class="cstat-no" title="statement not covered" >return !/^ADD_KB\|/.test(t) &amp;&amp; !/^ASK_MORE\|/.test(t) &amp;&amp; !/^SET\|/.test(t) &amp;&amp; t !== 'COMPLETE'; </span>})
+        .join('\n')
+        .trim();
+&nbsp;
+      const savedSummaries = <span class="cstat-no" title="statement not covered" >[];</span>
+<span class="cstat-no" title="statement not covered" >      for (const l of addLines) {</span>
+        const m = <span class="cstat-no" title="statement not covered" >/^ADD_KB\|(.*)\|(.*)$/.exec(l);</span>
+<span class="cstat-no" title="statement not covered" >        if (!m) <span class="cstat-no" title="statement not covered" >continue;</span></span>
+        const title = <span class="cstat-no" title="statement not covered" >(m[1] || '').trim().slice(0, 120) || 'Untitled';</span>
+        const content = <span class="cstat-no" title="statement not covered" >(m[2] || '').trim();</span>
+<span class="cstat-no" title="statement not covered" >        if (content) {</span>
+<span class="cstat-no" title="statement not covered" >          upsertKbItem(userId, title, content);</span>
+<span class="cstat-no" title="statement not covered" >          savedSummaries.push(`Saved “${title}” to KB.`);</span>
+        }
+      }
+&nbsp;
+<span class="cstat-no" title="statement not covered" >      if (setLines.length) {</span>
+        const current = <span class="cstat-no" title="statement not covered" >getSettingsForUser(userId) || {};</span>
+        const updates = <span class="cstat-no" title="statement not covered" >{ };</span>
+        let entryGreetingVal = <span class="cstat-no" title="statement not covered" >'';</span>
+<span class="cstat-no" title="statement not covered" >        for (const l of setLines) {</span>
+          const m = <span class="cstat-no" title="statement not covered" >/^SET\|(.*?)\|(.*)$/.exec(l);</span>
+<span class="cstat-no" title="statement not covered" >          if (!m) <span class="cstat-no" title="statement not covered" >continue;</span></span>
+          const key = <span class="cstat-no" title="statement not covered" >(m[1] || '').trim();</span>
+          const value = <span class="cstat-no" title="statement not covered" >(m[2] || '').trim();</span>
+<span class="cstat-no" title="statement not covered" >          if (key &amp;&amp; value) {</span>
+<span class="cstat-no" title="statement not covered" >            updates[key] = value;</span>
+<span class="cstat-no" title="statement not covered" >            if (key === 'entry_greeting') <span class="cstat-no" title="statement not covered" >entryGreetingVal = value;</span></span>
+          }
+        }
+<span class="cstat-no" title="statement not covered" >        if (Object.keys(updates).length) {</span>
+<span class="cstat-no" title="statement not covered" >          upsertSettingsForUser(userId, { ...current, ...updates });</span>
+<span class="cstat-no" title="statement not covered" >          try {</span>
+<span class="cstat-no" title="statement not covered" >            if (updates.business_name) { <span class="cstat-no" title="statement not covered" >upsertKbItem(userId, 'Business Name', updates.business_name); <span class="cstat-no" title="statement not covered" ></span>savedSummaries.push('Saved “Business Name” to KB.'); </span>}</span>
+<span class="cstat-no" title="statement not covered" >            if (updates.website_url) { <span class="cstat-no" title="statement not covered" >upsertKbItem(userId, 'Website', updates.website_url); <span class="cstat-no" title="statement not covered" ></span>savedSummaries.push('Saved “Website” to KB.'); </span>}</span>
+<span class="cstat-no" title="statement not covered" >            if (updates.business_phone) { <span class="cstat-no" title="statement not covered" >upsertKbItem(userId, 'Contact', updates.business_phone); <span class="cstat-no" title="statement not covered" ></span>savedSummaries.push('Saved “Contact” to KB.'); </span>}</span>
+          } catch {}
+<span class="cstat-no" title="statement not covered" >          if (!visible) {</span>
+<span class="cstat-no" title="statement not covered" >            if (entryGreetingVal) <span class="cstat-no" title="statement not covered" >visible = entryGreetingVal; </span>else <span class="cstat-no" title="statement not covered" >if (updates.business_name) <span class="cstat-no" title="statement not covered" >visible = `Saved business name: ${updates.business_name}`; </span>else <span class="cstat-no" title="statement not covered" >visible = 'Saved your settings.';</span></span></span>
+          }
+        }
+      }
+&nbsp;
+      // Heuristics for common statements
+<span class="cstat-no" title="statement not covered" >      try {</span>
+        const lower = <span class="cstat-no" title="statement not covered" >userMsg.toLowerCase();</span>
+        const extractSentence = <span class="cstat-no" title="statement not covered" ><span class="fstat-no" title="function not covered" >(t</span>ext, kw) =&gt; { <span class="cstat-no" title="statement not covered" >try { const parts = <span class="cstat-no" title="statement not covered" >text.split(/[.!?]/);</span> const hit = <span class="cstat-no" title="statement not covered" >parts.find(<span class="fstat-no" title="function not covered" >p </span>=&gt; <span class="cstat-no" title="statement not covered" >p.toLowerCase().includes(kw))</span>;</span> <span class="cstat-no" title="statement not covered" >return (hit || '').trim() ? (hit.trim() + '.') : ''; </span>} catch { <span class="cstat-no" title="statement not covered" >return ''; </span>} </span>};</span>
+        const currentSettings = <span class="cstat-no" title="statement not covered" >getSettingsForUser(userId) || {};</span>
+        const toUpdate = <span class="cstat-no" title="statement not covered" >{};</span>
+        const pushSetting = <span class="cstat-no" title="statement not covered" ><span class="fstat-no" title="function not covered" >(k</span>,v) =&gt; { <span class="cstat-no" title="statement not covered" >if (v) <span class="cstat-no" title="statement not covered" >toUpdate[k] = v; </span></span>};</span>
+        const bn = <span class="cstat-no" title="statement not covered" >/\b(business|company)\s*name\s*(is|:)\s*([\p{L}\p{N} _'"&amp;().-]{2,})/iu.exec(userMsg);</span>
+<span class="cstat-no" title="statement not covered" >        if (bn &amp;&amp; bn[3]) { const raw = <span class="cstat-no" title="statement not covered" >bn[3].trim().replace(/^[\'"\s]+|[\'"\s]+$/g, "");</span> <span class="cstat-no" title="statement not covered" >pushSetting('business_name', raw); <span class="cstat-no" title="statement not covered" ></span>upsertKbItem(userId, 'Business Name', raw); <span class="cstat-no" title="statement not covered" ></span>savedSummaries.push('Saved “Business Name” to KB.'); </span>}</span>
+        const ws = <span class="cstat-no" title="statement not covered" >/\b(website|site|url)\s*(is|:)\s*(\S+)/i.exec(userMsg);</span> <span class="cstat-no" title="statement not covered" >if (ws &amp;&amp; ws[3]) <span class="cstat-no" title="statement not covered" >pushSetting('website_url', ws[3].trim());</span></span>
+        const ph = <span class="cstat-no" title="statement not covered" >/\b(phone|number|contact)\s*(is|:)\s*([+\d][+\d\s().-]{6,})/i.exec(userMsg);</span> <span class="cstat-no" title="statement not covered" >if (ph &amp;&amp; ph[3]) <span class="cstat-no" title="statement not covered" >pushSetting('business_phone', ph[3].trim());</span></span>
+<span class="cstat-no" title="statement not covered" >        if (Object.keys(toUpdate).length) { <span class="cstat-no" title="statement not covered" >upsertSettingsForUser(userId, { ...currentSettings, ...toUpdate }); <span class="cstat-no" title="statement not covered" ></span>if (!visible) <span class="cstat-no" title="statement not covered" >visible = 'Saved your settings.'; </span></span>}</span>
+<span class="cstat-no" title="statement not covered" >        if (/\bwe\s+are\b|\bwe\s+do\b|\bour\s+business\b|\bwe\s+sell\b|\brestaurant|cafe|salon|clinic|store|shop\b/i.test(userMsg)) { const sentence = <span class="cstat-no" title="statement not covered" >extractSentence(userMsg,'we') || userMsg;</span> <span class="cstat-no" title="statement not covered" >upsertKbItem(userId,'What We Do', sentence); <span class="cstat-no" title="statement not covered" ></span>savedSummaries.push('Saved “What We Do” to KB.'); </span>}</span>
+        const hasDay = <span class="cstat-no" title="statement not covered" >/(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i.test(userMsg);</span>
+        const hasTime = <span class="cstat-no" title="statement not covered" >/\b(\d{1,2})([:.][0-5]\d)?\s*(am|pm)?\b.*?-.*?\b(\d{1,2})([:.][0-5]\d)?\s*(am|pm)?\b/i.test(userMsg);</span>
+<span class="cstat-no" title="statement not covered" >        if (hasDay || hasTime) { const sentence = <span class="cstat-no" title="statement not covered" >extractSentence(userMsg,'mon') || extractSentence(userMsg,'sun') || userMsg;</span> <span class="cstat-no" title="statement not covered" >upsertKbItem(userId,'Hours', sentence); <span class="cstat-no" title="statement not covered" ></span>savedSummaries.push('Saved “Hours” to KB.'); </span>}</span>
+<span class="cstat-no" title="statement not covered" >        if (/(street|st\.|ave\.|avenue|blvd\.|boulevard|road|rd\.|drive|dr\.|plaza|center|centre|city|town|village|address|located|location|near)/i.test(userMsg)) { const sentence = <span class="cstat-no" title="statement not covered" >extractSentence(userMsg,'location') || extractSentence(userMsg,'address') || userMsg;</span> <span class="cstat-no" title="statement not covered" >upsertKbItem(userId,'Locations', sentence); <span class="cstat-no" title="statement not covered" ></span>savedSummaries.push('Saved “Locations” to KB.'); </span>}</span>
+      } catch {}
+&nbsp;
+      const askFollow = <span class="cstat-no" title="statement not covered" >askLine ? (askLine.split('|')[1] || '').trim() : '';</span>
+<span class="cstat-no" title="statement not covered" >      if (!visible &amp;&amp; savedSummaries.length) <span class="cstat-no" title="statement not covered" >visible = savedSummaries.join(' ');</span></span>
+      let aiReply = <span class="cstat-no" title="statement not covered" >visible || (askFollow ? askFollow : '');</span>
+<span class="cstat-no" title="statement not covered" >      if (!aiReply || !aiReply.trim()) <span class="cstat-no" title="statement not covered" >aiReply = 'Got it.';</span></span>
+<span class="cstat-no" title="statement not covered" >      if (!askFollow &amp;&amp; !addLines.length) {</span>
+        const shouldAsk = <span class="cstat-no" title="statement not covered" >setLines.length &gt; 0 || savedSummaries.length &gt; 0;</span>
+<span class="cstat-no" title="statement not covered" >        if (shouldAsk) {</span>
+          const lower = <span class="cstat-no" title="statement not covered" >userMsg.toLowerCase();</span>
+          let nextQ = <span class="cstat-no" title="statement not covered" >'';</span>
+<span class="cstat-no" title="statement not covered" >          if (/business\s*name|name/.test(lower) || /Business Name/.test(savedSummaries.join(' '))) <span class="cstat-no" title="statement not covered" >nextQ = 'In one line, what do you sell or do?';</span></span>
+          else <span class="cstat-no" title="statement not covered" >if (/What We Do/.test(savedSummaries.join(' '))) <span class="cstat-no" title="statement not covered" >nextQ = 'What are your opening hours and locations?';</span></span>
+<span class="cstat-no" title="statement not covered" >          if (!nextQ) <span class="cstat-no" title="statement not covered" >nextQ = 'What are your opening hours?';</span></span>
+<span class="cstat-no" title="statement not covered" >          aiReply = `${aiReply ? aiReply + ' ' : ''}${nextQ}`.trim();</span>
+        }
+      }
+&nbsp;
+      const newTranscript = <span class="cstat-no" title="statement not covered" >`${state.transcript}${state.transcript ? '\n\n' : ''}You: ${userMsg}\nAI: ${aiReply}`;</span>
+<span class="cstat-no" title="statement not covered" >      setOnboarding(userId, { step: state.step ?? 0, transcript: newTranscript });</span>
+    } catch {
+      const newTranscript = <span class="cstat-no" title="statement not covered" >`${state.transcript}${state.transcript ? '\n\n' : ''}You: ${userMsg}\nAI: Sorry, I hit an error saving. Please try again.`;</span>
+<span class="cstat-no" title="statement not covered" >      setOnboarding(userId, { step: state.step ?? 0, transcript: newTranscript });</span>
+    }
+<span class="cstat-no" title="statement not covered" >    return res.redirect("/assistant");</span>
+  });
+}
+&nbsp;
+&nbsp;
+&nbsp;</pre></td></tr></table></pre>
+
+                <div class='push'></div><!-- for sticky footer -->
+            </div><!-- /wrapper -->
+            <div class='footer quiet pad2 space-top1 center small'>
+                Code coverage generated by
+                <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
+                at 2025-10-19T20:05:14.649Z
+            </div>
+        <script src="../../prettify.js"></script>
+        <script>
+            window.onload = function () {
+                prettyPrint();
+            };
+        </script>
+        <script src="../../sorter.js"></script>
+        <script src="../../block-navigation.js"></script>
+    </body>
+</html>
+    

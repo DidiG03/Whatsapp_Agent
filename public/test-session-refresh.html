@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Session Refresh Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .test-section { margin: 20px 0; padding: 15px; border: 1px solid #ccc; border-radius: 5px; }
+        .success { background-color: #d4edda; border-color: #c3e6cb; }
+        .error { background-color: #f8d7da; border-color: #f5c6cb; }
+        button { padding: 10px 15px; margin: 5px; cursor: pointer; }
+        .log { background-color: #f8f9fa; padding: 10px; border-radius: 3px; font-family: monospace; white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <h1>Session Refresh Test Page</h1>
+    
+    <div class="test-section">
+        <h3>Authentication Status</h3>
+        <button onclick="checkAuthStatus()">Check Auth Status</button>
+        <div id="authStatus" class="log"></div>
+    </div>
+    
+    <div class="test-section">
+        <h3>Session Refresh Test</h3>
+        <button onclick="testSessionRefresh()">Test Session Refresh</button>
+        <div id="refreshStatus" class="log"></div>
+    </div>
+    
+    <div class="test-section">
+        <h3>Form Submission Test</h3>
+        <form id="testForm" method="post" action="/inbox/447312706087/send-template" data-auth-enhanced>
+            <input type="text" name="var1" placeholder="Variable 1" value="Test Value 1">
+            <input type="text" name="var2" placeholder="Variable 2" value="Test Value 2">
+            <button type="submit">Test Template Send</button>
+        </form>
+        <div id="formStatus" class="log"></div>
+    </div>
+
+    <script src="/auth-utils.js"></script>
+    <script>
+        function log(elementId, message, isError = false) {
+            const element = document.getElementById(elementId);
+            const timestamp = new Date().toLocaleTimeString();
+            const logMessage = `[${timestamp}] ${message}\n`;
+            element.textContent += logMessage;
+            element.className = `log ${isError ? 'error' : 'success'}`;
+        }
+
+        async function checkAuthStatus() {
+            log('authStatus', 'Checking authentication status...');
+            try {
+                const authStatus = await window.authManager.checkAuthStatus();
+                log('authStatus', `Auth Status: ${JSON.stringify(authStatus, null, 2)}`);
+            } catch (error) {
+                log('authStatus', `Error: ${error.message}`, true);
+            }
+        }
+
+        async function testSessionRefresh() {
+            log('refreshStatus', 'Testing session refresh...');
+            try {
+                const refreshResult = await window.authManager.refreshSession();
+                log('refreshStatus', `Refresh Result: ${JSON.stringify(refreshResult, null, 2)}`);
+            } catch (error) {
+                log('refreshStatus', `Error: ${error.message}`, true);
+            }
+        }
+
+        // Override the form submission to show results
+        document.getElementById('testForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            log('formStatus', 'Testing form submission with enhanced auth...');
+            
+            try {
+                const success = await window.authManager.submitFormWithAuth(this);
+                log('formStatus', `Form submission result: ${success ? 'SUCCESS' : 'FAILED'}`);
+            } catch (error) {
+                log('formStatus', `Form submission error: ${error.message}`, true);
+            }
+        });
+
+        // Check auth status on page load
+        window.addEventListener('load', function() {
+            log('authStatus', 'Page loaded, checking initial auth status...');
+            checkAuthStatus();
+        });
+    </script>
+</body>
+</html>

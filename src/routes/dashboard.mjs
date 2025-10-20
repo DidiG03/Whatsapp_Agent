@@ -227,15 +227,16 @@ export default function registerDashboardRoutes(app) {
       <html>${getProfessionalHead('Dashboard')}<body>
         <script src="/toast.js"></script>
         <script src="/notifications.js"></script>
+        <script src="/auth-utils.js"></script>
         <script>
-          // Check authentication on page load
+          // Enhanced authentication check on page load
           (async function checkAuthOnLoad(){
-            try{ const r=await fetch('/auth/status',{credentials:'include'}); const j=await r.json(); if(!j.signedIn){ window.location='/auth'; return; } }catch(e){ window.location='/auth'; }
+            await window.authManager.checkAuthOnLoad();
           })();
           
+          // Enhanced auth check for form submission
           async function checkAuthThenSubmit(form){
-            try{ const r=await fetch('/auth/status',{credentials:'include'}); const j=await r.json(); if(!j.signedIn){ window.location='/auth'; return false;} }catch(e){ return false; }
-            return true;
+            return window.authManager.submitFormWithAuth(form);
           }
           function toggleMiniOnboard(force){
             const box = document.getElementById('mini-onboard');

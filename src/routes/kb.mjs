@@ -64,21 +64,38 @@ export default function registerKbRoutes(app) {
       const fileUrl = r.file_url || '';
       const fileBadge = fileUrl ? `<span class="small" style="margin-left:8px;background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;padding:2px 6px;border-radius:6px;">PDF</span>` : '';
       return `
-        <div class="kb-row" data-id="${r.id}" data-text="${escapeHtml((r.title||'') + ' ' + (r.content||''))}" data-title="${escapeHtml(title)}" data-content="${fullContent}" data-file-url="${escapeHtml(fileUrl)}" data-file-mime="${escapeHtml(r.file_mime||'')}">
-        <div>
-          <div class="kb-content">${escapeHtml(title)}${fileBadge}</div>
-          <div class="kb-title-pill">${content}</div>
+        <div class="kb-item" data-id="${r.id}" data-text="${escapeHtml((r.title||'') + ' ' + (r.content||''))}" data-title="${escapeHtml(title)}" data-content="${fullContent}" data-file-url="${escapeHtml(fileUrl)}" data-file-mime="${escapeHtml(r.file_mime||'')}" style="background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:20px; margin-bottom:16px; transition:all 0.2s ease; box-shadow:0 1px 3px rgba(0,0,0,0.1);">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px;">
+            <div style="flex:1;">
+              <h3 style="margin:0 0 8px 0; font-size:16px; font-weight:600; color:#111827; display:flex; align-items:center; gap:8px;">
+                ${escapeHtml(title)}
+                ${fileBadge}
+              </h3>
+              <div style="background:#f3f4f6; border-radius:8px; padding:12px; margin-bottom:12px; border-left:4px solid #3b82f6;">
+                <p style="margin:0; font-size:14px; line-height:1.5; color:#374151;">${content}</p>
+              </div>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px; margin-left:16px;">
+              <label class="small" style="display:flex; align-items:center; gap:6px; background:#f9fafb; padding:6px 10px; border-radius:6px; border:1px solid #e5e7eb;">
+                <input type="checkbox" class="kb-menu-toggle" data-id="${r.id}" ${r.show_in_menu ? 'checked' : ''} style="margin:0;"/>
+                Show in menu
+              </label>
+              ${fileUrl ? `<a class="btn-ghost" href="${escapeHtml(fileUrl)}" target="_blank" rel="noopener" style="background:#e0f2fe; color:#0369a1; border:1px solid #bae6fd; padding:6px 12px; border-radius:6px; font-size:12px;">📄 Preview</a>` : ''}
+              <button style="border:none; background:#f3f4f6; padding:8px; border-radius:6px; cursor:pointer;" class="btn-ghost" onclick="editKbItem(${r.id})" title="Edit">
+                <img src="/pencil-icon.svg" alt="Edit" style="width:16px;height:16px;"/>
+              </button>
+              <button style="border:none; background:#fef2f2; padding:8px; border-radius:6px; cursor:pointer;" class="btn-ghost" onclick="deleteKbItem(${r.id})" title="Delete">
+                <img src="/delete-icon.svg" alt="Delete" style="width:16px;height:16px;"/>
+              </button>
+            </div>
           </div>
-          <div style="margin-left:auto; display:flex; gap:8px;">
-          <label class="small" style="display:flex; align-items:center; gap:6px;">
-            <input type="checkbox" class="kb-menu-toggle" data-id="${r.id}" ${r.show_in_menu ? 'checked' : ''}/>
-            Show in menu
-          </label>
-          ${fileUrl ? `<a class="btn-ghost" href="${escapeHtml(fileUrl)}" target="_blank" rel="noopener">Preview</a>` : ''}
-          <button style="border:none;" class="btn-ghost" onclick="editKbItem(${r.id})"><img src="/pencil-icon.svg" alt="Edit"/></button>
-          <button style="border:none;" class="btn-ghost" onclick="deleteKbItem(${r.id})"><img src="/delete-icon.svg" alt="Delete"/></button>
+          <div style="display:flex; justify-content:space-between; align-items:center; padding-top:12px; border-top:1px solid #f3f4f6;">
+            <div class="kb-time small" style="color:#6b7280; font-size:12px;">Created ${when}</div>
+            <div style="display:flex; gap:4px;">
+              <span style="background:#f0f9ff; color:#0369a1; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:500;">KB Item</span>
+              ${r.show_in_menu ? '<span style="background:#f0fdf4; color:#166534; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:500;">Menu</span>' : ''}
+            </div>
           </div>
-          <div class="kb-time small">${when}</div>
         </div>
       `;
     }).join("");
@@ -89,8 +106,27 @@ export default function registerKbRoutes(app) {
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     res.end(`
-      <html><head><title>Code Orbit - KB</title><link rel="stylesheet" href="/styles.css"></head>
+      <html><head><title>Code Orbit - KB</title><link rel="stylesheet" href="/styles.css">
+        <style>
+          .kb-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            border-color: #d1d5db;
+          }
+          .kb-item {
+            transition: all 0.2s ease;
+          }
+          .kb-item button:hover {
+            transform: scale(1.05);
+          }
+          .kb-item a:hover {
+            transform: scale(1.05);
+          }
+        </style>
+      </head>
       <body>
+        <script src="/toast.js"></script>
+        <script src="/notifications.js"></script>
         <script>
           // Check authentication on page load
           (async function checkAuthOnLoad(){
@@ -176,7 +212,24 @@ export default function registerKbRoutes(app) {
                   <input id="kb-search" class="settings-field" placeholder="Search knowledge items..."/>
                   <button class="btn-ghost" onclick="addKbItem()">Add</button>
                 </div>
-                <div class="card kb-list">${html || '<div class="small" style="margin-top:16px;">No KB items yet</div>'}</div>
+                <div class="card kb-list">${html || `
+                  <div class="empty-state" style="text-align:center; padding:60px 20px; color:#666;">
+                    <div style="font-size:48px; margin-bottom:20px; opacity:0.3;">📚</div>
+                    <h3 style="margin:0 0 12px 0; color:#333; font-size:20px; font-weight:500;">No knowledge items yet</h3>
+                    <p style="margin:0 0 24px 0; font-size:14px; line-height:1.5; max-width:400px; margin-left:auto; margin-right:auto;">
+                      Create your first knowledge base item to help your AI assistant provide better responses to customers.
+                    </p>
+                    <div style="background:#f8f9fa; border-radius:12px; padding:20px; margin:0 auto; max-width:400px; border:1px solid #e9ecef;">
+                      <div style="font-size:13px; color:#666; margin-bottom:12px; font-weight:500;">💡 Getting Started:</div>
+                      <ul style="text-align:left; font-size:13px; color:#666; margin:0; padding-left:20px; line-height:1.6;">
+                        <li>Click "Add" to create your first knowledge item</li>
+                        <li>Add titles and content that customers commonly ask about</li>
+                        <li>Upload PDFs for detailed information</li>
+                        <li>Toggle "Show in menu" to make items easily accessible</li>
+                      </ul>
+                    </div>
+                  </div>
+                `}</div>
               </div>
             </main>
           </div>

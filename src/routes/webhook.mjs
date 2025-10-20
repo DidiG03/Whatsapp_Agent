@@ -14,7 +14,7 @@ import { listAvailability, createBooking, rescheduleBooking, cancelBooking, buil
 import { recordOutboundMessage } from "../services/messages.mjs";
 import { sendEscalationNotification, sendBookingNotification } from "../services/email.mjs";
 import { incrementUsage } from "../services/usage.mjs";
-import { addReaction } from "../services/reactions.mjs";
+import { broadcastNewMessage } from "./realtime.mjs";
 
 function isGreeting(raw) {
   const s = String(raw || "").trim().toLowerCase();
@@ -608,6 +608,22 @@ export default function registerWebhookRoutes(app) {
           // Track inbound message usage
           if (isFirstTimeInbound) {
             incrementUsage(tenantUserId, 'inbound_messages');
+            
+            // Broadcast new message to real-time clients
+            const messageData = {
+              id: inboundId,
+              direction: 'inbound',
+              type: message.type || 'text',
+              text_body: text,
+              timestamp: message.timestamp ? Number(message.timestamp) : Math.floor(Date.now() / 1000),
+              from_digits: normalizePhone(from),
+              to_digits: normalizePhone(metadata?.display_phone_number),
+              contact_name: null,
+              contact: from,
+              formatted_time: new Date((message.timestamp ? Number(message.timestamp) : Math.floor(Date.now() / 1000)) * 1000).toLocaleString()
+            };
+            
+            broadcastNewMessage(tenantUserId, from, messageData);
           }
         } catch {
           isFirstTimeInbound = false;

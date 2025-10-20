@@ -3,12 +3,19 @@
  * Mounts logging, body parsers, static assets, Clerk auth, security middleware, and all routes.
  */
 import express from "express";
-import { httpLogger } from "./logger.mjs";
 import { STATIC_DIR } from "./config.mjs";
 import { initClerk } from "./middleware/auth.mjs";
 import { securityHeaders, createRateLimiters } from "./middleware/security.mjs";
 import { errorHandler, requestLogger } from "./middleware/errors.mjs";
-import { runHealthChecks, collectMetrics } from "./middleware/health.mjs";
+
+// Monitoring and Logging
+import { initSentry } from "./monitoring/sentry.mjs";
+import { loggingMiddleware } from "./monitoring/logger.mjs";
+import { healthCheckMiddleware, startHealthCheckScheduler } from "./monitoring/health.mjs";
+import { metricsMiddleware, startMetricsCollection } from "./monitoring/metrics.mjs";
+
+// Scalability and Performance
+import { scalabilityManager, createPerformanceMiddleware, scalabilityHealthCheck } from "./scalability/index.mjs";
 
 // Ensure DB side-effects are applied by importing db module
 import "./db.mjs";
@@ -30,14 +37,31 @@ import registerPlanRoutes from "./routes/plan.mjs";
 import registerStripeRoutes from "./routes/stripe.mjs";
 import registerOnboardingRoutes from "./routes/onboarding.mjs";
 import registerAdminRoutes from "./routes/admin.mjs";
-import registerRealtimeRoutes from "./routes/realtime.mjs";
-import registerContactRoutes from "./routes/contacts.mjs";
+import registerRealtimeRoutes, { initializeSocketIO } from "./routes/realtime.mjs";
+// import registerContactRoutes from "./routes/contacts.mjs"; // Disabled
+import registerMonitoringRoutes from "./routes/monitoring.mjs";
+// import registerWebhookManagementRoutes from "./routes/webhooks.mjs"; // Disabled
+// import registerApiManagementRoutes from "./routes/apiManagement.mjs"; // Disabled
+
+// Initialize webhook and API systems
+// import { initWebhookSystem } from "./services/webhooks.mjs"; // Disabled
+// import { initApiEndpointSystem } from "./services/apiEndpoints.mjs"; // Disabled
 /**
  * Create and configure an Express app instance.
  * @returns {import('express').Express}
  */
-export function createApp() {
+export async function createApp() {
   const app = express();
+  
+  // Initialize scalability systems first
+  await scalabilityManager.init();
+  
+  // Initialize monitoring systems
+  initSentry();
+  
+  // Initialize webhook and API systems
+  // initWebhookSystem(); // Disabled
+  // initApiEndpointSystem(); // Disabled
   
   // Trust proxy for accurate IP addresses
   app.set('trust proxy', 1);
@@ -45,12 +69,17 @@ export function createApp() {
   // Security middleware
   app.use(securityHeaders);
   
+  // Performance middleware
+  const performanceMiddleware = createPerformanceMiddleware();
+  performanceMiddleware.forEach(middleware => app.use(middleware));
+  
+  // Monitoring middleware (before other middleware)
+  app.use(loggingMiddleware());
+  app.use(metricsMiddleware());
+  
   // Rate limiting
   const { generalLimiter, strictLimiter, webhookLimiter } = createRateLimiters();
   app.use(generalLimiter);
-  
-  // Request logging
-  // app.use(requestLogger);
   
   // rawBody capture for signature verification
   app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
@@ -70,16 +99,122 @@ export function createApp() {
     next();
   });
   
-  // Health check endpoints (before rate limiting)
-  app.get('/health', async (req, res) => {
-    const health = await runHealthChecks();
-    const statusCode = health.status === 'healthy' ? 200 : 503;
-    res.status(statusCode).json(health);
-  });
+  // Health check middleware (before rate limiting)
+  app.use(healthCheckMiddleware());
   
-  app.get('/metrics', (req, res) => {
-    const metrics = collectMetrics();
-    res.json(metrics);
+  // Scalability health check endpoint
+  app.get('/health/scalability', async (req, res) => {
+    try {
+      const health = await scalabilityHealthCheck();
+      res.status(health.overall === 'healthy' ? 200 : 503).json(health);
+    } catch (error) {
+      res.status(503).json({
+        overall: 'unhealthy',
+        error: error.message,
+        timestamp: new Date().toISOString()
+      });
+    }
+  });
+
+  // Block access to disabled features
+  app.use('/webhooks', (req, res) => {
+    res.status(403).send(`
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Feature Disabled - WhatsApp Agent</title>
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 40px; background: #f8fafc; }
+          .container { max-width: 500px; margin: 0 auto; text-align: center; background: white; padding: 40px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+          .lock-icon { font-size: 48px; color: #f59e0b; margin-bottom: 20px; }
+          h1 { color: #1f2937; margin-bottom: 16px; }
+          p { color: #6b7280; margin-bottom: 24px; line-height: 1.6; }
+          .btn { display: inline-block; padding: 12px 24px; background: #3b82f6; color: white; text-decoration: none; border-radius: 6px; font-weight: 500; }
+          .btn:hover { background: #2563eb; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="lock-icon">🔒</div>
+          <h1>Webhooks Feature Disabled</h1>
+          <p>This feature is currently under development and has been temporarily disabled. It will be available in a future update.</p>
+          <a href="/dashboard" class="btn">Return to Dashboard</a>
+        </div>
+      </body>
+      </html>
+    `);
+  });
+
+  app.use('/api-management', (req, res) => {
+    res.status(403).send(`
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Feature Disabled - WhatsApp Agent</title>
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 40px; background: #f8fafc; }
+          .container { max-width: 500px; margin: 0 auto; text-align: center; background: white; padding: 40px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+          .lock-icon { font-size: 48px; color: #f59e0b; margin-bottom: 20px; }
+          h1 { color: #1f2937; margin-bottom: 16px; }
+          p { color: #6b7280; margin-bottom: 24px; line-height: 1.6; }
+          .btn { display: inline-block; padding: 12px 24px; background: #3b82f6; color: white; text-decoration: none; border-radius: 6px; font-weight: 500; }
+          .btn:hover { background: #2563eb; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="lock-icon">🔒</div>
+          <h1>API Management Feature Disabled</h1>
+          <p>This feature is currently under development and has been temporarily disabled. It will be available in a future update.</p>
+          <a href="/dashboard" class="btn">Return to Dashboard</a>
+        </div>
+      </body>
+      </html>
+    `);
+  });
+
+  // Block access to contacts routes
+  app.use('/contacts', (req, res) => {
+    res.status(403).send(`
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Feature Disabled - WhatsApp Agent</title>
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 40px; background: #f8fafc; }
+          .container { max-width: 500px; margin: 0 auto; text-align: center; background: white; padding: 40px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+          .lock-icon { font-size: 48px; color: #f59e0b; margin-bottom: 20px; }
+          h1 { color: #1f2937; margin-bottom: 16px; }
+          p { color: #6b7280; margin-bottom: 24px; line-height: 1.6; }
+          .btn { display: inline-block; padding: 12px 24px; background: #3b82f6; color: white; text-decoration: none; border-radius: 6px; font-weight: 500; }
+          .btn:hover { background: #2563eb; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="lock-icon">🔒</div>
+          <h1>Contacts Feature Disabled</h1>
+          <p>This feature is currently under development and has been temporarily disabled. It will be available in a future update.</p>
+          <a href="/dashboard" class="btn">Return to Dashboard</a>
+        </div>
+      </body>
+      </html>
+    `);
+  });
+
+  // Block access to contacts API routes
+  app.use('/api/contacts', (req, res) => {
+    res.status(403).json({
+      error: 'Contacts feature disabled',
+      message: 'This feature is currently under development and has been temporarily disabled.',
+      code: 'FEATURE_DISABLED'
+    });
   });
 
   // Register routes
@@ -98,7 +233,10 @@ export function createApp() {
   registerStripeRoutes(app);
   registerAdminRoutes(app);
   registerRealtimeRoutes(app);
-  registerContactRoutes(app);
+  // registerContactRoutes(app); // Disabled
+  registerMonitoringRoutes(app);
+  // registerWebhookManagementRoutes(app); // Disabled
+  // registerApiManagementRoutes(app); // Disabled
   registerWebhookRoutes(app);
   registerMiscRoutes(app);
   
@@ -106,9 +244,14 @@ export function createApp() {
   app.use('/admin', strictLimiter);
   app.use('/webhook', webhookLimiter);
   
+  // Start monitoring services
+  startHealthCheckScheduler(60000); // Check every minute
+  startMetricsCollection(30000); // Collect metrics every 30 seconds
+  
   // Global error handler (must be last)
   app.use(errorHandler);
 
-  return app;
+  // Return app and Socket.IO initializer
+  return { app, initializeSocketIO };
 }
 

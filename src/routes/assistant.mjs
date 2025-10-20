@@ -18,15 +18,195 @@ export default function registerAssistantRoutes(app) {
     const chat = renderTranscriptAsBubbles(state.transcript);
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.end(`
-      <html><head><link rel="stylesheet" href="/styles.css"></head><body>
-        <div class="chat-box" style="padding:12px;">
-          ${chat}
-        </div>
-        <form method="post" action="/assistant?token=${encodeURIComponent(String(token||''))}" style="display:grid; grid-template-columns: 1fr auto; gap:8px; padding:12px;">
-          <input type="text" name="message" class="settings-field" placeholder="Ask me to add or improve your KB..."/>
-          <button type="submit" class="send">Send</button>
-        </form>
-      </body></html>
+      <html>
+        <head>
+          <link rel="stylesheet" href="/styles.css">
+          <style>
+            body {
+              margin: 0;
+              padding: 0;
+              height: 100vh;
+              display: flex;
+              flex-direction: column;
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            }
+            
+            .kb-assistant-container {
+              display: flex;
+              flex-direction: column;
+              height: 100vh;
+              background: #f8f9fa;
+            }
+            
+            .kb-assistant-chat {
+              flex: 1;
+              overflow-y: auto;
+              padding: 16px;
+              display: flex;
+              flex-direction: column;
+              gap: 12px;
+            }
+            
+            .kb-assistant-empty {
+              flex: 1;
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              justify-content: center;
+              text-align: center;
+              color: #6b7280;
+            }
+            
+            .kb-assistant-empty-icon {
+              width: 64px;
+              height: 64px;
+              background: #e5e7eb;
+              border-radius: 50%;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              margin-bottom: 16px;
+              font-size: 24px;
+            }
+            
+            .kb-assistant-empty-text {
+              font-size: 16px;
+              font-weight: 500;
+              margin-bottom: 8px;
+            }
+            
+            .kb-assistant-empty-subtext {
+              font-size: 14px;
+              color: #9ca3af;
+            }
+            
+            .kb-assistant-input-container {
+              background: white;
+              border-top: 1px solid #e5e7eb;
+              padding: 16px;
+              box-shadow: 0 -1px 3px rgba(0,0,0,0.1);
+            }
+            
+            .kb-assistant-form {
+              display: flex;
+              gap: 12px;
+              align-items: flex-end;
+            }
+            
+            .kb-assistant-input {
+              flex: 1;
+              border: 1px solid #d1d5db;
+              border-radius: 20px;
+              padding: 12px 16px;
+              font-size: 14px;
+              outline: none;
+              transition: border-color 0.2s, box-shadow 0.2s;
+              resize: none;
+              min-height: 20px;
+              max-height: 100px;
+              font-family: inherit;
+            }
+            
+            .kb-assistant-input:focus {
+              border-color: #3b82f6;
+              box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+            }
+            
+            .kb-assistant-input::placeholder {
+              color: #9ca3af;
+            }
+            
+            .kb-assistant-send {
+              background: #3b82f6;
+              color: white;
+              border: none;
+              border-radius: 20px;
+              padding: 12px 20px;
+              font-size: 14px;
+              font-weight: 500;
+              cursor: pointer;
+              transition: background-color 0.2s;
+              white-space: nowrap;
+            }
+            
+            .kb-assistant-send:hover {
+              background: #2563eb;
+            }
+            
+            .kb-assistant-send:disabled {
+              background: #9ca3af;
+              cursor: not-allowed;
+            }
+            
+            /* Chat bubbles */
+            .chat-bubble {
+              max-width: 80%;
+              padding: 12px 16px;
+              border-radius: 18px;
+              font-size: 14px;
+              line-height: 1.4;
+              word-wrap: break-word;
+            }
+            
+            .chat-bubble.user {
+              background: #3b82f6;
+              color: white;
+              align-self: flex-end;
+              border-bottom-right-radius: 4px;
+            }
+            
+            .chat-bubble.assistant {
+              background: white;
+              color: #111827;
+              border: 1px solid #e5e7eb;
+              align-self: flex-start;
+              border-bottom-left-radius: 4px;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="kb-assistant-container">
+            <div class="kb-assistant-chat">
+              ${chat || `
+                <div class="kb-assistant-empty">
+                  <div class="kb-assistant-empty-icon">💬</div>
+                  <div class="kb-assistant-empty-text">How can I improve your KB?</div>
+                  <div class="kb-assistant-empty-subtext">Ask me to add or improve your knowledge base</div>
+                </div>
+              `}
+            </div>
+            
+            <div class="kb-assistant-input-container">
+              <form method="post" action="/assistant?token=${encodeURIComponent(String(token||''))}" class="kb-assistant-form">
+                <textarea 
+                  name="message" 
+                  class="kb-assistant-input" 
+                  placeholder="Ask me to add or improve your KB..."
+                  rows="1"
+                  required
+                ></textarea>
+                <button type="submit" class="kb-assistant-send">Send</button>
+              </form>
+            </div>
+          </div>
+          
+          <script>
+            // Auto-resize textarea
+            const textarea = document.querySelector('.kb-assistant-input');
+            textarea.addEventListener('input', function() {
+              this.style.height = 'auto';
+              this.style.height = Math.min(this.scrollHeight, 100) + 'px';
+            });
+            
+            // Auto-focus input
+            textarea.focus();
+            
+            // Scroll to bottom on load
+            const chat = document.querySelector('.kb-assistant-chat');
+            chat.scrollTop = chat.scrollHeight;
+          </script>
+        </body>
+      </html>
     `);
   });
 

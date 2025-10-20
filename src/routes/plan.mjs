@@ -45,6 +45,8 @@ export default function registerPlanRoutes(app) {
     res.setHeader("Expires", "0");
     res.end(`
       <html><head><title>WhatsApp Agent - Plan & Usage</title><link rel="stylesheet" href="/styles.css"></head><body>
+        <script src="/toast.js"></script>
+        <script src="/notifications.js"></script>
         <script>
           // Check authentication on page load
           (async function checkAuthOnLoad(){

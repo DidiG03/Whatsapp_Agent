@@ -1,0 +1,165 @@
+/**
+ * Unit tests for AI service
+ */
+
+import { describe, test, expect, beforeEach, jest } from '@jest/globals';
+import { initTestDatabase, seedTestDatabase, clearTestDatabase } from '../helpers/database.js';
+import { testMessages, testSettings } from '../fixtures/testData.js';
+
+// Mock the database module
+jest.mock('../../src/db.mjs', () => ({
+  db: null // Will be set in beforeEach
+}));
+
+// Import the AI service after mocking
+import { generateAiReply, logOpenAiError } from '../../src/services/ai.mjs';
+
+describe('AI Service', () => {
+  let testDb;
+  const testUserId = 'test-user-123';
+
+  beforeEach(() => {
+    // Initialize test database
+    testDb = initTestDatabase();
+    
+    // Set the mocked database
+    const { db } = require('../../src/db.mjs');
+    Object.defineProperty(require('../../src/db.mjs'), 'db', {
+      value: testDb,
+      writable: true
+    });
+    
+    // Seed test data
+    seedTestDatabase(testDb, testUserId);
+  });
+
+  afterEach(() => {
+    clearTestDatabase(testDb);
+    cleanupTestDatabase();
+  });
+
+  describe('generateAiReply', () => {
+    test('should generate a reply for a simple greeting', async () => {
+      const userMessage = 'Hello';
+      const contextSnippets = ['We are open Monday-Friday 9AM-5PM'];
+      
+      const result = await generateAiReply(userMessage, contextSnippets, {
+        userId: testUserId,
+        tone: 'friendly',
+        style: 'professional'
+      });
+
+      expect(result).toBeDefined();
+      expect(typeof result).toBe('string');
+      expect(result.length).toBeGreaterThan(0);
+    });
+
+    test('should handle business hours questions', async () => {
+      const userMessage = 'What are your hours?';
+      const contextSnippets = ['We are open Monday-Friday 9AM-5PM'];
+      
+      const result = await generateAiReply(userMessage, contextSnippets, {
+        userId: testUserId,
+        tone: 'friendly'
+      });
+
+      expect(result).toBeDefined();
+      expect(result.toLowerCase()).toContain('monday');
+      expect(result.toLowerCase()).toContain('friday');
+    });
+
+    test('should handle empty context snippets', async () => {
+      const userMessage = 'Hello';
+      const contextSnippets = [];
+      
+      const result = await generateAiReply(userMessage, contextSnippets, {
+        userId: testUserId
+      });
+
+      expect(result).toBeDefined();
+      expect(typeof result).toBe('string');
+    });
+
+    test('should handle OpenAI API errors gracefully', async () => {
+      // Mock OpenAI to throw an error
+      const mockOpenAI = require('openai');
+      mockOpenAI.OpenAI.mockImplementation(() => ({
+        chat: {
+          completions: {
+            create: jest.fn().mockRejectedValue(new Error('API Error'))
+          }
+        }
+      }));
+
+      const userMessage = 'Hello';
+      const contextSnippets = ['Test context'];
+      
+      const result = await generateAiReply(userMessage, contextSnippets, {
+        userId: testUserId
+      });
+
+      // Should return a fallback response
+      expect(result).toBeDefined();
+      expect(typeof result).toBe('string');
+    });
+
+    test('should respect tone settings', async () => {
+      const userMessage = 'Hello';
+      const contextSnippets = ['We are open Monday-Friday 9AM-5PM'];
+      
+      const friendlyResult = await generateAiReply(userMessage, contextSnippets, {
+        userId: testUserId,
+        tone: 'friendly'
+      });
+
+      const professionalResult = await generateAiReply(userMessage, contextSnippets, {
+        userId: testUserId,
+        tone: 'professional'
+      });
+
+      expect(friendlyResult).toBeDefined();
+      expect(professionalResult).toBeDefined();
+      // Results should be different based on tone
+      expect(friendlyResult).not.toBe(professionalResult);
+    });
+
+    test('should handle blocked topics', async () => {
+      const userMessage = 'Tell me about politics';
+      const contextSnippets = [];
+      
+      const result = await generateAiReply(userMessage, contextSnippets, {
+        userId: testUserId,
+        blockedTopics: 'politics,religion'
+      });
+
+      expect(result).toBeDefined();
+      expect(result.toLowerCase()).not.toContain('politics');
+    });
+  });
+
+  describe('logOpenAiError', () => {
+    test('should log OpenAI errors without throwing', () => {
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+      
+      const error = new Error('Test OpenAI error');
+      logOpenAiError(error, 'Test label');
+      
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Test label'),
+        expect.any(Error)
+      );
+      
+      consoleSpy.mockRestore();
+    });
+
+    test('should handle non-Error objects', () => {
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+      
+      logOpenAiError('String error', 'Test label');
+      
+      expect(consoleSpy).toHaveBeenCalled();
+      
+      consoleSpy.mockRestore();
+    });
+  });
+});

@@ -98,6 +98,8 @@ export default function registerContactRoutes(app) {
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Contact Management - WhatsApp Agent</title>
         <link rel="stylesheet" href="/styles.css">
+        <script src="/toast.js"></script>
+        <script src="/notifications.js"></script>
         <style>
           .contacts-container {
             display: flex;
@@ -541,6 +543,55 @@ export default function registerContactRoutes(app) {
     const interactions = getContactInteractions(userId, contactId);
     const availableTags = getContactTags(userId);
     
+    // Get conversation analytics and message history
+    const conversationStats = db.prepare(`
+      SELECT 
+        COUNT(*) as total_messages,
+        COUNT(CASE WHEN direction = 'inbound' THEN 1 END) as messages_received,
+        COUNT(CASE WHEN direction = 'outbound' THEN 1 END) as messages_sent,
+        MIN(timestamp) as first_message,
+        MAX(timestamp) as last_message,
+        AVG(CASE WHEN direction = 'inbound' THEN timestamp END) as avg_response_time
+      FROM messages 
+      WHERE user_id = ? AND (
+        (from_digits = ? OR (from_digits IS NULL AND REPLACE(REPLACE(REPLACE(from_id,'+',''),' ',''),'-','') = ?)) OR
+        (to_digits   = ? OR (to_digits   IS NULL AND REPLACE(REPLACE(REPLACE(to_id,'+',''),' ',''),'-','')   = ?))
+      )
+    `).get(userId, contactId, contactId, contactId, contactId);
+    
+    // Get recent messages
+    const recentMessages = db.prepare(`
+      SELECT direction, text_body, timestamp, type
+      FROM messages 
+      WHERE user_id = ? AND (
+        (from_digits = ? OR (from_digits IS NULL AND REPLACE(REPLACE(REPLACE(from_id,'+',''),' ',''),'-','') = ?)) OR
+        (to_digits   = ? OR (to_digits   IS NULL AND REPLACE(REPLACE(REPLACE(to_id,'+',''),' ',''),'-','')   = ?))
+      )
+      ORDER BY timestamp DESC 
+      LIMIT 10
+    `).all(userId, contactId, contactId, contactId, contactId);
+    
+    // Get conversation status
+    const conversationStatus = db.prepare(`
+      SELECT conversation_status, is_human, human_expires_ts, escalation_reason
+      FROM handoff 
+      WHERE contact_id = ? AND user_id = ?
+    `).get(contactId, userId);
+    
+    // Get activity patterns (messages by hour)
+    const activityPattern = db.prepare(`
+      SELECT 
+        strftime('%H', datetime(timestamp, 'unixepoch')) as hour,
+        COUNT(*) as message_count
+      FROM messages 
+      WHERE user_id = ? AND (
+        (from_digits = ? OR (from_digits IS NULL AND REPLACE(REPLACE(REPLACE(from_id,'+',''),' ',''),'-','') = ?)) OR
+        (to_digits   = ? OR (to_digits   IS NULL AND REPLACE(REPLACE(REPLACE(to_id,'+',''),' ',''),'-','')   = ?))
+      )
+      GROUP BY strftime('%H', datetime(timestamp, 'unixepoch'))
+      ORDER BY hour
+    `).all(userId, contactId, contactId, contactId, contactId);
+    
     res.setHeader("Content-Type", "text/html");
     res.end(`
       <!DOCTYPE html>
@@ -572,6 +623,161 @@ export default function registerContactRoutes(app) {
             border-radius: 12px;
             padding: 20px;
             box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+          }
+          
+          .analytics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+          }
+          
+          .analytics-card {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 16px;
+            text-align: center;
+          }
+          
+          .analytics-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #1e293b;
+            margin-bottom: 4px;
+          }
+          
+          .analytics-label {
+            font-size: 12px;
+            color: #64748b;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+          }
+          
+          .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            padding-bottom: 8px;
+            border-bottom: 2px solid #e2e8f0;
+          }
+          
+          .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #1e293b;
+          }
+          
+          .message-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 12px;
+            margin-bottom: 8px;
+            background: #f8fafc;
+            border-radius: 8px;
+            border-left: 4px solid #e2e8f0;
+          }
+          
+          .message-item.inbound {
+            border-left-color: #10b981;
+            background: #f0fdf4;
+          }
+          
+          .message-item.outbound {
+            border-left-color: #3b82f6;
+            background: #eff6ff;
+          }
+          
+          .message-content {
+            flex: 1;
+          }
+          
+          .message-text {
+            font-size: 14px;
+            color: #374151;
+            margin-bottom: 4px;
+          }
+          
+          .message-meta {
+            font-size: 12px;
+            color: #6b7280;
+            display: flex;
+            gap: 8px;
+          }
+          
+          .activity-chart {
+            background: #f8fafc;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 20px;
+          }
+          
+          .chart-bar {
+            display: flex;
+            align-items: end;
+            gap: 2px;
+            height: 100px;
+            margin-top: 8px;
+          }
+          
+          .bar {
+            flex: 1;
+            background: #3b82f6;
+            border-radius: 2px 2px 0 0;
+            min-height: 2px;
+            transition: all 0.2s;
+          }
+          
+          .bar:hover {
+            background: #2563eb;
+          }
+          
+          .quick-actions {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 8px;
+            margin-bottom: 20px;
+          }
+          
+          .quick-action-btn {
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            text-decoration: none;
+            text-align: center;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s;
+          }
+          
+          .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+          }
+          
+          .status-active {
+            background: #dcfce7;
+            color: #166534;
+          }
+          
+          .status-escalated {
+            background: #fef3c7;
+            color: #92400e;
+          }
+          
+          .status-human {
+            background: #dbeafe;
+            color: #1e40af;
           }
           
           .profile-header {
@@ -882,22 +1088,115 @@ export default function registerContactRoutes(app) {
           </div>
           
           <div class="contact-profile-main">
-            <div class="interactions-section">
-              <h3>Recent Interactions</h3>
-              ${interactions.length > 0 ? interactions.map(interaction => `
-                <div class="interaction-item">
-                  <div class="interaction-header">
-                    <span class="interaction-type">${escapeHtml(interaction.interaction_type)}</span>
-                    <span class="interaction-time">${new Date(interaction.created_at * 1000).toLocaleString()}</span>
-                  </div>
-                  <div class="interaction-data">
-                    ${interaction.interaction_data && typeof interaction.interaction_data === 'object' 
-                      ? JSON.stringify(interaction.interaction_data, null, 2)
-                      : escapeHtml(interaction.interaction_data || '')}
+            <!-- Conversation Analytics -->
+            <div class="analytics-grid">
+              <div class="analytics-card">
+                <div class="analytics-value">${conversationStats?.total_messages || 0}</div>
+                <div class="analytics-label">Total Messages</div>
+              </div>
+              <div class="analytics-card">
+                <div class="analytics-value">${conversationStats?.messages_received || 0}</div>
+                <div class="analytics-label">Messages Received</div>
+              </div>
+              <div class="analytics-card">
+                <div class="analytics-value">${conversationStats?.messages_sent || 0}</div>
+                <div class="analytics-label">Messages Sent</div>
+              </div>
+              <div class="analytics-card">
+                <div class="analytics-value">${conversationStats?.first_message ? new Date(conversationStats.first_message * 1000).toLocaleDateString() : 'N/A'}</div>
+                <div class="analytics-label">First Contact</div>
+              </div>
+            </div>
+            
+            <!-- Quick Actions -->
+            <div class="quick-actions">
+              <a href="/inbox/${escapeHtml(contact.contact_id)}" class="quick-action-btn" style="background: #10b981; color: white;">💬 Start Chat</a>
+              <a href="/contacts/${escapeHtml(contact.contact_id)}/edit" class="quick-action-btn" style="background: #3b82f6; color: white;">✏️ Edit Profile</a>
+              <button onclick="exportContactData('${escapeHtml(contact.contact_id)}')" class="quick-action-btn" style="background: #6b7280; color: white;">📊 Export Data</button>
+              <button onclick="addNote('${escapeHtml(contact.contact_id)}')" class="quick-action-btn" style="background: #f59e0b; color: white;">📝 Add Note</button>
+            </div>
+            
+            <!-- Conversation Status -->
+            ${conversationStatus ? `
+              <div style="margin-bottom: 20px;">
+                <div class="section-header">
+                  <div class="section-title">Conversation Status</div>
+                  <div class="status-indicator ${conversationStatus.conversation_status === 'active' ? 'status-active' : conversationStatus.escalation_reason ? 'status-escalated' : 'status-human'}">
+                    ${conversationStatus.is_human ? '🤖 Human Mode' : '🤖 AI Mode'}
+                    ${conversationStatus.conversation_status || 'ACTIVE'}
                   </div>
                 </div>
-              `).join('') : '<p style="color: #6b7280; font-style: italic;">No interactions recorded yet.</p>'}
+                ${conversationStatus.escalation_reason ? `
+                  <div style="background: #fef3c7; border: 1px solid #f59e0b; border-radius: 6px; padding: 12px; margin-top: 8px;">
+                    <strong>Escalation:</strong> ${escapeHtml(conversationStatus.escalation_reason)}
+                  </div>
+                ` : ''}
+              </div>
+            ` : ''}
+            
+            <!-- Activity Pattern Chart -->
+            ${activityPattern.length > 0 ? `
+              <div class="activity-chart">
+                <div class="section-header">
+                  <div class="section-title">Activity Pattern (24h)</div>
+                </div>
+                <div class="chart-bar">
+                  ${Array.from({length: 24}, (_, i) => {
+                    const hourData = activityPattern.find(h => parseInt(h.hour) === i);
+                    const height = hourData ? Math.max(2, (hourData.message_count / Math.max(...activityPattern.map(h => h.message_count))) * 100) : 2;
+                    return `<div class="bar" style="height: ${height}px;" title="${i}:00 - ${hourData ? hourData.message_count : 0} messages"></div>`;
+                  }).join('')}
+                </div>
+                <div style="display: flex; justify-content: space-between; font-size: 10px; color: #6b7280; margin-top: 4px;">
+                  <span>00:00</span>
+                  <span>06:00</span>
+                  <span>12:00</span>
+                  <span>18:00</span>
+                  <span>23:00</span>
+                </div>
+              </div>
+            ` : ''}
+            
+            <!-- Recent Messages -->
+            <div class="section-header">
+              <div class="section-title">Recent Messages</div>
+              <a href="/inbox/${escapeHtml(contact.contact_id)}" style="font-size: 12px; color: #3b82f6;">View All →</a>
             </div>
+            ${recentMessages.length > 0 ? recentMessages.map(message => `
+              <div class="message-item ${message.direction}">
+                <div class="message-content">
+                  <div class="message-text">${escapeHtml(message.text_body || '[Media Message]')}</div>
+                  <div class="message-meta">
+                    <span>${message.direction === 'inbound' ? '📨 Received' : '📤 Sent'}</span>
+                    <span>•</span>
+                    <span>${new Date(message.timestamp * 1000).toLocaleString()}</span>
+                    ${message.type !== 'text' ? `<span>•</span><span>${message.type}</span>` : ''}
+                  </div>
+                </div>
+              </div>
+            `).join('') : '<p style="color: #6b7280; font-style: italic; text-align: center; padding: 20px;">No messages yet. Start a conversation!</p>'}
+            
+            <!-- Recent Interactions -->
+            ${interactions.length > 0 ? `
+              <div style="margin-top: 24px;">
+                <div class="section-header">
+                  <div class="section-title">Recent Interactions</div>
+                </div>
+                ${interactions.slice(0, 5).map(interaction => `
+                  <div class="interaction-item">
+                    <div class="interaction-header">
+                      <span class="interaction-type">${escapeHtml(interaction.interaction_type)}</span>
+                      <span class="interaction-time">${new Date(interaction.created_at * 1000).toLocaleString()}</span>
+                    </div>
+                    <div class="interaction-data">
+                      ${interaction.interaction_data && typeof interaction.interaction_data === 'object' 
+                        ? JSON.stringify(interaction.interaction_data, null, 2)
+                        : escapeHtml(interaction.interaction_data || '')}
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            ` : ''}
           </div>
         </div>
       </body>

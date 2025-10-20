@@ -23,6 +23,8 @@ export default function registerGuideRoutes(app) {
     res.end(`
       <html><head><title>Code Orbit - Guide</title><link rel="stylesheet" href="/styles.css"></head>
         <body>
+            <script src="/toast.js"></script>
+            <script src="/notifications.js"></script>
             <script>
               // Check authentication on page load
               (async function checkAuthOnLoad(){

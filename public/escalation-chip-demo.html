@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Escalation Chip Demo</title>
+    <link rel="stylesheet" href="/styles.css">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 20px;
+            background-color: #f0f0f0;
+        }
+        .demo-container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .demo-section {
+            margin: 20px 0;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+        .conversation-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px;
+            background: white;
+            border-radius: 8px;
+            margin: 10px 0;
+            border: 1px solid #e5e5e5;
+        }
+        .avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: #dedede;
+            color: #111;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+        }
+        .conversation-info {
+            flex: 1;
+        }
+        .conversation-name {
+            font-weight: 700;
+            color: #111;
+            margin-bottom: 4px;
+        }
+        .conversation-preview {
+            font-size: 14px;
+            color: #666;
+        }
+        .conversation-time {
+            font-size: 12px;
+            color: #999;
+        }
+    </style>
+</head>
+<body>
+    <div class="demo-container">
+        <h2>Agent Escalation Chip Demo</h2>
+        
+        <div class="demo-section">
+            <h4>Normal Conversation (No Escalation):</h4>
+            <div class="conversation-item">
+                <div class="avatar">SS</div>
+                <div class="conversation-info">
+                    <div class="conversation-name">
+                        +447312706087
+                        <span class="status-chip" style="background-color: #3b82f6; color: white; font-size: 10px; padding: 2px 6px; border-radius: 10px; margin-left: 6px;">NEW</span>
+                    </div>
+                    <div class="conversation-preview">Hello</div>
+                </div>
+                <div class="conversation-time">10/19/2025, 11:52:58 PM</div>
+            </div>
+        </div>
+        
+        <div class="demo-section">
+            <h4>Escalated Conversation (Agent Escalation):</h4>
+            <div class="conversation-item">
+                <div class="avatar">87</div>
+                <div class="conversation-info">
+                    <div class="conversation-name">
+                        Okay
+                        <span class="live-chip">live</span>
+                        <span class="escalation-chip">Agent Escalation</span>
+                        <span class="status-chip" style="background-color: #f59e0b; color: white; font-size: 10px; padding: 2px 6px; border-radius: 10px; margin-left: 6px;">IN PROGRESS</span>
+                    </div>
+                    <div class="conversation-preview">Hello, there!</div>
+                </div>
+                <div class="conversation-time">10/20/2025, 6:31:24 PM</div>
+            </div>
+        </div>
+        
+        <div class="demo-section">
+            <h4>Chip Styling:</h4>
+            <p><strong>Live Chip:</strong> <span class="live-chip">live</span> - Red background (#ef4444)</p>
+            <p><strong>Escalation Chip:</strong> <span class="escalation-chip">Agent Escalation</span> - Orange background (#ff9500)</p>
+            <p><strong>Status Chips:</strong> 
+                <span class="status-chip" style="background-color: #3b82f6; color: white; font-size: 10px; padding: 2px 6px; border-radius: 10px; margin-left: 6px;">NEW</span>
+                <span class="status-chip" style="background-color: #f59e0b; color: white; font-size: 10px; padding: 2px 6px; border-radius: 10px; margin-left: 6px;">IN PROGRESS</span>
+                <span class="status-chip" style="background-color: #10b981; color: white; font-size: 10px; padding: 2px 6px; border-radius: 10px; margin-left: 6px;">RESOLVED</span>
+                <span class="status-chip" style="background-color: #6b7280; color: white; font-size: 10px; padding: 2px 6px; border-radius: 10px; margin-left: 6px;">CLOSED</span>
+            </p>
+        </div>
+        
+        <div class="demo-section">
+            <h4>When Escalation Chips Appear:</h4>
+            <ul>
+                <li><strong>Live Chip:</strong> Shows when conversation is currently being handled by a human agent</li>
+                <li><strong>Agent Escalation Chip:</strong> Shows when the bot has escalated the conversation to a human agent</li>
+                <li><strong>Both chips together:</strong> Indicates an escalated conversation that's currently live with an agent</li>
+            </ul>
+        </div>
+    </div>
+</body>
+</html>

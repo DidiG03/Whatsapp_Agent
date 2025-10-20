@@ -26,16 +26,16 @@ export default function registerSettingsRoutes(app) {
     res.end(`
       <html><head><title>Code Orbit - Settings</title><link rel="stylesheet" href="/styles.css"></head><body>
         <script src="/notifications.js"></script>
+        <script src="/auth-utils.js"></script>
         <script>
-          // Check authentication on page load
+          // Enhanced authentication check on page load
           (async function checkAuthOnLoad(){
-            try{ const r=await fetch('/auth/status',{credentials:'include'}); const j=await r.json(); if(!j.signedIn){ window.location='/auth'; return; } }catch(e){ window.location='/auth'; }
+            await window.authManager.checkAuthOnLoad();
           })();
           
-          function checkAuthThenSubmit(){
-            // For form submission, we'll let the server handle auth
-            // The server will redirect to auth if needed
-            return true;
+          // Enhanced auth check for form submission
+          async function checkAuthThenSubmit(form){
+            return window.authManager.submitFormWithAuth(form);
           }
           function toggleReveal(id){
             const el=document.getElementById(id);
@@ -53,7 +53,7 @@ export default function registerSettingsRoutes(app) {
             <main class="main">
               <div class="main-content">
                 <div class="card chat-box-settings">
-                <form method="post" action="/settings" onsubmit="return checkAuthThenSubmit();">
+                <form method="post" action="/settings" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;">
                   <div class="section">
                     <h3>Personal Information</h3>
                     <div class="grid-2">

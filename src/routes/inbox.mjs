@@ -8,10 +8,55 @@ import { getQuickReplies } from "../services/quickReplies.mjs";
 import { getMessageReactions, toggleReaction, removeReaction, getMessagesReactions, getUserReactionsForMessages } from "../services/reactions.mjs";
 import { createReply, getMessagesReplies, getReplyOriginals } from "../services/replies.mjs";
 import { updateContactActivity, upsertContactProfile } from "../services/contacts.mjs";
+import { 
+  getConversationStatus, 
+  updateConversationStatus, 
+  getConversationsWithStatus,
+  getConversationStatusStats,
+  CONVERSATION_STATUSES,
+  STATUS_DISPLAY_NAMES,
+  STATUS_COLORS
+} from "../services/conversationStatus.mjs";
+import { 
+  MESSAGE_STATUS, 
+  READ_STATUS, 
+  getMessageStatus, 
+  markConversationAsRead,
+  simulateDeliveryStatusUpdate
+} from "../services/messageStatus.mjs";
+import { initializeSocketIO, getIO } from "./realtime.mjs";
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+
+/** Clean contact ID by removing URL parameters and query strings */
+function cleanContactId(contactId) {
+  if (!contactId) return contactId;
+  
+  // Remove common URL parameters that might be appended to phone numbers
+  let cleaned = contactId.toString();
+  
+  // Remove query string parameters like ?type=success, &type=success, etc.
+  cleaned = cleaned.replace(/[?&]type=[^&]*/g, '');
+  cleaned = cleaned.replace(/[?&]status=[^&]*/g, '');
+  cleaned = cleaned.replace(/[?&]state=[^&]*/g, '');
+  cleaned = cleaned.replace(/[?&]code=[^&]*/g, '');
+  
+  // Remove any remaining query string parameters
+  const questionMarkIndex = cleaned.indexOf('?');
+  if (questionMarkIndex !== -1) {
+    cleaned = cleaned.substring(0, questionMarkIndex);
+  }
+  
+  // Remove any remaining ampersand parameters
+  const ampersandIndex = cleaned.indexOf('&');
+  if (ampersandIndex !== -1) {
+    cleaned = cleaned.substring(0, ampersandIndex);
+  }
+  
+  return cleaned;
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -122,9 +167,9 @@ async function performAdvancedSearch(userId, filters) {
   
   const searchResults = db.prepare(searchQuery).all(...queryParams);
   
-  // Convert to contact format expected by the UI
+  // Convert to contact format expected by the UI and clean contact IDs
   return searchResults.map(result => ({
-    contact: result.contact,
+    contact: cleanContactId(result.contact),
     last_message_ts: result.last_message_ts,
     message_count: result.message_count
   }));
@@ -252,6 +297,10 @@ export default function registerInboxRoutes(app) {
     const customerNameByContact = new Map(customers.map(r => [String(r.contact_id), r.display_name]));
     const lastSeenRows = db.prepare(`SELECT contact_id, COALESCE(last_seen_ts,0) AS seen FROM handoff WHERE user_id = ?`).all(userId);
     const lastSeenByContact = new Map(lastSeenRows.map(r => [String(r.contact_id), Number(r.seen||0)]));
+    
+    // Get conversation statuses
+    const statusRows = db.prepare(`SELECT contact_id, conversation_status FROM handoff WHERE user_id = ?`).all(userId);
+    const statusByContact = new Map(statusRows.map(r => [String(r.contact_id), r.conversation_status || CONVERSATION_STATUSES.NEW]));
     // Get escalations and check if support has handled them
     const escalationRows = db.prepare(`
       SELECT h.contact_id, h.escalation_reason, h.updated_at as escalation_ts, 
@@ -288,24 +337,27 @@ export default function registerInboxRoutes(app) {
       const seenTs = lastSeenByContact.get(String(c.contact)) || 0;
       const hasNew = lastTs > seenTs;
       const hasEscalation = escalationByContact.has(String(c.contact));
+      const conversationStatus = statusByContact.get(String(c.contact)) || CONVERSATION_STATUSES.NEW;
+      const statusDisplay = STATUS_DISPLAY_NAMES[conversationStatus];
+      const statusColor = STATUS_COLORS[conversationStatus];
       const dropdownId = `menu_${c.contact}`;
       const menu = `
         <div class="dropdown" style="position:relative;">
           <button type="button" class="btn-ghost" style="border:none;" onclick="return toggleMenu('${dropdownId}', event)">
             <img src="/menu-icon.svg" alt="Menu" style="width:20px;height:20px;vertical-align:middle;border:none;"/>
           </button>
-          <div id="${dropdownId}" class="dropdown-menu" style="position:absolute; right:0; top:28px; background:#fff; border:1px solid var(--border); border-radius:8px; padding:6px; min-width:140px; display:none; box-shadow:0 6px 20px rgba(0,0,0,0.12); z-index:10;" onclick="event.stopPropagation()">
-            <form method="post" action="/inbox/${c.contact}/archive" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
+          <div id="${dropdownId}" class="dropdown-menu" style="position:absolute; right:0; top:28px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:6px; min-width:140px; display:none; box-shadow:0 6px 20px rgba(0,0,0,0.12); z-index:10;" onclick="event.stopPropagation()">
+            <form method="post" action="/inbox/${c.contact}/archive" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
               <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;">
                 <img src="/archive-icon.svg" alt="Archive"/> Archive
               </button>
             </form>
-            <form method="post" action="/inbox/${c.contact}/clear" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
+            <form method="post" action="/inbox/${c.contact}/clear" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
               <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;">
                 <img src="/clear-icon.svg" alt="Clear"/> Clear
               </button>
             </form>
-            <form method="post" action="/inbox/${c.contact}/delete" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
+            <form method="post" action="/inbox/${c.contact}/delete" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
               <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; color:#c00; border:none;">
                 <img src="/delete-icon.svg" alt="Delete"/> Delete
               </button>
@@ -324,7 +376,13 @@ export default function registerInboxRoutes(app) {
             <div class="wa-row">
               <div class="wa-avatar">${initials}</div>
               <div class="wa-col">
-                <div class="wa-name">${displayName}${hasNew ? '<span class="badge-dot"></span>' : ''}${hasEscalation ? '<span class="live-chip">live</span>' : ''}</div>
+                <div class="wa-name">
+                  ${displayName}
+                  ${hasNew ? '<span class="badge-dot"></span>' : ''}
+                  ${hasEscalation ? '<span class="live-chip">live</span>' : ''}
+                  ${hasEscalation ? '<span class="escalation-chip">Agent Escalation</span>' : ''}
+                  <span class="status-chip" style="background-color: ${statusColor}; color: white; font-size: 10px; padding: 2px 6px; border-radius: 10px; margin-left: 6px;">${statusDisplay}</span>
+                </div>
                 <div class="wa-top">
                   <div class="item-preview small">${preview}</div>
                   <div style="display:flex; align-items:center; gap:8px;">
@@ -352,15 +410,82 @@ export default function registerInboxRoutes(app) {
     res.setHeader("Expires", "0");
     res.end(`
       <html>${getProfessionalHead('Inbox')}<body>
+        <!-- Loading Overlay -->
+        <div id="loadingOverlay" class="loading-overlay">
+          <div class="loading-container">
+            <div class="loading-spinner"></div>
+            <div class="loading-text">Loading conversations...</div>
+            <div class="loading-progress">
+              <div class="loading-progress-bar"></div>
+            </div>
+            <div class="loading-dots">
+              <div class="loading-dot"></div>
+              <div class="loading-dot"></div>
+              <div class="loading-dot"></div>
+            </div>
+          </div>
+        </div>
+        
         <script src="/toast.js"></script>
         <script src="/notifications.js"></script>
         <script>
+          // Loading management
+          let loadingComplete = false;
+          let pageReady = false;
+          
+          function hideLoading() {
+            if (loadingComplete) return;
+            loadingComplete = true;
+            
+            const overlay = document.getElementById('loadingOverlay');
+            if (overlay) {
+              overlay.classList.add('hidden');
+              setTimeout(() => {
+                overlay.style.display = 'none';
+              }, 300);
+            }
+          }
+          
+          function showPageContent() {
+            pageReady = true;
+            
+            // Ensure loading is hidden after a minimum time
+            setTimeout(() => {
+              hideLoading();
+              // Add loaded class to page transition elements
+              const pageElements = document.querySelectorAll('.page-transition');
+              pageElements.forEach(el => el.classList.add('loaded'));
+            }, 500);
+          }
+          
           // Check authentication on page load
           (async function checkAuthOnLoad(){
-            try{ const r=await fetch('/auth/status',{credentials:'include'}); const j=await r.json(); if(!j.signedIn){ window.location='/auth'; return; } }catch(e){ window.location='/auth'; }
+            try{ 
+              const r=await fetch('/auth/status',{credentials:'include'}); 
+              const j=await r.json(); 
+              if(!j.signedIn){ 
+                window.location='/auth'; 
+                return; 
+              } 
+            }catch(e){ 
+              window.location='/auth'; 
+            }
+            
+            // Auth check complete, show content
+            showPageContent();
           })();
+          
+          // Fallback: hide loading after maximum time
+          setTimeout(() => {
+            if (!loadingComplete) {
+              hideLoading();
+              // Add loaded class to page transition elements
+              const pageElements = document.querySelectorAll('.page-transition');
+              pageElements.forEach(el => el.classList.add('loaded'));
+            }
+          }, 3000);
         </script>
-        <div class="container">
+        <div class="container page-transition">
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Inbox`, email)}
           <div class="layout">
             ${renderSidebar('inbox')}
@@ -424,7 +549,7 @@ export default function registerInboxRoutes(app) {
               <div id="nameModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.35); z-index:1000; align-items:center; justify-content:center;">
                 <div class="card" style="width:420px; max-width:95vw;">
                   <div class="small" style="margin-bottom:8px;">Name Customer</div>
-                  <form id="nameForm" method="post" action="" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;" style="display:grid; gap:8px;">
+                  <form id="nameForm" method="post" action="" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="display:grid; gap:8px;">
                     <input class="settings-field" type="text" name="display_name" placeholder="Customer name" required />
                     <textarea class="settings-field" name="notes" rows="3" placeholder="Notes (optional)"></textarea>
                     <div style="display:flex; gap:8px; justify-content:flex-end;">
@@ -588,7 +713,23 @@ export default function registerInboxRoutes(app) {
                   document.querySelectorAll('.dropdown-menu').forEach(el=>{ el.style.display='none'; });
                 });
               </script>
-                <ul class="list card">${searchResultsCount}${list || '<div class="small" style="margin-top:16px;">No conversations yet</div>'}</ul>
+                <ul class="list card">${searchResultsCount}${list || `
+                  <div class="empty-state" style="text-align:center; padding:60px 20px; color:#666;">
+                    <h3 style="margin:0 0 12px 0; color:#333; font-size:20px; font-weight:500;">No conversations yet</h3>
+                    <p style="margin:0 0 24px 0; font-size:14px; line-height:1.5; max-width:400px; margin-left:auto; margin-right:auto;">
+                      Your WhatsApp conversations will appear here once customers start messaging your business number.
+                    </p>
+                    <div style="background:#f8f9fa; border-radius:12px; padding:20px; margin:0 auto; max-width:400px; border:1px solid #e9ecef;">
+                      <div style="font-size:13px; color:#666; margin-bottom:12px; font-weight:500;">💡 Getting Started:</div>
+                      <ul style="text-align:left; font-size:13px; color:#666; margin:0; padding-left:20px; line-height:1.6;">
+                        <li>Share your WhatsApp Business number with customers</li>
+                        <li>Customers can start conversations by sending any message</li>
+                        <li>AI will automatically respond and manage conversations</li>
+                        <li>You can take over anytime for human support</li>
+                      </ul>
+                    </div>
+                  </div>
+                `}</ul>
               </div>
             </main>
           </div>
@@ -851,6 +992,12 @@ export default function registerInboxRoutes(app) {
     const expTs = Number(status?.exp || 0);
     const nowSec = Math.floor(Date.now()/1000);
     const remain = expTs > nowSec ? (expTs - nowSec) : 0;
+    
+    // Get conversation status
+    const conversationStatus = getConversationStatus(userId, phone);
+    const statusDisplay = STATUS_DISPLAY_NAMES[conversationStatus];
+    const statusColor = STATUS_COLORS[conversationStatus];
+    
     const email = await getSignedInEmail(req);
     const quickReplies = getQuickReplies(userId);
     const items = msgs.map(m => {
@@ -928,19 +1075,27 @@ export default function registerInboxRoutes(app) {
       const safe = display.includes('<img') || display.includes('<div') ? display : escapeHtml(display).replace(/\n/g, '<br/>');
       const ts = new Date((m.ts||0)*1000).toLocaleString();
       
-      // Generate status indicator for outbound messages
-      let statusIndicator = '';
-      if (m.direction === 'outbound' && m.message_status) {
-        const status = m.message_status.toLowerCase();
-        if (status === 'sent') {
-          statusIndicator = '<span class="msg-status sent" title="Sent">✓</span>';
-        } else if (status === 'delivered') {
-          statusIndicator = '<span class="msg-status delivered" title="Delivered">✓✓</span>';
-        } else if (status === 'read') {
-          statusIndicator = '<span class="msg-status read" title="Read">✓✓</span>';
-        } else if (status === 'failed') {
-          statusIndicator = '<span class="msg-status failed" title="Failed">✗</span>';
+      // Generate WhatsApp-style status ticks for outbound messages
+      let statusTicks = '';
+      if (m.direction === 'outbound') {
+        // Get message status from database
+        const messageStatus = getMessageStatus(m.id);
+        const deliveryStatus = messageStatus?.delivery_status || MESSAGE_STATUS.SENT;
+        const readStatus = messageStatus?.read_status || READ_STATUS.UNREAD;
+        
+        // Determine final status (read overrides delivered)
+        let finalStatus = deliveryStatus;
+        if (readStatus === READ_STATUS.READ) {
+          finalStatus = MESSAGE_STATUS.READ;
         }
+        
+        // Generate ticks HTML
+        statusTicks = `
+          <div class="message-status-ticks message-status-${finalStatus}">
+            <div class="message-tick"></div>
+            <div class="message-tick"></div>
+          </div>
+        `;
       }
       
       // Get reactions for this message
@@ -989,7 +1144,7 @@ export default function registerInboxRoutes(app) {
         </div>
       `;
       
-      return `<div class="${cls} message-container" id="message-${m.id}">${originalMessageHtml}<div class="bubble">${safe}<div class="meta">${ts}${statusIndicator}</div>${reactionsHtml}${actionButtons}</div></div>`;
+      return `<div class="${cls} message-container" id="message-${m.id}">${originalMessageHtml}<div class="bubble">${safe}<div class="meta">${ts}${statusTicks}</div>${reactionsHtml}${actionButtons}</div></div>`;
     }).join("");
     const toastMsg = (req.query?.toast || '').toString();
     const toastType = (req.query?.type || '').toString();
@@ -1001,29 +1156,187 @@ export default function registerInboxRoutes(app) {
     res.end(`
       <html><head><title>Code Orbit - Chat +${String(phone).replace(/^\+/, '')}</title><link rel="stylesheet" href="/styles.css"></head>
       <body>
+        <!-- Loading Overlay -->
+        <div id="loadingOverlay" class="loading-overlay">
+          <div class="loading-container">
+            <div class="loading-spinner"></div>
+            <div class="loading-text">Loading conversation...</div>
+            <div class="loading-progress">
+              <div class="loading-progress-bar"></div>
+            </div>
+            <div class="loading-dots">
+              <div class="loading-dot"></div>
+              <div class="loading-dot"></div>
+              <div class="loading-dot"></div>
+            </div>
+          </div>
+        </div>
+        
         <script src="/toast.js"></script>
+        <script src="/auth-utils.js"></script>
+        <script src="/realtime.js"></script>
         <script>
-          // Check authentication on page load
+          // Loading management
+          let loadingComplete = false;
+          let pageReady = false;
+          
+          function hideLoading() {
+            if (loadingComplete) return;
+            loadingComplete = true;
+            
+            const overlay = document.getElementById('loadingOverlay');
+            if (overlay) {
+              overlay.classList.add('hidden');
+              setTimeout(() => {
+                overlay.style.display = 'none';
+              }, 300);
+            }
+          }
+          
+          function showPageContent() {
+            pageReady = true;
+            
+            // Ensure loading is hidden after a minimum time
+            setTimeout(() => {
+              hideLoading();
+              // Add loaded class to page transition elements
+              const pageElements = document.querySelectorAll('.page-transition');
+              pageElements.forEach(el => el.classList.add('loaded'));
+            }, 500);
+          }
+          
+          // Enhanced authentication check on page load
           (async function checkAuthOnLoad(){
-            try{ const r=await fetch('/auth/status',{credentials:'include'}); const j=await r.json(); if(!j.signedIn){ window.location='/auth'; return; } }catch(e){ window.location='/auth'; }
+            await window.authManager.checkAuthOnLoad();
+            
+            // Auth check complete, show content
+            showPageContent();
           })();
           
-          // Check authentication before form submission to prevent redirects
-          async function checkAuthThenSubmit(form){
-            try {
-              const response = await fetch('/auth/status', { credentials: 'include' });
-              const authData = await response.json();
-              if (!authData.signedIn) {
-                alert('Your session has expired. Please sign in again.');
-                window.location = '/auth';
-                return false;
-              }
-              return true;
-            } catch (error) {
-              console.error('Auth check failed:', error);
-              alert('Authentication check failed. Please try again.');
-              return false;
+          // Fallback: hide loading after maximum time
+          setTimeout(() => {
+            if (!loadingComplete) {
+              hideLoading();
+              // Add loaded class to page transition elements
+              const pageElements = document.querySelectorAll('.page-transition');
+              pageElements.forEach(el => el.classList.add('loaded'));
             }
+          }, 3000);
+          
+          // Real-time functionality
+          let realtimeManager = null;
+          const phone = '${phone}'.split('?')[0]; // Clean phone number to remove query parameters
+          const userId = '${userId}';
+          
+          // Initialize real-time features
+          document.addEventListener('DOMContentLoaded', async () => {
+            // Wait for realtime manager to be available
+            const checkRealtime = async () => {
+              if (window.realtimeManager) {
+                realtimeManager = window.realtimeManager;
+                // Set the userId for the realtime manager
+                realtimeManager.userId = userId;
+                // Connect to Socket.IO
+                await realtimeManager.connect();
+                realtimeManager.joinChat(phone);
+                setupRealtimeFeatures();
+              } else {
+                setTimeout(checkRealtime, 100);
+              }
+            };
+            checkRealtime();
+          });
+          
+          function setupRealtimeFeatures() {
+            if (!realtimeManager) return;
+            
+            // Set up typing detection
+            const messageInput = document.getElementById('messageInput');
+            if (messageInput) {
+              let typingTimer = null;
+              
+              messageInput.addEventListener('input', () => {
+                if (realtimeManager.isConnected) {
+                  realtimeManager.startTyping(phone);
+                  
+                  // Clear existing timer
+                  if (typingTimer) clearTimeout(typingTimer);
+                  
+                  // Stop typing after 1 second of inactivity
+                  typingTimer = setTimeout(() => {
+                    realtimeManager.stopTyping(phone);
+                  }, 1000);
+                }
+              });
+              
+              messageInput.addEventListener('blur', () => {
+                if (realtimeManager.isConnected) {
+                  realtimeManager.stopTyping(phone);
+                }
+              });
+            }
+            
+            // Override form submission to use real-time messaging
+            const messageForm = document.querySelector('form[action*="/inbox/' + phone + '/send"]');
+            if (messageForm) {
+              messageForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                
+                const messageInput = document.getElementById('messageInput');
+                const message = messageInput.value.trim();
+                
+                if (message && realtimeManager.isConnected) {
+                  // Send via real-time
+                  const success = realtimeManager.sendMessage(phone, message);
+                  if (success) {
+                    messageInput.value = '';
+                    messageInput.style.height = 'auto';
+                    updateSendButtonState();
+                  } else {
+                    // Fallback to form submission
+                    messageForm.submit();
+                  }
+                } else {
+                  // Fallback to form submission
+                  messageForm.submit();
+                }
+              });
+            }
+          }
+          
+          function toggleHandoffMode() {
+            const handoffBtn = document.getElementById('handoffToggleBtn');
+            const isCurrentlyHuman = handoffBtn.getAttribute('data-is-human') === 'true';
+            const newHumanMode = !isCurrentlyHuman;
+            
+            // Update UI immediately
+            const img = handoffBtn.querySelector('img');
+            img.src = newHumanMode ? '/raise-hand-icon.svg' : '/bot-icon.svg';
+            img.alt = newHumanMode ? 'Human handling' : 'AI handling';
+            handoffBtn.setAttribute('data-is-human', newHumanMode);
+            
+            // Update the hidden input
+            const hiddenInput = handoffBtn.closest('form').querySelector('input[name="is_human"]');
+            hiddenInput.value = newHumanMode ? '1' : '';
+            
+            // Send via real-time if available
+            if (realtimeManager && realtimeManager.isConnected) {
+              realtimeManager.toggleLiveMode(phone, newHumanMode);
+            }
+            
+            // Submit the form with authentication
+            const form = handoffBtn.closest('form');
+            checkAuthThenSubmit(form).then(valid => {
+              if (valid) {
+                form.submit();
+              } else {
+                // Revert UI on auth failure
+                img.src = isCurrentlyHuman ? '/raise-hand-icon.svg' : '/bot-icon.svg';
+                img.alt = isCurrentlyHuman ? 'Human handling' : 'AI handling';
+                handoffBtn.setAttribute('data-is-human', isCurrentlyHuman);
+                hiddenInput.value = isCurrentlyHuman ? '1' : '';
+              }
+            });
           }
           function setupComposer(){
             const ta=document.querySelector('#messageInput');
@@ -1137,29 +1450,11 @@ export default function registerInboxRoutes(app) {
           }
           
           function initTypingIndicator() {
-            const phone = '${phone}';
+            const phone = '${phone}'.split('?')[0]; // Clean phone number
             const userId = '${userId}';
             
-            // Connect to Server-Sent Events for typing indicators
-            const eventSource = new EventSource(\`/api/typing/\${phone}?userId=\${userId}\`);
-            
-            eventSource.onmessage = function(event) {
-              const data = JSON.parse(event.data);
-              if (data.type === 'typing_start') {
-                showTypingIndicator();
-              } else if (data.type === 'typing_stop') {
-                hideTypingIndicator();
-              }
-            };
-            
-            eventSource.onerror = function(event) {
-              console.log('SSE connection error:', event);
-            };
-            
-            // Clean up on page unload
-            window.addEventListener('beforeunload', function() {
-              eventSource.close();
-            });
+            // Typing indicators are now handled by Socket.IO in realtime.js
+            console.log('Typing indicators initialized via Socket.IO');
           }
           
           function showTypingIndicator() {
@@ -1179,9 +1474,9 @@ export default function registerInboxRoutes(app) {
           
           // Test functions for typing indicators
           function testTypingStart() {
-            const phone = '${phone}';
+            const phone = '${phone}'.split('?')[0]; // Clean phone number
             const userId = '${userId}';
-            fetch(\`/api/typing/\${phone}/start\`, {
+            fetch('/api/typing/' + phone + '/start', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json'
@@ -1197,9 +1492,9 @@ export default function registerInboxRoutes(app) {
           }
           
           function testTypingStop() {
-            const phone = '${phone}';
+            const phone = '${phone}'.split('?')[0]; // Clean phone number
             const userId = '${userId}';
-            fetch(\`/api/typing/\${phone}/stop\`, {
+            fetch('/api/typing/' + phone + '/stop', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json'
@@ -1238,8 +1533,8 @@ export default function registerInboxRoutes(app) {
           function addReaction(emoji) {
             if (!currentMessageId) return;
             
-            const phone = '${phone}';
-            fetch(\`/api/reactions/\${currentMessageId}\`, {
+            const phone = '${phone}'.split('?')[0]; // Clean phone number
+            fetch('/api/reactions/' + currentMessageId, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json'
@@ -1262,8 +1557,8 @@ export default function registerInboxRoutes(app) {
           }
           
           function toggleReaction(messageId, emoji) {
-            const phone = '${phone}';
-            fetch(\`/api/reactions/\${messageId}\`, {
+            const phone = '${phone}'.split('?')[0]; // Clean phone number
+            fetch('/api/reactions/' + messageId, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json'
@@ -1286,7 +1581,7 @@ export default function registerInboxRoutes(app) {
           // Reply functions
           function replyToMessage(messageId) {
             currentReplyToMessageId = messageId;
-            const messageElement = document.getElementById(\`message-\${messageId}\`);
+            const messageElement = document.getElementById('message-' + messageId);
             
             if (messageElement) {
               // Highlight the message being replied to
@@ -1304,7 +1599,7 @@ export default function registerInboxRoutes(app) {
           }
           
           function showReplyIndicator(messageId) {
-            const messageElement = document.getElementById(\`message-\${messageId}\`);
+            const messageElement = document.getElementById('message-' + messageId);
             const messageText = messageElement ? messageElement.querySelector('.bubble')?.textContent?.trim() : 'Message';
             const truncatedText = messageText.length > 35 ? messageText.substring(0, 35) + '...' : messageText;
             
@@ -1331,7 +1626,7 @@ export default function registerInboxRoutes(app) {
                 inputContainer.parentNode.insertBefore(replyIndicator, inputContainer);
               }
             } else {
-              replyIndicator.querySelector('.reply-indicator-text').innerHTML = \`<strong>\${authorName}</strong><br>\${truncatedText}\`;
+              replyIndicator.querySelector('.reply-indicator-text').innerHTML = '<strong>' + authorName + '</strong><br>' + truncatedText;
             }
           }
           
@@ -1351,7 +1646,7 @@ export default function registerInboxRoutes(app) {
           }
           
           function scrollToMessage(messageId) {
-            const messageElement = document.getElementById(\`message-\${messageId}\`);
+            const messageElement = document.getElementById('message-' + messageId);
             if (messageElement) {
               messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
               // Temporarily highlight the message
@@ -1551,10 +1846,14 @@ export default function registerInboxRoutes(app) {
                 imageForm.appendChild(replyInput);
               }
 
-              imageForm.submit();
-              // Scroll to bottom after image is sent
-              setTimeout(scrollToBottom, 500);
-              clearReply(); // Clear reply state
+              // Use enhanced auth for image form submission
+              window.authManager.submitFormWithAuth(imageForm).then(success => {
+                if (success) {
+                  // Scroll to bottom after image is sent
+                  setTimeout(scrollToBottom, 500);
+                  clearReply(); // Clear reply state
+                }
+              });
             } else if (documentPreview) {
               // If document preview is visible, send the document
               const mainTextarea = document.getElementById('messageInput');
@@ -1572,29 +1871,62 @@ export default function registerInboxRoutes(app) {
                 documentForm.appendChild(replyInput);
               }
 
-              documentForm.submit();
-              // Scroll to bottom after document is sent
-              setTimeout(scrollToBottom, 500);
-              clearReply(); // Clear reply state
-            } else {
-              // Otherwise, send the text message normally
-              checkAuthThenSubmit().then(valid => { 
-                if(valid) {
-                  // Add reply information if replying to a message
-                  if (currentReplyToMessageId) {
-                    const replyInput = document.createElement('input');
-                    replyInput.type = 'hidden';
-                    replyInput.name = 'replyTo';
-                    replyInput.value = currentReplyToMessageId;
-                    event.target.appendChild(replyInput);
-                  }
-                  
-                  event.target.submit();
-                  // Scroll to bottom after text message is sent
+              // Use enhanced auth for document form submission
+              window.authManager.submitFormWithAuth(documentForm).then(success => {
+                if (success) {
+                  // Scroll to bottom after document is sent
                   setTimeout(scrollToBottom, 500);
                   clearReply(); // Clear reply state
                 }
               });
+            } else {
+              // Send text message via real-time system (no page refresh)
+              const textarea = document.getElementById('messageInput');
+              const message = textarea ? textarea.value.trim() : '';
+              
+              if (!message) {
+                console.log('No message to send');
+                return;
+              }
+              
+              // Check if real-time manager is available and connected
+              if (realtimeManager && realtimeManager.isConnected) {
+                console.log('📤 Sending message via real-time:', message);
+                
+                // Send via real-time
+                const success = realtimeManager.sendMessage(phone, message, 'text');
+                
+                if (success) {
+                  // Clear the input
+                  textarea.value = '';
+                  
+                  // Clear reply state
+                  clearReply();
+                  
+                  // The message will be added to chat via real-time broadcast from server
+                  // No optimistic update needed - wait for server response
+                } else {
+                  console.error('Failed to send message via real-time');
+                  // Fallback to form submission
+                  window.authManager.submitFormWithAuth(event.target).then(success => { 
+                    if(success) {
+                      event.target.submit();
+                      setTimeout(scrollToBottom, 500);
+                      clearReply();
+                    }
+                  });
+                }
+              } else {
+                console.log('Real-time not available, falling back to form submission');
+                // Fallback to form submission if real-time is not available
+                window.authManager.submitFormWithAuth(event.target).then(success => { 
+                  if(success) {
+                    event.target.submit();
+                    setTimeout(scrollToBottom, 500);
+                    clearReply();
+                  }
+                });
+              }
             }
           }
           window.addEventListener('DOMContentLoaded', function() {
@@ -1645,6 +1977,93 @@ export default function registerInboxRoutes(app) {
               }
             });
           });
+          
+          // Status Management Functions
+          function toggleStatusDropdown() {
+            const dropdown = document.getElementById('statusDropdown');
+            if (!dropdown) return;
+            
+            // Close other dropdowns
+            document.querySelectorAll('.dropdown-menu').forEach(el => {
+              if (el.id !== 'statusDropdown') el.style.display = 'none';
+            });
+            
+            // Toggle status dropdown
+            dropdown.style.display = dropdown.style.display === 'block' ? 'none' : 'block';
+          }
+          
+          function updateConversationStatus(status) {
+            // Update UI immediately
+            const statusChip = document.querySelector('.status-chip');
+            const statusDisplay = getStatusDisplayName(status);
+            const statusColor = getStatusColor(status);
+            
+            if (statusChip) {
+              statusChip.textContent = statusDisplay;
+              statusChip.style.backgroundColor = statusColor;
+            }
+            
+            // Close dropdown
+            document.getElementById('statusDropdown').style.display = 'none';
+            
+            // Submit status update via fetch API
+            fetch('/inbox/' + phone + '/status', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+              },
+              body: 'status=' + encodeURIComponent(status)
+            })
+            .then(response => {
+              if (response.ok) {
+                // Show success message
+                window.location.href = '/inbox/' + phone + '?toast=' + encodeURIComponent('Status updated to ' + statusDisplay) + '&type=success';
+              } else {
+                throw new Error('Status update failed');
+              }
+            })
+            .catch(error => {
+              console.error('Status update failed:', error);
+              alert('Failed to update status. Please try again.');
+              // Revert UI changes on error
+              if (statusChip) {
+                statusChip.textContent = '${statusDisplay}';
+                statusChip.style.backgroundColor = '${statusColor}';
+              }
+            });
+          }
+          
+          function getStatusDisplayName(status) {
+            const statusNames = {
+              'new': 'New',
+              'in_progress': 'In Progress', 
+              'resolved': 'Resolved',
+              'closed': 'Closed'
+            };
+            return statusNames[status] || status;
+          }
+          
+          function getStatusColor(status) {
+            const statusColors = {
+              'new': '#3b82f6',
+              'in_progress': '#f59e0b',
+              'resolved': '#10b981', 
+              'closed': '#6b7280'
+            };
+            return statusColors[status] || '#6b7280';
+          }
+          
+          // Close status dropdown when clicking outside
+          document.addEventListener('click', function(e) {
+            const statusDropdown = document.getElementById('statusDropdown');
+            const statusButton = document.querySelector('.status-dropdown button');
+            
+            if (statusDropdown && statusButton && 
+                !statusDropdown.contains(e.target) && 
+                !statusButton.contains(e.target)) {
+              statusDropdown.style.display = 'none';
+            }
+          });
         </script>
         <script>
           (function(){
@@ -1657,7 +2076,7 @@ export default function registerInboxRoutes(app) {
             }catch(_){ }
           })();
         </script>
-        <div class="container">
+        <div class="container page-transition">
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / <a href="/inbox">Inbox</a> / +${String(phone).replace(/^\+/, '')}`, email)}
           <div class="layout">
             ${renderSidebar('inbox')}
@@ -1671,11 +2090,14 @@ export default function registerInboxRoutes(app) {
                   <div class="wa-avatar">${String(phone).slice(-2)}</div>
                   <div style="flex:1;">
                     <div class="wa-name">${headerName}</div>
-                    <div class="small">${isHuman ? ('Human' + (remain ? ' • <span id="exp_remain"></span> left' : '')) : 'AI'}</div>
+                    <div class="small">
+                      ${isHuman ? ('Human' + (remain ? ' • <span id="exp_remain"></span> left' : '')) : 'AI'}
+                    </div>
                   </div>
-                  <form method="post" action="/handoff/${phone}" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;">
+
+                  <form method="post" action="/handoff/${phone}" onsubmit="event.preventDefault(); toggleHandoffMode(); return false;">
                     <input type="hidden" name="is_human" value="${isHuman ? '' : '1'}"/>
-                    <button type="submit" class="btn-ghost" style="border:none; background:transparent; padding:0; margin:0;">
+                    <button type="submit" class="btn-ghost handoff-toggle-btn" id="handoffToggleBtn" data-is-human="${isHuman}" style="border:none; background:transparent; padding:0; margin:0;">
                       <img 
                         src="${isHuman ? '/raise-hand-icon.svg' : '/bot-icon.svg'}"
                         alt="${isHuman ? 'Human handling' : 'AI handling'}" 
@@ -1683,18 +2105,36 @@ export default function registerInboxRoutes(app) {
                       />
                     </button>
                   </form>
-                  ${isHuman ? `<form method="post" action="/inbox/${phone}/renew" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
+                  ${isHuman ? `<form method="post" action="/inbox/${phone}/renew" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
                     <button type="submit" class="btn-ghost" title="Renew 5 minutes" style="border:none;"><img src="/restart-onboarding.svg" alt="Renew" style="width:20px;height:20px;vertical-align:middle;"/></button>
                   </form>` : ''}
-                  <form method="post" action="/inbox/${phone}/archive" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
+                  <form method="post" action="/inbox/${phone}/archive" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
                     <button type="submit" class="btn-ghost" style="border:none;"><img src="/archive-icon.svg" alt="Archive" style="width:20px;height:20px;vertical-align:middle;"/></button>
                   </form>
-                  <form method="post" action="/inbox/${phone}/clear" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
+                  <form method="post" action="/inbox/${phone}/clear" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
                     <button type="submit" class="btn-ghost" style="border:none;"><img src="/clear-icon.svg" alt="Clear" style="width:24px;height:24px;vertical-align:middle;"/></button>
                   </form>
-                  <form method="post" action="/inbox/${phone}/delete" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
+                  <form method="post" action="/inbox/${phone}/delete" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
                     <button type="submit" class="btn-ghost" style="color:#c00; border:none;"><img src="/delete-icon.svg" alt="Delete" style="width:20px;height:20px;vertical-align:middle;"/></button>
                   </form>
+                  
+                  <!-- Conversation Status Management -->
+                  <div class="status-dropdown" style="position:relative; margin-left:8px; margin-bottom:8px;">
+                    <button type="button" class="btn-ghost" onclick="toggleStatusDropdown()" style="border:none; background:transparent; padding:4px 8px; border-radius:6px; display:flex; align-items:center; gap:4px;">
+                      <span class="status-chip" style="background-color: ${statusColor}; color: white; font-size: 11px; padding: 3px 8px; border-radius: 12px;">${statusDisplay}</span>
+                      <span style="font-size:12px; color:#666;">▼</span>
+                    </button>
+                    <div id="statusDropdown" class="status-dropdown-menu" style="position:absolute; right:0; top:32px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:8px; min-width:160px; display:none; box-shadow:0 6px 20px rgba(0,0,0,0.12); z-index:10;">
+                      <div style="font-size:12px; color:#666; margin-bottom:6px; padding-bottom:4px; border-bottom:1px solid #eee;">Change Status</div>
+                      ${Object.entries(CONVERSATION_STATUSES).map(([key, value]) => `
+                        <button type="button" class="status-option ${conversationStatus === value ? 'active' : ''}" onclick="updateConversationStatus('${value}')" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none; background:transparent; padding:6px 8px; border-radius:4px; font-size:13px; ${conversationStatus === value ? 'background:#f0f9ff; color:#0369a1;' : ''}">
+                          <span style="width:8px; height:8px; border-radius:50%; background-color: ${STATUS_COLORS[value]};"></span>
+                          ${STATUS_DISPLAY_NAMES[value]}
+                          ${conversationStatus === value ? '✓' : ''}
+                        </button>
+                      `).join('')}
+                    </div>
+                  </div>
                 </div>
                 ${(() => {
                   try{
@@ -1702,7 +2142,7 @@ export default function registerInboxRoutes(app) {
                     const over24 = lastInbound && (Math.floor(Date.now()/1000)-lastInbound) > 24*3600;
                     if (over24) {
                       return `<div class=\"small\" style=\"margin:8px 0; padding:8px; background:#fff8e1; border:1px solid #fde68a; border-radius:8px;\">Session expired (>24h). Send template to reopen window.
-                        <form method=\"post\" action=\"/inbox/${phone}/send-template\" onsubmit=\"event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) this.submit(); }); return false;\" style=\"display:flex; gap:6px; align-items:center; margin-top:6px;\">
+                        <form method=\"post\" action=\"/inbox/${phone}/send-template\" data-auth-enhanced style=\"display:flex; gap:6px; align-items:center; margin-top:6px;\">
                           <input class=\"settings-field\" name=\"var1\" placeholder=\"{{1}} (optional)\" style=\"height:32px;\"/>
                           <input class=\"settings-field\" name=\"var2\" placeholder=\"{{2}} (optional)\" style=\"height:32px;\"/>
                           <button class=\"btn-ghost\" type=\"submit\" style=\"border:none;\">Send Template</button>
@@ -1759,12 +2199,12 @@ export default function registerInboxRoutes(app) {
                     </div>
                   </div>
                   
-                  <form id="imageUploadForm" method="post" action="/upload-image/${phone}" enctype="multipart/form-data" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) { this.submit(); setTimeout(scrollToBottom, 500); } }); return false;" style="display:none;">
+                  <form id="imageUploadForm" method="post" action="/upload-image/${phone}" enctype="multipart/form-data" data-auth-enhanced style="display:none;">
                       <input type="file" name="image" accept="image/*" id="imageFileInput" onchange="handleImageSelect(event)" />
                       <textarea name="caption" id="hiddenCaption" style="display:none;"></textarea>
                     </form>
                   
-                  <form id="documentUploadForm" method="post" action="/upload-document/${phone}" enctype="multipart/form-data" onsubmit="event.preventDefault(); checkAuthThenSubmit().then(valid => { if(valid) { this.submit(); setTimeout(scrollToBottom, 500); } }); return false;" style="display:none;">
+                  <form id="documentUploadForm" method="post" action="/upload-document/${phone}" enctype="multipart/form-data" data-auth-enhanced style="display:none;">
                     <input type="file" name="document" accept=".pdf,.doc,.docx,.txt,.rtf,.odt,.ppt,.pptx,.xls,.xlsx,.csv,.zip,.rar" id="documentFileInput" onchange="handleDocumentSelect(event)" />
                     <textarea name="caption" id="hiddenDocumentCaption" style="display:none;"></textarea>
                   </form>
@@ -1889,6 +2329,59 @@ export default function registerInboxRoutes(app) {
     `);
     try { upsert.run(phone, userId, isHuman, exp); } catch {}
     res.redirect(`/inbox/${phone}`);
+  });
+
+  // Simulate message status updates (for demo purposes)
+  app.post("/inbox/:phone/simulate-status", ensureAuthed, (req, res) => {
+    const phone = req.params.phone.split('?')[0];
+    const userId = getCurrentUserId(req);
+    const { messageId, status } = req.body;
+    
+    try {
+      if (!messageId || !status) {
+        return res.status(400).json({ error: 'Missing messageId or status' });
+      }
+      
+      // Import the simulation function
+      simulateDeliveryStatusUpdate(messageId, status);
+      
+      // Broadcast status update to real-time clients
+      const io = getIO();
+      if (io) {
+        io.to(`chat:${phone}`).emit('message_status_update', {
+          messageId,
+          status,
+          timestamp: Date.now()
+        });
+      }
+      
+      res.json({ success: true, messageId, status });
+    } catch (error) {
+      console.error('Error simulating status update:', error);
+      res.status(500).json({ error: 'Failed to update status' });
+    }
+  });
+
+  // Update conversation status
+  app.post("/inbox/:phone/status", ensureAuthed, (req, res) => {
+    const phone = req.params.phone.split('?')[0]; // Clean phone number
+    const userId = getCurrentUserId(req);
+    const { status, reason } = req.body;
+    
+    try {
+      if (!Object.values(CONVERSATION_STATUSES).includes(status)) {
+        return res.status(400).json({ error: 'Invalid conversation status' });
+      }
+      
+      updateConversationStatus(userId, phone, status, reason);
+      
+      // Redirect back to conversation with success message
+      const statusDisplay = STATUS_DISPLAY_NAMES[status];
+      res.redirect(`/inbox/${phone}?toast=${encodeURIComponent(`Status updated to ${statusDisplay}`)}&type=success`);
+    } catch (error) {
+      console.error('Error updating conversation status:', error);
+      res.redirect(`/inbox/${phone}?toast=${encodeURIComponent('Failed to update status')}&type=error`);
+    }
   });
 
   // Renew 5 more minutes of human mode

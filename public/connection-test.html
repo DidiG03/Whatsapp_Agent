@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Socket.IO Connection Test</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 20px;
+            background-color: #f0f0f0;
+        }
+        .test-container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .status {
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            font-weight: bold;
+        }
+        .connected { background: #d4edda; color: #155724; }
+        .disconnected { background: #f8d7da; color: #721c24; }
+        .connecting { background: #fff3cd; color: #856404; }
+        .log {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+            padding: 15px;
+            height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+            margin: 20px 0;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin: 20px 0;
+        }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .connect-btn { background: #28a745; color: white; }
+        .disconnect-btn { background: #dc3545; color: white; }
+        .test-btn { background: #007bff; color: white; }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <div class="test-container">
+        <h2>Socket.IO Connection Stability Test</h2>
+        
+        <div id="status" class="status disconnected">Disconnected</div>
+        
+        <div class="controls">
+            <button id="connectBtn" class="connect-btn" onclick="connect()">Connect</button>
+            <button id="disconnectBtn" class="disconnect-btn" onclick="disconnect()" disabled>Disconnect</button>
+            <button id="testBtn" class="test-btn" onclick="sendTestMessage()" disabled>Send Test Message</button>
+        </div>
+        
+        <div class="log" id="log"></div>
+        
+        <div>
+            <h3>Connection Stats:</h3>
+            <p>Connection attempts: <span id="attempts">0</span></p>
+            <p>Successful connections: <span id="successful">0</span></p>
+            <p>Disconnections: <span id="disconnections">0</span></p>
+            <p>Heartbeats sent: <span id="heartbeats">0</span></p>
+            <p>Heartbeats received: <span id="heartbeatAcks">0</span></p>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        let socket = null;
+        let stats = {
+            attempts: 0,
+            successful: 0,
+            disconnections: 0,
+            heartbeats: 0,
+            heartbeatAcks: 0
+        };
+
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.innerHTML = `[${timestamp}] ${message}`;
+            logEntry.style.color = type === 'error' ? '#dc3545' : type === 'success' ? '#28a745' : '#333';
+            logDiv.appendChild(logEntry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function updateStatus(status, className) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = status;
+            statusDiv.className = `status ${className}`;
+        }
+
+        function updateStats() {
+            document.getElementById('attempts').textContent = stats.attempts;
+            document.getElementById('successful').textContent = stats.successful;
+            document.getElementById('disconnections').textContent = stats.disconnections;
+            document.getElementById('heartbeats').textContent = stats.heartbeats;
+            document.getElementById('heartbeatAcks').textContent = stats.heartbeatAcks;
+        }
+
+        function connect() {
+            if (socket) {
+                socket.disconnect();
+            }
+
+            stats.attempts++;
+            updateStats();
+            
+            log('🔄 Attempting to connect...', 'info');
+            updateStatus('Connecting...', 'connecting');
+            
+            socket = io({
+                auth: {
+                    userId: 'test_user_' + Date.now()
+                },
+                transports: ['polling', 'websocket'],
+                timeout: 30000,
+                reconnection: true,
+                reconnectionDelay: 2000,
+                reconnectionDelayMax: 10000,
+                maxReconnectionAttempts: 5,
+                forceNew: false,
+                upgrade: true,
+                rememberUpgrade: true
+            });
+
+            socket.on('connect', () => {
+                stats.successful++;
+                updateStats();
+                log('✅ Connected successfully!', 'success');
+                updateStatus('Connected', 'connected');
+                document.getElementById('connectBtn').disabled = true;
+                document.getElementById('disconnectBtn').disabled = false;
+                document.getElementById('testBtn').disabled = false;
+            });
+
+            socket.on('disconnect', (reason) => {
+                stats.disconnections++;
+                updateStats();
+                log(`❌ Disconnected: ${reason}`, 'error');
+                updateStatus('Disconnected', 'disconnected');
+                document.getElementById('connectBtn').disabled = false;
+                document.getElementById('disconnectBtn').disabled = true;
+                document.getElementById('testBtn').disabled = true;
+            });
+
+            socket.on('connect_error', (error) => {
+                log(`❌ Connection error: ${error.message}`, 'error');
+                updateStatus('Connection Error', 'disconnected');
+            });
+
+            socket.on('reconnect', (attemptNumber) => {
+                log(`🔄 Reconnected after ${attemptNumber} attempts`, 'success');
+                updateStatus('Reconnected', 'connected');
+            });
+
+            socket.on('reconnect_error', (error) => {
+                log(`❌ Reconnection error: ${error.message}`, 'error');
+            });
+
+            socket.on('reconnect_failed', () => {
+                log('❌ Reconnection failed after all attempts', 'error');
+                updateStatus('Reconnection Failed', 'disconnected');
+            });
+
+            socket.on('pong', (data) => {
+                stats.heartbeatAcks++;
+                updateStats();
+                log(`💓 Heartbeat acknowledged: ${JSON.stringify(data)}`, 'success');
+            });
+
+            // Send heartbeat every 20 seconds
+            setInterval(() => {
+                if (socket && socket.connected) {
+                    socket.emit('ping', { timestamp: Date.now() });
+                    stats.heartbeats++;
+                    updateStats();
+                    log('💓 Heartbeat sent', 'info');
+                }
+            }, 20000);
+        }
+
+        function disconnect() {
+            if (socket) {
+                socket.disconnect();
+                socket = null;
+            }
+        }
+
+        function sendTestMessage() {
+            if (socket && socket.connected) {
+                socket.emit('test_message', { 
+                    message: 'Test message from client',
+                    timestamp: Date.now()
+                });
+                log('📤 Test message sent', 'info');
+            }
+        }
+
+        // Auto-connect on page load
+        window.addEventListener('load', () => {
+            log('🚀 Page loaded, starting connection test...', 'info');
+            connect();
+        });
+    </script>
+</body>
+</html>

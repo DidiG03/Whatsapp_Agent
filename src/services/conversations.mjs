@@ -7,7 +7,7 @@ import { db } from "../db.mjs";
 
 /** List the latest 100 contacts with last timestamp and last text preview. */
 export function listContactsForUser(userId) {
-  return db.prepare(`
+  const results = db.prepare(`
     WITH contacts AS (
       SELECT from_id AS contact, timestamp AS ts
       FROM messages
@@ -41,6 +41,40 @@ export function listContactsForUser(userId) {
     ORDER BY l.last_ts DESC
     LIMIT 100
   `).all(userId, userId, userId, userId);
+  
+  // Clean contact IDs by removing URL parameters and query strings
+  return results.map(row => ({
+    ...row,
+    contact: cleanContactId(row.contact)
+  }));
+}
+
+/** Clean contact ID by removing URL parameters and query strings */
+function cleanContactId(contactId) {
+  if (!contactId) return contactId;
+  
+  // Remove common URL parameters that might be appended to phone numbers
+  let cleaned = contactId.toString();
+  
+  // Remove query string parameters like ?type=success, &type=success, etc.
+  cleaned = cleaned.replace(/[?&]type=[^&]*/g, '');
+  cleaned = cleaned.replace(/[?&]status=[^&]*/g, '');
+  cleaned = cleaned.replace(/[?&]state=[^&]*/g, '');
+  cleaned = cleaned.replace(/[?&]code=[^&]*/g, '');
+  
+  // Remove any remaining query string parameters
+  const questionMarkIndex = cleaned.indexOf('?');
+  if (questionMarkIndex !== -1) {
+    cleaned = cleaned.substring(0, questionMarkIndex);
+  }
+  
+  // Remove any remaining ampersand parameters
+  const ampersandIndex = cleaned.indexOf('&');
+  if (ampersandIndex !== -1) {
+    cleaned = cleaned.substring(0, ampersandIndex);
+  }
+  
+  return cleaned;
 }
 
 /** List messages for a user+phoneDigits thread ordered by timestamp ASC. */
