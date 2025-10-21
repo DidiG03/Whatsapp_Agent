@@ -29,25 +29,24 @@ const structuredFormat = winston.format.combine(
   })
 );
 
-// Create logger instance
-const logger = winston.createLogger({
-  level: process.env.LOG_LEVEL || 'info',
-  format: structuredFormat,
-  defaultMeta: {
-    service: 'whatsapp-agent',
-    version: '1.0.0',
-    environment: process.env.NODE_ENV || 'development'
-  },
-  transports: [
-    // Console transport for development
-    new winston.transports.Console({
-      format: winston.format.combine(
-        winston.format.colorize(),
-        winston.format.simple()
-      )
-    }),
-    
-    // File transport for production
+// Check if we're in a serverless environment (Vercel, AWS Lambda, etc.)
+const isServerless = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NODE_ENV === 'production';
+
+// Create transports based on environment
+const transports = [
+  // Console transport for all environments
+  new winston.transports.Console({
+    format: winston.format.combine(
+      winston.format.colorize(),
+      winston.format.simple()
+    )
+  })
+];
+
+// Only add file transports in non-serverless environments
+if (!isServerless) {
+  transports.push(
+    // File transport for production (non-serverless)
     new winston.transports.File({
       filename: 'logs/error.log',
       level: 'error',
@@ -60,17 +59,30 @@ const logger = winston.createLogger({
       maxsize: 5242880, // 5MB
       maxFiles: 5
     })
-  ],
+  );
+}
+
+// Create logger instance
+const logger = winston.createLogger({
+  level: process.env.LOG_LEVEL || 'info',
+  format: structuredFormat,
+  defaultMeta: {
+    service: 'whatsapp-agent',
+    version: '1.0.0',
+    environment: process.env.NODE_ENV || 'development'
+  },
+  transports,
   
-  // Handle uncaught exceptions
-  exceptionHandlers: [
-    new winston.transports.File({ filename: 'logs/exceptions.log' })
-  ],
-  
-  // Handle unhandled promise rejections
-  rejectionHandlers: [
-    new winston.transports.File({ filename: 'logs/rejections.log' })
-  ]
+  // Only add file-based exception handlers in non-serverless environments
+  ...(isServerless ? {} : {
+    exceptionHandlers: [
+      new winston.transports.File({ filename: 'logs/exceptions.log' })
+    ],
+    
+    rejectionHandlers: [
+      new winston.transports.File({ filename: 'logs/rejections.log' })
+    ]
+  })
 });
 
 // Create request-scoped logger with correlation ID
