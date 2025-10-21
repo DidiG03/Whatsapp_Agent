@@ -1,7 +1,7 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
 import { renderSidebar, normalizePhone, escapeHtml, renderTopbar, getProfessionalHead } from "../utils.mjs";
 import { listContactsForUser, listMessagesForThread } from "../services/conversations.mjs";
-import { db } from "../db.mjs";
+import { db } from "../db-serverless.mjs";
 import { getSettingsForUser } from "../services/settings.mjs";
 import { sendWhatsAppText, sendWhatsAppTemplate, sendWhatsappImage, sendWhatsappReaction } from "../services/whatsapp.mjs";
 import { getQuickReplies } from "../services/quickReplies.mjs";

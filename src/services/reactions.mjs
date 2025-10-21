@@ -2,7 +2,7 @@
  * Message reactions service for handling emoji reactions to messages.
  */
 
-import { db } from '../db.mjs';
+import { db } from '../db-serverless.mjs';
 
 /**
  * Get all reactions for a specific message

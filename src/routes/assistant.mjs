@@ -4,7 +4,7 @@ import { renderTranscriptAsBubbles } from "../utils.mjs";
 import { upsertKbItem } from "../services/kb.mjs";
 import { upsertSettingsForUser, getSettingsForUser } from "../services/settings.mjs";
 import { onboardingCoachReply } from "../services/ai.mjs";
-import { db } from "../db.mjs";
+import { db } from "../db-serverless.mjs";
 
 export default function registerAssistantRoutes(app) {
   app.get("/assistant", (req, res) => {

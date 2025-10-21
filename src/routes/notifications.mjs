@@ -5,7 +5,7 @@
  * - POST /api/notifications/read-all: mark all as read
  */
 import { ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
-import { db } from "../db.mjs";
+import { db } from "../db-serverless.mjs";
 
 export default function registerNotificationRoutes(app) {
   // Get notifications for current user

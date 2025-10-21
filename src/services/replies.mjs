@@ -2,7 +2,7 @@
  * Message replies service for handling thread-style conversations.
  */
 
-import { db } from '../db.mjs';
+import { db } from '../db-serverless.mjs';
 
 /**
  * Create a reply relationship between two messages

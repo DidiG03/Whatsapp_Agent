@@ -1,7 +1,7 @@
 /**
  * Usage tracking service for monitoring message counts and plan limits.
  */
-import { db } from "../db.mjs";
+import { db } from "../db-serverless.mjs";
 
 /**
  * Get current month/year string in format "2024-01"

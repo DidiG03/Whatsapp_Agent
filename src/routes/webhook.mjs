@@ -4,7 +4,7 @@
  * - POST /webhook: inbound messages and status updates
  */
 import crypto from "node:crypto";
-import { db } from "../db.mjs";
+import { db } from "../db-serverless.mjs";
 import { findSettingsByVerifyToken, findSettingsByPhoneNumberId, findSettingsByBusinessPhone } from "../services/settings.mjs";
 import { retrieveKbMatches, buildKbSuggestions } from "../services/kb.mjs";
 import { sendWhatsappButton, sendWhatsAppText, sendWhatsappList, sendWhatsappReaction, sendWhatsappDocument } from "../services/whatsapp.mjs";

@@ -3,7 +3,7 @@
  * Handles conversation status transitions: new, in_progress, resolved, closed
  */
 
-import { db } from "../db.mjs";
+import { db } from "../db-serverless.mjs";
 
 // Valid conversation statuses
 export const CONVERSATION_STATUSES = {

@@ -2,7 +2,7 @@
  * Quick Replies service for managing predefined message templates.
  */
 
-import { db } from "../db.mjs";
+import { db } from "../db-serverless.mjs";
 
 /**
  * Get all quick replies for a user

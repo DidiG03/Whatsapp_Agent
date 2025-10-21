@@ -5,7 +5,7 @@ import { getOnboarding } from "../services/onboarding.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
 import { renderSidebar, renderTopbar } from "../utils.mjs";
 import { getSignedInEmail } from "../middleware/auth.mjs";
-import { db } from "../db.mjs";
+import { db } from "../db-serverless.mjs";
 import { getQuickReplies, getQuickReplyCategories, createQuickReply, updateQuickReply, deleteQuickReply, reorderQuickReplies } from "../services/quickReplies.mjs";
 
 export default function registerSettingsRoutes(app) {

@@ -2,7 +2,7 @@
  * Onboarding state management per user.
  * Stores step index and transcript text, and defines the set of steps.
  */
-import { db } from "../db.mjs";
+import { db } from "../db-serverless.mjs";
 
 export const ONBOARD_STEPS = [
   { key: 'business_name', title: 'Business Name', prompt: 'What is your business name?' },

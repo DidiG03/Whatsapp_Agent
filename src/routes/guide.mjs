@@ -1,6 +1,6 @@
 import { renderSidebar, renderTopbar, escapeHtml } from "../utils.mjs";
 import { getSignedInEmail, ensureAuthed } from "../middleware/auth.mjs";
-import { db } from "../db.mjs";
+import { db } from "../db-serverless.mjs";
 
 export default function registerGuideRoutes(app) {
   // Guides index

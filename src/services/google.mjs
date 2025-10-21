@@ -8,7 +8,7 @@
  * storing null event ids so the rest of the app can function.
  */
 import fetch from "node-fetch";
-import { db } from "../db.mjs";
+import { db } from "../db-serverless.mjs";
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_CAL_BASE = "https://www.googleapis.com/calendar/v3";

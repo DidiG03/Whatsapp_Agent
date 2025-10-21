@@ -2,7 +2,7 @@
  * Settings service for multi-tenant configuration (per Clerk user).
  * Provides helpers to get, upsert, and find settings by various keys.
  */
-import { db } from "../db.mjs";
+import { db } from "../db-serverless.mjs";
 
 /** Fetch settings for a given user id. */
 export function getSettingsForUser(userId) {

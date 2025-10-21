@@ -4,7 +4,7 @@
  */
 
 import { ensureAuthed, getCurrentUserId } from '../middleware/auth.mjs';
-import { db } from '../db.mjs';
+import { db } from '../db-serverless.mjs';
 import { getAllMetrics } from '../monitoring/metrics.mjs';
 import { logHelpers } from '../monitoring/logger.mjs';
 import { broadcastMetricsUpdate } from './realtime.mjs';

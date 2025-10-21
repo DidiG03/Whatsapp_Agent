@@ -1,6 +1,6 @@
 import { ensureAuthed, getSignedInEmail, getCurrentUserId, signSessionToken } from "../middleware/auth.mjs";
 import { renderSidebar, escapeHtml, renderTopbar, getProfessionalHead } from "../utils.mjs";
-import { db } from "../db.mjs";
+import { db } from "../db-serverless.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
 import { getCurrentUsage, getUserPlan } from "../services/usage.mjs";
 

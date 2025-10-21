@@ -3,7 +3,7 @@
  * - listContactsForUser: latest contacts for Inbox
  * - listMessagesForThread: chronological messages for a contact thread
  */
-import { db } from "../db.mjs";
+import { db } from "../db-serverless.mjs";
 
 /** List the latest 100 contacts with last timestamp and last text preview. */
 export function listContactsForUser(userId) {

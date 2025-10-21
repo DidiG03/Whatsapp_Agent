@@ -3,7 +3,7 @@
  * Provides comprehensive system health monitoring and status reporting
  */
 
-import { db } from '../db.mjs';
+import { db } from '../db-serverless.mjs';
 import { logHelpers } from './logger.mjs';
 import { sentryHelpers } from './sentry.mjs';
 import fs from 'fs';

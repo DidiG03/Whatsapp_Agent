@@ -3,7 +3,7 @@
  * Handles WhatsApp-style message delivery and read status tracking
  */
 
-import { db } from "../db.mjs";
+import { db } from "../db-serverless.mjs";
 
 // Message status constants
 export const MESSAGE_STATUS = {

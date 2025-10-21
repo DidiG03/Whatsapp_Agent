@@ -3,7 +3,7 @@
  * - Upsert items by title per user
  * - Retrieve naive keyword matches for a query
  */
-import { db } from "../db.mjs";
+import { db } from "../db-serverless.mjs";
 
 const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
 const shouldLogVerbose = LOG_LEVEL === "debug" || LOG_LEVEL === "trace";

@@ -1,5 +1,5 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
-import { db } from "../db.mjs";
+import { db } from "../db-serverless.mjs";
 import { renderSidebar, escapeHtml, renderTopbar } from "../utils.mjs";
 
 export default function registerKbRoutes(app) {
