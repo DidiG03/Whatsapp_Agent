@@ -9,7 +9,8 @@ import { db } from "../db.mjs";
 export const MESSAGE_STATUS = {
   SENT: 'sent',           // 1 tick (gray)
   DELIVERED: 'delivered', // 2 ticks (gray) 
-  READ: 'read'            // 2 ticks (blue)
+  READ: 'read',           // 2 ticks (blue)
+  FAILED: 'failed'        // 1 red exclamation mark
 };
 
 // Read status constants
@@ -100,6 +101,68 @@ export function markConversationAsRead(userId, contactId) {
 }
 
 /**
+ * Mark a message as failed
+ */
+export function markMessageAsFailed(messageId, errorMessage = null) {
+  const stmt = db.prepare(`
+    UPDATE messages 
+    SET delivery_status = ?, delivery_timestamp = ?, error_message = ?
+    WHERE id = ?
+  `);
+  
+  const timestamp = Math.floor(Date.now() / 1000);
+  const result = stmt.run(MESSAGE_STATUS.FAILED, timestamp, errorMessage, messageId);
+  
+  if (result.changes > 0) {
+    console.log(`❌ Message ${messageId} marked as failed: ${errorMessage || 'Unknown error'}`);
+    return true;
+  }
+  
+  return false;
+}
+
+/**
+ * Retry sending a failed message
+ */
+export function retryFailedMessage(messageId) {
+  const stmt = db.prepare(`
+    SELECT id, user_id, text_body, to_digits, from_digits, raw
+    FROM messages 
+    WHERE id = ? AND delivery_status = ?
+  `);
+  
+  const message = stmt.get(messageId, MESSAGE_STATUS.FAILED);
+  
+  if (!message) {
+    return { success: false, error: 'Message not found or not in failed state' };
+  }
+  
+  // Reset status to sent for retry
+  const updateStmt = db.prepare(`
+    UPDATE messages 
+    SET delivery_status = ?, delivery_timestamp = ?, error_message = NULL
+    WHERE id = ?
+  `);
+  
+  const timestamp = Math.floor(Date.now() / 1000);
+  updateStmt.run(MESSAGE_STATUS.SENT, timestamp, messageId);
+  
+  console.log(`🔄 Retrying failed message ${messageId}`);
+  
+  return {
+    success: true,
+    message: {
+      id: message.id,
+      userId: message.user_id,
+      text: message.text_body,
+      to: message.to_digits,
+      from: message.from_digits,
+      raw: message.raw
+    }
+  };
+}
+
+/**
  * Simulate WhatsApp webhook delivery status updates
  * In a real implementation, this would be called by WhatsApp webhooks
  */
@@ -113,6 +176,9 @@ export function simulateDeliveryStatusUpdate(messageId, status) {
     case 'read':
       updateMessageDeliveryStatus(messageId, MESSAGE_STATUS.READ, timestamp);
       updateMessageReadStatus(messageId, READ_STATUS.READ, timestamp);
+      break;
+    case 'failed':
+      markMessageAsFailed(messageId, 'Simulated failure');
       break;
     default:
       console.warn(`Unknown delivery status: ${status}`);

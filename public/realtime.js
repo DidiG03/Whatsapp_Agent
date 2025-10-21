@@ -12,6 +12,12 @@ class RealtimeManager {
     this.typingTimeout = null;
     this.isTyping = false;
     this.heartbeatInterval = null;
+    this.reconnectTimeout = null;
+    this.scriptElement = null;
+    this.eventListeners = new Map();
+    this.connectionAttempts = 0;
+    this.maxConnectionAttempts = 5;
+    this.isDestroyed = false;
     
     this.init();
   }
@@ -26,6 +32,11 @@ class RealtimeManager {
   }
   
   async connect() {
+    if (this.isDestroyed) {
+      console.warn('RealtimeManager is destroyed, cannot connect');
+      return;
+    }
+    
     if (this.isConnected) {
       console.log('🔌 Already connected');
       return;
@@ -35,6 +46,13 @@ class RealtimeManager {
       console.warn('No user ID found, cannot connect');
       return;
     }
+    
+    if (this.connectionAttempts >= this.maxConnectionAttempts) {
+      console.error('Max connection attempts reached, giving up');
+      return;
+    }
+    
+    this.connectionAttempts++;
     
     try {
       // Initialize Socket.IO connection
@@ -46,6 +64,7 @@ class RealtimeManager {
       console.log('🔌 RealtimeManager connected with userId:', this.userId);
     } catch (error) {
       console.error('Failed to connect RealtimeManager:', error);
+      this.handleConnectionError();
     }
   }
   
@@ -74,30 +93,35 @@ class RealtimeManager {
   async connectSocket() {
     return new Promise((resolve, reject) => {
       try {
+        // Clean up any existing script
+        if (this.scriptElement && this.scriptElement.parentNode) {
+          this.scriptElement.parentNode.removeChild(this.scriptElement);
+        }
+        
         // Import Socket.IO client
-        const script = document.createElement('script');
-        script.src = '/socket.io/socket.io.js';
-        script.onload = () => {
+        this.scriptElement = document.createElement('script');
+        this.scriptElement.src = '/socket.io/socket.io.js';
+        this.scriptElement.onload = () => {
           console.log('🔌 Socket.IO client loaded, connecting...');
           // Configure Socket.IO with better connection options
-    this.socket = io({
-      auth: {
-        userId: this.userId
-      },
-      query: {
-        userId: this.userId
-      },
-      transports: ['polling', 'websocket'], // Start with polling, upgrade to websocket
-      timeout: 30000, // 30 seconds
-      reconnection: true,
-      reconnectionDelay: 2000, // 2 seconds
-      reconnectionDelayMax: 10000, // 10 seconds
-      maxReconnectionAttempts: 5, // Limit attempts
-      forceNew: false, // Don't force new connection
-      upgrade: true, // Allow transport upgrades
-      rememberUpgrade: true, // Remember successful upgrades
-      autoConnect: true
-    });
+          this.socket = io({
+            auth: {
+              userId: this.userId
+            },
+            query: {
+              userId: this.userId
+            },
+            transports: ['polling', 'websocket'], // Start with polling, upgrade to websocket
+            timeout: 30000, // 30 seconds
+            reconnection: true,
+            reconnectionDelay: 2000, // 2 seconds
+            reconnectionDelayMax: 10000, // 10 seconds
+            maxReconnectionAttempts: 3, // Reduced attempts
+            forceNew: false, // Don't force new connection
+            upgrade: true, // Allow transport upgrades
+            rememberUpgrade: true, // Remember successful upgrades
+            autoConnect: true
+          });
           
           this.socket.on('connect', () => {
             this.isConnected = true;
@@ -112,15 +136,12 @@ class RealtimeManager {
             console.log('🔌 Disconnected from real-time server:', reason);
             this.updateConnectionStatus(false);
             this.stopHeartbeat();
+            this.clearReconnectTimeout();
             
-            // Auto-reconnect for certain disconnect reasons
-            if (reason === 'io server disconnect' || reason === 'io client disconnect') {
+            // Auto-reconnect for certain disconnect reasons (but not if destroyed)
+            if (!this.isDestroyed && (reason === 'io server disconnect' || reason === 'io client disconnect')) {
               console.log('🔄 Attempting to reconnect...');
-              setTimeout(() => {
-                if (!this.isConnected) {
-                  this.socket.connect();
-                }
-              }, 2000);
+              this.scheduleReconnect();
             }
           });
           
@@ -153,63 +174,17 @@ class RealtimeManager {
           });
         };
         
-        script.onerror = () => {
+        this.scriptElement.onerror = () => {
           reject(new Error('Failed to load Socket.IO client'));
         };
         
-        document.head.appendChild(script);
+        document.head.appendChild(this.scriptElement);
       } catch (error) {
         reject(error);
       }
     });
   }
   
-  setupEventListeners() {
-    if (!this.socket) return;
-    
-    // Handle new messages
-    this.socket.on('new_message', (messageData) => {
-      this.handleNewMessage(messageData);
-    });
-    
-    // Handle typing indicators
-    this.socket.on('typing_start', (data) => {
-      this.handleTypingStart(data);
-    });
-    
-    this.socket.on('typing_stop', (data) => {
-      this.handleTypingStop(data);
-    });
-    
-    // Handle heartbeat responses
-    this.socket.on('pong', (data) => {
-      console.log('💓 Heartbeat acknowledged:', data);
-    });
-    
-    // Handle live mode changes
-    this.socket.on('live_mode_changed', (data) => {
-      this.handleLiveModeChange(data);
-    });
-    
-    // Handle user online/offline
-    this.socket.on('user_online', (data) => {
-      this.handleUserOnline(data);
-    });
-    
-    this.socket.on('user_offline', (data) => {
-      this.handleUserOffline(data);
-    });
-    
-    // Handle message errors
-    this.socket.on('message_error', (error) => {
-      this.handleMessageError(error);
-    });
-    
-    // Handle message status updates
-    this.socket.on('message_status_update', (data) => {
-      this.handleMessageStatusUpdate(data);
-    });
-  }
   
   // Join a chat room
   joinChat(phone) {
@@ -354,15 +329,156 @@ class RealtimeManager {
         // Update the status class
         statusTicksDiv.className = `message-status-ticks message-status-${status}`;
         
-        // Show/hide second tick based on status
+        // Handle different status types
+        const firstTick = statusTicksDiv.querySelector('.message-tick:nth-child(1)');
         const secondTick = statusTicksDiv.querySelector('.message-tick:nth-child(2)');
-        if (secondTick) {
-          secondTick.style.display = status === 'sent' ? 'none' : 'block';
+        
+        if (firstTick && secondTick) {
+          switch (status) {
+            case 'sent':
+              // Only first tick visible (gray)
+              firstTick.style.display = 'block';
+              firstTick.style.color = '#999';
+              secondTick.style.display = 'none';
+              break;
+            case 'delivered':
+              // Both ticks visible, first tick green, second tick gray
+              firstTick.style.display = 'block';
+              firstTick.style.color = '#4CAF50';
+              secondTick.style.display = 'block';
+              secondTick.style.color = '#999';
+              break;
+            case 'read':
+              // Both ticks visible and green
+              firstTick.style.display = 'block';
+              firstTick.style.color = '#4CAF50';
+              secondTick.style.display = 'block';
+              secondTick.style.color = '#4CAF50';
+              break;
+            case 'failed':
+              // Show failed state with retry button
+              statusTicksDiv.innerHTML = `
+                <div class="message-failed-indicator" title="Message failed to send">
+                  <span class="failed-icon">!</span>
+                  <button class="retry-button" onclick="retryMessage('${messageId}')" title="Retry sending message">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+                      <path d="M21 3v5h-5"/>
+                      <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+                      <path d="M3 21v-5h5"/>
+                    </svg>
+                  </button>
+                </div>
+              `;
+              break;
+            default:
+              // Default to sent state
+              firstTick.style.display = 'block';
+              firstTick.style.color = '#999';
+              secondTick.style.display = 'none';
+          }
         }
         
         console.log(`✅ Updated message ${messageId} status to: ${status}`);
+      } else {
+        console.warn(`Status ticks div not found for message ${messageId}`);
+      }
+    } else {
+      console.warn(`Message element not found for ID: ${messageId}`);
+    }
+  }
+  
+  handleMessageReaction(data) {
+    console.log('😀 Message reaction update received:', data);
+    console.log('😀 Socket connected:', this.isConnected);
+    console.log('😀 Current chat:', this.currentChat);
+    
+    const { messageId, emoji, action, userId } = data;
+    
+    // Use data attribute selector which is more reliable than ID with special characters
+    const messageElement = document.querySelector(`[data-message-id="${messageId}"]`);
+    
+    if (!messageElement) {
+      console.warn(`Message element not found for ID: ${messageId}`);
+      console.warn(`Tried selector: [data-message-id="${messageId}"]`);
+      return;
+    }
+    
+    console.log(`Found message element for ID: ${messageId}`);
+    this.updateReactionOnElement(messageElement, messageId, emoji, action);
+  }
+  
+  updateReactionOnElement(messageElement, messageId, emoji, action) {
+    // Find or create the reactions container
+    let reactionsContainer = messageElement.querySelector('.message-reactions');
+    if (!reactionsContainer) {
+      reactionsContainer = document.createElement('div');
+      reactionsContainer.className = 'message-reactions';
+      
+      // Insert before the action buttons
+      const actionButtons = messageElement.querySelector('.message-actions');
+      if (actionButtons) {
+        actionButtons.parentNode.insertBefore(reactionsContainer, actionButtons);
+      } else {
+        // Insert at the end of the message bubble
+        const messageBubble = messageElement.querySelector('.bubble');
+        if (messageBubble) {
+          messageBubble.appendChild(reactionsContainer);
+        }
       }
     }
+    
+    // Find existing reaction for this emoji
+    const existingReaction = reactionsContainer.querySelector(`[data-emoji="${emoji}"]`);
+    
+    if (action === 'added') {
+      if (existingReaction) {
+        // Update count
+        const countSpan = existingReaction.querySelector('.reaction-count');
+        if (countSpan) {
+          const currentCount = parseInt(countSpan.textContent) || 0;
+          countSpan.textContent = currentCount + 1;
+        }
+      } else {
+        // Create new reaction element
+        const reactionElement = document.createElement('span');
+        reactionElement.className = 'reaction customer-reaction';
+        reactionElement.setAttribute('data-message-id', messageId);
+        reactionElement.setAttribute('data-emoji', emoji);
+        reactionElement.title = 'Customer reaction';
+        reactionElement.style.cursor = 'default';
+        reactionElement.innerHTML = `${emoji}<span class="reaction-count">1</span>`;
+        
+        reactionsContainer.appendChild(reactionElement);
+      }
+      
+      // Show a subtle animation for new reactions
+      const reactionElement = reactionsContainer.querySelector(`[data-emoji="${emoji}"]`);
+      if (reactionElement) {
+        reactionElement.style.transform = 'scale(1.2)';
+        reactionElement.style.transition = 'transform 0.2s ease';
+        setTimeout(() => {
+          reactionElement.style.transform = 'scale(1)';
+        }, 200);
+      }
+      
+    } else if (action === 'removed') {
+      if (existingReaction) {
+        const countSpan = existingReaction.querySelector('.reaction-count');
+        if (countSpan) {
+          const currentCount = parseInt(countSpan.textContent) || 0;
+          if (currentCount <= 1) {
+            // Remove the reaction entirely
+            existingReaction.remove();
+          } else {
+            // Decrease count
+            countSpan.textContent = currentCount - 1;
+          }
+        }
+      }
+    }
+    
+    console.log(`✅ Updated reactions for message ${messageId}: ${action} ${emoji}`);
   }
   
   // Add message to chat thread
@@ -617,6 +733,118 @@ class RealtimeManager {
       }
     }
   }
+
+  // Schedule reconnection with exponential backoff
+  scheduleReconnect() {
+    if (this.isDestroyed || this.isConnected) return;
+    
+    const delay = Math.min(1000 * Math.pow(2, this.connectionAttempts - 1), 30000);
+    console.log(`🔄 Scheduling reconnect in ${delay}ms (attempt ${this.connectionAttempts})`);
+    
+    this.reconnectTimeout = setTimeout(() => {
+      if (!this.isDestroyed && !this.isConnected) {
+        this.connect();
+      }
+    }, delay);
+  }
+
+  // Clear reconnection timeout
+  clearReconnectTimeout() {
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+  }
+
+  // Handle connection errors
+  handleConnectionError() {
+    this.clearReconnectTimeout();
+    this.stopHeartbeat();
+    
+    if (this.connectionAttempts < this.maxConnectionAttempts) {
+      this.scheduleReconnect();
+    } else {
+      console.error('❌ Max connection attempts reached, giving up');
+      this.updateConnectionStatus(false);
+    }
+  }
+
+  // Properly disconnect and cleanup
+  disconnect() {
+    console.log('🔌 Disconnecting RealtimeManager...');
+    this.isDestroyed = true;
+    
+    // Clear all timeouts and intervals
+    this.clearReconnectTimeout();
+    this.stopHeartbeat();
+    
+    if (this.typingTimeout) {
+      clearTimeout(this.typingTimeout);
+      this.typingTimeout = null;
+    }
+    
+    // Remove all event listeners
+    this.removeAllEventListeners();
+    
+    // Disconnect socket
+    if (this.socket) {
+      this.socket.removeAllListeners();
+      this.socket.disconnect();
+      this.socket = null;
+    }
+    
+    // Clean up script element
+    if (this.scriptElement && this.scriptElement.parentNode) {
+      this.scriptElement.parentNode.removeChild(this.scriptElement);
+      this.scriptElement = null;
+    }
+    
+    // Reset state
+    this.isConnected = false;
+    this.currentChat = null;
+    this.isTyping = false;
+    this.connectionAttempts = 0;
+    
+    console.log('🧹 RealtimeManager cleanup complete');
+  }
+
+  // Remove all event listeners
+  removeAllEventListeners() {
+    for (const [event, listener] of this.eventListeners) {
+      if (this.socket) {
+        this.socket.off(event, listener);
+      }
+    }
+    this.eventListeners.clear();
+  }
+
+  // Enhanced setupEventListeners with proper cleanup tracking
+  setupEventListeners() {
+    if (!this.socket) return;
+    
+    // Store listeners for cleanup
+    const listeners = {
+      'new_message': (messageData) => this.handleNewMessage(messageData),
+      'typing_start': (data) => this.handleTypingStart(data),
+      'typing_stop': (data) => this.handleTypingStop(data),
+      'pong': (data) => console.log('💓 Heartbeat acknowledged:', data),
+      'live_mode_changed': (data) => this.handleLiveModeChange(data),
+      'user_online': (data) => this.handleUserOnline(data),
+      'user_offline': (data) => this.handleUserOffline(data),
+      'message_error': (error) => this.handleMessageError(error),
+      'message_status_update': (data) => this.handleMessageStatusUpdate(data),
+      'message_reaction': (data) => {
+        console.log('📡 Received message_reaction event:', data);
+        this.handleMessageReaction(data);
+      }
+    };
+    
+    // Add listeners and track them
+    for (const [event, listener] of Object.entries(listeners)) {
+      this.socket.on(event, listener);
+      this.eventListeners.set(event, listener);
+    }
+  }
 }
 
 // Initialize real-time manager when DOM is loaded
@@ -627,6 +855,20 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('visibilitychange', () => {
     if (window.realtimeManager) {
       window.realtimeManager.handleVisibilityChange();
+    }
+  });
+  
+  // Add cleanup on page unload
+  window.addEventListener('beforeunload', () => {
+    if (window.realtimeManager) {
+      window.realtimeManager.disconnect();
+    }
+  });
+  
+  // Add cleanup on page hide (mobile)
+  window.addEventListener('pagehide', () => {
+    if (window.realtimeManager) {
+      window.realtimeManager.disconnect();
     }
   });
 });

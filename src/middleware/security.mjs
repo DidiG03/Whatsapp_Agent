@@ -38,21 +38,76 @@ export const createRateLimiters = () => {
   return { generalLimiter, strictLimiter, webhookLimiter };
 };
 
-// Minimal security headers (CSP and frame options completely disabled)
+// Essential security headers for protection against common attacks
 export const securityHeaders = (req, res, next) => {
-  // Explicitly remove any CSP or frame-related headers
-  res.removeHeader('Content-Security-Policy');
-  res.removeHeader('X-Frame-Options');
-  res.removeHeader('X-Content-Type-Options');
-  res.removeHeader('X-XSS-Protection');
-  res.removeHeader('X-DNS-Prefetch-Control');
-  res.removeHeader('X-Download-Options');
-  res.removeHeader('X-Permitted-Cross-Domain-Policies');
-  res.removeHeader('Strict-Transport-Security');
-  res.removeHeader('Cross-Origin-Embedder-Policy');
-  res.removeHeader('Cross-Origin-Opener-Policy');
-  res.removeHeader('Cross-Origin-Resource-Policy');
+  // Prevent clickjacking attacks but allow same-origin framing for internal iframes
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   
+  // Prevent MIME type sniffing
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  
+  // Enable XSS protection (legacy browsers)
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  
+  // Prevent DNS prefetching for privacy
+  res.setHeader('X-DNS-Prefetch-Control', 'off');
+  
+  // Disable download options
+  res.setHeader('X-Download-Options', 'noopen');
+  
+  // Restrict cross-domain policies
+  res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+  
+  // Basic CSP to prevent XSS (can be customized per route)
+  res.setHeader('Content-Security-Policy', 
+    "default-src 'self'; " +
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://clerk.accounts.dev https://accounts.clerk.com; " +
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+    "img-src 'self' data: https:; " +
+    "font-src 'self' data: https://fonts.gstatic.com; " +
+    "connect-src 'self' https://api.openai.com https://api.stripe.com https://graph.facebook.com https://modern-jay-77.accounts.dev https://accounts.clerk.com https://clerk.accounts.dev; " +
+    "frame-src 'self' https://clerk.accounts.dev https://accounts.clerk.com;"
+  );
+  
+  // HSTS for HTTPS (only in production)
+  if (process.env.NODE_ENV === 'production') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+  
+  next();
+};
+
+// Input sanitization middleware
+export const sanitizeInput = (req, res, next) => {
+  // Sanitize common XSS patterns
+  const sanitize = (obj) => {
+    if (typeof obj === 'string') {
+      return obj
+        .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+        .replace(/javascript:/gi, '')
+        .replace(/on\w+\s*=/gi, '')
+        .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '')
+        .replace(/<object\b[^<]*(?:(?!<\/object>)<[^<]*)*<\/object>/gi, '')
+        .replace(/<embed\b[^<]*(?:(?!<\/embed>)<[^<]*)*<\/embed>/gi, '');
+    }
+    if (typeof obj === 'object' && obj !== null) {
+      const sanitized = {};
+      for (const [key, value] of Object.entries(obj)) {
+        sanitized[key] = sanitize(value);
+      }
+      return sanitized;
+    }
+    return obj;
+  };
+
+  // Only sanitize mutable properties
+  if (req.body && typeof req.body === 'object') {
+    req.body = sanitize(req.body);
+  }
+  
+  // Don't modify req.query and req.params as they are read-only
+  // Instead, create sanitized copies if needed in route handlers
+
   next();
 };
 

@@ -1,0 +1,55 @@
+# Vercel Environment Variables Template
+# Copy this file to .env.local for local development
+# For Vercel deployment, set these variables in the Vercel dashboard
+
+# Server Configuration
+NODE_ENV=production
+PORT=3000
+LOG_LEVEL=info
+
+# Public Base URL (replace with your Vercel domain)
+PUBLIC_BASE_URL=https://your-app-name.vercel.app
+
+# Clerk Authentication (Optional)
+CLERK_PUBLISHABLE_KEY=pk_test_your_clerk_publishable_key
+CLERK_SECRET_KEY=sk_test_your_clerk_secret_key
+CLERK_SIGN_IN_URL=/sign-in
+CLERK_SIGN_UP_URL=/sign-up
+
+# WhatsApp Business API Configuration
+WHATSAPP_PHONE_NUMBER_ID=your_phone_number_id
+WHATSAPP_TOKEN=your_whatsapp_token
+WHATSAPP_VERIFY_TOKEN=your_verify_token
+WHATSAPP_APP_SECRET=your_app_secret
+WHATSAPP_BUSINESS_PHONE=your_business_phone_number
+
+# OpenAI Configuration
+OPENAI_API_KEY=sk-your_openai_api_key
+
+# Email/SMTP Configuration (Optional)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=your_email@gmail.com
+SMTP_PASS=your_app_password
+
+# Stripe Configuration (Optional)
+STRIPE_SECRET_KEY=sk_test_your_stripe_secret_key
+STRIPE_PUBLISHABLE_KEY=pk_test_your_stripe_publishable_key
+STRIPE_WEBHOOK_SECRET=whsec_your_webhook_secret
+
+# Database Configuration (for local development)
+DB_PATH=./data.sqlite
+
+# Sentry Configuration (Optional)
+SENTRY_DSN=your_sentry_dsn
+
+# Redis Configuration (Optional - for production scaling)
+REDIS_URL=redis://localhost:6379
+
+# Important Notes for Vercel Deployment:
+# 1. Set all these variables in your Vercel dashboard
+# 2. Replace PUBLIC_BASE_URL with your actual Vercel domain
+# 3. SQLite database will be ephemeral in serverless environment
+# 4. Consider using external database for production (PostgreSQL, etc.)
+# 5. File uploads will not persist between function invocations

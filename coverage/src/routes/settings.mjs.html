@@ -1037,7 +1037,19 @@
 <a name='L972'></a><a href='#L972'>972</a>
 <a name='L973'></a><a href='#L973'>973</a>
 <a name='L974'></a><a href='#L974'>974</a>
-<a name='L975'></a><a href='#L975'>975</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
+<a name='L975'></a><a href='#L975'>975</a>
+<a name='L976'></a><a href='#L976'>976</a>
+<a name='L977'></a><a href='#L977'>977</a>
+<a name='L978'></a><a href='#L978'>978</a>
+<a name='L979'></a><a href='#L979'>979</a>
+<a name='L980'></a><a href='#L980'>980</a>
+<a name='L981'></a><a href='#L981'>981</a>
+<a name='L982'></a><a href='#L982'>982</a>
+<a name='L983'></a><a href='#L983'>983</a>
+<a name='L984'></a><a href='#L984'>984</a>
+<a name='L985'></a><a href='#L985'>985</a>
+<a name='L986'></a><a href='#L986'>986</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -1343,6 +1355,16 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -2013,6 +2035,7 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js">import { ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
 import { clerkClient } from "../middleware/auth.mjs";
+import { adminWhitelist } from "../middleware/security.mjs";
 import { getOnboarding } from "../services/onboarding.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
 import { renderSidebar, renderTopbar } from "../utils.mjs";
@@ -2066,7 +2089,7 @@ export default function <span class="fstat-no" title="function not covered" >reg
             &lt;main class="main"&gt;
               &lt;div class="main-content"&gt;
                 &lt;div class="card chat-box-settings"&gt;
-                &lt;form method="post" action="/settings" onsubmit="return checkAuthThenSubmit();"&gt;
+                &lt;form method="post" action="/settings" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid =&gt; { if(valid) this.submit(); }); return false;"&gt;
                   &lt;div class="section"&gt;
                     &lt;h3&gt;Personal Information&lt;/h3&gt;
                     &lt;div class="grid-2"&gt;
@@ -2468,7 +2491,10 @@ export default function <span class="fstat-no" title="function not covered" >reg
                           // Proceed with adding quick reply
                           return fetch('/api/quick-replies', {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
+                            headers: { 
+                              'Content-Type': 'application/json',
+                              'Accept': 'application/json'
+                            },
                             credentials: 'include',
                             body: JSON.stringify({
                               text: formData.get('text'),
@@ -2531,7 +2557,10 @@ export default function <span class="fstat-no" title="function not covered" >reg
                           
                           return fetch(\`/api/quick-replies/\${editingReplyId}\`, {
                             method: 'PUT',
-                            headers: { 'Content-Type': 'application/json' },
+                            headers: { 
+                              'Content-Type': 'application/json',
+                              'Accept': 'application/json'
+                            },
                             credentials: 'include',
                             body: JSON.stringify({
                               text: formData.get('text'),
@@ -2573,6 +2602,10 @@ export default function <span class="fstat-no" title="function not covered" >reg
                           
                           return fetch(\`/api/quick-replies/\${id}\`, {
                             method: 'DELETE',
+                            headers: {
+                              'Accept': 'application/json',
+                              'Content-Type': 'application/json'
+                            },
                             credentials: 'include'
                           });
                         })
@@ -2756,7 +2789,7 @@ export default function <span class="fstat-no" title="function not covered" >reg
 <span class="cstat-no" title="statement not covered" >    return res.redirect('/settings');</span>
   });
 &nbsp;
-<span class="cstat-no" title="statement not covered" >  app.post("/danger/wipe", ensureAuthed, <span class="fstat-no" title="function not covered" >as</span>ync (req, res) =&gt; {</span>
+<span class="cstat-no" title="statement not covered" >  app.post("/danger/wipe", ensureAuthed, adminWhitelist, <span class="fstat-no" title="function not covered" >as</span>ync (req, res) =&gt; {</span>
     const userId = <span class="cstat-no" title="statement not covered" >getCurrentUserId(req);</span>
 <span class="cstat-no" title="statement not covered" >    try {</span>
       const wipe = <span class="cstat-no" title="statement not covered" >db.transaction(<span class="fstat-no" title="function not covered" >(u</span>id) =&gt; {</span>
@@ -2992,7 +3025,7 @@ export default function <span class="fstat-no" title="function not covered" >reg
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2025-10-19T20:05:14.649Z
+                at 2025-10-21T20:36:54.577Z
             </div>
         <script src="../../prettify.js"></script>
         <script>

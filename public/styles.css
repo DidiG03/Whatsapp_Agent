@@ -199,26 +199,10 @@ header h1, header h2 {
   overflow: hidden;
 }
 
-.card::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--primary-200), transparent);
-  opacity: 0;
-  transition: opacity var(--transition-normal);
-}
-
 .card:hover {
   box-shadow: var(--shadow-lg);
   transform: translateY(-2px);
   border-color: var(--primary-200);
-}
-
-.card:hover::before {
-  opacity: 1;
 }
 
 /* Enhanced List Styles */
@@ -269,16 +253,6 @@ header h1, header h2 {
   overflow-y: auto;
 }
 
-.sidebar::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 3px;
-  background: linear-gradient(90deg, var(--primary-500), var(--primary-600), var(--primary-500));
-}
-
 .sidebar .brand { 
   font-weight: 800; 
   margin-bottom: var(--space-8); 
@@ -293,6 +267,7 @@ header h1, header h2 {
 /* Phone emoji removed from sidebar branding */
 
 /* Enhanced Loading Component Styles */
+/* Simple loading styles */
 .loading-overlay {
   position: fixed;
   top: 0;
@@ -474,27 +449,11 @@ header h1, header h2 {
   overflow: hidden;
 }
 
-.sidebar .nav a::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--primary-500);
-  transform: scaleY(0);
-  transition: transform var(--transition-normal);
-}
-
 .sidebar .nav a:hover { 
   background: var(--primary-50); 
   color: var(--primary-700);
   transform: translateX(4px);
   box-shadow: var(--shadow-sm);
-}
-
-.sidebar .nav a:hover::before {
-  transform: scaleY(1);
 }
 
 .sidebar .nav a.active { 
@@ -577,7 +536,6 @@ header h1, header h2 {
   max-height: 480px;
   display: flex;
   flex-direction: column;
-  z-index: 1000;
 }
 .notification-header {
   display: flex;
@@ -1099,7 +1057,6 @@ form input[type="text"]:focus, form input[type="password"]:focus, form input[typ
   box-shadow: 0 0 0 4px rgba(99,102,241,0.15);
 }
 form input::placeholder, form textarea::placeholder { color: var(--muted); }
-button { background: var(--brand); color: white; border: 0; border-radius: 8px; padding: 8px 12px; cursor: pointer; }
 button:hover { filter: brightness(0.95); }
 .send { margin-left: 8px; }
 
@@ -2677,6 +2634,66 @@ button:hover { filter: brightness(0.95); }
 
 .message-status-read .message-tick::before {
   border-color: #4fc3f7;
+}
+
+/* Failed message indicator */
+.message-status-failed {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+  font-size: 12px;
+}
+
+.message-failed-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+
+.failed-icon {
+  color: #dc2626;
+  font-weight: bold;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.retry-button {
+  background: #dc2626;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 2px 4px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  opacity: 0.8;
+}
+
+.retry-button:hover {
+  background: #b91c1c;
+  opacity: 1;
+  transform: scale(1.05);
+}
+
+.retry-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.retry-button svg {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .status-dropdown button:hover {

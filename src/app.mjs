@@ -5,7 +5,7 @@
 import express from "express";
 import { STATIC_DIR } from "./config.mjs";
 import { initClerk } from "./middleware/auth.mjs";
-import { securityHeaders, createRateLimiters } from "./middleware/security.mjs";
+import { securityHeaders, createRateLimiters, sanitizeInput } from "./middleware/security.mjs";
 import { errorHandler, requestLogger } from "./middleware/errors.mjs";
 
 // Monitoring and Logging
@@ -36,16 +36,9 @@ import registerNotificationRoutes from "./routes/notifications.mjs";
 import registerPlanRoutes from "./routes/plan.mjs";
 import registerStripeRoutes from "./routes/stripe.mjs";
 import registerOnboardingRoutes from "./routes/onboarding.mjs";
-import registerAdminRoutes from "./routes/admin.mjs";
 import registerRealtimeRoutes, { initializeSocketIO } from "./routes/realtime.mjs";
-// import registerContactRoutes from "./routes/contacts.mjs"; // Disabled
 import registerMonitoringRoutes from "./routes/monitoring.mjs";
-// import registerWebhookManagementRoutes from "./routes/webhooks.mjs"; // Disabled
-// import registerApiManagementRoutes from "./routes/apiManagement.mjs"; // Disabled
-
-// Initialize webhook and API systems
-// import { initWebhookSystem } from "./services/webhooks.mjs"; // Disabled
-// import { initApiEndpointSystem } from "./services/apiEndpoints.mjs"; // Disabled
+import registerMetricsRoutes from "./routes/metrics.mjs";
 /**
  * Create and configure an Express app instance.
  * @returns {import('express').Express}
@@ -58,10 +51,6 @@ export async function createApp() {
   
   // Initialize monitoring systems
   initSentry();
-  
-  // Initialize webhook and API systems
-  // initWebhookSystem(); // Disabled
-  // initApiEndpointSystem(); // Disabled
   
   // Trust proxy for accurate IP addresses
   app.set('trust proxy', 1);
@@ -81,9 +70,18 @@ export async function createApp() {
   const { generalLimiter, strictLimiter, webhookLimiter } = createRateLimiters();
   app.use(generalLimiter);
   
-  // rawBody capture for signature verification
-  app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
-  app.use(express.urlencoded({ extended: true }));
+  // Request size limits to prevent DoS attacks
+  app.use(express.json({ 
+    limit: '10mb', // Limit JSON payloads to 10MB
+    verify: (req, _res, buf) => { req.rawBody = buf; } 
+  }));
+  app.use(express.urlencoded({ 
+    limit: '10mb', // Limit URL-encoded payloads to 10MB
+    extended: true 
+  }));
+
+  // Input sanitization to prevent XSS attacks
+  app.use(sanitizeInput);
 
   // Static file serving with security headers
   app.use(express.static(STATIC_DIR));
@@ -231,22 +229,18 @@ export async function createApp() {
   registerNotificationRoutes(app);
   registerPlanRoutes(app);
   registerStripeRoutes(app);
-  registerAdminRoutes(app);
   registerRealtimeRoutes(app);
-  // registerContactRoutes(app); // Disabled
   registerMonitoringRoutes(app);
-  // registerWebhookManagementRoutes(app); // Disabled
-  // registerApiManagementRoutes(app); // Disabled
+  registerMetricsRoutes(app);
   registerWebhookRoutes(app);
   registerMiscRoutes(app);
   
   // Apply specific rate limits to sensitive endpoints
-  app.use('/admin', strictLimiter);
   app.use('/webhook', webhookLimiter);
   
   // Start monitoring services
-  startHealthCheckScheduler(60000); // Check every minute
-  startMetricsCollection(30000); // Collect metrics every 30 seconds
+  startHealthCheckScheduler(300000); // Check every 5 minutes (reduced frequency)
+  startMetricsCollection(60000); // Collect metrics every minute (reduced frequency)
   
   // Global error handler (must be last)
   app.use(errorHandler);

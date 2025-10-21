@@ -14,7 +14,8 @@ import { listAvailability, createBooking, rescheduleBooking, cancelBooking, buil
 import { recordOutboundMessage } from "../services/messages.mjs";
 import { sendEscalationNotification, sendBookingNotification } from "../services/email.mjs";
 import { incrementUsage } from "../services/usage.mjs";
-import { broadcastNewMessage } from "./realtime.mjs";
+import { addReaction, removeReaction } from "../services/reactions.mjs";
+import { broadcastNewMessage, broadcastReaction, broadcastMessageStatus } from "./realtime.mjs";
 
 function isGreeting(raw) {
   const s = String(raw || "").trim().toLowerCase();
@@ -367,9 +368,8 @@ export default function registerWebhookRoutes(app) {
         } catch { return null; }
       })();
       const s = prospective || {};
-      // Temporarily disable signature verification for testing
-      // TODO: Re-enable signature verification in production
-      if (false && s.app_secret && sig) {
+      // Verify webhook signature for security
+      if (s.app_secret && sig) {
         const [algo, their] = sig.split("=");
         if (algo !== "sha256") return res.sendStatus(403);
         const hmac = crypto.createHmac("sha256", s.app_secret);
@@ -410,6 +410,34 @@ export default function registerWebhookRoutes(app) {
               error?.message ?? null,
               (change?.metadata?.phone_number_id ? (findSettingsByPhoneNumberId(change.metadata.phone_number_id)?.user_id || null) : null)
             );
+            
+            // Broadcast message status update in real-time
+            if (messageId && status) {
+              const tenantUserId = change?.metadata?.phone_number_id ? (findSettingsByPhoneNumberId(change.metadata.phone_number_id)?.user_id || null) : null;
+              if (tenantUserId) {
+                // Get the phone number from the message to determine the chat room
+                const messageQuery = db.prepare(`SELECT from_digits, to_digits FROM messages WHERE id = ? AND user_id = ?`).get(messageId, tenantUserId);
+                if (messageQuery) {
+                  const phone = messageQuery.from_digits || messageQuery.to_digits;
+                  if (phone) {
+                    const statusData = {
+                      messageId,
+                      status,
+                      recipientId,
+                      timestamp: timestamp ? Number(timestamp) : null,
+                      error: error ? {
+                        code: error.code,
+                        title: error.title,
+                        message: error.message
+                      } : null
+                    };
+                    
+                    broadcastMessageStatus(tenantUserId, phone, messageId, status, statusData);
+                    console.log(`📡 Broadcasted message status update: ${status} for message ${messageId}`);
+                  }
+                }
+              }
+            }
           } catch {}
         });
       }
@@ -432,11 +460,66 @@ export default function registerWebhookRoutes(app) {
           const tenant = findSettingsByPhoneNumberId(metadata?.phone_number_id) || findSettingsByBusinessPhone(metadata?.display_phone_number?.replace(/\D/g, ""));
           const tenantUserId = tenant?.user_id || null;
           
-          if (tenantUserId && message.reaction && message.reaction.message_id && message.reaction.emoji) {
-            // Add the customer's reaction to the database with special customer identifier
+          if (tenantUserId && message.reaction && message.reaction.message_id) {
             const customerUserId = `customer_${message.from}`;
-            const result = addReaction(message.reaction.message_id, customerUserId, message.reaction.emoji);
-            console.log("Stored customer reaction:", result);
+            const phone = normalizePhone(message.from);
+            
+            // Check if this is a reaction removal (empty emoji) or addition
+            if (message.reaction.emoji && message.reaction.emoji.trim() !== '') {
+              // This is a reaction addition
+              const result = addReaction(message.reaction.message_id, customerUserId, message.reaction.emoji);
+              console.log("Stored customer reaction:", result);
+              
+              // Broadcast the reaction in real-time to agents
+              if (result.success) {
+                const reactionData = {
+                  messageId: message.reaction.message_id,
+                  emoji: message.reaction.emoji,
+                  userId: customerUserId,
+                  added: true,
+                  removed: false
+                };
+                
+                broadcastReaction(tenantUserId, phone, message.reaction.message_id, message.reaction.emoji, 'added', reactionData);
+                console.log("📡 Broadcasted customer reaction addition to agents");
+              }
+            } else {
+              // This is a reaction removal (empty emoji)
+              console.log("Received reaction removal from customer");
+              
+              // We need to find which emoji was removed
+              // WhatsApp doesn't tell us which emoji was removed, so we need to check the database
+              const existingReactions = db.prepare(`
+                SELECT emoji FROM message_reactions 
+                WHERE message_id = ? AND user_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+              `).get(message.reaction.message_id, customerUserId);
+              
+              if (existingReactions) {
+                const emojiToRemove = existingReactions.emoji;
+                
+                // Remove the reaction from database
+                const result = removeReaction(message.reaction.message_id, customerUserId, emojiToRemove);
+                console.log("Removed customer reaction:", result);
+                
+                // Broadcast the reaction removal in real-time to agents
+                if (result.success) {
+                  const reactionData = {
+                    messageId: message.reaction.message_id,
+                    emoji: emojiToRemove,
+                    userId: customerUserId,
+                    added: false,
+                    removed: true
+                  };
+                  
+                  broadcastReaction(tenantUserId, phone, message.reaction.message_id, emojiToRemove, 'removed', reactionData);
+                  console.log("📡 Broadcasted customer reaction removal to agents");
+                }
+              } else {
+                console.log("No existing reaction found to remove for customer");
+              }
+            }
           }
         } catch (error) {
           console.error("Error storing customer reaction:", error);

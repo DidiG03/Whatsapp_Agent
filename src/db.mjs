@@ -93,6 +93,25 @@ db.exec(`
     updated_at INTEGER DEFAULT (strftime('%s','now'))
   );
 
+  CREATE TABLE IF NOT EXISTS ai_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    success BOOLEAN NOT NULL DEFAULT 1,
+    response_time INTEGER,
+    model TEXT DEFAULT 'gpt-3.5-turbo',
+    tokens_used INTEGER,
+    created_at INTEGER DEFAULT (strftime('%s','now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_ai_requests_user_id ON ai_requests(user_id);
+  CREATE INDEX IF NOT EXISTS idx_ai_requests_created_at ON ai_requests(created_at);
+
+  CREATE TABLE IF NOT EXISTS user_settings (
+    user_id TEXT PRIMARY KEY,
+    dashboard_preferences TEXT,
+    updated_at INTEGER DEFAULT (strftime('%s','now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_user_settings_updated_at ON user_settings(updated_at);
+
   -- Legacy 'settings' table removed in favor of settings_multi. Dropped at runtime if present.
 
   CREATE TABLE IF NOT EXISTS settings_multi (

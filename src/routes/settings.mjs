@@ -1,5 +1,6 @@
 import { ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
 import { clerkClient } from "../middleware/auth.mjs";
+import { adminWhitelist } from "../middleware/security.mjs";
 import { getOnboarding } from "../services/onboarding.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
 import { renderSidebar, renderTopbar } from "../utils.mjs";
@@ -455,7 +456,10 @@ export default function registerSettingsRoutes(app) {
                           // Proceed with adding quick reply
                           return fetch('/api/quick-replies', {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
+                            headers: { 
+                              'Content-Type': 'application/json',
+                              'Accept': 'application/json'
+                            },
                             credentials: 'include',
                             body: JSON.stringify({
                               text: formData.get('text'),
@@ -518,7 +522,10 @@ export default function registerSettingsRoutes(app) {
                           
                           return fetch(\`/api/quick-replies/\${editingReplyId}\`, {
                             method: 'PUT',
-                            headers: { 'Content-Type': 'application/json' },
+                            headers: { 
+                              'Content-Type': 'application/json',
+                              'Accept': 'application/json'
+                            },
                             credentials: 'include',
                             body: JSON.stringify({
                               text: formData.get('text'),
@@ -560,6 +567,10 @@ export default function registerSettingsRoutes(app) {
                           
                           return fetch(\`/api/quick-replies/\${id}\`, {
                             method: 'DELETE',
+                            headers: {
+                              'Accept': 'application/json',
+                              'Content-Type': 'application/json'
+                            },
                             credentials: 'include'
                           });
                         })
@@ -743,7 +754,7 @@ export default function registerSettingsRoutes(app) {
     return res.redirect('/settings');
   });
 
-  app.post("/danger/wipe", ensureAuthed, async (req, res) => {
+  app.post("/danger/wipe", ensureAuthed, adminWhitelist, async (req, res) => {
     const userId = getCurrentUserId(req);
     try {
       const wipe = db.transaction((uid) => {

@@ -292,9 +292,6 @@ export function renderTopbar(crumbs, email) {
               <span style="font-weight: 600;">Notifications</span>
               <button onclick="markAllAsRead(event)" class="mark-all-read">Mark all read</button>
             </div>
-            <div id="notification-list" class="notification-list">
-              <div class="notification-loading">Loading...</div>
-            </div>
           </div>
         </div>
         <div class="small">${email ? `Signed in as: ${email}` : ''}</div>

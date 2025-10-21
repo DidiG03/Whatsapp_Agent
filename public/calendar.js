@@ -42,7 +42,7 @@
     root.innerHTML = '';
 
     var toolbar = document.createElement('div');
-    toolbar.className = 'calendar-toolbar';
+    toolbar.className = 'calendar-';
     var left = document.createElement('button'); left.className='btn-ghost'; left.textContent='‹'; left.onclick=function(){ state.current = addMonths(state.current, -1); render(); };
     var right = document.createElement('button'); right.className='btn-ghost'; right.textContent='›'; right.onclick=function(){ state.current = addMonths(state.current, 1); render(); };
     var title = document.createElement('div'); title.className='calendar-title'; title.textContent = formatMonthYear(state.current);

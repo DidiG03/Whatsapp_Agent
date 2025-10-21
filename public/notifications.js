@@ -29,7 +29,12 @@ function toggleNotifications(event) {
 // Load notifications from API
 async function loadNotifications() {
   try {
-    const response = await fetch('/api/notifications?limit=20');
+    const response = await fetch('/api/notifications?limit=20', {
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      }
+    });
     const data = await response.json();
     
     if (data.success) {
@@ -98,7 +103,10 @@ async function handleNotificationClick(notificationId, link, event) {
     // Mark as read
     await fetch(`/api/notifications/${notificationId}/read`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      }
     });
     
     // Update UI
@@ -120,7 +128,10 @@ async function markAllAsRead(event) {
   try {
     const response = await fetch('/api/notifications/read-all', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      }
     });
     
     if (response.ok) {
@@ -158,7 +169,12 @@ function startNotificationPolling() {
   // Check every 30 seconds
   notificationCheckInterval = setInterval(async () => {
     try {
-      const response = await fetch('/api/notifications?limit=1&unread_only=true');
+      const response = await fetch('/api/notifications?limit=1&unread_only=true', {
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        }
+      });
       const data = await response.json();
       
       if (data.success) {

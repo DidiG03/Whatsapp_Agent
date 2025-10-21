@@ -29,7 +29,7 @@ async function checkDatabase() {
     if (result && result.test === 1) {
       // Check table counts
       const tableCounts = {};
-      const tables = ['users', 'messages', 'customers', 'kb_items', 'settings_multi'];
+      const tables = ['messages', 'customers', 'kb_items', 'settings_multi'];
       let tableErrors = 0;
       
       for (const table of tables) {
@@ -176,18 +176,18 @@ function checkMemory() {
     const rssMem = memUsage.rss;
     
     const usagePercentage = (usedMem / totalMem) * 100;
-    const isHealthy = usagePercentage < 85; // Lowered threshold from 90% to 85%
-    const isWarning = usagePercentage >= 85 && usagePercentage < 95; // Warning between 85-95%
+    const isHealthy = usagePercentage < 90; // Increased threshold from 85% to 90%
+    const isWarning = usagePercentage >= 90 && usagePercentage < 95; // Warning between 90-95%
     
-    // Force garbage collection if memory usage is high
-    if (usagePercentage > 80 && global.gc) {
+    // Force garbage collection if memory usage is very high (only above 95%)
+    if (usagePercentage > 95 && global.gc) {
       global.gc();
       // Re-check memory after GC
       const newMemUsage = process.memoryUsage();
       const newUsagePercentage = (newMemUsage.heapUsed / newMemUsage.heapTotal) * 100;
       
       healthChecks.memory = {
-        status: newUsagePercentage < 85 ? 'healthy' : (newUsagePercentage < 95 ? 'warning' : 'unhealthy'),
+        status: newUsagePercentage < 90 ? 'healthy' : (newUsagePercentage < 95 ? 'warning' : 'unhealthy'),
         heap_total: Math.round(newMemUsage.heapTotal / 1024 / 1024), // MB
         heap_used: Math.round(newMemUsage.heapUsed / 1024 / 1024), // MB
         heap_external: Math.round(newMemUsage.external / 1024 / 1024), // MB
@@ -197,7 +197,7 @@ function checkMemory() {
         last_check: new Date().toISOString()
       };
       
-      if (newUsagePercentage > 85) {
+      if (newUsagePercentage > 90) {
         logHelpers.logError(new Error('High memory usage after GC'), {
           component: 'health_check',
           check: 'memory',
@@ -206,7 +206,7 @@ function checkMemory() {
         });
       }
       
-      return newUsagePercentage < 85;
+      return newUsagePercentage < 90;
     }
     
     healthChecks.memory = {
@@ -354,9 +354,23 @@ export function healthCheckMiddleware() {
 }
 
 // Start periodic health checks
-export function startHealthCheckScheduler(intervalMs = 60000) { // Default 1 minute
-  setInterval(async () => {
-    await runHealthChecks();
+export function startHealthCheckScheduler(intervalMs = 300000) { // Default 5 minutes (increased from 1 minute)
+  // Clear any existing interval
+  if (global.healthCheckInterval) {
+    clearInterval(global.healthCheckInterval);
+  }
+  
+  global.healthCheckInterval = setInterval(async () => {
+    try {
+      await runHealthChecks();
+      
+      // Force garbage collection after health checks to prevent memory buildup
+      if (global.gc) {
+        global.gc();
+      }
+    } catch (error) {
+      logHelpers.logError(error, { component: 'health_check', operation: 'scheduled_check' });
+    }
   }, intervalMs);
   
   logHelpers.logBusinessEvent('health_check_scheduler_started', { interval_ms: intervalMs });

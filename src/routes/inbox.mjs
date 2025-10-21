@@ -22,9 +22,11 @@ import {
   READ_STATUS, 
   getMessageStatus, 
   markConversationAsRead,
-  simulateDeliveryStatusUpdate
+  simulateDeliveryStatusUpdate,
+  markMessageAsFailed,
+  retryFailedMessage
 } from "../services/messageStatus.mjs";
-import { initializeSocketIO, getIO } from "./realtime.mjs";
+import { initializeSocketIO, getIO, broadcastReaction } from "./realtime.mjs";
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
@@ -1090,12 +1092,32 @@ export default function registerInboxRoutes(app) {
         }
         
         // Generate ticks HTML
-        statusTicks = `
-          <div class="message-status-ticks message-status-${finalStatus}">
-            <div class="message-tick"></div>
-            <div class="message-tick"></div>
-          </div>
-        `;
+        if (finalStatus === MESSAGE_STATUS.FAILED) {
+          // Show red exclamation mark for failed messages with retry button
+          statusTicks = `
+            <div class="message-status-ticks message-status-failed">
+              <div class="message-failed-indicator" title="Message failed to send">
+                <span class="failed-icon">!</span>
+                <button class="retry-button" data-message-id="${m.id}" onclick="retryMessage('${m.id}')" title="Retry sending message">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+                    <path d="M21 3v5h-5"/>
+                    <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+                    <path d="M3 21v-5h5"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          `;
+        } else {
+          // Show normal ticks for other statuses
+          statusTicks = `
+            <div class="message-status-ticks message-status-${finalStatus}">
+              <div class="message-tick"></div>
+              <div class="message-tick"></div>
+            </div>
+          `;
+        }
       }
       
       // Get reactions for this message
@@ -1144,7 +1166,7 @@ export default function registerInboxRoutes(app) {
         </div>
       `;
       
-      return `<div class="${cls} message-container" id="message-${m.id}">${originalMessageHtml}<div class="bubble">${safe}<div class="meta">${ts}${statusTicks}</div>${reactionsHtml}${actionButtons}</div></div>`;
+      return `<div class="${cls} message-container" id="message-${m.id}" data-message-id="${m.id}">${originalMessageHtml}<div class="bubble">${safe}<div class="meta">${ts}${statusTicks}</div>${reactionsHtml}${actionButtons}</div></div>`;
     }).join("");
     const toastMsg = (req.query?.toast || '').toString();
     const toastType = (req.query?.type || '').toString();
@@ -1228,14 +1250,29 @@ export default function registerInboxRoutes(app) {
           const phone = '${phone}'.split('?')[0]; // Clean phone number to remove query parameters
           const userId = '${userId}';
           
+          // Debug: Log userId to console
+          console.log('🔍 Debug - userId from template:', userId);
+          
           // Initialize real-time features
           document.addEventListener('DOMContentLoaded', async () => {
             // Wait for realtime manager to be available
             const checkRealtime = async () => {
               if (window.realtimeManager) {
                 realtimeManager = window.realtimeManager;
+                
+                // Ensure we have a valid userId
+                let finalUserId = userId;
+                if (!finalUserId || finalUserId === 'undefined' || finalUserId === 'null') {
+                  // Try to get userId from auth manager as fallback
+                  if (window.authManager && window.authManager.getCurrentUserId) {
+                    finalUserId = await window.authManager.getCurrentUserId();
+                    console.log('🔍 Debug - userId from auth manager:', finalUserId);
+                  }
+                }
+                
                 // Set the userId for the realtime manager
-                realtimeManager.userId = userId;
+                realtimeManager.userId = finalUserId;
+                console.log('🔍 Debug - Setting realtimeManager.userId to:', finalUserId);
                 // Connect to Socket.IO
                 await realtimeManager.connect();
                 realtimeManager.joinChat(phone);
@@ -1575,6 +1612,64 @@ export default function registerInboxRoutes(app) {
               })
               .catch(error => {
                 console.error('Error toggling reaction:', error);
+              });
+          }
+
+          // Retry failed message function
+          function retryMessage(messageId) {
+            console.log('🔄 Retrying message:', messageId);
+            
+            // Show loading state on the retry button
+            const retryButton = document.querySelector('[data-message-id="' + messageId + '"]');
+            if (retryButton) {
+              retryButton.disabled = true;
+              retryButton.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>';
+              retryButton.style.opacity = '0.6';
+            }
+            
+            fetch('/retry-message/' + messageId, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              }
+            }).then(response => response.json())
+              .then(data => {
+                if (data.success) {
+                  console.log('✅ Message retried successfully:', data.newMessageId);
+                  // Show success toast
+                  if (typeof showToast === 'function') {
+                    showToast('Message sent successfully!', 'success');
+                  }
+                  // Reload the page to show updated status
+                  setTimeout(() => {
+                    window.location.reload();
+                  }, 1000);
+                } else {
+                  console.error('❌ Failed to retry message:', data.error);
+                  // Show error toast
+                  if (typeof showToast === 'function') {
+                    showToast('Retry failed: ' + data.error, 'error');
+                  }
+                  // Reset button state
+                  if (retryButton) {
+                    retryButton.disabled = false;
+                    retryButton.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>';
+                    retryButton.style.opacity = '1';
+                  }
+                }
+              })
+              .catch(error => {
+                console.error('❌ Error retrying message:', error);
+                // Show error toast
+                if (typeof showToast === 'function') {
+                  showToast('Retry failed: ' + error.message, 'error');
+                }
+                // Reset button state
+                if (retryButton) {
+                  retryButton.disabled = false;
+                  retryButton.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>';
+                  retryButton.style.opacity = '1';
+                }
               });
           }
           
@@ -2508,9 +2603,127 @@ export default function registerInboxRoutes(app) {
       }
     } catch (e) {
       console.error("Manual send error:", e);
+      
+      // Create a failed message record in the database
+      const tempMessageId = `failed_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const fromBiz = (cfg.business_phone || "").replace(/\D/g, "") || null;
+      const timestamp = Math.floor(Date.now() / 1000);
+      
+      try {
+        const stmt = db.prepare(`
+          INSERT INTO messages (id, user_id, direction, from_id, to_id, from_digits, to_digits, type, text_body, timestamp, raw, delivery_status, error_message)
+          VALUES (?, ?, 'outbound', ?, ?, ?, ?, 'text', ?, ?, ?, ?, ?)
+        `);
+        
+        stmt.run(
+          tempMessageId, 
+          userId, 
+          fromBiz, 
+          to, 
+          normalizePhone(fromBiz), 
+          normalizePhone(to), 
+          text, 
+          timestamp, 
+          JSON.stringify({ to, text }), 
+          MESSAGE_STATUS.FAILED,
+          e?.message || 'Unknown error'
+        );
+        
+        console.log(`❌ Created failed message record: ${tempMessageId}`);
+      } catch (dbError) {
+        console.error("Error creating failed message record:", dbError);
+      }
+      
       return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
     }
     res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Message sent')}&type=success`);
+  });
+
+  // Retry failed message endpoint
+  app.post("/retry-message/:messageId", ensureAuthed, async (req, res) => {
+    const messageId = req.params.messageId;
+    const userId = getCurrentUserId(req);
+    
+    try {
+      // Get the failed message details
+      const retryResult = retryFailedMessage(messageId);
+      
+      if (!retryResult.success) {
+        return res.status(400).json({ 
+          success: false, 
+          error: retryResult.error 
+        });
+      }
+      
+      const message = retryResult.message;
+      
+      // Verify the message belongs to the current user
+      if (message.userId !== userId) {
+        return res.status(403).json({ 
+          success: false, 
+          error: 'Unauthorized to retry this message' 
+        });
+      }
+      
+      // Get user settings for WhatsApp API
+      const cfg = getSettingsForUser(userId);
+      if (!cfg || !cfg.whatsapp_token || !cfg.phone_number_id) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'WhatsApp configuration not found' 
+        });
+      }
+      
+      // Attempt to resend the message
+      const data = await sendWhatsAppText(message.to, message.text, cfg);
+      const outboundId = data?.messages?.[0]?.id;
+      
+      if (outboundId) {
+        // Update the message with the new WhatsApp message ID
+        const updateStmt = db.prepare(`
+          UPDATE messages 
+          SET id = ?, delivery_status = ?, delivery_timestamp = ?, error_message = NULL
+          WHERE id = ?
+        `);
+        
+        const timestamp = Math.floor(Date.now() / 1000);
+        updateStmt.run(outboundId, MESSAGE_STATUS.SENT, timestamp, messageId);
+        
+        // Update contact activity
+        try {
+          updateContactActivity(userId, message.to);
+        } catch (error) {
+          console.error('Error updating contact activity:', error);
+        }
+        
+        console.log(`✅ Successfully retried message ${messageId} -> ${outboundId}`);
+        
+        res.json({ 
+          success: true, 
+          message: 'Message retried successfully',
+          newMessageId: outboundId
+        });
+      } else {
+        // Mark as failed again
+        markMessageAsFailed(messageId, 'Retry failed: No message ID returned from WhatsApp');
+        
+        res.status(500).json({ 
+          success: false, 
+          error: 'Failed to send message via WhatsApp' 
+        });
+      }
+      
+    } catch (error) {
+      console.error('Retry message error:', error);
+      
+      // Mark as failed again
+      markMessageAsFailed(messageId, `Retry failed: ${error.message}`);
+      
+      res.status(500).json({ 
+        success: false, 
+        error: error.message 
+      });
+    }
   });
 
   // Upload and send image route
@@ -2793,8 +3006,23 @@ export default function registerInboxRoutes(app) {
     
     const result = toggleReaction(messageId, userId, emoji);
     if (result.success) {
-      // If this is adding a reaction (not removing), send it via WhatsApp
-      if (result.added && phone) {
+      // Broadcast the reaction change in real-time
+      if (phone) {
+        const action = result.added ? 'added' : 'removed';
+        const reactionData = {
+          messageId,
+          emoji,
+          userId,
+          added: result.added,
+          removed: result.removed
+        };
+        
+        // Broadcast to all users in the chat room
+        broadcastReaction(userId, phone, messageId, emoji, action, reactionData);
+      }
+      
+      // Send reaction changes to WhatsApp
+      if (phone) {
         try {
           // Get the original message to find the WhatsApp message ID
           const originalMessage = db.prepare(`SELECT raw FROM messages WHERE id = ? AND user_id = ?`).get(messageId, userId);
@@ -2808,7 +3036,15 @@ export default function registerInboxRoutes(app) {
               const settings = getSettingsForUser(userId);
               
               if (settings.whatsapp_token && settings.phone_number_id) {
-                await sendWhatsappReaction(phone, whatsappMessageId, emoji, settings);
+                if (result.added) {
+                  // Send reaction addition to WhatsApp
+                  await sendWhatsappReaction(phone, whatsappMessageId, emoji, settings);
+                  console.log('Sent WhatsApp reaction addition');
+                } else if (result.removed) {
+                  // Send reaction removal to WhatsApp (empty emoji)
+                  await sendWhatsappReaction(phone, whatsappMessageId, '', settings);
+                  console.log('Sent WhatsApp reaction removal');
+                }
               }
             }
           }
