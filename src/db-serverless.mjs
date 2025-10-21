@@ -313,4 +313,4 @@ try {
 
 // Export the same interface as the original db.mjs
 export { db };
-export { db as default };
+export default db;
