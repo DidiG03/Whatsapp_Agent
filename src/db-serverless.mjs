@@ -106,9 +106,10 @@ const SERVERLESS_SCHEMA = `
 if (process.env.VERCEL) {
   try {
     db.exec(SERVERLESS_SCHEMA);
-    console.log('Serverless database schema initialized');
+    console.log('Serverless database schema initialized successfully');
   } catch (error) {
     console.error('Error initializing serverless database:', error);
+    // Don't throw - let the app continue without database if needed
   }
 }
 

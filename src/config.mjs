@@ -4,8 +4,15 @@
  * process.env being populated. Only plain constants are exported.
  */
 import dotenv from "dotenv";
+import fs from "fs";
+import path from "path";
 
-dotenv.config();
+// Only load .env file if it exists and we're not in Vercel
+if (!process.env.VERCEL && fs.existsSync('.env')) {
+  dotenv.config();
+} else if (process.env.VERCEL) {
+  console.log('Running in Vercel environment - using environment variables from Vercel');
+}
 
 /** Log verbosity level used by pino logger. */
 export const LOG_LEVEL = process.env.LOG_LEVEL || "info";
