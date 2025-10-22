@@ -39,7 +39,8 @@ export const CLERK_SIGN_UP_URL = process.env.CLERK_SIGN_UP_URL;
 export const STATIC_DIR = "public";
 
 /** Public base URL used for links sent to users (e.g., ICS downloads). */
-export const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || `http://localhost:${PORT}`;
+export const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 
+  (process.env.VERCEL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${PORT}`);
 
 /** Email/SMTP configuration for notifications */
 export const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';

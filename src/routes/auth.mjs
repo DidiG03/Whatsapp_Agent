@@ -4,12 +4,18 @@ import { getAuth, clerkClient } from "@clerk/express";
 export default function registerAuthRoutes(app) {
   app.get("/auth", (_req, res) => {
     const pub = (process.env.CLERK_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) ? "configured" : "missing publishable key";
+    const secret = process.env.CLERK_SECRET_KEY ? "configured" : "missing secret key";
+    const baseUrl = PUBLIC_BASE_URL;
+    
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.end(`
       <html><head><link rel="stylesheet" href="/styles.css"></head><body>
         <div class="container">
           <h2>Auth</h2>
           <p class="small">Clerk status: ${pub}</p>
+          <p class="small">Secret key: ${secret}</p>
+          <p class="small">Base URL: ${baseUrl}</p>
+          <p class="small">Environment: ${process.env.NODE_ENV || 'development'}</p>
           <ul class="list card">
             <li><a href="${(() => { const base = CLERK_SIGN_IN_URL || 'https://accounts.clerk.com/sign-in'; return base.includes('redirect_url=') ? base : `${base}${base.includes('?') ? '&' : '?'}redirect_url=${encodeURIComponent(PUBLIC_BASE_URL)}`; })()}">Sign In</a></li>
             <li><a href="${(() => { const base = CLERK_SIGN_UP_URL || 'https://accounts.clerk.com/sign-up'; return base.includes('redirect_url=') ? base : `${base}${base.includes('?') ? '&' : '?'}redirect_url=${encodeURIComponent(PUBLIC_BASE_URL)}`; })()}">Sign Up</a></li>
