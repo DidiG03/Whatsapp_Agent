@@ -61,12 +61,13 @@ export const securityHeaders = (req, res, next) => {
   // Basic CSP to prevent XSS (can be customized per route)
   res.setHeader('Content-Security-Policy', 
     "default-src 'self'; " +
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://clerk.accounts.dev https://accounts.clerk.com; " +
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://clerk.accounts.dev https://accounts.clerk.com https://unpkg.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com; " +
+    "worker-src 'self' blob:; " +
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
     "img-src 'self' data: https:; " +
     "font-src 'self' data: https://fonts.gstatic.com; " +
-    "connect-src 'self' https://api.openai.com https://api.stripe.com https://graph.facebook.com https://modern-jay-77.accounts.dev https://accounts.clerk.com https://clerk.accounts.dev; " +
-    "frame-src 'self' https://clerk.accounts.dev https://accounts.clerk.com;"
+    "connect-src 'self' https://api.openai.com https://api.stripe.com https://graph.facebook.com https://*.clerk.accounts.dev https://accounts.clerk.com https://clerk.accounts.dev https://clerk-telemetry.com https://*.cloudflare.com; " +
+    "frame-src 'self' https://clerk.accounts.dev https://accounts.clerk.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com;"
   );
   
   // HSTS for HTTPS (only in production)

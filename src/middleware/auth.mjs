@@ -25,14 +25,16 @@ export function initClerk(app) {
     if (!url) return url;
     return url.includes("redirect_url=") ? url : `${url}${url.includes("?") ? "&" : "?"}redirect_url=${encodeURIComponent(baseUrl)}`;
   };
-  const signInUrl = appendRedirect(CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in");
-  const signUpUrl = appendRedirect(CLERK_SIGN_UP_URL || "https://accounts.clerk.com/sign-up");
+  const signInUrl = appendRedirect(CLERK_SIGN_IN_URL || "/auth/signin");
+  const signUpUrl = appendRedirect(CLERK_SIGN_UP_URL || "/auth/signup");
   // Use a single Clerk middleware for all requests to ensure consistent session handling
   const clerkMW = clerkMiddleware({
     publishableKey: CLERK_PUBLISHABLE,
     secretKey: CLERK_SECRET,
     signInUrl,
     signUpUrl,
+    afterSignInUrl: '/dashboard',
+    afterSignUpUrl: '/dashboard',
   });
   app.use(clerkMW);
 }
@@ -62,13 +64,11 @@ export function ensureAuthed(req, res, next) {
         });
       }
       
-      // Use the current request's host to preserve ngrok URL
+      // Redirect to our custom signin page
       const currentBaseUrl = `${req.protocol}://${req.get('host')}`;
       const redirectUrl = req.originalUrl ? `${currentBaseUrl}${req.originalUrl}` : currentBaseUrl;
-      const signIn = (CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in").includes("redirect_url=")
-        ? (CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in")
-        : `${CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in"}${(CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in").includes("?") ? "&" : "?"}redirect_url=${encodeURIComponent(redirectUrl)}`;
-      return res.redirect(signIn);
+      const signInUrl = `${currentBaseUrl}/auth/signin?redirect_url=${encodeURIComponent(redirectUrl)}`;
+      return res.redirect(signInUrl);
     }
     return next();
   } catch (error) {
@@ -92,13 +92,11 @@ export function ensureAuthed(req, res, next) {
       });
     }
     
-    // Use the current request's host to preserve ngrok URL
+    // Redirect to our custom signin page
     const currentBaseUrl = `${req.protocol}://${req.get('host')}`;
     const redirectUrl = req.originalUrl ? `${currentBaseUrl}${req.originalUrl}` : currentBaseUrl;
-    const signIn = (CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in").includes("redirect_url=")
-      ? (CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in")
-      : `${CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in"}${(CLERK_SIGN_IN_URL || "https://accounts.clerk.com/sign-in").includes("?") ? "&" : "?"}redirect_url=${encodeURIComponent(redirectUrl)}`;
-    return res.redirect(signIn);
+    const signInUrl = `${currentBaseUrl}/auth/signin?redirect_url=${encodeURIComponent(redirectUrl)}`;
+    return res.redirect(signInUrl);
   }
 }
 

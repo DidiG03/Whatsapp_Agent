@@ -20,7 +20,7 @@ export const LOG_LEVEL = process.env.LOG_LEVEL || "info";
 export const PORT = process.env.PORT || 3000;
 
 /** Clerk publishable key, if configured (can also come from NEXT_PUBLIC_ variant). */
-export const CLERK_PUBLISHABLE = process.env.CLERK_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || null;
+export const CLERK_PUBLISHABLE = process.env.CLERK_PUBLISHABLE || process.env.CLERK_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || null;
 /** Clerk secret key, required for server-side auth. */
 export const CLERK_SECRET = process.env.CLERK_SECRET_KEY || null;
 /** Convenience flag indicating whether Clerk auth is enabled. */
@@ -39,8 +39,7 @@ export const CLERK_SIGN_UP_URL = process.env.CLERK_SIGN_UP_URL;
 export const STATIC_DIR = "public";
 
 /** Public base URL used for links sent to users (e.g., ICS downloads). */
-export const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 
-  (process.env.VERCEL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${PORT}`);
+export const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || `http://localhost:${PORT}`;
 
 /** Email/SMTP configuration for notifications */
 export const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
