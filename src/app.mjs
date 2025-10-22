@@ -18,7 +18,7 @@ import { metricsMiddleware, startMetricsCollection } from "./monitoring/metrics.
 import { scalabilityManager, createPerformanceMiddleware, scalabilityHealthCheck } from "./scalability/index.mjs";
 
 // Ensure DB side-effects are applied by importing appropriate db module
-import "./db-serverless.mjs";
+import "./db-mongodb.mjs";
 
 // Routes
 import registerHomeRoutes from "./routes/home.mjs";

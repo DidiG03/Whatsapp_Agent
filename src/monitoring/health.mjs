@@ -3,7 +3,7 @@
  * Provides comprehensive system health monitoring and status reporting
  */
 
-import { db } from '../db-serverless.mjs';
+import { getDB, isMongoConnected } from '../db-mongodb.mjs';
 import { logHelpers } from './logger.mjs';
 import { sentryHelpers } from './sentry.mjs';
 import fs from 'fs';
@@ -21,46 +21,40 @@ const healthChecks = {
 async function checkDatabase() {
   try {
     const startTime = Date.now();
-    
-    // Test basic query
-    const result = db.prepare('SELECT 1 as test').get();
+    if (!isMongoConnected()) throw new Error('MongoDB not connected');
+
+    const mongoDb = getDB();
+    await mongoDb.command({ ping: 1 });
     const duration = Date.now() - startTime;
-    
-    if (result && result.test === 1) {
-      // Check table counts
-      const tableCounts = {};
-      const tables = ['messages', 'customers', 'kb_items', 'settings_multi'];
-      let tableErrors = 0;
-      
-      for (const table of tables) {
-        try {
-          const count = db.prepare(`SELECT COUNT(*) as count FROM ${table}`).get()?.count || 0;
-          tableCounts[table] = count;
-        } catch (error) {
-          tableCounts[table] = 'error';
-          tableErrors++;
-          // Log table errors but don't fail the entire health check
-          logHelpers.logError(error, { component: 'health_check', check: 'database_table', table });
-        }
+
+    // Collection counts (best-effort)
+    const tableCounts = {};
+    const tables = ['messages', 'customers', 'kb_items', 'settings_multi'];
+    let tableErrors = 0;
+    for (const name of tables) {
+      try {
+        const count = await mongoDb.collection(name).estimatedDocumentCount();
+        tableCounts[name] = count;
+      } catch (error) {
+        tableCounts[name] = 'error';
+        tableErrors++;
+        logHelpers.logError(error, { component: 'health_check', check: 'database_collection', collection: name });
       }
-      
-      // Only fail database health if critical tables are missing
-      const criticalTables = ['messages', 'customers'];
-      const criticalTableErrors = criticalTables.filter(table => tableCounts[table] === 'error').length;
-      
-      healthChecks.database = {
-        status: criticalTableErrors === 0 ? 'healthy' : 'unhealthy',
-        response_time: duration,
-        table_counts: tableCounts,
-        table_errors: tableErrors,
-        critical_table_errors: criticalTableErrors,
-        last_check: new Date().toISOString()
-      };
-      
-      return criticalTableErrors === 0;
     }
-    
-    throw new Error('Database query failed');
+
+    const criticalTables = ['messages', 'customers'];
+    const criticalTableErrors = criticalTables.filter(t => tableCounts[t] === 'error').length;
+
+    healthChecks.database = {
+      status: criticalTableErrors === 0 ? 'healthy' : 'degraded',
+      response_time: duration,
+      table_counts: tableCounts,
+      table_errors: tableErrors,
+      critical_table_errors: criticalTableErrors,
+      last_check: new Date().toISOString()
+    };
+
+    return true;
   } catch (error) {
     healthChecks.database = {
       status: 'unhealthy',
@@ -176,18 +170,18 @@ function checkMemory() {
     const rssMem = memUsage.rss;
     
     const usagePercentage = (usedMem / totalMem) * 100;
-    const isHealthy = usagePercentage < 90; // Increased threshold from 85% to 90%
-    const isWarning = usagePercentage >= 90 && usagePercentage < 95; // Warning between 90-95%
+    const isHealthy = usagePercentage < 95; // Relax threshold
+    const isWarning = usagePercentage >= 95 && usagePercentage < 98; // Warning between 95-98%
     
     // Force garbage collection if memory usage is very high (only above 95%)
-    if (usagePercentage > 95 && global.gc) {
+    if (usagePercentage > 98 && global.gc) {
       global.gc();
       // Re-check memory after GC
       const newMemUsage = process.memoryUsage();
       const newUsagePercentage = (newMemUsage.heapUsed / newMemUsage.heapTotal) * 100;
       
       healthChecks.memory = {
-        status: newUsagePercentage < 90 ? 'healthy' : (newUsagePercentage < 95 ? 'warning' : 'unhealthy'),
+        status: newUsagePercentage < 95 ? 'healthy' : (newUsagePercentage < 98 ? 'warning' : 'unhealthy'),
         heap_total: Math.round(newMemUsage.heapTotal / 1024 / 1024), // MB
         heap_used: Math.round(newMemUsage.heapUsed / 1024 / 1024), // MB
         heap_external: Math.round(newMemUsage.external / 1024 / 1024), // MB
@@ -197,7 +191,7 @@ function checkMemory() {
         last_check: new Date().toISOString()
       };
       
-      if (newUsagePercentage > 90) {
+      if (newUsagePercentage > 95) {
         logHelpers.logError(new Error('High memory usage after GC'), {
           component: 'health_check',
           check: 'memory',

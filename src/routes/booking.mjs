@@ -1,7 +1,7 @@
 import { ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
 import { listAvailability, createBooking, cancelBooking, rescheduleBooking } from "../services/booking.mjs";
 import { sendBookingNotification } from "../services/email.mjs";
-import { db } from "../db-serverless.mjs";
+import { db } from "../db-mongodb.mjs";
 
 export default function registerBookingRoutes(app) {
   // Public read: availability (admin-auth optional). If authed, uses their user_id.

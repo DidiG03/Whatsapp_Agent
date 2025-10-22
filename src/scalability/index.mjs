@@ -10,7 +10,7 @@ import { businessMetrics } from '../monitoring/metrics.mjs';
 export const scalabilityConfig = {
   // Database configuration
   database: {
-    type: process.env.DATABASE_TYPE || 'sqlite', // sqlite, postgresql
+    type: process.env.DATABASE_TYPE || 'mongodb', // mongodb
     connectionPool: {
       min: parseInt(process.env.DB_POOL_MIN || '5'),
       max: parseInt(process.env.DB_POOL_MAX || '20'),

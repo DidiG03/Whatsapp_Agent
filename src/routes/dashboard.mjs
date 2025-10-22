@@ -1,6 +1,6 @@
 import { ensureAuthed, getSignedInEmail, getCurrentUserId, signSessionToken } from "../middleware/auth.mjs";
 import { renderSidebar, escapeHtml, renderTopbar, getProfessionalHead } from "../utils.mjs";
-import { db } from "../db-serverless.mjs";
+import { db } from "../db-mongodb.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
 import { getCurrentUsage, getUserPlan } from "../services/usage.mjs";
 
@@ -13,42 +13,7 @@ export default function registerDashboardRoutes(app) {
     // Get usage and plan info
     const usage = getCurrentUsage(userId);
     const plan = getUserPlan(userId);
-    const totalMessages = usage.inbound_messages + usage.outbound_messages + usage.template_messages;
-    const usagePercentage = plan.monthly_limit > 0 ? Math.round((totalMessages / plan.monthly_limit) * 100) : 0;
-    
-    // Create usage summary HTML
-    const usageHtml = `
-      <div class="card">
-        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
-          <h3 style="margin: 0;">Monthly Usage</h3>
-          <a href="/plan" class="btn-ghost" style="font-size: 14px;">View Details</a>
-        </div>
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 16px;">
-          <div style="text-align: center;">
-            <div style="font-size: 24px; font-weight: bold; color: #111827;">${totalMessages}</div>
-            <div style="font-size: 14px; color: #6b7280;">of ${plan.monthly_limit}</div>
-            <div style="font-size: 12px; color: #6b7280;">messages</div>
-          </div>
-          <div style="text-align: center;">
-            <div style="font-size: 24px; font-weight: bold; color: #111827;">${usagePercentage}%</div>
-            <div style="font-size: 14px; color: #6b7280;">used</div>
-            <div class="usage-progress" style="width: 100%; height: 6px; background: #e5e7eb; border-radius: 3px; margin-top: 4px; overflow: hidden;">
-              <div style="height: 100%; width: ${Math.min(usagePercentage, 100)}%; background-color: ${usagePercentage > 90 ? '#ef4444' : usagePercentage > 75 ? '#f59e0b' : '#10b981'}; transition: width 0.3s ease;"></div>
-            </div>
-          </div>
-          <div style="text-align: center;">
-            <div style="font-size: 24px; font-weight: bold; color: #111827;">${plan.plan_name}</div>
-            <div style="font-size: 14px; color: #6b7280;">plan</div>
-            <div style="font-size: 12px; color: #6b7280;">$${plan.plan_name === 'free' ? '0' : '29'}/month</div>
-          </div>
-        </div>
-        ${usagePercentage > 90 ? `
-          <div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; padding: 8px; margin-top: 12px; text-align: center;">
-            <span style="color: #dc2626; font-size: 14px;">⚠️ ${usagePercentage}% usage reached</span>
-          </div>
-        ` : ''}
-      </div>
-    `;
+    const totalMessages = usage.inbound_messages + usage.outbound_messages + usage.template_messages;    
 
     // Create metrics dashboard HTML
     const metricsHtml = `
@@ -701,12 +666,9 @@ export default function registerDashboardRoutes(app) {
           <div class="layout">
             ${renderSidebar('dashboard')}
             <main class="main">
-              <div class="main-content">
-                ${usageHtml}
                 ${metricsHtml}
                 ${apptHtml}
                 ${intakeHtml}
-              </div>
               <div id="mini-onboard" class="card" style="position:fixed; right:24px; bottom:92px; width:400px; display:none; padding:0; overflow:hidden;">
                 <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-bottom:1px solid #eee;">
                   <div class="small">KB Assistant</div>

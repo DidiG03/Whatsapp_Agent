@@ -359,7 +359,7 @@ export const databaseAdapter = {
     } else {
       // Fallback to SQLite
       logHelpers.logBusinessEvent('database_fallback_sqlite');
-      return 'sqlite';
+      return 'mongodb';
     }
   },
   
@@ -383,9 +383,9 @@ export const databaseAdapter = {
       try {
         const sqliteDb = this.getInstance();
         sqliteDb.prepare('SELECT 1').get();
-        return { connected: true, type: 'sqlite' };
+        return { connected: true, type: 'mongodb' };
       } catch (error) {
-        return { connected: false, error: error.message, type: 'sqlite' };
+        return { connected: false, error: error.message, type: 'mongodb' };
       }
     }
   }

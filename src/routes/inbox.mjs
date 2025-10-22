@@ -1,7 +1,8 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
 import { renderSidebar, normalizePhone, escapeHtml, renderTopbar, getProfessionalHead } from "../utils.mjs";
 import { listContactsForUser, listMessagesForThread } from "../services/conversations.mjs";
-import { db } from "../db-serverless.mjs";
+import { db } from "../db-mongodb.mjs";
+import { Customer, Handoff, Message, MessageStatus } from '../schemas/mongodb.mjs';
 import { getSettingsForUser } from "../services/settings.mjs";
 import { sendWhatsAppText, sendWhatsAppTemplate, sendWhatsappImage, sendWhatsappReaction } from "../services/whatsapp.mjs";
 import { getQuickReplies } from "../services/quickReplies.mjs";
@@ -294,31 +295,29 @@ export default function registerInboxRoutes(app) {
       contacts = await performAdvancedSearch(userId, { q, messageType, direction, dateFrom, dateTo });
     } else {
       // Regular contact list
-      contacts = listContactsForUser(userId);
+      contacts = await listContactsForUser(userId);
     }
     const email = await getSignedInEmail(req);
-    const customers = db.prepare(`SELECT contact_id, display_name FROM customers WHERE user_id = ?`).all(userId);
+    const customers = await Customer.find({ user_id: userId }).select('contact_id display_name');
     const customerNameByContact = new Map(customers.map(r => [String(r.contact_id), r.display_name]));
-    const lastSeenRows = db.prepare(`SELECT contact_id, COALESCE(last_seen_ts,0) AS seen FROM handoff WHERE user_id = ?`).all(userId);
-    const lastSeenByContact = new Map(lastSeenRows.map(r => [String(r.contact_id), Number(r.seen||0)]));
+    const lastSeenRows = await Handoff.find({ user_id: userId }).select('contact_id last_seen_ts');
+    const lastSeenByContact = new Map(lastSeenRows.map(r => [String(r.contact_id), Number(r.last_seen_ts || 0)]));
     
     // Get conversation statuses
-    const statusRows = db.prepare(`SELECT contact_id, conversation_status FROM handoff WHERE user_id = ?`).all(userId);
+    const statusRows = await Handoff.find({ user_id: userId }).select('contact_id conversation_status');
     const statusByContact = new Map(statusRows.map(r => [String(r.contact_id), r.conversation_status || CONVERSATION_STATUSES.NEW]));
     // Get escalations and check if support has handled them
-    const escalationRows = db.prepare(`
-      SELECT h.contact_id, h.escalation_reason, h.updated_at as escalation_ts, 
-             h.is_human, h.human_expires_ts
-      FROM handoff h 
-      WHERE h.user_id = ? AND h.escalation_reason IS NOT NULL
-    `).all(userId);
+    const escalationRows = await Handoff.find({ 
+      user_id: userId, 
+      escalation_reason: { $exists: true, $ne: null } 
+    }).select('contact_id escalation_reason updatedAt is_human human_expires_ts');
     
     const escalationByContact = new Map();
     const now = Math.floor(Date.now()/1000);
     
     escalationRows.forEach(row => {
       const contactId = String(row.contact_id);
-      const escalationTs = Number(row.escalation_ts || 0);
+      const escalationTs = Number(row.updatedAt || 0);
       const isHuman = Number(row.is_human || 0);
       const humanExpiresTs = Number(row.human_expires_ts || 0);
       
@@ -959,31 +958,54 @@ export default function registerInboxRoutes(app) {
     const phone = req.params.phone.split('?')[0]; // Remove any query parameters from phone
     const userId = getCurrentUserId(req);
     const phoneDigits = normalizePhone(phone);
-    // Mark as seen
+    // Mark as seen (Mongo)
     try {
-      db.prepare(`INSERT INTO handoff (contact_id, user_id, last_seen_ts, updated_at)
-        VALUES (?, ?, strftime('%s','now'), strftime('%s','now'))
-        ON CONFLICT(contact_id, user_id) DO UPDATE SET last_seen_ts = strftime('%s','now'), updated_at = strftime('%s','now')`).run(phone, userId);
+      const nowSec = Math.floor(Date.now()/1000);
+      await Handoff.findOneAndUpdate(
+        { contact_id: phone, user_id: userId },
+        { $set: { last_seen_ts: nowSec, updatedAt: new Date() } },
+        { upsert: true }
+      );
     } catch {}
-    const cust = db.prepare(`SELECT display_name FROM customers WHERE user_id = ? AND contact_id = ?`).get(userId, phone);
+    const cust = await Customer.findOne({ user_id: userId, contact_id: phone }).select('display_name');
     const headerName = cust?.display_name || ('+' + String(phone).replace(/^\+/, ''));
-    // Fetch richer message data so we can render interactive/document messages too
-    const msgs = db.prepare(`
-      SELECT m.id, m.direction, m.type, m.text_body, COALESCE(m.timestamp, 0) AS ts, m.raw,
-             ms.status as message_status, ms.timestamp as status_timestamp
-      FROM messages m
-      LEFT JOIN (
-        SELECT message_id, status, timestamp, ROW_NUMBER() OVER (PARTITION BY message_id ORDER BY timestamp DESC) as rn
-        FROM message_statuses 
-      WHERE user_id = ?
-      ) ms ON m.id = ms.message_id AND ms.rn = 1
-      WHERE m.user_id = ?
-        AND (
-          ((m.from_digits = ? OR (m.from_digits IS NULL AND REPLACE(REPLACE(REPLACE(m.from_id,'+',''),' ',''),'-','') = ?)) AND m.direction = 'inbound') OR
-          ((m.to_digits   = ? OR (m.to_digits   IS NULL AND REPLACE(REPLACE(REPLACE(m.to_id,'+',''),' ',''),'-','')   = ?)) AND m.direction = 'outbound')
-        )
-      ORDER BY m.timestamp ASC
-    `).all(userId, userId, phoneDigits, phoneDigits, phoneDigits, phoneDigits);
+    // Fetch richer message data using Mongo aggregation
+    const msgs = await Message.aggregate([
+      {
+        $match: {
+          user_id: userId,
+          $or: [
+            { $and: [ { direction: 'inbound' }, { $or: [ { from_digits: phoneDigits }, { $and: [ { from_digits: { $in: [null, undefined] } }, { $expr: { $eq: [ { $replaceAll: { input: { $replaceAll: { input: { $replaceAll: { input: { $ifNull: ['$from_id', ''] }, find: '+', replacement: '' } }, find: ' ', replacement: '' } }, find: '-', replacement: '' } }, phoneDigits ] } } ] } ] } ] },
+            { $and: [ { direction: 'outbound' }, { $or: [ { to_digits: phoneDigits }, { $and: [ { to_digits: { $in: [null, undefined] } }, { $expr: { $eq: [ { $replaceAll: { input: { $replaceAll: { input: { $replaceAll: { input: { $ifNull: ['$to_id', ''] }, find: '+', replacement: '' } }, find: ' ', replacement: '' } }, find: '-', replacement: '' } }, phoneDigits ] } } ] } ] } ] }
+          ]
+        }
+      },
+      { $sort: { timestamp: 1 } },
+      {
+        $lookup: {
+          from: 'message_statuses',
+          let: { mid: '$id', uid: '$user_id' },
+          pipeline: [
+            { $match: { $expr: { $and: [ { $eq: ['$message_id', '$$mid'] }, { $eq: ['$user_id', '$$uid'] } ] } } },
+            { $sort: { timestamp: -1 } },
+            { $limit: 1 }
+          ],
+          as: 'last_status'
+        }
+      },
+      {
+        $project: {
+          id: 1,
+          direction: 1,
+          type: 1,
+          text_body: 1,
+          ts: { $ifNull: ['$timestamp', 0] },
+          raw: 1,
+          message_status: { $arrayElemAt: ['$last_status.status', 0] },
+          status_timestamp: { $arrayElemAt: ['$last_status.timestamp', 0] }
+        }
+      }
+    ]);
     
     // Load reactions and replies for all messages
     const messageIds = msgs.map(m => m.id);
@@ -991,9 +1013,9 @@ export default function registerInboxRoutes(app) {
     const userReactionsByMessage = getUserReactionsForMessages(messageIds, userId);
     const repliesByMessage = getMessagesReplies(messageIds);
     const replyOriginals = getReplyOriginals(messageIds);
-    const status = db.prepare(`SELECT is_human, COALESCE(human_expires_ts,0) AS exp FROM handoff WHERE contact_id = ? AND user_id = ?`).get(phone, userId);
+    const status = await Handoff.findOne({ contact_id: phone, user_id: userId }).select('is_human human_expires_ts');
     const isHuman = !!status?.is_human;
-    const expTs = Number(status?.exp || 0);
+    const expTs = Number(status?.human_expires_ts || 0);
     const nowSec = Math.floor(Date.now()/1000);
     const remain = expTs > nowSec ? (expTs - nowSec) : 0;
     

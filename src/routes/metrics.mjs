@@ -4,7 +4,7 @@
  */
 
 import { ensureAuthed, getCurrentUserId } from '../middleware/auth.mjs';
-import { db } from '../db-serverless.mjs';
+import { db } from '../db-mongodb.mjs';
 import { getAllMetrics } from '../monitoring/metrics.mjs';
 import { logHelpers } from '../monitoring/logger.mjs';
 import { broadcastMetricsUpdate } from './realtime.mjs';
@@ -15,6 +15,7 @@ import {
   STATUS_DISPLAY_NAMES,
   STATUS_COLORS
 } from '../services/conversationStatus.mjs';
+import { Message, AIRequest, Handoff, UserSettings } from '../schemas/mongodb.mjs';
 
 export default function registerMetricsRoutes(app) {
   
@@ -43,187 +44,325 @@ export default function registerMetricsRoutes(app) {
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
     
-    // Convert timestamps to seconds for SQLite
-    const todayTs = Math.floor(today.getTime() / 1000);
-    const yesterdayTs = Math.floor(yesterday.getTime() / 1000);
+    // Convert timestamps to milliseconds for MongoDB
+    const todayTs = today.getTime();
+    const yesterdayTs = yesterday.getTime();
     
-    // Get message counts for today and yesterday
-    const todayMessages = db.prepare(`
-      SELECT 
-        COUNT(CASE WHEN direction = 'outbound' THEN 1 END) as sent_today,
-        COUNT(CASE WHEN direction = 'inbound' THEN 1 END) as received_today
-      FROM messages 
-      WHERE user_id = ? AND timestamp >= ?
-    `).get(userId, todayTs);
-    
-    const yesterdayMessages = db.prepare(`
-      SELECT 
-        COUNT(CASE WHEN direction = 'outbound' THEN 1 END) as sent_yesterday,
-        COUNT(CASE WHEN direction = 'inbound' THEN 1 END) as received_yesterday
-      FROM messages 
-      WHERE user_id = ? AND timestamp >= ? AND timestamp < ?
-    `).get(userId, yesterdayTs, todayTs);
-    
-    // Get active conversations
-    const activeConversations = db.prepare(`
-      SELECT COUNT(DISTINCT from_digits) as active_count
-      FROM messages 
-      WHERE user_id = ? AND timestamp >= ?
-    `).get(userId, Math.floor((now.getTime() - 24 * 60 * 60 * 1000) / 1000));
-    
-    // Get response time data
-    const responseTimeData = db.prepare(`
-      SELECT 
-        AVG(CASE 
-          WHEN direction = 'outbound' AND prev_direction = 'inbound' 
-          THEN timestamp - prev_timestamp 
-          ELSE NULL 
-        END) as avg_response_time
-      FROM (
-        SELECT 
-          timestamp, 
-          direction,
-          from_digits,
-          LAG(timestamp) OVER (PARTITION BY from_digits ORDER BY timestamp) as prev_timestamp,
-          LAG(direction) OVER (PARTITION BY from_digits ORDER BY timestamp) as prev_direction
-        FROM messages 
-        WHERE user_id = ? AND timestamp >= ?
-      )
-    `).get(userId, Math.floor((now.getTime() - 7 * 24 * 60 * 60 * 1000) / 1000));
-    
-    // Get AI performance data (handle case where table might be empty)
-    let aiRequests = { total_requests: 0, successful_requests: 0, avg_response_time: 0 };
     try {
-      aiRequests = db.prepare(`
-        SELECT 
-          COUNT(*) as total_requests,
-          COUNT(CASE WHEN success = 1 THEN 1 END) as successful_requests,
-          AVG(response_time) as avg_response_time
-        FROM ai_requests 
-        WHERE user_id = ? AND created_at >= ?
-      `).get(userId, Math.floor((now.getTime() - 24 * 60 * 60 * 1000) / 1000)) || aiRequests;
+      // Get message counts for today and yesterday using MongoDB aggregation
+      const todayMessages = await Message.aggregate([
+        {
+          $match: {
+            user_id: userId,
+            timestamp: { $gte: todayTs }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            sent_today: {
+              $sum: { $cond: [{ $eq: ['$direction', 'outbound'] }, 1, 0] }
+            },
+            received_today: {
+              $sum: { $cond: [{ $eq: ['$direction', 'inbound'] }, 1, 0] }
+            }
+          }
+        }
+      ]);
+      
+      const yesterdayMessages = await Message.aggregate([
+        {
+          $match: {
+            user_id: userId,
+            timestamp: { $gte: yesterdayTs, $lt: todayTs }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            sent_yesterday: {
+              $sum: { $cond: [{ $eq: ['$direction', 'outbound'] }, 1, 0] }
+            },
+            received_yesterday: {
+              $sum: { $cond: [{ $eq: ['$direction', 'inbound'] }, 1, 0] }
+            }
+          }
+        }
+      ]);
+      
+      // Get active conversations
+      const activeConversations = await Message.aggregate([
+        {
+          $match: {
+            user_id: userId,
+            timestamp: { $gte: now.getTime() - 24 * 60 * 60 * 1000 }
+          }
+        },
+        {
+          $group: {
+            _id: '$from_digits'
+          }
+        },
+        {
+          $count: 'active_count'
+        }
+      ]);
+      
+      // Get response time data using aggregation
+      const responseTimeData = await Message.aggregate([
+        {
+          $match: {
+            user_id: userId,
+            timestamp: { $gte: now.getTime() - 7 * 24 * 60 * 60 * 1000 }
+          }
+        },
+        {
+          $sort: { from_digits: 1, timestamp: 1 }
+        },
+        {
+          $group: {
+            _id: '$from_digits',
+            messages: { $push: { timestamp: '$timestamp', direction: '$direction' } }
+          }
+        },
+        {
+          $unwind: {
+            path: '$messages',
+            includeArrayIndex: 'index'
+          }
+        },
+        {
+          $addFields: {
+            prevMessage: {
+              $arrayElemAt: ['$messages', { $subtract: ['$index', 1] }]
+            }
+          }
+        },
+        {
+          $match: {
+            'messages.direction': 'outbound',
+            'prevMessage.direction': 'inbound'
+          }
+        },
+        {
+          $addFields: {
+            responseTime: { $subtract: ['$messages.timestamp', '$prevMessage.timestamp'] }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            avg_response_time: { $avg: '$responseTime' }
+          }
+        }
+      ]);
+      
+      // Get AI performance data
+      let aiRequests = { total_requests: 0, successful_requests: 0, avg_response_time: 0 };
+      try {
+        const aiStats = await AIRequest.aggregate([
+          {
+            $match: {
+              user_id: userId,
+              createdAt: { $gte: new Date(now.getTime() - 24 * 60 * 60 * 1000) }
+            }
+          },
+          {
+            $group: {
+              _id: null,
+              total_requests: { $sum: 1 },
+              successful_requests: {
+                $sum: { $cond: [{ $eq: ['$success', true] }, 1, 0] }
+              },
+              avg_response_time: { $avg: '$response_time' }
+            }
+          }
+        ]);
+        
+        if (aiStats.length > 0) {
+          aiRequests = aiStats[0];
+        }
+      } catch (error) {
+        console.log('AI requests query failed:', error.message);
+      }
+      
+      // Get template usage
+      let templateUsage = { template_messages_today: 0, template_messages_yesterday: 0 };
+      try {
+        const templateStats = await Message.aggregate([
+          {
+            $match: {
+              user_id: userId,
+              type: 'template',
+              timestamp: { $gte: yesterdayTs }
+            }
+          },
+          {
+            $group: {
+              _id: null,
+              template_messages_today: {
+                $sum: { $cond: [{ $gte: ['$timestamp', todayTs] }, 1, 0] }
+              },
+              template_messages_yesterday: {
+                $sum: { $cond: [{ $lt: ['$timestamp', todayTs] }, 1, 0] }
+              }
+            }
+          }
+        ]);
+        
+        if (templateStats.length > 0) {
+          templateUsage = templateStats[0];
+        }
+      } catch (error) {
+        console.log('Template usage query failed:', error.message);
+      }
+      
+      // Get ticket metrics
+      const ticketStats = await getConversationStatusStats(userId);
+      
+      // Get tickets created today and yesterday
+      const ticketsCreatedToday = await Handoff.countDocuments({
+        user_id: userId,
+        updatedAt: { $gte: today },
+        conversation_status: CONVERSATION_STATUSES.NEW
+      });
+      
+      const ticketsCreatedYesterday = await Handoff.countDocuments({
+        user_id: userId,
+        updatedAt: { $gte: yesterday, $lt: today },
+        conversation_status: CONVERSATION_STATUSES.NEW
+      });
+      
+      // Get tickets resolved today and yesterday
+      const ticketsResolvedToday = await Handoff.countDocuments({
+        user_id: userId,
+        updatedAt: { $gte: today },
+        conversation_status: CONVERSATION_STATUSES.RESOLVED
+      });
+      
+      const ticketsResolvedYesterday = await Handoff.countDocuments({
+        user_id: userId,
+        updatedAt: { $gte: yesterday, $lt: today },
+        conversation_status: CONVERSATION_STATUSES.RESOLVED
+      });
+      
+      // Get escalation metrics
+      const escalationStats = await Handoff.aggregate([
+        {
+          $match: {
+            user_id: userId,
+            escalation_reason: { $exists: true, $ne: null }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            total_escalations: { $sum: 1 },
+            escalations_today: {
+              $sum: { $cond: [{ $gte: ['$updatedAt', today] }, 1, 0] }
+            }
+          }
+        }
+      ]);
+      
+      // Get average resolution time
+      const resolutionTimeData = await Handoff.aggregate([
+        {
+          $match: {
+            user_id: userId,
+            conversation_status: CONVERSATION_STATUSES.RESOLVED
+          }
+        },
+        {
+          $group: {
+            _id: '$contact_id',
+            created_at: { $min: '$createdAt' },
+            resolved_at: { $max: '$updatedAt' }
+          }
+        },
+        {
+          $addFields: {
+            resolution_time: { $subtract: ['$resolved_at', '$created_at'] }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            avg_resolution_time: { $avg: '$resolution_time' }
+          }
+        }
+      ]);
+      
+      // Extract data from aggregation results
+      const todayMsgData = todayMessages[0] || { sent_today: 0, received_today: 0 };
+      const yesterdayMsgData = yesterdayMessages[0] || { sent_yesterday: 0, received_yesterday: 0 };
+      const activeConvData = activeConversations[0] || { active_count: 0 };
+      const responseTimeDataResult = responseTimeData[0] || { avg_response_time: 0 };
+      const escalationStatsResult = escalationStats[0] || { total_escalations: 0, escalations_today: 0 };
+      const resolutionTimeDataResult = resolutionTimeData[0] || { avg_resolution_time: 0 };
+      
+      // Calculate trends
+      const sentTrend = calculateTrend(todayMsgData.sent_today || 0, yesterdayMsgData.sent_yesterday || 0);
+      const receivedTrend = calculateTrend(todayMsgData.received_today || 0, yesterdayMsgData.received_yesterday || 0);
+      const ticketsCreatedTrend = calculateTrend(ticketsCreatedToday || 0, ticketsCreatedYesterday || 0);
+      const ticketsResolvedTrend = calculateTrend(ticketsResolvedToday || 0, ticketsResolvedYesterday || 0);
+    
+      return {
+        messages: {
+          sent_today: todayMsgData.sent_today || 0,
+          received_today: todayMsgData.received_today || 0,
+          sent_yesterday: yesterdayMsgData.sent_yesterday || 0,
+          received_yesterday: yesterdayMsgData.received_yesterday || 0,
+          sent_trend: sentTrend,
+          received_trend: receivedTrend
+        },
+        conversations: {
+          active: activeConvData.active_count || 0
+        },
+        performance: {
+          avg_response_time: Math.round(responseTimeDataResult.avg_response_time || 0),
+          ai_success_rate: aiRequests.total_requests > 0 
+            ? Math.round((aiRequests.successful_requests / aiRequests.total_requests) * 100)
+            : 0,
+          ai_avg_response_time: Math.round(aiRequests.avg_response_time || 0)
+        },
+        templates: {
+          used_today: templateUsage.template_messages_today || 0,
+          used_yesterday: templateUsage.template_messages_yesterday || 0
+        },
+        system: {
+          uptime: Math.floor(process.uptime()),
+          memory_usage: metrics.gauges.memory_usage_mb || 0,
+          error_rate: calculateErrorRate(metrics)
+        },
+        tickets: {
+          status_counts: ticketStats,
+          created_today: ticketsCreatedToday || 0,
+          created_yesterday: ticketsCreatedYesterday || 0,
+          created_trend: ticketsCreatedTrend,
+          resolved_today: ticketsResolvedToday || 0,
+          resolved_yesterday: ticketsResolvedYesterday || 0,
+          resolved_trend: ticketsResolvedTrend,
+          total_escalations: escalationStatsResult.total_escalations || 0,
+          escalations_today: escalationStatsResult.escalations_today || 0,
+          avg_resolution_time: Math.round(resolutionTimeDataResult.avg_resolution_time || 0),
+          resolution_rate: ticketStats.resolved > 0 ? Math.round((ticketStats.resolved / (ticketStats.new + ticketStats.in_progress + ticketStats.resolved)) * 100) : 0
+        },
+        timestamp: new Date().toISOString()
+      };
     } catch (error) {
-      console.log('AI requests table not available or empty:', error.message);
+      logHelpers.logError(error, { component: 'dashboard_metrics', userId });
+      // Return default values in case of error
+      return {
+        messages: { sent_today: 0, received_today: 0, sent_yesterday: 0, received_yesterday: 0, sent_trend: 0, received_trend: 0 },
+        conversations: { active: 0 },
+        performance: { avg_response_time: 0, ai_success_rate: 0, ai_avg_response_time: 0 },
+        templates: { used_today: 0, used_yesterday: 0 },
+        system: { uptime: Math.floor(process.uptime()), memory_usage: 0, error_rate: 0 },
+        tickets: { status_counts: {}, created_today: 0, created_yesterday: 0, created_trend: 0, resolved_today: 0, resolved_yesterday: 0, resolved_trend: 0, total_escalations: 0, escalations_today: 0, avg_resolution_time: 0, resolution_rate: 0 },
+        timestamp: new Date().toISOString()
+      };
     }
-    
-    // Get template usage (using type column instead of message_type)
-    let templateUsage = { template_messages_today: 0, template_messages_yesterday: 0 };
-    try {
-      templateUsage = db.prepare(`
-        SELECT 
-          COUNT(*) as template_messages_today,
-          COUNT(CASE WHEN timestamp >= ? THEN 1 END) as template_messages_yesterday
-        FROM messages 
-        WHERE user_id = ? AND type = 'template' AND timestamp >= ?
-      `).get(userId, yesterdayTs, userId, yesterdayTs) || templateUsage;
-    } catch (error) {
-      console.log('Template usage query failed:', error.message);
-    }
-    
-    // Get ticket metrics
-    const ticketStats = getConversationStatusStats(userId);
-    
-    // Get tickets created today and yesterday
-    const ticketsCreatedToday = db.prepare(`
-      SELECT COUNT(*) as count
-      FROM handoff 
-      WHERE user_id = ? AND updated_at >= ? AND conversation_status = ?
-    `).get(userId, todayTs, CONVERSATION_STATUSES.NEW);
-    
-    const ticketsCreatedYesterday = db.prepare(`
-      SELECT COUNT(*) as count
-      FROM handoff 
-      WHERE user_id = ? AND updated_at >= ? AND updated_at < ? AND conversation_status = ?
-    `).get(userId, yesterdayTs, todayTs, CONVERSATION_STATUSES.NEW);
-    
-    // Get tickets resolved today and yesterday
-    const ticketsResolvedToday = db.prepare(`
-      SELECT COUNT(*) as count
-      FROM handoff 
-      WHERE user_id = ? AND updated_at >= ? AND conversation_status = ?
-    `).get(userId, todayTs, CONVERSATION_STATUSES.RESOLVED);
-    
-    const ticketsResolvedYesterday = db.prepare(`
-      SELECT COUNT(*) as count
-      FROM handoff 
-      WHERE user_id = ? AND updated_at >= ? AND updated_at < ? AND conversation_status = ?
-    `).get(userId, yesterdayTs, todayTs, CONVERSATION_STATUSES.RESOLVED);
-    
-    // Get escalation metrics
-    const escalationStats = db.prepare(`
-      SELECT 
-        COUNT(*) as total_escalations,
-        COUNT(CASE WHEN updated_at >= ? THEN 1 END) as escalations_today
-      FROM handoff 
-      WHERE user_id = ? AND escalation_reason IS NOT NULL
-    `).get(userId, todayTs);
-    
-    // Get average resolution time (for resolved tickets)
-    const resolutionTimeData = db.prepare(`
-      SELECT 
-        AVG(resolution_time) as avg_resolution_time
-      FROM (
-        SELECT 
-          h1.contact_id,
-          (h2.updated_at - h1.updated_at) as resolution_time
-        FROM handoff h1
-        JOIN handoff h2 ON h1.contact_id = h2.contact_id AND h1.user_id = h2.user_id
-        WHERE h1.user_id = ? 
-          AND h1.conversation_status = ?
-          AND h2.conversation_status = ?
-          AND h2.updated_at > h1.updated_at
-      )
-    `).get(userId, CONVERSATION_STATUSES.NEW, CONVERSATION_STATUSES.RESOLVED);
-    
-    // Calculate trends
-    const sentTrend = calculateTrend(todayMessages.sent_today || 0, yesterdayMessages.sent_yesterday || 0);
-    const receivedTrend = calculateTrend(todayMessages.received_today || 0, yesterdayMessages.received_yesterday || 0);
-    const ticketsCreatedTrend = calculateTrend(ticketsCreatedToday.count || 0, ticketsCreatedYesterday.count || 0);
-    const ticketsResolvedTrend = calculateTrend(ticketsResolvedToday.count || 0, ticketsResolvedYesterday.count || 0);
-    
-    return {
-      messages: {
-        sent_today: todayMessages.sent_today || 0,
-        received_today: todayMessages.received_today || 0,
-        sent_yesterday: yesterdayMessages.sent_yesterday || 0,
-        received_yesterday: yesterdayMessages.received_yesterday || 0,
-        sent_trend: sentTrend,
-        received_trend: receivedTrend
-      },
-      conversations: {
-        active: activeConversations.active_count || 0
-      },
-      performance: {
-        avg_response_time: Math.round(responseTimeData.avg_response_time || 0),
-        ai_success_rate: aiRequests.total_requests > 0 
-          ? Math.round((aiRequests.successful_requests / aiRequests.total_requests) * 100)
-          : 0,
-        ai_avg_response_time: Math.round(aiRequests.avg_response_time || 0)
-      },
-      templates: {
-        used_today: templateUsage.template_messages_today || 0,
-        used_yesterday: templateUsage.template_messages_yesterday || 0
-      },
-      system: {
-        uptime: Math.floor(process.uptime()),
-        memory_usage: metrics.gauges.memory_usage_mb || 0,
-        error_rate: calculateErrorRate(metrics)
-      },
-      tickets: {
-        status_counts: ticketStats,
-        created_today: ticketsCreatedToday.count || 0,
-        created_yesterday: ticketsCreatedYesterday.count || 0,
-        created_trend: ticketsCreatedTrend,
-        resolved_today: ticketsResolvedToday.count || 0,
-        resolved_yesterday: ticketsResolvedYesterday.count || 0,
-        resolved_trend: ticketsResolvedTrend,
-        total_escalations: escalationStats.total_escalations || 0,
-        escalations_today: escalationStats.escalations_today || 0,
-        avg_resolution_time: Math.round(resolutionTimeData.avg_resolution_time || 0),
-        resolution_rate: ticketStats.resolved > 0 ? Math.round((ticketStats.resolved / (ticketStats.new + ticketStats.in_progress + ticketStats.resolved)) * 100) : 0
-      },
-      timestamp: new Date().toISOString()
-    };
   }
   
   // Get dashboard metrics for current user
@@ -240,23 +379,46 @@ export default function registerMetricsRoutes(app) {
       // Add hourly chart data
       const now = new Date();
       const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      const todayTs = Math.floor(today.getTime() / 1000);
+      const todayTs = today.getTime();
       
-      const hourlyData = db.prepare(`
-        SELECT 
-          strftime('%H', datetime(timestamp, 'unixepoch')) as hour,
-          COUNT(CASE WHEN direction = 'inbound' THEN 1 END) as received,
-          COUNT(CASE WHEN direction = 'outbound' THEN 1 END) as sent
-        FROM messages 
-        WHERE user_id = ? AND timestamp >= ?
-        GROUP BY hour
-        ORDER BY hour
-      `).all(userId, todayTs);
+      const hourlyData = await Message.aggregate([
+        {
+          $match: {
+            user_id: userId,
+            timestamp: { $gte: todayTs }
+          }
+        },
+        {
+          $addFields: {
+            hour: {
+              $substr: [
+                { $dateToString: { date: { $toDate: '$timestamp' }, format: '%H' } },
+                0,
+                2
+              ]
+            }
+          }
+        },
+        {
+          $group: {
+            _id: '$hour',
+            received: {
+              $sum: { $cond: [{ $eq: ['$direction', 'inbound'] }, 1, 0] }
+            },
+            sent: {
+              $sum: { $cond: [{ $eq: ['$direction', 'outbound'] }, 1, 0] }
+            }
+          }
+        },
+        {
+          $sort: { _id: 1 }
+        }
+      ]);
       
       // Format hourly data for chart
       const hourlyChartData = Array.from({ length: 24 }, (_, i) => {
         const hour = String(i).padStart(2, '0');
-        const hourData = hourlyData.find(h => h.hour === hour);
+        const hourData = hourlyData.find(h => h._id === hour);
         return {
           hour: `${hour}:00`,
           received: hourData?.received || 0,
@@ -281,9 +443,7 @@ export default function registerMetricsRoutes(app) {
     const userId = getCurrentUserId(req);
     
     try {
-      const preferences = db.prepare(`
-        SELECT dashboard_preferences FROM user_settings WHERE user_id = ?
-      `).get(userId);
+      const preferences = await UserSettings.findOne({ user_id: userId });
       
       const defaultPreferences = {
         visibleMetrics: [
@@ -337,10 +497,14 @@ export default function registerMetricsRoutes(app) {
       }
       
       // Save to database
-      db.prepare(`
-        INSERT OR REPLACE INTO user_settings (user_id, dashboard_preferences, updated_at)
-        VALUES (?, ?, ?)
-      `).run(userId, JSON.stringify(preferences), Math.floor(Date.now() / 1000));
+      await UserSettings.findOneAndUpdate(
+        { user_id: userId },
+        { 
+          user_id: userId, 
+          dashboard_preferences: JSON.stringify(preferences) 
+        },
+        { upsert: true, new: true }
+      );
       
       res.json({ success: true, preferences });
       
@@ -365,40 +529,33 @@ export default function registerMetricsRoutes(app) {
         user_id: userId,
         export_date: new Date().toISOString(),
         period_days: days,
-        messages: db.prepare(`
-          SELECT 
-            timestamp,
-            direction,
-            type,
-            text_body,
-            from_digits,
-            delivery_status
-          FROM messages 
-          WHERE user_id = ? AND timestamp >= ?
-          ORDER BY timestamp DESC
-        `).all(userId, startTs),
-        ai_requests: db.prepare(`
-          SELECT 
-            created_at,
-            success,
-            response_time,
-            model,
-            tokens_used
-          FROM ai_requests 
-          WHERE user_id = ? AND created_at >= ?
-          ORDER BY created_at DESC
-        `).all(userId, startTs),
-        conversations: db.prepare(`
-          SELECT 
-            from_digits,
-            COUNT(*) as message_count,
-            MIN(timestamp) as first_message,
-            MAX(timestamp) as last_message
-          FROM messages 
-          WHERE user_id = ? AND timestamp >= ?
-          GROUP BY from_digits
-          ORDER BY last_message DESC
-        `).all(userId, startTs)
+        messages: await Message.find({
+          user_id: userId,
+          timestamp: { $gte: startDate.getTime() }
+        }).select('timestamp direction type text_body from_digits delivery_status').sort({ timestamp: -1 }),
+        ai_requests: await AIRequest.find({
+          user_id: userId,
+          createdAt: { $gte: startDate }
+        }).select('createdAt success response_time model tokens_used').sort({ createdAt: -1 }),
+        conversations: await Message.aggregate([
+          {
+            $match: {
+              user_id: userId,
+              timestamp: { $gte: startDate.getTime() }
+            }
+          },
+          {
+            $group: {
+              _id: '$from_digits',
+              message_count: { $sum: 1 },
+              first_message: { $min: '$timestamp' },
+              last_message: { $max: '$timestamp' }
+            }
+          },
+          {
+            $sort: { last_message: -1 }
+          }
+        ])
       };
       
       if (format === 'csv') {
@@ -455,7 +612,7 @@ function convertToCSV(data) {
   // Add messages
   data.messages.forEach(msg => {
     rows.push([
-      new Date(msg.timestamp * 1000).toISOString(),
+      new Date(msg.timestamp).toISOString(),
       'message',
       msg.direction,
       `"${(msg.text_body || '').replace(/"/g, '""')}"`,
@@ -468,7 +625,7 @@ function convertToCSV(data) {
   // Add AI requests
   data.ai_requests.forEach(req => {
     rows.push([
-      new Date(req.created_at * 1000).toISOString(),
+      new Date(req.createdAt).toISOString(),
       'ai_request',
       '',
       '',

@@ -2,7 +2,7 @@
  * Enhanced Contact Management Service
  * Handles contact profiles, tags, search, and analytics
  */
-import { db } from "../db-serverless.mjs";
+import { db } from "../db-mongodb.mjs";
 
 /**
  * Get contact profile by user_id and contact_id

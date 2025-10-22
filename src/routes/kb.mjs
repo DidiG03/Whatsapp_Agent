@@ -1,5 +1,5 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
-import { db } from "../db-serverless.mjs";
+import { KBItem } from "../schemas/mongodb.mjs";
 import { renderSidebar, escapeHtml, renderTopbar } from "../utils.mjs";
 
 export default function registerKbRoutes(app) {
@@ -51,20 +51,16 @@ export default function registerKbRoutes(app) {
   app.get("/kb/ui", ensureAuthed, async (req,res) =>{
     const userId = getCurrentUserId(req);
     const email = await getSignedInEmail(req);
-    const rows = db.prepare(`
-      SELECT id, title, content, file_url, file_mime, show_in_menu, created_at FROM kb_items
-      WHERE user_id = ?
-      ORDER BY id DESC LIMIT 200
-    `).all(userId);
+    const rows = await KBItem.find({ user_id: userId }).sort({ _id: -1 }).limit(200).lean();
     const html = rows.map(r => {
-      const when = new Date((r.created_at||0) * 1000).toLocaleDateString();
+      const when = new Date(r.createdAt || Date.now()).toLocaleDateString();
       const title = (r.title || 'Untitled');
       const fullContent = escapeHtml(r.content || '');
       const content = fullContent.slice(0, 280);
       const fileUrl = r.file_url || '';
       const fileBadge = fileUrl ? `<span class="small" style="margin-left:8px;background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;padding:2px 6px;border-radius:6px;">PDF</span>` : '';
       return `
-        <div class="kb-item" data-id="${r.id}" data-text="${escapeHtml((r.title||'') + ' ' + (r.content||''))}" data-title="${escapeHtml(title)}" data-content="${fullContent}" data-file-url="${escapeHtml(fileUrl)}" data-file-mime="${escapeHtml(r.file_mime||'')}" style="background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:20px; margin-bottom:16px; transition:all 0.2s ease; box-shadow:0 1px 3px rgba(0,0,0,0.1);">
+        <div class="kb-item" data-id="${String(r._id)}" data-text="${escapeHtml((r.title||'') + ' ' + (r.content||''))}" data-title="${escapeHtml(title)}" data-content="${fullContent}" data-file-url="${escapeHtml(fileUrl)}" data-file-mime="${escapeHtml(r.file_mime||'')}" style="background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:20px; margin-bottom:16px; transition:all 0.2s ease; box-shadow:0 1px 3px rgba(0,0,0,0.1);">
           <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px;">
             <div style="flex:1;">
               <h3 style="margin:0 0 8px 0; font-size:16px; font-weight:600; color:#111827; display:flex; align-items:center; gap:8px;">
@@ -81,10 +77,10 @@ export default function registerKbRoutes(app) {
                 Show in menu
               </label>
               ${fileUrl ? `<a class="btn-ghost" href="${escapeHtml(fileUrl)}" target="_blank" rel="noopener" style="background:#e0f2fe; color:#0369a1; border:1px solid #bae6fd; padding:6px 12px; border-radius:6px; font-size:12px;">📄 Preview</a>` : ''}
-              <button style="border:none; background:#f3f4f6; padding:8px; border-radius:6px; cursor:pointer;" class="btn-ghost" onclick="editKbItem(${r.id})" title="Edit">
+              <button style="border:none; background:#f3f4f6; padding:8px; border-radius:6px; cursor:pointer;" class="btn-ghost" onclick="editKbItem('${String(r._id)}')" title="Edit">
                 <img src="/pencil-icon.svg" alt="Edit" style="width:16px;height:16px;"/>
               </button>
-              <button style="border:none; background:#fef2f2; padding:8px; border-radius:6px; cursor:pointer;" class="btn-ghost" onclick="deleteKbItem(${r.id})" title="Delete">
+              <button style="border:none; background:#fef2f2; padding:8px; border-radius:6px; cursor:pointer;" class="btn-ghost" onclick="deleteKbItem('${String(r._id)}')" title="Delete">
                 <img src="/delete-icon.svg" alt="Delete" style="width:16px;height:16px;"/>
               </button>
             </div>
@@ -238,14 +234,10 @@ export default function registerKbRoutes(app) {
     `);
   });
 
-  app.get("/kb", ensureAuthed, (req, res) => {
+  app.get("/kb", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
-    const rows = db.prepare(`
-      SELECT id, title, content, created_at FROM kb_items
-      WHERE user_id = ?
-      ORDER BY id DESC LIMIT 200
-    `).all(userId);
-    return res.json(rows);
+    const rows = await KBItem.find({ user_id: userId }).sort({ _id: -1 }).limit(200).lean();
+    return res.json(rows.map(r => ({ id: String(r._id), title: r.title, content: r.content, created_at: Math.floor(new Date(r.createdAt || Date.now()).getTime() / 1000) })));
   });
 }
 

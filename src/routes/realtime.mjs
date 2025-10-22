@@ -3,7 +3,7 @@
  */
 
 import { ensureAuthed, getCurrentUserId } from '../middleware/auth.mjs';
-import { db } from '../db-serverless.mjs';
+import { db } from '../db-mongodb.mjs';
 import { Server } from 'socket.io';
 import { createServer } from 'http';
 import { sendWhatsAppText } from '../services/whatsapp.mjs';

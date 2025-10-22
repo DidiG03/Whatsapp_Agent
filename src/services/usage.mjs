@@ -1,7 +1,7 @@
 /**
  * Usage tracking service for monitoring message counts and plan limits.
  */
-import { db } from "../db-serverless.mjs";
+import { UsageStats, UserPlan } from "../schemas/mongodb.mjs";
 
 /**
  * Get current month/year string in format "2024-01"
@@ -16,135 +16,103 @@ function getCurrentMonthYear() {
 /**
  * Get or create usage stats for a user for the current month
  */
-export function getCurrentUsage(userId) {
+export async function getCurrentUsage(userId) {
   if (!userId) return null;
-  
   const monthYear = getCurrentMonthYear();
-  const usage = db.prepare(`
-    SELECT * FROM usage_stats 
-    WHERE user_id = ? AND month_year = ?
-  `).get(userId, monthYear);
-  
+  let usage = await UsageStats.findOne({ user_id: userId, month_year: monthYear }).lean();
   if (!usage) {
-    // Create new usage record for this month
-    db.prepare(`
-      INSERT INTO usage_stats (user_id, month_year, inbound_messages, outbound_messages, template_messages)
-      VALUES (?, ?, 0, 0, 0)
-    `).run(userId, monthYear);
-    
-    return {
+    const doc = await UsageStats.create({
       user_id: userId,
       month_year: monthYear,
       inbound_messages: 0,
       outbound_messages: 0,
-      template_messages: 0,
-      created_at: Math.floor(Date.now() / 1000),
-      updated_at: Math.floor(Date.now() / 1000)
+      template_messages: 0
+    });
+    usage = {
+      user_id: doc.user_id,
+      month_year: doc.month_year,
+      inbound_messages: doc.inbound_messages,
+      outbound_messages: doc.outbound_messages,
+      template_messages: doc.template_messages,
+      created_at: Math.floor(new Date(doc.createdAt || Date.now()).getTime() / 1000),
+      updated_at: Math.floor(new Date(doc.updatedAt || Date.now()).getTime() / 1000)
     };
   }
-  
   return usage;
 }
 
 /**
  * Increment usage counter for a specific message type
  */
-export function incrementUsage(userId, messageType) {
+export async function incrementUsage(userId, messageType) {
   if (!userId || !messageType) return;
-  
   const monthYear = getCurrentMonthYear();
   const validTypes = ['inbound_messages', 'outbound_messages', 'template_messages'];
-  
   if (!validTypes.includes(messageType)) {
     console.error(`Invalid message type: ${messageType}`);
     return;
   }
-  
-  // First ensure the record exists
-  getCurrentUsage(userId);
-  
-  // Then increment the counter
-  db.prepare(`
-    UPDATE usage_stats 
-    SET ${messageType} = ${messageType} + 1, updated_at = strftime('%s','now')
-    WHERE user_id = ? AND month_year = ?
-  `).run(userId, monthYear);
+  await UsageStats.updateOne(
+    { user_id: userId, month_year: monthYear },
+    { $inc: { [messageType]: 1 } },
+    { upsert: true }
+  );
 }
 
 /**
  * Get user's plan information
  */
-export function getUserPlan(userId) {
+export async function getUserPlan(userId) {
   if (!userId) return null;
-  
-  const plan = db.prepare(`
-    SELECT * FROM user_plans WHERE user_id = ?
-  `).get(userId);
-  
+  let plan = await UserPlan.findOne({ user_id: userId }).lean();
   if (!plan) {
-    // Create default free plan for new users
-    db.prepare(`
-      INSERT INTO user_plans (user_id, plan_name, status, monthly_limit, whatsapp_numbers, billing_cycle_start)
-      VALUES (?, 'free', 'active', 100, 1, strftime('%s','now'))
-    `).run(userId);
-    
-    return {
+    const doc = await UserPlan.create({
       user_id: userId,
       plan_name: 'free',
       status: 'active',
       monthly_limit: 100,
       whatsapp_numbers: 1,
-      billing_cycle_start: Math.floor(Date.now() / 1000),
-      created_at: Math.floor(Date.now() / 1000),
-      updated_at: Math.floor(Date.now() / 1000)
-    };
+      billing_cycle_start: Math.floor(Date.now() / 1000)
+    });
+    plan = doc.toObject();
   }
-  
   return plan;
 }
 
 /**
  * Update user's plan
  */
-export function updateUserPlan(userId, planData) {
+export async function updateUserPlan(userId, planData) {
   if (!userId) return null;
-  
-  const current = getUserPlan(userId);
+  const current = await getUserPlan(userId);
   const updated = {
     ...current,
     ...planData,
     updated_at: Math.floor(Date.now() / 1000)
   };
-  
-  db.prepare(`
-    UPDATE user_plans 
-    SET plan_name = ?, status = ?, monthly_limit = ?, whatsapp_numbers = ?, billing_cycle_start = ?, 
-        stripe_customer_id = ?, stripe_subscription_id = ?, updated_at = ?
-    WHERE user_id = ?
-  `).run(
-    updated.plan_name,
-    updated.status,
-    updated.monthly_limit,
-    updated.whatsapp_numbers,
-    updated.billing_cycle_start,
-    updated.stripe_customer_id || null,
-    updated.stripe_subscription_id || null,
-    updated.updated_at,
-    userId
+  await UserPlan.findOneAndUpdate(
+    { user_id: userId },
+    { $set: {
+      plan_name: updated.plan_name,
+      status: updated.status,
+      monthly_limit: updated.monthly_limit,
+      whatsapp_numbers: updated.whatsapp_numbers,
+      billing_cycle_start: updated.billing_cycle_start,
+      stripe_customer_id: updated.stripe_customer_id || null,
+      stripe_subscription_id: updated.stripe_subscription_id || null
+    } },
+    { upsert: true, new: true }
   );
-  
   return updated;
 }
 
 /**
  * Check if user has exceeded their monthly limit
  */
-export function isUsageExceeded(userId) {
-  const usage = getCurrentUsage(userId);
-  const plan = getUserPlan(userId);
-  
+export async function isUsageExceeded(userId) {
+  const usage = await getCurrentUsage(userId);
+  const plan = await getUserPlan(userId);
   if (!usage || !plan) return false;
-  
   const totalMessages = usage.inbound_messages + usage.outbound_messages + usage.template_messages;
   return totalMessages >= plan.monthly_limit;
 }
@@ -152,17 +120,10 @@ export function isUsageExceeded(userId) {
 /**
  * Get usage statistics for multiple months
  */
-export function getUsageHistory(userId, months = 6) {
+export async function getUsageHistory(userId, months = 6) {
   if (!userId) return [];
-  
-  const history = db.prepare(`
-    SELECT * FROM usage_stats 
-    WHERE user_id = ? 
-    ORDER BY month_year DESC 
-    LIMIT ?
-  `).all(userId, months);
-  
-  return history;
+  const rows = await UsageStats.find({ user_id: userId }).sort({ month_year: -1 }).limit(months).lean();
+  return rows || [];
 }
 
 /**

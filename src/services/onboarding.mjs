@@ -2,7 +2,7 @@
  * Onboarding state management per user.
  * Stores step index and transcript text, and defines the set of steps.
  */
-import { db } from "../db-serverless.mjs";
+import { OnboardingState } from "../schemas/mongodb.mjs";
 
 export const ONBOARD_STEPS = [
   { key: 'business_name', title: 'Business Name', prompt: 'What is your business name?' },
@@ -18,25 +18,21 @@ export const ONBOARD_STEPS = [
 ];
 
 /** Get onboarding state for a user. */
-export function getOnboarding(userId) {
+export async function getOnboarding(userId) {
   if (!userId) return null;
-  return db.prepare(`SELECT * FROM onboarding_state WHERE user_id = ?`).get(userId) || null;
+  return (await OnboardingState.findOne({ user_id: userId }).lean()) || null;
 }
 
 /** Update onboarding state fields for a user (creates row if missing). */
-export function setOnboarding(userId, fields) {
+export async function setOnboarding(userId, fields) {
   if (!userId) return null;
-  const current = getOnboarding(userId) || { user_id: userId, step: 0, transcript: '' };
+  const current = (await getOnboarding(userId)) || { user_id: userId, step: 0, transcript: '' };
   const next = {
     user_id: userId,
     step: fields.step ?? current.step,
     transcript: fields.transcript ?? current.transcript,
   };
-  db.prepare(`
-    INSERT INTO onboarding_state (user_id, step, transcript, updated_at)
-    VALUES (@user_id, @step, @transcript, strftime('%s','now'))
-    ON CONFLICT(user_id) DO UPDATE SET step = excluded.step, transcript = excluded.transcript, updated_at = excluded.updated_at
-  `).run(next);
+  await OnboardingState.findOneAndUpdate({ user_id: userId }, { $set: next }, { upsert: true, new: true });
   return next;
 }
 

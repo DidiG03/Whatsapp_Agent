@@ -2,21 +2,22 @@
  * Settings service for multi-tenant configuration (per Clerk user).
  * Provides helpers to get, upsert, and find settings by various keys.
  */
-import { db } from "../db-serverless.mjs";
+import { SettingsMulti } from "../schemas/mongodb.mjs";
 
 /** Fetch settings for a given user id. */
-export function getSettingsForUser(userId) {
+export async function getSettingsForUser(userId) {
   if (!userId) return {};
-  const row = db.prepare(`SELECT * FROM settings_multi WHERE user_id = ?`).get(userId);
+  const row = await SettingsMulti.findOne({ user_id: userId }).lean();
   return row || {};
 }
 
 /** Upsert settings for a given user id, merging with existing values. */
-export function upsertSettingsForUser(userId, values) {
+export async function upsertSettingsForUser(userId, values) {
   if (!userId) return {};
-  const current = getSettingsForUser(userId);
+  const current = await getSettingsForUser(userId);
   const merged = {
     user_id: userId,
+    name: values.name ?? current.name ?? null,
     phone_number_id: values.phone_number_id ?? current.phone_number_id ?? null,
     whatsapp_token: values.whatsapp_token ?? current.whatsapp_token ?? null,
     verify_token: values.verify_token ?? current.verify_token ?? null,
@@ -48,60 +49,39 @@ export function upsertSettingsForUser(userId, values) {
     escalation_out_of_hours_message: values.escalation_out_of_hours_message ?? current.escalation_out_of_hours_message ?? null,
     escalation_questions_json: values.escalation_questions_json ?? current.escalation_questions_json ?? null,
   };
-  db.prepare(`
-    INSERT INTO settings_multi (user_id, phone_number_id, whatsapp_token, verify_token, app_secret, business_phone, business_name, website_url, ai_tone, ai_blocked_topics, ai_style, entry_greeting, bookings_enabled, booking_questions_json, reschedule_min_lead_minutes, cancel_min_lead_minutes, reminders_enabled, reminder_windows, wa_template_name, wa_template_language, escalation_email_enabled, escalation_email, smtp_host, smtp_port, smtp_secure, smtp_user, smtp_pass, conversation_mode, escalation_additional_message, escalation_out_of_hours_message, escalation_questions_json, updated_at)
-    VALUES (@user_id, @phone_number_id, @whatsapp_token, @verify_token, @app_secret, @business_phone, @business_name, @website_url, @ai_tone, @ai_blocked_topics, @ai_style, @entry_greeting, @bookings_enabled, @booking_questions_json, @reschedule_min_lead_minutes, @cancel_min_lead_minutes, @reminders_enabled, @reminder_windows, @wa_template_name, @wa_template_language, @escalation_email_enabled, @escalation_email, @smtp_host, @smtp_port, @smtp_secure, @smtp_user, @smtp_pass, @conversation_mode, @escalation_additional_message, @escalation_out_of_hours_message, @escalation_questions_json, strftime('%s','now'))
-    ON CONFLICT(user_id) DO UPDATE SET
-      phone_number_id = excluded.phone_number_id,
-      whatsapp_token = excluded.whatsapp_token,
-      verify_token = excluded.verify_token,
-      app_secret = excluded.app_secret,
-      business_phone = excluded.business_phone,
-      business_name = excluded.business_name,
-      website_url = excluded.website_url,
-      ai_tone = excluded.ai_tone,
-      ai_blocked_topics = excluded.ai_blocked_topics,
-      ai_style = excluded.ai_style,
-      entry_greeting = excluded.entry_greeting,
-      bookings_enabled = excluded.bookings_enabled,
-      booking_questions_json = excluded.booking_questions_json,
-      reschedule_min_lead_minutes = excluded.reschedule_min_lead_minutes,
-      cancel_min_lead_minutes = excluded.cancel_min_lead_minutes,
-      reminders_enabled = excluded.reminders_enabled,
-      reminder_windows = excluded.reminder_windows,
-      wa_template_name = excluded.wa_template_name,
-      wa_template_language = excluded.wa_template_language,
-      escalation_email_enabled = excluded.escalation_email_enabled,
-      escalation_email = excluded.escalation_email,
-      smtp_host = excluded.smtp_host,
-      smtp_port = excluded.smtp_port,
-      smtp_secure = excluded.smtp_secure,
-      smtp_user = excluded.smtp_user,
-      smtp_pass = excluded.smtp_pass,
-      conversation_mode = excluded.conversation_mode,
-      escalation_additional_message = excluded.escalation_additional_message,
-      escalation_out_of_hours_message = excluded.escalation_out_of_hours_message,
-      escalation_questions_json = excluded.escalation_questions_json,
-      updated_at = excluded.updated_at
-  `).run(merged);
-  return merged;
+  try {
+    const res = await SettingsMulti.findOneAndUpdate(
+      { user_id: userId },
+      { $set: merged },
+      { upsert: true, new: true }
+    );
+    return merged;
+  } catch (e) {
+    console.error('[settings.upsert] error', e?.message || e);
+    throw e;
+  }
 }
 
 /** Locate a tenant settings row using the Meta verify token. */
-export function findSettingsByVerifyToken(token) {
+export async function findSettingsByVerifyToken(token) {
   if (!token) return null;
-  return db.prepare(`SELECT * FROM settings_multi WHERE verify_token = ?`).get(token) || null;
+  return (await SettingsMulti.findOne({ verify_token: token }).lean()) || null;
 }
 
 /** Locate a tenant settings row using the Meta phone_number_id. */
-export function findSettingsByPhoneNumberId(phoneNumberId) {
+export async function findSettingsByPhoneNumberId(phoneNumberId) {
   if (!phoneNumberId) return null;
-  return db.prepare(`SELECT * FROM settings_multi WHERE phone_number_id = ?`).get(phoneNumberId) || null;
+  return (await SettingsMulti.findOne({ phone_number_id: phoneNumberId }).lean()) || null;
 }
 
 /** Locate a tenant by normalized business phone digits. */
-export function findSettingsByBusinessPhone(digits) {
+export async function findSettingsByBusinessPhone(digits) {
   if (!digits) return null;
-  return db.prepare(`SELECT * FROM settings_multi WHERE REPLACE(business_phone, '+', '') = ? OR business_phone = ?`).get(digits, digits) || null;
+  // Check digits-only and exact match
+  const or = [
+    { business_phone: digits },
+    { business_phone: new RegExp(`\\+?${digits}$`) }
+  ];
+  return (await SettingsMulti.findOne({ $or: or }).lean()) || null;
 }
 

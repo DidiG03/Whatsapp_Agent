@@ -3,7 +3,7 @@
  * - Compute availability (via Google FreeBusy + working hours)
  * - Create, cancel, and reschedule appointments (mirrors in Google Calendar)
  */
-import { db } from "../db-serverless.mjs";
+import { db } from "../db-mongodb.mjs";
 import { freeBusy, createEvent, updateEvent, deleteEvent } from "./google.mjs";
 
 // (removed unused toISO)

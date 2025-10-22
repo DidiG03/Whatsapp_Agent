@@ -3,50 +3,104 @@
  * - listContactsForUser: latest contacts for Inbox
  * - listMessagesForThread: chronological messages for a contact thread
  */
-import { db } from "../db-serverless.mjs";
+import { Message, Handoff } from "../schemas/mongodb.mjs";
 
 /** List the latest 100 contacts with last timestamp and last text preview. */
-export function listContactsForUser(userId) {
-  const results = db.prepare(`
-    WITH contacts AS (
-      SELECT from_id AS contact, timestamp AS ts
-      FROM messages
-      WHERE user_id = ? AND direction = 'inbound' AND from_id IS NOT NULL
-      UNION ALL
-      SELECT to_id   AS contact, timestamp AS ts
-      FROM messages
-      WHERE user_id = ? AND direction = 'outbound' AND to_id IS NOT NULL
-    ),
-    latest AS (
-      SELECT contact, MAX(COALESCE(ts,0)) AS last_ts
-      FROM contacts
-      WHERE contact IS NOT NULL AND contact <> ''
-      GROUP BY contact
-    )
-    SELECT l.contact,
-           l.last_ts,
-           (
-             SELECT m.text_body FROM messages m
-             WHERE m.user_id = ?
-               AND (
-                (m.direction = 'inbound'  AND m.from_id = l.contact) OR
-                (m.direction = 'outbound' AND m.to_id   = l.contact)
-               )
-             ORDER BY COALESCE(m.timestamp,0) DESC
-             LIMIT 1
-           ) AS last_text
-    FROM latest l
-    LEFT JOIN handoff h ON h.contact_id = l.contact AND (h.user_id = ? OR h.user_id IS NULL)
-    WHERE COALESCE(h.is_archived,0) = 0 AND COALESCE(h.deleted_at,0) = 0
-    ORDER BY l.last_ts DESC
-    LIMIT 100
-  `).all(userId, userId, userId, userId);
-  
-  // Clean contact IDs by removing URL parameters and query strings
-  return results.map(row => ({
-    ...row,
-    contact: cleanContactId(row.contact)
-  }));
+export async function listContactsForUser(userId) {
+  try {
+    // Get all unique contacts from messages
+    const contacts = await Message.aggregate([
+      {
+        $match: {
+          user_id: userId,
+          $or: [
+            { direction: 'inbound', from_id: { $exists: true, $ne: null, $ne: '' } },
+            { direction: 'outbound', to_id: { $exists: true, $ne: null, $ne: '' } }
+          ]
+        }
+      },
+      {
+        $addFields: {
+          contact: {
+            $cond: [
+              { $eq: ['$direction', 'inbound'] },
+              '$from_id',
+              '$to_id'
+            ]
+          }
+        }
+      },
+      {
+        $group: {
+          _id: '$contact',
+          last_ts: { $max: '$timestamp' },
+          last_text: {
+            $first: {
+              $cond: [
+                { $eq: [{ $max: '$timestamp' }, '$timestamp'] },
+                '$text_body',
+                null
+              ]
+            }
+          }
+        }
+      },
+      {
+        $lookup: {
+          from: 'handoff',
+          let: { contact_id: '$_id' },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ['$contact_id', '$$contact_id'] },
+                    { $eq: ['$user_id', userId] }
+                  ]
+                }
+              }
+            }
+          ],
+          as: 'handoff'
+        }
+      },
+      {
+        $match: {
+          $or: [
+            { 'handoff.is_archived': { $ne: true } },
+            { 'handoff.is_archived': { $exists: false } }
+          ],
+          $or: [
+            { 'handoff.deleted_at': { $exists: false } },
+            { 'handoff.deleted_at': null }
+          ]
+        }
+      },
+      {
+        $sort: { last_ts: -1 }
+      },
+      {
+        $limit: 100
+      },
+      {
+        $project: {
+          contact: '$_id',
+          last_ts: 1,
+          last_text: 1,
+          _id: 0
+        }
+      }
+    ]);
+
+    // Clean contact IDs by removing URL parameters and query strings
+    return contacts.map(row => ({
+      ...row,
+      contact: cleanContactId(row.contact)
+    }));
+  } catch (error) {
+    console.error('Error listing contacts for user:', error);
+    return [];
+  }
 }
 
 /** Clean contact ID by removing URL parameters and query strings */
@@ -78,16 +132,56 @@ function cleanContactId(contactId) {
 }
 
 /** List messages for a user+phoneDigits thread ordered by timestamp ASC. */
-export function listMessagesForThread(userId, phoneDigits) {
-  return db.prepare(`
-    SELECT direction, text_body, COALESCE(timestamp, 0) AS ts
-    FROM messages
-    WHERE user_id = ?
-      AND (
-        ((from_digits = ? OR (from_digits IS NULL AND REPLACE(REPLACE(REPLACE(from_id,'+',''),' ',''),'-','') = ?)) AND direction = 'inbound') OR
-        ((to_digits   = ? OR (to_digits   IS NULL AND REPLACE(REPLACE(REPLACE(to_id,'+',''),' ',''),'-','')   = ?)) AND direction = 'outbound')
-      )
-    ORDER BY ts ASC
-  `).all(userId, phoneDigits, phoneDigits, phoneDigits, phoneDigits);
+export async function listMessagesForThread(userId, phoneDigits) {
+  try {
+    const messages = await Message.find({
+      user_id: userId,
+      $or: [
+        {
+          $and: [
+            { direction: 'inbound' },
+            {
+              $or: [
+                { from_digits: phoneDigits },
+                { 
+                  $and: [
+                    { from_digits: { $exists: false } },
+                    { from_id: { $regex: phoneDigits.replace(/[+ -]/g, ''), $options: 'i' } }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          $and: [
+            { direction: 'outbound' },
+            {
+              $or: [
+                { to_digits: phoneDigits },
+                { 
+                  $and: [
+                    { to_digits: { $exists: false } },
+                    { to_id: { $regex: phoneDigits.replace(/[+ -]/g, ''), $options: 'i' } }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    })
+    .select('direction text_body timestamp')
+    .sort({ timestamp: 1 });
+
+    return messages.map(msg => ({
+      direction: msg.direction,
+      text_body: msg.text_body,
+      ts: msg.timestamp || 0
+    }));
+  } catch (error) {
+    console.error('Error listing messages for thread:', error);
+    return [];
+  }
 }
 

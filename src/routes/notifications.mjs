@@ -5,30 +5,20 @@
  * - POST /api/notifications/read-all: mark all as read
  */
 import { ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
-import { db } from "../db-serverless.mjs";
+import { Notification } from "../schemas/mongodb.mjs";
 
 export default function registerNotificationRoutes(app) {
   // Get notifications for current user
-  app.get("/api/notifications", ensureAuthed, (req, res) => {
+  app.get("/api/notifications", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const limit = parseInt(req.query.limit || '20', 10);
     const unreadOnly = req.query.unread_only === 'true';
     
     try {
-      let query = `SELECT * FROM notifications WHERE user_id = ?`;
-      let params = [userId];
-      
-      if (unreadOnly) {
-        query += ` AND is_read = 0`;
-      }
-      
-      query += ` ORDER BY created_at DESC LIMIT ?`;
-      params.push(limit);
-      
-      const notifications = db.prepare(query).all(...params);
-      
-      // Get unread count
-      const unreadCount = db.prepare(`SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = 0`).get(userId)?.count || 0;
+      const findQuery = { user_id: userId };
+      if (unreadOnly) findQuery.is_read = false;
+      const notifications = await Notification.find(findQuery).sort({ createdAt: -1 }).limit(limit).lean();
+      const unreadCount = await Notification.countDocuments({ user_id: userId, is_read: false });
       
       res.json({
         success: true,
@@ -42,12 +32,12 @@ export default function registerNotificationRoutes(app) {
   });
   
   // Mark notification as read
-  app.post("/api/notifications/:id/read", ensureAuthed, (req, res) => {
+  app.post("/api/notifications/:id/read", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const notificationId = parseInt(req.params.id, 10);
     
     try {
-      db.prepare(`UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?`).run(notificationId, userId);
+      await Notification.findOneAndUpdate({ _id: String(notificationId), user_id: userId }, { $set: { is_read: true } });
       res.json({ success: true });
     } catch (e) {
       console.error('[Notifications API] Error marking notification as read:', e.message);
@@ -56,11 +46,11 @@ export default function registerNotificationRoutes(app) {
   });
   
   // Mark all notifications as read
-  app.post("/api/notifications/read-all", ensureAuthed, (req, res) => {
+  app.post("/api/notifications/read-all", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     
     try {
-      db.prepare(`UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0`).run(userId);
+      await Notification.updateMany({ user_id: userId, is_read: false }, { $set: { is_read: true } });
       res.json({ success: true });
     } catch (e) {
       console.error('[Notifications API] Error marking all as read:', e.message);
@@ -69,12 +59,12 @@ export default function registerNotificationRoutes(app) {
   });
   
   // Delete notification
-  app.delete("/api/notifications/:id", ensureAuthed, (req, res) => {
+  app.delete("/api/notifications/:id", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const notificationId = parseInt(req.params.id, 10);
     
     try {
-      db.prepare(`DELETE FROM notifications WHERE id = ? AND user_id = ?`).run(notificationId, userId);
+      await Notification.findOneAndDelete({ _id: String(notificationId), user_id: userId });
       res.json({ success: true });
     } catch (e) {
       console.error('[Notifications API] Error deleting notification:', e.message);

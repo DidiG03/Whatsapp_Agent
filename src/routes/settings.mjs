@@ -5,20 +5,20 @@ import { getOnboarding } from "../services/onboarding.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
 import { renderSidebar, renderTopbar } from "../utils.mjs";
 import { getSignedInEmail } from "../middleware/auth.mjs";
-import { db } from "../db-serverless.mjs";
+import { Calendar, Staff } from "../schemas/mongodb.mjs";
 import { getQuickReplies, getQuickReplyCategories, createQuickReply, updateQuickReply, deleteQuickReply, reorderQuickReplies } from "../services/quickReplies.mjs";
 
 export default function registerSettingsRoutes(app) {
   app.get("/settings", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
-    const s = getSettingsForUser(userId);
-    const ob = getOnboarding(userId);
+    const s = await getSettingsForUser(userId);
+    const ob = await getOnboarding(userId);
     const email = await getSignedInEmail(req);
     const q = req.query || {};
-    const calendars = db.prepare(`SELECT id, display_name, account_email, calendar_id FROM calendars WHERE user_id = ? ORDER BY id`).all(userId);
-    const staff = db.prepare(`SELECT id, name, timezone, slot_minutes, calendar_id FROM staff WHERE user_id = ? ORDER BY id DESC LIMIT 50`).all(userId);
-    const quickReplies = getQuickReplies(userId);
-    const quickReplyCategories = getQuickReplyCategories(userId);
+    const calendars = await Calendar.find({ user_id: userId }).select('_id display_name account_email calendar_id').sort({ _id: 1 }).lean();
+    const staff = await Staff.find({ user_id: userId }).select('_id name timezone slot_minutes calendar_id').sort({ _id: -1 }).limit(50).lean();
+    const quickReplies = await getQuickReplies(userId);
+    const quickReplyCategories = await getQuickReplyCategories(userId);
     // Prevent caching to avoid showing cached authenticated pages after logout
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
@@ -304,7 +304,7 @@ export default function registerSettingsRoutes(app) {
                       <label>Calendar
                         <select class="settings-field" name="calendar_id">
                           <option value="">— None (local only) —</option>
-                          ${(calendars||[]).map(c => `<option value="${c.id}">${(c.display_name||c.account_email||c.calendar_id||('Calendar #'+c.id))}</option>`).join('')}
+                          ${(calendars||[]).map(c => `<option value="${String(c._id)}">${(c.display_name||c.account_email||c.calendar_id||('Calendar'))}</option>`).join('')}
                         </select>
                       </label>
                       <div style="grid-column: 1 / -1;">
@@ -641,7 +641,7 @@ export default function registerSettingsRoutes(app) {
                             <div class="wa-top"><div class="wa-name">${r.name}</div></div>
                             <div class="item-preview small">${r.timezone || 'UTC'} · ${r.slot_minutes||30}m ${r.calendar_id ? '(Calendar linked)' : ''}</div>
                           </div>
-                          <form method="post" action="/settings/staff/${r.id}/delete" onsubmit="return checkAuthThenSubmit(this)" style="margin-left:auto;">
+                          <form method="post" action="/settings/staff/${String(r._id)}/delete" onsubmit="return checkAuthThenSubmit(this)" style="margin-left:auto;">
                             <button type="submit" style="border:none;" class="btn-ghost" style="color:#991b1b;"><img src="/delete-icon.svg" alt="Delete"/></button>
                           </form>
                         </div>
@@ -798,9 +798,10 @@ export default function registerSettingsRoutes(app) {
     return res.redirect('/logout');
   });
 
-  app.post("/settings", ensureAuthed, (req, res) => {
+  app.post("/settings", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const values = {
+      name: req.body?.name || null,
       phone_number_id: req.body?.phone_number_id || null,
       whatsapp_token: req.body?.whatsapp_token || null,
       verify_token: req.body?.verify_token || null,
@@ -845,7 +846,11 @@ export default function registerSettingsRoutes(app) {
         return questionArray.length > 0 ? JSON.stringify(questionArray) : null;
       })(),
     };
-    upsertSettingsForUser(userId, values);
+    try {
+      await upsertSettingsForUser(userId, values);
+    } catch (e) {
+      console.error('[POST /settings] upsert error', e?.message || e);
+    }
     res.redirect("/settings");
   });
 
@@ -895,7 +900,7 @@ export default function registerSettingsRoutes(app) {
   });
 
   // Create staff
-  app.post("/settings/staff", ensureAuthed, (req, res) => {
+  app.post("/settings/staff", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const name = (req.body?.name || '').toString().trim();
     if (!name) return res.redirect('/settings');
@@ -903,7 +908,7 @@ export default function registerSettingsRoutes(app) {
     const slotMinutes = Number(req.body?.slot_minutes || 30) || 30;
     let workingJson = (req.body?.working_hours_json || '').toString().trim() || null;
     const calIdRaw = (req.body?.calendar_id || '').toString().trim();
-    const calendarId = calIdRaw ? Number(calIdRaw) : null;
+    const calendarId = calIdRaw ? String(calIdRaw) : null;
     try {
       // Normalize timezone (basic mapping for common labels)
       if (timezone && !/\//.test(timezone)) {
@@ -915,18 +920,17 @@ export default function registerSettingsRoutes(app) {
       if (!workingJson || workingJson === '{}' || workingJson === 'null') {
         workingJson = '{"mon":["09:00-17:00"],"tue":["09:00-17:00"],"wed":["09:00-17:00"],"thu":["09:00-17:00"],"fri":["09:00-17:00"]}';
       }
-      db.prepare(`INSERT INTO staff (user_id, name, calendar_id, timezone, slot_minutes, working_hours_json, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, strftime('%s','now'), strftime('%s','now'))`).run(userId, name, calendarId, timezone, slotMinutes, workingJson);
+      await Staff.create({ user_id: userId, name, calendar_id: calendarId, timezone, slot_minutes: slotMinutes, working_hours_json: workingJson });
     } catch {}
     return res.redirect('/settings');
   });
 
   // Delete staff
-  app.post("/settings/staff/:id/delete", ensureAuthed, (req, res) => {
+  app.post("/settings/staff/:id/delete", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
-    const id = Number(req.params.id || 0);
+    const id = String(req.params.id || '');
     if (!id) return res.redirect('/settings');
-    try { db.prepare(`DELETE FROM staff WHERE id = ? AND user_id = ?`).run(id, userId); } catch {}
+    try { await Staff.findOneAndDelete({ _id: id, user_id: userId }); } catch {}
     return res.redirect('/settings');
   });
 

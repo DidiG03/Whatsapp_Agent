@@ -1,4 +1,4 @@
-import { db } from "../db-serverless.mjs";
+import { db } from "../db-mongodb.mjs";
 import { normalizePhone } from "../utils.mjs";
 
 /**

@@ -1,15 +1,15 @@
 import { renderSidebar, renderTopbar, escapeHtml } from "../utils.mjs";
 import { getSignedInEmail, ensureAuthed } from "../middleware/auth.mjs";
-import { db } from "../db-serverless.mjs";
+import { Guide } from "../schemas/mongodb.mjs";
 
 export default function registerGuideRoutes(app) {
   // Guides index
   app.get("/guide", ensureAuthed, async (req, res) => {
     const email = await getSignedInEmail(req);
-    const guides = db.prepare(`SELECT slug, title, summary, created_at FROM guides ORDER BY created_at DESC`).all();
-    const cards = guides.map(g => `
+    const guides = await Guide.find({}).select('slug title summary createdAt').sort({ createdAt: -1 }).lean();
+    const cards = (guides || []).map(g => `
       <a class="guide-card" href="/guide/${encodeURIComponent(g.slug)}">
-        <div class="guide-card-date">${new Date((g.created_at||0)*1000).toLocaleDateString()}</div>
+        <div class="guide-card-date">${new Date(g.createdAt || Date.now()).toLocaleDateString()}</div>
         <div class="guide-card-header">${escapeHtml(g.title)}</div>
         <div class="guide-card-body">${escapeHtml(g.summary || '')}</div>
         <div class="guide-card-cta">Read more →</div>
@@ -76,15 +76,15 @@ export default function registerGuideRoutes(app) {
   app.get("/guide/:slug", ensureAuthed, async (req, res) => {
     const email = await getSignedInEmail(req);
     const slug = String(req.params.slug || '').trim();
-    const g = db.prepare(`SELECT * FROM guides WHERE slug = ?`).get(slug);
+    const g = await Guide.findOne({ slug }).lean();
     if (!g) return res.redirect('/guide');
-    const others = db.prepare(`SELECT slug, title, summary, created_at FROM guides WHERE slug <> ? ORDER BY created_at DESC LIMIT 6`).all(slug);
-    const related = others.map(o => `
+    const others = await Guide.find({ slug: { $ne: slug } }).select('slug title summary createdAt').sort({ createdAt: -1 }).limit(6).lean();
+    const related = (others || []).map(o => `
       <li class="related-item">
         <a href="/guide/${encodeURIComponent(o.slug)}">
           <div class="related-title">${escapeHtml(o.title)}</div>
           <div class="related-summary">${escapeHtml(o.summary || '')}</div>
-          <div class="related-date">${new Date((o.created_at||0)*1000).toLocaleDateString()}</div>
+          <div class="related-date">${new Date(o.createdAt || Date.now()).toLocaleDateString()}</div>
         </a>
       </li>
     `).join('');
@@ -144,7 +144,7 @@ export default function registerGuideRoutes(app) {
                 <div class="card article">
                   <a href="/guide" class="back">← Back to Guides</a>
                   <div class="title">${escapeHtml(g.title)}</div>
-                  <div class="meta">Published ${new Date((g.created_at||0)*1000).toLocaleDateString()}</div>
+                  <div class="meta">Published ${new Date(g.createdAt || Date.now()).toLocaleDateString()}</div>
                   <div class="separator" style="margin:8px 0;"></div>
                   <div class="prose">${body}</div>
                 </div>

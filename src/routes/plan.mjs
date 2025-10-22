@@ -9,9 +9,9 @@ export default function registerPlanRoutes(app) {
     const email = await getSignedInEmail(req);
     
     // Get current usage and plan info
-    const usage = getCurrentUsage(userId);
-    const plan = getUserPlan(userId);
-    const history = getUsageHistory(userId, 6);
+    const usage = await getCurrentUsage(userId);
+    const plan = await getUserPlan(userId);
+    const history = await getUsageHistory(userId, 6);
     const pricing = getPlanPricing();
     
     // Calculate usage percentage
@@ -24,7 +24,7 @@ export default function registerPlanRoutes(app) {
     const stripePublishableKey = getStripePublishableKey();
     
     // Format usage history for display
-    const historyRows = history.map(h => {
+    const historyRows = (history || []).map(h => {
       const total = h.inbound_messages + h.outbound_messages + h.template_messages;
       const date = new Date(h.month_year + '-01');
       return `
@@ -360,7 +360,7 @@ export default function registerPlanRoutes(app) {
       }
       
       // Update user plan
-      updateUserPlan(userId, {
+      await updateUserPlan(userId, {
         plan_name: plan_name,
         monthly_limit: planDetails.monthly_limit,
         whatsapp_numbers: planDetails.whatsapp_numbers,

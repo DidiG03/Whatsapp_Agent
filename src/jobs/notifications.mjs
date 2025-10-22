@@ -3,7 +3,7 @@
  * - Looks for T-24h and T-1h windows.
  * - Uses sendWhatsAppText; records status via existing webhook/status table.
  */
-import { db } from "../db-serverless.mjs";
+import { db } from "../db-mongodb.mjs";
 import { getSettingsForUser } from "../services/settings.mjs";
 import { sendWhatsappButton } from "../services/whatsapp.mjs";
 
