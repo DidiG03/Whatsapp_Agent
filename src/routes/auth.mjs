@@ -26,6 +26,29 @@ export default function registerAuthRoutes(app) {
     `);
   });
 
+  app.get("/sign-in", (_req, res) => {
+    // Redirect to Clerk's hosted sign-in page
+    const signInUrl = CLERK_SIGN_IN_URL || 'https://accounts.clerk.com/sign-in';
+    const redirectUrl = signInUrl.includes('redirect_url=') 
+      ? signInUrl 
+      : `${signInUrl}${signInUrl.includes('?') ? '&' : '?'}redirect_url=${encodeURIComponent(PUBLIC_BASE_URL)}`;
+    res.redirect(redirectUrl);
+  });
+
+  app.get("/sign-up", (_req, res) => {
+    // Redirect to Clerk's hosted sign-up page
+    const signUpUrl = CLERK_SIGN_UP_URL || 'https://accounts.clerk.com/sign-up';
+    const redirectUrl = signUpUrl.includes('redirect_url=') 
+      ? signUpUrl 
+      : `${signUpUrl}${signUpUrl.includes('?') ? '&' : '?'}redirect_url=${encodeURIComponent(PUBLIC_BASE_URL)}`;
+    res.redirect(redirectUrl);
+  });
+
+  app.get("/sign-out", (_req, res) => {
+    // Handle sign out
+    res.redirect('/logout');
+  });
+
   app.get("/auth/status", (req, res) => {
     try {
       const auth = getAuth(req) || {};
