@@ -4,7 +4,7 @@ import { listContactsForUser, listMessagesForThread } from "../services/conversa
 import { db } from "../db-mongodb.mjs";
 import { Customer, Handoff, Message, MessageStatus } from '../schemas/mongodb.mjs';
 import { getSettingsForUser } from "../services/settings.mjs";
-import { sendWhatsAppText, sendWhatsAppTemplate, sendWhatsappImage, sendWhatsappReaction } from "../services/whatsapp.mjs";
+import { sendWhatsAppText, sendWhatsAppTemplate, sendWhatsappImage, sendWhatsappReaction, sendWhatsappList } from "../services/whatsapp.mjs";
 import { getQuickReplies } from "../services/quickReplies.mjs";
 import { getMessageReactions, toggleReaction, removeReaction, getMessagesReactions, getUserReactionsForMessages } from "../services/reactions.mjs";
 import { createReply, getMessagesReplies, getReplyOriginals } from "../services/replies.mjs";
@@ -295,9 +295,19 @@ export default function registerInboxRoutes(app) {
       contacts = await performAdvancedSearch(userId, { q, messageType, direction, dateFrom, dateTo });
     } else {
       // Regular contact list
-      contacts = await listContactsForUser(userId);
+      const page = Math.max(1, parseInt(req.query.page||'1', 10) || 1);
+      const pageSize = Math.min(50, Math.max(10, parseInt(req.query.page_size||'20', 10) || 20));
+      contacts = await listContactsForUser(userId, { page, pageSize });
     }
     const email = await getSignedInEmail(req);
+
+    // ETag for inbox list: derive from userId + top contact timestamps
+    try {
+      const etagBase = contacts.slice(0, 50).map(c => `${c.contact}:${c.last_ts||0}`).join('|');
+      const etag = 'W/"'+Buffer.from(etagBase).toString('base64').slice(0, 32)+'"';
+      if (req.headers['if-none-match'] === etag) return res.status(304).end();
+      res.setHeader('ETag', etag);
+    } catch {}
     const customers = await Customer.find({ user_id: userId }).select('contact_id display_name');
     const customerNameByContact = new Map(customers.map(r => [String(r.contact_id), r.display_name]));
     const lastSeenRows = await Handoff.find({ user_id: userId }).select('contact_id last_seen_ts');
@@ -343,13 +353,13 @@ export default function registerInboxRoutes(app) {
       const conversationStatus = statusByContact.get(String(c.contact)) || CONVERSATION_STATUSES.NEW;
       const statusDisplay = STATUS_DISPLAY_NAMES[conversationStatus];
       const statusColor = STATUS_COLORS[conversationStatus];
-      const dropdownId = `menu_${c.contact}`;
-      const menu = `
-        <div class="dropdown" style="position:relative;">
-          <button type="button" class="btn-ghost" style="border:none;" onclick="return toggleMenu('${dropdownId}', event)">
+          const dropdownId = `menu_${c.contact}`;
+          const menu = `
+        <div class="dropdown" style="position:relative; overflow:visible;">
+          <button type="button" class="btn-ghost" style="border:none; position:relative; z-index:10000;" onclick="return toggleMenu('${dropdownId}', event)">
             <img src="/menu-icon.svg" alt="Menu" style="width:20px;height:20px;vertical-align:middle;border:none;"/>
           </button>
-          <div id="${dropdownId}" class="dropdown-menu" style="position:absolute; right:0; top:28px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:6px; min-width:140px; display:none; box-shadow:0 6px 20px rgba(0,0,0,0.12); z-index:10;" onclick="event.stopPropagation()">
+          <div id="${dropdownId}" class="dropdown-menu" style="position:absolute; right:0; top:36px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:6px; min-width:180px; display:none; box-shadow:0 10px 30px rgba(0,0,0,0.18); z-index:10001;" onclick="event.stopPropagation()">
             <form method="post" action="/inbox/${c.contact}/archive" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
               <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;">
                 <img src="/archive-icon.svg" alt="Archive"/> Archive
@@ -368,6 +378,21 @@ export default function registerInboxRoutes(app) {
             <form method="post" action="/inbox/${c.contact}/nameCustomer" style="margin:0;">
               <button type="button" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;" onclick="openNameModal('${c.contact}'); return false;">
                 <img src="/name-person-icon.svg" alt="Name Person"/> Name Customer
+              </button>
+            </form>
+            <form method="post" action="/inbox/${c.contact}/optout" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
+              <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;">
+                🚫 Opt-out
+              </button>
+            </form>
+            <form method="post" action="/inbox/${c.contact}/unoptout" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
+              <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;">
+                ✅ Remove opt-out
+              </button>
+            </form>
+            <form method="post" action="/inbox/${c.contact}/block24h" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
+              <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;">
+                ⛔ Block 24h
               </button>
             </form>
           </div>
@@ -499,9 +524,7 @@ export default function registerInboxRoutes(app) {
                   <div class="search-input-group">
                     <input class="search-input" type="text" name="q" placeholder='Search conversations...' value="${q}"/>
                     <button type="submit" class="search-btn">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
-                        <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
-                      </svg>
+                      <img src="/search-icon.svg" alt="Search" width="20" height="20">
                     </button>
                   </div>
                   <div class="search-filters" id="searchFilters" style="display: none;">
@@ -535,16 +558,10 @@ export default function registerInboxRoutes(app) {
                   </div>
                   <div class="search-actions">
                     <button type="button" onclick="toggleSearchFilters()" class="filter-toggle-btn">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
-                        <path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/>
-                      </svg>
-                      Filters
+                      <img src="/filter-icon.svg" alt="Filter" width="20" height="20">
                     </button>
                     <a href="/search" class="btn-primary">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" style="margin-right: 6px;">
-                        <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
-                      </svg>
-                      Advanced Search
+                      <img src="/advanced-search-icon.svg" alt="Advanced Search" width="20" height="20" style="margin-right: 6px;">
                     </a>
                   </div>
               </form>
@@ -706,9 +723,30 @@ export default function registerInboxRoutes(app) {
                 function toggleMenu(id, evt){
                   if(evt){ try{ evt.preventDefault(); evt.stopPropagation(); }catch(_){} }
                   try{
-                    document.querySelectorAll('.dropdown-menu').forEach(el=>{ if(el.id!==id) el.style.display='none'; });
-                    const el = document.getElementById(id);
-                    if(!el) return false; el.style.display = (el.style.display==='block') ? 'none' : 'block';
+                    document.querySelectorAll('.dropdown-menu').forEach(el=>{ if(el.id!==id){ el.style.display='none'; if(el.__portal){ try{el.__portal.remove()}catch{}; el.__portal=null; } } });
+                    const origin = document.getElementById(id);
+                    if(!origin) return false;
+                    // Portal clone attached to body to defeat clipping
+                    if(!origin.__portal){
+                      const rect = (evt && (evt.currentTarget||evt.target).getBoundingClientRect()) || origin.getBoundingClientRect();
+                      const portal = origin.cloneNode(true);
+                      portal.id = id + '_p';
+                      portal.style.position = 'fixed';
+                      portal.style.left = Math.max(8, rect.right - 180) + 'px';
+                      portal.style.top = (rect.bottom + 8) + 'px';
+                      portal.style.display = 'block';
+                      portal.style.zIndex = 100000;
+                      portal.onclick = function(e){ e.stopPropagation(); };
+                      document.body.appendChild(portal);
+                      origin.style.display='none';
+                      origin.__portal = portal;
+                      window.addEventListener('click', function onClose(){
+                        if(origin.__portal){ try{ origin.__portal.remove(); }catch{} origin.__portal=null; }
+                        window.removeEventListener('click', onClose);
+                      });
+                    } else {
+                      try{ origin.__portal.remove(); }catch{} origin.__portal=null;
+                    }
                   }catch(_){ }
                   return false;
                 }
@@ -1001,6 +1039,10 @@ export default function registerInboxRoutes(app) {
           text_body: 1,
           ts: { $ifNull: ['$timestamp', 0] },
           raw: 1,
+          delivery_status: 1,
+          read_status: 1,
+          delivery_timestamp: 1,
+          read_timestamp: 1,
           message_status: { $arrayElemAt: ['$last_status.status', 0] },
           status_timestamp: { $arrayElemAt: ['$last_status.timestamp', 0] }
         }
@@ -1009,10 +1051,10 @@ export default function registerInboxRoutes(app) {
     
     // Load reactions and replies for all messages
     const messageIds = msgs.map(m => m.id);
-    const reactionsByMessage = getMessagesReactions(messageIds);
-    const userReactionsByMessage = getUserReactionsForMessages(messageIds, userId);
-    const repliesByMessage = getMessagesReplies(messageIds);
-    const replyOriginals = getReplyOriginals(messageIds);
+    const reactionsByMessage = await getMessagesReactions(messageIds);
+    const userReactionsByMessage = await getUserReactionsForMessages(messageIds, userId);
+    const repliesByMessage = await getMessagesReplies(messageIds);
+    const replyOriginals = await getReplyOriginals(messageIds);
     const status = await Handoff.findOne({ contact_id: phone, user_id: userId }).select('is_human human_expires_ts');
     const isHuman = !!status?.is_human;
     const expTs = Number(status?.human_expires_ts || 0);
@@ -1020,12 +1062,21 @@ export default function registerInboxRoutes(app) {
     const remain = expTs > nowSec ? (expTs - nowSec) : 0;
     
     // Get conversation status
-    const conversationStatus = getConversationStatus(userId, phone);
-    const statusDisplay = STATUS_DISPLAY_NAMES[conversationStatus];
-    const statusColor = STATUS_COLORS[conversationStatus];
+    const conversationStatus = await getConversationStatus(userId, phone);
+    const statusKey = conversationStatus || 'new';
+    const statusDisplay = STATUS_DISPLAY_NAMES[statusKey] || 'New';
+    const statusColor = STATUS_COLORS[statusKey] || STATUS_COLORS['new'];
     
     const email = await getSignedInEmail(req);
     const quickReplies = getQuickReplies(userId);
+    // ETag for thread: hash of last message id + count
+    try {
+      const etagBase = `${userId}:${phone}:${msgs.length}:${msgs[msgs.length-1]?.id||''}`;
+      const etag = 'W/"'+Buffer.from(etagBase).toString('base64').slice(0, 32)+'"';
+      if (req.headers['if-none-match'] === etag) return res.status(304).end();
+      res.setHeader('ETag', etag);
+    } catch {}
+
     const items = msgs.map(m => {
       const cls = m.direction === 'inbound' ? 'msg msg-in' : 'msg msg-out';
       let display = String(m.text_body || '').trim();
@@ -1104,10 +1155,9 @@ export default function registerInboxRoutes(app) {
       // Generate WhatsApp-style status ticks for outbound messages
       let statusTicks = '';
       if (m.direction === 'outbound') {
-        // Get message status from database
-        const messageStatus = getMessageStatus(m.id);
-        const deliveryStatus = messageStatus?.delivery_status || MESSAGE_STATUS.SENT;
-        const readStatus = messageStatus?.read_status || READ_STATUS.UNREAD;
+        // Use delivery/read status directly from message document
+        const deliveryStatus = m.delivery_status || MESSAGE_STATUS.SENT;
+        const readStatus = m.read_status || READ_STATUS.UNREAD;
         
         // Determine final status (read overrides delivered)
         let finalStatus = deliveryStatus;
@@ -1272,6 +1322,7 @@ export default function registerInboxRoutes(app) {
           // Real-time functionality
           let realtimeManager = null;
           const phone = '${phone}'.split('?')[0]; // Clean phone number to remove query parameters
+          const phoneDigits = phone.replace(/\D/g, ''); // Normalize to digits for realtime rooms/APIs
           const userId = '${userId}';
           
           // Debug: Log userId to console
@@ -1299,7 +1350,7 @@ export default function registerInboxRoutes(app) {
                 console.log('🔍 Debug - Setting realtimeManager.userId to:', finalUserId);
                 // Connect to Socket.IO
                 await realtimeManager.connect();
-                realtimeManager.joinChat(phone);
+                realtimeManager.joinChat(phoneDigits);
                 setupRealtimeFeatures();
               } else {
                 setTimeout(checkRealtime, 100);
@@ -1318,21 +1369,21 @@ export default function registerInboxRoutes(app) {
               
               messageInput.addEventListener('input', () => {
                 if (realtimeManager.isConnected) {
-                  realtimeManager.startTyping(phone);
+                  realtimeManager.startTyping(phoneDigits);
                   
                   // Clear existing timer
                   if (typingTimer) clearTimeout(typingTimer);
                   
                   // Stop typing after 1 second of inactivity
                   typingTimer = setTimeout(() => {
-                    realtimeManager.stopTyping(phone);
+                    realtimeManager.stopTyping(phoneDigits);
                   }, 1000);
                 }
               });
               
               messageInput.addEventListener('blur', () => {
                 if (realtimeManager.isConnected) {
-                  realtimeManager.stopTyping(phone);
+                  realtimeManager.stopTyping(phoneDigits);
                 }
               });
             }
@@ -1342,25 +1393,9 @@ export default function registerInboxRoutes(app) {
             if (messageForm) {
               messageForm.addEventListener('submit', (e) => {
                 e.preventDefault();
-                
-                const messageInput = document.getElementById('messageInput');
-                const message = messageInput.value.trim();
-                
-                if (message && realtimeManager.isConnected) {
-                  // Send via real-time
-                  const success = realtimeManager.sendMessage(phone, message);
-                  if (success) {
-                    messageInput.value = '';
-                    messageInput.style.height = 'auto';
-                    updateSendButtonState();
-                  } else {
-                    // Fallback to form submission
-                    messageForm.submit();
-                  }
-                } else {
-                  // Fallback to form submission
-                  messageForm.submit();
-                }
+                // Use the central handler which ensures realtime and avoids page reloads
+                handleFormSubmit(e);
+                return false;
               });
             }
           }
@@ -1382,7 +1417,7 @@ export default function registerInboxRoutes(app) {
             
             // Send via real-time if available
             if (realtimeManager && realtimeManager.isConnected) {
-              realtimeManager.toggleLiveMode(phone, newHumanMode);
+              realtimeManager.toggleLiveMode(phoneDigits, newHumanMode);
             }
             
             // Submit the form with authentication
@@ -1404,7 +1439,15 @@ export default function registerInboxRoutes(app) {
             if(!ta) return; 
             
             ta.addEventListener('keydown', function(e){
-              if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); this.form.submit(); }
+              if(e.key==='Enter' && !e.shiftKey){
+                e.preventDefault();
+                // Trigger the form's submit handler without bypassing listeners
+                if (this.form && typeof this.form.requestSubmit === 'function') {
+                  this.form.requestSubmit();
+                } else if (this.form) {
+                  this.form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+                }
+              }
             });
             
             // Auto-resize textarea and update send button state
@@ -1641,17 +1684,20 @@ export default function registerInboxRoutes(app) {
 
           // Retry failed message function
           function retryMessage(messageId) {
-            console.log('🔄 Retrying message:', messageId);
+            console.log('🔄 Retrying message (raw id):', messageId);
+            // Normalize id (handle accidental spaces)
+            const cleanId = String(messageId || '').trim().replace(/\s+/g, '_');
+            console.log('🔄 Retrying message (normalized id):', cleanId);
             
             // Show loading state on the retry button
-            const retryButton = document.querySelector('[data-message-id="' + messageId + '"]');
+            const retryButton = document.querySelector('[data-message-id="' + cleanId + '"]');
             if (retryButton) {
               retryButton.disabled = true;
               retryButton.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>';
               retryButton.style.opacity = '0.6';
             }
             
-            fetch('/retry-message/' + messageId, {
+            fetch('/retry-message/' + encodeURIComponent(cleanId), {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json'
@@ -1664,10 +1710,13 @@ export default function registerInboxRoutes(app) {
                   if (typeof showToast === 'function') {
                     showToast('Message sent successfully!', 'success');
                   }
-                  // Reload the page to show updated status
+                  // No need to reload if real-time broadcast works; fallback reload
                   setTimeout(() => {
+                    try {
+                      if (window.realtimeManager && window.realtimeManager.isConnected) return;
+                    } catch {}
                     window.location.reload();
-                  }, 1000);
+                  }, 800);
                 } else {
                   console.error('❌ Failed to retry message:', data.error);
                   // Show error toast
@@ -2008,45 +2057,37 @@ export default function registerInboxRoutes(app) {
                 return;
               }
               
-              // Check if real-time manager is available and connected
-              if (realtimeManager && realtimeManager.isConnected) {
+              // Ensure real-time is connected (attempt quick connect if needed)
+              const ensureConnected = async () => {
+                try {
+                  if (!realtimeManager) return false;
+                  if (realtimeManager.isConnected) return true;
+                  await realtimeManager.connect();
+                  realtimeManager.joinChat(phoneDigits);
+                  await new Promise(r => setTimeout(r, 500));
+                  return realtimeManager.isConnected;
+                } catch(_) { return false; }
+              };
+              
+              (async () => {
+                const ok = await ensureConnected();
+                if (!ok) {
+                  console.error('Real-time connection unavailable. Message not sent.');
+                  alert('Connection issue: message not sent. Please try again.');
+                  return;
+                }
                 console.log('📤 Sending message via real-time:', message);
-                
-                // Send via real-time
-                const success = realtimeManager.sendMessage(phone, message, 'text');
-                
+                const success = realtimeManager.sendMessage(phoneDigits, message, 'text');
                 if (success) {
-                  // Clear the input
                   textarea.value = '';
-                  
-                  // Clear reply state
                   clearReply();
-                  
-                  // The message will be added to chat via real-time broadcast from server
-                  // No optimistic update needed - wait for server response
                 } else {
                   console.error('Failed to send message via real-time');
-                  // Fallback to form submission
-                  window.authManager.submitFormWithAuth(event.target).then(success => { 
-                    if(success) {
-                      event.target.submit();
-                      setTimeout(scrollToBottom, 500);
-                      clearReply();
-                    }
-                  });
+                  alert('Failed to send message. Please try again.');
                 }
-              } else {
-                console.log('Real-time not available, falling back to form submission');
-                // Fallback to form submission if real-time is not available
-                window.authManager.submitFormWithAuth(event.target).then(success => { 
-                  if(success) {
-                    event.target.submit();
-                    setTimeout(scrollToBottom, 500);
-                    clearReply();
-                  }
-                });
-              }
+              })();
             }
+            return false;
           }
           window.addEventListener('DOMContentLoaded', function() {
             setupComposer();
@@ -2201,91 +2242,88 @@ export default function registerInboxRoutes(app) {
             ${renderSidebar('inbox')}
             <main class="main">
               <div class="main-content">
-                <div style="min-height: calc(100vh - 107px);" class="card">
-                <div class="wa-chat-header">
-                  <a href="/inbox" style="border:none; margin-right:20px;">
-                    <img src="/left-arrow-icon.svg" alt="Back" style="width:20px;height:20px;vertical-align:middle;"/>
-                  </a>
-                  <div class="wa-avatar">${String(phone).slice(-2)}</div>
-                  <div style="flex:1;">
-                    <div class="wa-name">${headerName}</div>
-                    <div class="small">
-                      ${isHuman ? ('Human' + (remain ? ' • <span id="exp_remain"></span> left' : '')) : 'AI'}
+                  <div class="wa-chat-header">
+                    <a href="/inbox" style="border:none; margin-right:20px;">
+                      <img src="/left-arrow-icon.svg" alt="Back" style="width:20px;height:20px;vertical-align:middle;"/>
+                    </a>
+                    <div class="wa-avatar">${String(phone).slice(-2)}</div>
+                      <div style="flex:1;">
+                        <div class="wa-name">${headerName}</div>
+                        <div class="small">
+                          ${isHuman ? ('Human' + (remain ? ' • <span id="exp_remain"></span> left' : '')) : 'AI'}
+                        </div>
+                    </div>
+                    <form method="post" action="/handoff/${phone}" onsubmit="event.preventDefault(); toggleHandoffMode(); return false;">
+                      <input type="hidden" name="is_human" value="${isHuman ? '' : '1'}"/>
+                      <button type="submit" class="btn-ghost handoff-toggle-btn" id="handoffToggleBtn" data-is-human="${isHuman}" style="border:none; background:transparent; padding:0; margin:0;">
+                        <img 
+                          src="${isHuman ? '/raise-hand-icon.svg' : '/bot-icon.svg'}"
+                          alt="${isHuman ? 'Human handling' : 'AI handling'}" 
+                          style="width:26px;height:26px;vertical-align:middle;margin-right:6px; cursor:pointer;"
+                        />
+                      </button>
+                    </form>
+                    ${isHuman ? `<form method="post" action="/inbox/${phone}/renew" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
+                      <button type="submit" class="btn-ghost" title="Renew 5 minutes" style="border:none;"><img src="/restart-onboarding.svg" alt="Renew" style="width:20px;height:20px;vertical-align:middle;"/></button>
+                    </form>` : ''}
+                    <form method="post" action="/inbox/${phone}/archive" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
+                      <button type="submit" class="btn-ghost" style="border:none;"><img src="/archive-icon.svg" alt="Archive" style="width:20px;height:20px;vertical-align:middle;"/></button>
+                    </form>
+                    <form method="post" action="/inbox/${phone}/clear" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
+                      <button type="submit" class="btn-ghost" style="border:none;"><img src="/clear-icon.svg" alt="Clear" style="width:24px;height:24px;vertical-align:middle;"/></button>
+                    </form>
+                    <form method="post" action="/inbox/${phone}/delete" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
+                      <button type="submit" class="btn-ghost" style="color:#c00; border:none;"><img src="/delete-icon.svg" alt="Delete" style="width:20px;height:20px;vertical-align:middle;"/></button>
+                    </form>
+                    
+                    <!-- Conversation Status Management -->
+                    <div class="status-dropdown" style="position:relative; margin-left:8px; margin-bottom:8px;">
+                      <button type="button" class="btn-ghost" onclick="toggleStatusDropdown()" style="border:none; background:transparent; padding:4px 8px; border-radius:6px; display:flex; align-items:center; gap:4px;">
+                        <span class="status-chip" style="background-color: ${statusColor}; color: white; font-size: 11px; padding: 3px 8px; border-radius: 12px;">${statusDisplay}</span>
+                        <span style="font-size:12px; color:#666;">▼</span>
+                      </button>
+                      <div id="statusDropdown" class="status-dropdown-menu" style="position:absolute; right:0; top:32px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:8px; min-width:160px; display:none; box-shadow:0 6px 20px rgba(0,0,0,0.12); z-index:10;">
+                        <div style="font-size:12px; color:#666; margin-bottom:6px; padding-bottom:4px; border-bottom:1px solid #eee;">Change Status</div>
+                        ${Object.entries(CONVERSATION_STATUSES).map(([key, value]) => `
+                          <button type="button" class="status-option ${conversationStatus === value ? 'active' : ''}" onclick="updateConversationStatus('${value}')" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none; background:transparent; padding:6px 8px; border-radius:4px; font-size:13px; ${conversationStatus === value ? 'background:#f0f9ff; color:#0369a1;' : ''}">
+                            <span style="width:8px; height:8px; border-radius:50%; background-color: ${STATUS_COLORS[value]};"></span>
+                            ${STATUS_DISPLAY_NAMES[value]}
+                            ${conversationStatus === value ? '✓' : ''}
+                          </button>
+                        `).join('')}
+                      </div>
                     </div>
                   </div>
-
-                  <form method="post" action="/handoff/${phone}" onsubmit="event.preventDefault(); toggleHandoffMode(); return false;">
-                    <input type="hidden" name="is_human" value="${isHuman ? '' : '1'}"/>
-                    <button type="submit" class="btn-ghost handoff-toggle-btn" id="handoffToggleBtn" data-is-human="${isHuman}" style="border:none; background:transparent; padding:0; margin:0;">
-                      <img 
-                        src="${isHuman ? '/raise-hand-icon.svg' : '/bot-icon.svg'}"
-                        alt="${isHuman ? 'Human handling' : 'AI handling'}" 
-                        style="width:26px;height:26px;vertical-align:middle;margin-right:6px; cursor:pointer;"
-                      />
-                    </button>
-                  </form>
-                  ${isHuman ? `<form method="post" action="/inbox/${phone}/renew" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
-                    <button type="submit" class="btn-ghost" title="Renew 5 minutes" style="border:none;"><img src="/restart-onboarding.svg" alt="Renew" style="width:20px;height:20px;vertical-align:middle;"/></button>
-                  </form>` : ''}
-                  <form method="post" action="/inbox/${phone}/archive" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
-                    <button type="submit" class="btn-ghost" style="border:none;"><img src="/archive-icon.svg" alt="Archive" style="width:20px;height:20px;vertical-align:middle;"/></button>
-                  </form>
-                  <form method="post" action="/inbox/${phone}/clear" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
-                    <button type="submit" class="btn-ghost" style="border:none;"><img src="/clear-icon.svg" alt="Clear" style="width:24px;height:24px;vertical-align:middle;"/></button>
-                  </form>
-                  <form method="post" action="/inbox/${phone}/delete" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
-                    <button type="submit" class="btn-ghost" style="color:#c00; border:none;"><img src="/delete-icon.svg" alt="Delete" style="width:20px;height:20px;vertical-align:middle;"/></button>
-                  </form>
-                  
-                  <!-- Conversation Status Management -->
-                  <div class="status-dropdown" style="position:relative; margin-left:8px; margin-bottom:8px;">
-                    <button type="button" class="btn-ghost" onclick="toggleStatusDropdown()" style="border:none; background:transparent; padding:4px 8px; border-radius:6px; display:flex; align-items:center; gap:4px;">
-                      <span class="status-chip" style="background-color: ${statusColor}; color: white; font-size: 11px; padding: 3px 8px; border-radius: 12px;">${statusDisplay}</span>
-                      <span style="font-size:12px; color:#666;">▼</span>
-                    </button>
-                    <div id="statusDropdown" class="status-dropdown-menu" style="position:absolute; right:0; top:32px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:8px; min-width:160px; display:none; box-shadow:0 6px 20px rgba(0,0,0,0.12); z-index:10;">
-                      <div style="font-size:12px; color:#666; margin-bottom:6px; padding-bottom:4px; border-bottom:1px solid #eee;">Change Status</div>
-                      ${Object.entries(CONVERSATION_STATUSES).map(([key, value]) => `
-                        <button type="button" class="status-option ${conversationStatus === value ? 'active' : ''}" onclick="updateConversationStatus('${value}')" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none; background:transparent; padding:6px 8px; border-radius:4px; font-size:13px; ${conversationStatus === value ? 'background:#f0f9ff; color:#0369a1;' : ''}">
-                          <span style="width:8px; height:8px; border-radius:50%; background-color: ${STATUS_COLORS[value]};"></span>
-                          ${STATUS_DISPLAY_NAMES[value]}
-                          ${conversationStatus === value ? '✓' : ''}
-                        </button>
-                      `).join('')}
-                    </div>
-                  </div>
-                </div>
-                ${(() => {
-                  try{
-                    const lastInbound = (msgs||[]).filter(x=>x.direction==='inbound').map(x=>Number(x.ts||0)).sort((a,b)=>b-a)[0]||0;
-                    const over24 = lastInbound && (Math.floor(Date.now()/1000)-lastInbound) > 24*3600;
-                    if (over24) {
-                      return `<div class=\"small\" style=\"margin:8px 0; padding:8px; background:#fff8e1; border:1px solid #fde68a; border-radius:8px;\">Session expired (>24h). Send template to reopen window.
-                        <form method=\"post\" action=\"/inbox/${phone}/send-template\" data-auth-enhanced style=\"display:flex; gap:6px; align-items:center; margin-top:6px;\">
-                          <input class=\"settings-field\" name=\"var1\" placeholder=\"{{1}} (optional)\" style=\"height:32px;\"/>
-                          <input class=\"settings-field\" name=\"var2\" placeholder=\"{{2}} (optional)\" style=\"height:32px;\"/>
-                          <button class=\"btn-ghost\" type=\"submit\" style=\"border:none;\">Send Template</button>
-                        </form>
-                      </div>`;
-                    }
-                  }catch(_){ }
-                  return '';
-                })()}
-                <div class="chat-thread">
-                  ${items || '<div class="small" style="text-align:center;padding:16px;">No messages</div>'}
-                  <div id="typingIndicator" class="typing-indicator" style="display:none;">
-                    <div class="msg msg-in">
-                      <div class="bubble">
-                        <div class="typing-dots">
-                          <span></span>
-                          <span></span>
-                          <span></span>
-                </div>
+                        ${(() => {
+                          try{
+                            const lastInbound = (msgs||[]).filter(x=>x.direction==='inbound').map(x=>Number(x.ts||0)).sort((a,b)=>b-a)[0]||0;
+                            const over24 = lastInbound && (Math.floor(Date.now()/1000)-lastInbound) > 24*3600;
+                            if (over24) {
+                              return `<div class=\"small\" style=\"margin:8px 0; padding:8px; background:#fff8e1; border:1px solid #fde68a; border-radius:8px;\">Session expired (>24h). Send template to reopen window.
+                                <form method=\"post\" action=\"/inbox/${phone}/send-template\" data-auth-enhanced style=\"display:flex; gap:6px; align-items:center; margin-top:6px;\">
+                                  <input class=\"settings-field\" name=\"var1\" placeholder=\"{{1}} (optional)\" style=\"height:32px;\"/>
+                                  <input class=\"settings-field\" name=\"var2\" placeholder=\"{{2}} (optional)\" style=\"height:32px;\"/>
+                                  <button class=\"btn-ghost\" type=\"submit\" style=\"border:none;\">Send Template</button>
+                                </form>
+                              </div>`;
+                            }
+                          }catch(_){ }
+                          return '';
+                        })()}
+                        <div class="chat-thread">
+                          ${items || '<div class="small" style="text-align:center;padding:16px;">No messages</div>'}
+                          <div id="typingIndicator" class="typing-indicator" style="display:none;">
+                            <div class="msg msg-in">
+                              <div class="bubble">
+                                <div class="typing-dots">
+                                  <span></span>
+                                  <span></span>
+                                  <span></span>
+                        </div>
                         <div class="meta">Typing...</div>
                       </div>
                     </div>
                   </div>
-                </div>
                 
                 ${quickReplies.length > 0 ? `
                 <div class="quick-replies-container" id="quickRepliesContainer">
@@ -2308,7 +2346,7 @@ export default function registerInboxRoutes(app) {
                 </div>
                 ` : ''}
                 
-                <div class="wa-composer">
+                <div>
                   <div id="imagePreview" style="display:none; margin-bottom:8px; padding:8px; background:#f0f0f0; border-radius:8px;">
                     <div style="display:flex; gap:8px; align-items:center;">
                       <img id="previewImg" style="width:60px; height:60px; object-fit:cover; border-radius:8px;" />
@@ -2365,7 +2403,9 @@ export default function registerInboxRoutes(app) {
                     </div>
                   </div>
                   
-                  <form method="post" action="/send/${phone}" onsubmit="event.preventDefault(); handleFormSubmit(event); return false;">
+                  </div>
+                  </div>
+                  <form method="post" action="/send/${phone}" onsubmit="event.preventDefault(); handleFormSubmit(event); return false;" style="margin-top: 8px;">
                     <div class="wa-attach-menu" id="attachMenu" style="display: none;">
                       <button type="button" class="wa-attach-option" id="attachDocumentBtn" title="Send document">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -2374,9 +2414,9 @@ export default function registerInboxRoutes(app) {
                           <line x1="16" y1="13" x2="8" y2="13"></line>
                           <line x1="16" y1="17" x2="8" y2="17"></line>
                           <polyline points="10,9 9,9 8,9"></polyline>
-                      </svg>
+                        </svg>
                         <span>Document</span>
-                    </button>
+                      /button>
                       <button type="button" class="wa-attach-option" id="attachImageBtn" title="Send photo">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                           <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
@@ -2385,7 +2425,7 @@ export default function registerInboxRoutes(app) {
                         </svg>
                         <span>Photo</span>
                       </button>
-                  </div>
+                    </div>
                     
                     <div class="wa-input-container">
                       <button type="button" ${!isHuman ? 'disabled' : ''} onclick="toggleAttachmentMenu()" class="wa-attach-btn" title="Attach">
@@ -2404,30 +2444,12 @@ export default function registerInboxRoutes(app) {
                           <path d="M8.5 10c-.83 0-1.5-.67-1.5-1.5S7.67 7 8.5 7s1.5.67 1.5 1.5S9.33 10 8.5 10zm7 0c-.83 0-1.5-.67-1.5-1.5S14.67 7 15.5 7s1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm-3.5 6c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5z"/>
                         </svg>
                       </button>
-                      
-                      <button type="button" ${!isHuman ? 'disabled' : ''} onclick="document.getElementById('imageFileInput').click()" class="wa-camera-btn" title="Camera">
-                        <svg viewBox="0 0 24 24" fill="currentColor">
-                          <path d="M12 12m-3.2 0a3.2 3.2 0 1 1 6.4 0a3.2 3.2 0 1 1 -6.4 0"/>
-                          <path d="M9 2L7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/>
-                        </svg>
-                      </button>
-                      
-                      <button type="button" ${!isHuman ? 'disabled' : ''} onclick="startVoiceRecording()" class="wa-mic-btn" title="Voice Message">
-                        <svg viewBox="0 0 24 24" fill="currentColor">
-                          <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
-                          <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
-                        </svg>
-                      </button>
-                      
+                    
                       <button type="submit" id="sendButton" class="wa-send-btn" title="Send" ${!isHuman ? 'disabled data-original-disabled="true"' : ''}>
-                        <svg viewBox="0 0 24 24" fill="currentColor">
-                          <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
-                        </svg>
+                        <img src="/send-whatsapp-icon.svg" alt="Send" style="width:22px; height:22px; vertical-align:middle;" />
                       </button>
                     </div>
                   </form>
-                </div>
-              </div>
               </div>
             </main>
           </div>
@@ -2436,17 +2458,13 @@ export default function registerInboxRoutes(app) {
     `);
   });
 
-  app.post("/handoff/:phone", ensureAuthed, (req, res) => {
+  app.post("/handoff/:phone", ensureAuthed, async (req, res) => {
     const phone = req.params.phone;
     const userId = getCurrentUserId(req);
     const isHuman = req.body?.is_human ? 1 : 0;
     const now = Math.floor(Date.now()/1000);
     const exp = isHuman ? (now + 5*60) : 0;
-    const upsert = db.prepare(`
-      INSERT INTO handoff (contact_id, user_id, is_human, human_expires_ts, updated_at) VALUES (?, ?, ?, ?, strftime('%s','now'))
-      ON CONFLICT(contact_id, user_id) DO UPDATE SET is_human = excluded.is_human, human_expires_ts = excluded.human_expires_ts, updated_at = excluded.updated_at
-    `);
-    try { upsert.run(phone, userId, isHuman, exp); } catch {}
+    try { await Handoff.findOneAndUpdate({ contact_id: phone, user_id: userId }, { $set: { is_human: !!isHuman, human_expires_ts: exp, updatedAt: new Date() } }, { upsert: true }); } catch {}
     res.redirect(`/inbox/${phone}`);
   });
 
@@ -2482,7 +2500,7 @@ export default function registerInboxRoutes(app) {
   });
 
   // Update conversation status
-  app.post("/inbox/:phone/status", ensureAuthed, (req, res) => {
+  app.post("/inbox/:phone/status", ensureAuthed, async (req, res) => {
     const phone = req.params.phone.split('?')[0]; // Clean phone number
     const userId = getCurrentUserId(req);
     const { status, reason } = req.body;
@@ -2492,11 +2510,49 @@ export default function registerInboxRoutes(app) {
         return res.status(400).json({ error: 'Invalid conversation status' });
       }
       
-      updateConversationStatus(userId, phone, status, reason);
+      await updateConversationStatus(userId, phone, status, reason);
+      
+      // If resolved → request CSAT rating via WhatsApp and flag awaiting rating
+      if (status === CONVERSATION_STATUSES.RESOLVED) {
+        try {
+          const cfg = await getSettingsForUser(userId);
+          if (cfg?.whatsapp_token && cfg?.phone_number_id) {
+            // Send WhatsApp list for emoji selection
+            const header = 'Rate your experience';
+            const body = 'Tap one of the options below:';
+            const rows = [
+              { id: 'CSAT_1', title: '😡 Very bad', description: '' },
+              { id: 'CSAT_2', title: '😕 Bad', description: '' },
+              { id: 'CSAT_3', title: '🙂 Okay', description: '' },
+              { id: 'CSAT_4', title: '😀 Good', description: '' },
+              { id: 'CSAT_5', title: '🤩 Excellent', description: '' }
+            ];
+            try {
+              const resp = await sendWhatsappList(phone, header, body, 'Select', rows, cfg);
+              console.log('[CSAT] List prompt sent:', { hasId: !!resp?.messages?.[0]?.id });
+            } catch (e) {
+              console.warn('[CSAT] Failed to send list prompt, falling back to text:', e?.message || e);
+              const prompt = "Thanks for chatting with us! Please rate by replying with one emoji: 😡 😕 🙂 😀 🤩";
+              try { await sendWhatsAppText(phone, prompt, cfg); } catch {}
+            }
+          } else {
+            console.warn('[CSAT] Skipped prompt: missing WhatsApp config');
+          }
+          try {
+            const { getDB } = await import('../db-mongodb.mjs');
+            const dbNative = getDB();
+            await dbNative.collection('contact_state').updateOne(
+              { user_id: String(userId), contact_id: String(phone) },
+              { $set: { await_rating: 1, await_rating_ts: Math.floor(Date.now()/1000), updatedAt: new Date() } },
+              { upsert: true }
+            );
+          } catch (e) { console.warn('[CSAT] Failed to flag await_rating:', e?.message || e); }
+        } catch {}
+      }
       
       // Redirect back to conversation with success message
       const statusDisplay = STATUS_DISPLAY_NAMES[status];
-      res.redirect(`/inbox/${phone}?toast=${encodeURIComponent(`Status updated to ${statusDisplay}`)}&type=success`);
+      res.redirect(`/inbox/${phone}`);
     } catch (error) {
       console.error('Error updating conversation status:', error);
       res.redirect(`/inbox/${phone}?toast=${encodeURIComponent('Failed to update status')}&type=error`);
@@ -2504,69 +2560,109 @@ export default function registerInboxRoutes(app) {
   });
 
   // Renew 5 more minutes of human mode
-  app.post("/inbox/:phone/renew", ensureAuthed, (req, res) => {
+  app.post("/inbox/:phone/renew", ensureAuthed, async (req, res) => {
     const phone = req.params.phone;
     const userId = getCurrentUserId(req);
     try {
       const now = Math.floor(Date.now()/1000);
-      const row = db.prepare(`SELECT COALESCE(human_expires_ts,0) AS exp FROM handoff WHERE contact_id = ? AND user_id = ?`).get(phone, userId) || { exp: 0 };
-      const base = Number(row.exp || 0) > now ? Number(row.exp || 0) : now;
+      const row = await Handoff.findOne({ contact_id: phone, user_id: userId }).select('human_expires_ts');
+      const base = Number(row?.human_expires_ts || 0) > now ? Number(row?.human_expires_ts || 0) : now;
       const next = base + 5*60;
-      db.prepare(`INSERT INTO handoff (contact_id, user_id, is_human, human_expires_ts, updated_at)
-        VALUES (?, ?, 1, ?, strftime('%s','now'))
-        ON CONFLICT(contact_id, user_id) DO UPDATE SET is_human = 1, human_expires_ts = ?, updated_at = strftime('%s','now')
-      `).run(phone, userId, next, next);
+      await Handoff.findOneAndUpdate({ contact_id: phone, user_id: userId }, { $set: { is_human: true, human_expires_ts: next, updatedAt: new Date() } }, { upsert: true });
     } catch {}
     res.redirect(`/inbox/${phone}`);
   });
 
   // Archive a conversation (hide from inbox list)
-  app.post("/inbox/:phone/archive", ensureAuthed, (req, res) => {
+  app.post("/inbox/:phone/archive", ensureAuthed, async (req, res) => {
     const phone = req.params.phone;
     const userId = getCurrentUserId(req);
-    try {
-      db.prepare(`INSERT INTO handoff (contact_id, user_id, is_archived, updated_at) VALUES (?, ?, 1, strftime('%s','now'))
-        ON CONFLICT(contact_id, user_id) DO UPDATE SET is_archived = 1, updated_at = excluded.updated_at`).run(phone, userId);
-    } catch {}
+    try { await Handoff.findOneAndUpdate({ contact_id: phone, user_id: userId }, { $set: { is_archived: true, updatedAt: new Date() } }, { upsert: true }); } catch {}
     res.redirect(`/inbox`);
+  });
+
+  // Opt-out a contact
+  app.post("/inbox/:phone/optout", ensureAuthed, async (req, res) => {
+    const phone = req.params.phone;
+    const userId = getCurrentUserId(req);
+    const { Customer } = await import('../schemas/mongodb.mjs');
+    try { await Customer.findOneAndUpdate({ user_id: userId, contact_id: phone }, { $set: { opted_out: true, updatedAt: new Date() } }, { upsert: true }); } catch {}
+    res.redirect(`/inbox/${encodeURIComponent(phone)}`);
+  });
+
+  // Remove opt-out
+  app.post("/inbox/:phone/unoptout", ensureAuthed, async (req, res) => {
+    const phone = req.params.phone;
+    const userId = getCurrentUserId(req);
+    const { Customer } = await import('../schemas/mongodb.mjs');
+    try { await Customer.updateOne({ user_id: userId, contact_id: phone }, { $set: { opted_out: false, updatedAt: new Date() } }); } catch {}
+    res.redirect(`/inbox/${encodeURIComponent(phone)}`);
+  });
+
+  // Block for 24 hours
+  app.post("/inbox/:phone/block24h", ensureAuthed, async (req, res) => {
+    const phone = req.params.phone;
+    const userId = getCurrentUserId(req);
+    const { Customer } = await import('../schemas/mongodb.mjs');
+    const until = Math.floor(Date.now()/1000) + 24*3600;
+    try { await Customer.findOneAndUpdate({ user_id: userId, contact_id: phone }, { $set: { blocked_until_ts: until, updatedAt: new Date() } }, { upsert: true }); } catch {}
+    res.redirect(`/inbox/${encodeURIComponent(phone)}`);
   });
 
   // Clear a conversation (delete messages only for this contact/user)
-  app.post("/inbox/:phone/clear", ensureAuthed, (req, res) => {
+  app.post("/inbox/:phone/clear", ensureAuthed, async (req, res) => {
     const phone = req.params.phone;
     const userId = getCurrentUserId(req);
     const digits = normalizePhone(phone);
     try {
-      db.prepare(`DELETE FROM messages WHERE user_id = ? AND (
-        (from_digits = ? OR (from_digits IS NULL AND REPLACE(REPLACE(REPLACE(from_id,'+',''),' ',''),'-','') = ?)) OR
-        (to_digits   = ? OR (to_digits   IS NULL AND REPLACE(REPLACE(REPLACE(to_id,'+',''),' ',''),'-','')   = ?))
-      )`).run(userId, digits, digits, digits, digits);
-    } catch {}
-    res.redirect(`/inbox/${phone}`);
+      // Delete by digits; include id fallbacks (+digits or digits) for older records
+      await Message.deleteMany({
+        user_id: String(userId),
+        $or: [
+          { from_digits: digits },
+          { to_digits: digits },
+          { from_id: { $in: [digits, '+' + digits] } },
+          { to_id: { $in: [digits, '+' + digits] } }
+        ]
+      });
+    } catch (e) {
+      console.error('Clear conversation failed:', e?.message || e);
+    }
+    return res.redirect(`/inbox/${encodeURIComponent(phone)}`);
   });
 
   // Delete a conversation (mark deleted and remove messages)
-  app.post("/inbox/:phone/delete", ensureAuthed, (req, res) => {
+  app.post("/inbox/:phone/delete", ensureAuthed, async (req, res) => {
     const phone = req.params.phone;
     const userId = getCurrentUserId(req);
     const digits = normalizePhone(phone);
     try {
-      db.prepare(`DELETE FROM messages WHERE user_id = ? AND (
-        (from_digits = ? OR (from_digits IS NULL AND REPLACE(REPLACE(REPLACE(from_id,'+',''),' ',''),'-','') = ?)) OR
-        (to_digits   = ? OR (to_digits   IS NULL AND REPLACE(REPLACE(REPLACE(to_id,'+',''),' ',''),'-','')   = ?))
-      )`).run(userId, digits, digits, digits, digits);
-    } catch {}
+      await Message.deleteMany({
+        user_id: String(userId),
+        $or: [
+          { from_digits: digits },
+          { to_digits: digits },
+          { from_id: { $in: [digits, '+' + digits] } },
+          { to_id: { $in: [digits, '+' + digits] } }
+        ]
+      });
+    } catch (e) {
+      console.error('Delete conversation failed:', e?.message || e);
+    }
     try {
-      db.prepare(`INSERT INTO handoff (contact_id, user_id, deleted_at, updated_at) VALUES (?, ?, strftime('%s','now'), strftime('%s','now'))
-        ON CONFLICT(contact_id, user_id) DO UPDATE SET deleted_at = strftime('%s','now'), updated_at = strftime('%s','now')`).run(phone, userId);
+      await Handoff.findOneAndUpdate(
+        { contact_id: phone, user_id: userId },
+        { $set: { deleted_at: Math.floor(Date.now()/1000), updatedAt: new Date() } },
+        { upsert: true }
+      );
     } catch {}
-    res.redirect(`/inbox`);
+    return res.redirect(`/inbox`);
   });
 
   app.post("/send/:phone", ensureAuthed, async (req, res) => {
     const to = req.params.phone;
     const userId = getCurrentUserId(req);
-    const cfg = getSettingsForUser(userId);
+    const cfg = await getSettingsForUser(userId);
     const text = (req.body?.text || "").toString().trim();
     if (!text) return res.redirect(`/inbox/${to}`);
     // Enforce 24h window: if last inbound >24h ago, attempt a template instead
@@ -2578,10 +2674,10 @@ export default function registerInboxRoutes(app) {
         try {
           await sendWhatsAppTemplate(to, 'hello_world', 'en_US', [], cfg);
           // Optionally queue the freeform reply AFTER user responds to the template
-          return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=Template sent. Ask the user to reply to reopen the session.&type=success`);
+          return res.redirect(`/inbox/${encodeURIComponent(to)}`);
         } catch (e) {
           console.error('Template send failed, falling back to text within 24h only:', e?.message || e);
-          return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Template send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
+          return res.redirect(`/inbox/${encodeURIComponent(to)}`);
         }
       }
     } catch {}
@@ -2599,11 +2695,25 @@ export default function registerInboxRoutes(app) {
       const outboundId = data?.messages?.[0]?.id;
       const fromBiz = (cfg.business_phone || "").replace(/\D/g, "") || null;
       if (outboundId) {
-        const stmt = db.prepare(`
-          INSERT OR IGNORE INTO messages (id, user_id, direction, from_id, to_id, from_digits, to_digits, type, text_body, timestamp, raw)
-          VALUES (?, ?, 'outbound', ?, ?, ?, ?, 'text', ?, strftime('%s','now'), ?)
-        `);
-        try { stmt.run(outboundId, userId, fromBiz, to, normalizePhone(fromBiz), normalizePhone(to), text, JSON.stringify({ to, text })); } catch {}
+        try { await recordOutboundMessage({ messageId: outboundId, userId, cfg, to, type: 'text', text, raw: { to, text } }); } catch {}
+        try {
+          const { broadcastNewMessage } = await import('../routes/realtime.mjs');
+          const messageData = {
+            id: outboundId,
+            direction: 'outbound',
+            type: 'text',
+            text_body: text,
+            timestamp: Math.floor(Date.now() / 1000),
+            from_digits: (cfg.business_phone || "").replace(/\D/g, "") || null,
+            to_digits: String(to),
+            contact_name: null,
+            contact: String(to),
+            formatted_time: new Date().toLocaleString(),
+            delivery_status: 'sent',
+            read_status: 'unread'
+          };
+          broadcastNewMessage(userId, String(to), messageData);
+        } catch {}
         
         // Update contact activity
         try {
@@ -2658,9 +2768,9 @@ export default function registerInboxRoutes(app) {
         console.error("Error creating failed message record:", dbError);
       }
       
-      return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
+      return res.redirect(`/inbox/${encodeURIComponent(to)}`);
     }
-    res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Message sent')}&type=success`);
+    res.redirect(`/inbox/${encodeURIComponent(to)}`);
   });
 
   // Retry failed message endpoint
@@ -2670,7 +2780,7 @@ export default function registerInboxRoutes(app) {
     
     try {
       // Get the failed message details
-      const retryResult = retryFailedMessage(messageId);
+      const retryResult = await retryFailedMessage(messageId);
       
       if (!retryResult.success) {
         return res.status(400).json({ 
@@ -2690,7 +2800,7 @@ export default function registerInboxRoutes(app) {
       }
       
       // Get user settings for WhatsApp API
-      const cfg = getSettingsForUser(userId);
+      const cfg = await getSettingsForUser(userId);
       if (!cfg || !cfg.whatsapp_token || !cfg.phone_number_id) {
         return res.status(400).json({ 
           success: false, 
@@ -2698,7 +2808,8 @@ export default function registerInboxRoutes(app) {
         });
       }
       
-      // Attempt to resend the message
+      // Attempt to resend the message (with diagnostics)
+      try { console.log('[Retry] Resending WA text', { to_tail: String(message.to||'').slice(-6), hasPhoneId: !!cfg.phone_number_id, hasToken: !!cfg.whatsapp_token }); } catch {}
       const data = await sendWhatsAppText(message.to, message.text, cfg);
       const outboundId = data?.messages?.[0]?.id;
       
@@ -2722,7 +2833,29 @@ export default function registerInboxRoutes(app) {
         
         console.log(`✅ Successfully retried message ${messageId} -> ${outboundId}`);
         
-        res.json({ 
+        // Broadcast the newly sent message to the chat in real-time
+        try {
+          const { broadcastNewMessage } = await import('../routes/realtime.mjs');
+          const messageData = {
+            id: outboundId,
+            direction: 'outbound',
+            type: 'text',
+            text_body: message.text,
+            timestamp: Math.floor(Date.now() / 1000),
+            from_digits: (cfg.business_phone || '').replace(/\D/g, '') || null,
+            to_digits: String(message.to),
+            contact_name: null,
+            contact: String(message.to),
+            formatted_time: new Date().toLocaleString(),
+            delivery_status: 'sent',
+            read_status: 'unread'
+          };
+          broadcastNewMessage(userId, String(message.to), messageData);
+        } catch (e) {
+          console.warn('[Retry] Broadcast failed (non-fatal):', e?.message || e);
+        }
+        
+        return res.json({ 
           success: true, 
           message: 'Message retried successfully',
           newMessageId: outboundId
@@ -2731,7 +2864,7 @@ export default function registerInboxRoutes(app) {
         // Mark as failed again
         markMessageAsFailed(messageId, 'Retry failed: No message ID returned from WhatsApp');
         
-        res.status(500).json({ 
+        return res.status(500).json({ 
           success: false, 
           error: 'Failed to send message via WhatsApp' 
         });
@@ -2743,7 +2876,7 @@ export default function registerInboxRoutes(app) {
       // Mark as failed again
       markMessageAsFailed(messageId, `Retry failed: ${error.message}`);
       
-      res.status(500).json({ 
+      return res.status(500).json({ 
         success: false, 
         error: error.message 
       });
@@ -2754,11 +2887,11 @@ export default function registerInboxRoutes(app) {
   app.post("/upload-image/:phone", ensureAuthed, uploadImage.single('image'), async (req, res) => {
     const to = req.params.phone;
     const userId = getCurrentUserId(req);
-    const cfg = getSettingsForUser(userId);
+    const cfg = await getSettingsForUser(userId);
     const caption = (req.body?.caption || "").toString().trim();
     
     if (!req.file) {
-      return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('No image file provided')}&type=error`);
+      return res.redirect(`/inbox/${encodeURIComponent(to)}`);
     }
 
     // Create a public URL for the uploaded image
@@ -2797,10 +2930,10 @@ export default function registerInboxRoutes(app) {
       if (over24h) {
         try {
           await sendWhatsAppTemplate(to, 'hello_world', 'en_US', [], cfg);
-          return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Template sent. Ask the user to reply to reopen the session.')}&type=success`);
+          return res.redirect(`/inbox/${encodeURIComponent(to)}`);
         } catch (e) {
           console.error('Template send failed, falling back to image within 24h only:', e?.message || e);
-          return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Template send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
+          return res.redirect(`/inbox/${encodeURIComponent(to)}`);
         }
       }
     } catch {}
@@ -2841,14 +2974,9 @@ export default function registerInboxRoutes(app) {
       const fromBiz = (cfg.business_phone || "").replace(/\D/g, "") || null;
       
       if (outboundId) {
-        const stmt = db.prepare(`
-          INSERT OR IGNORE INTO messages (id, user_id, direction, from_id, to_id, from_digits, to_digits, type, text_body, timestamp, raw)
-          VALUES (?, ?, 'outbound', ?, ?, ?, ?, 'image', ?, strftime('%s','now'), ?)
-        `);
-        try { 
-          // Store the display URL (not the WhatsApp URL) for proper rendering
+        try {
           const rawData = { to, imageUrl, caption, filename: req.file.filename };
-          stmt.run(outboundId, userId, fromBiz, to, normalizePhone(fromBiz), normalizePhone(to), caption || '📷 Image', JSON.stringify(rawData)); 
+          await recordOutboundMessage({ messageId: outboundId, userId, cfg, to, type: 'image', text: caption || '📷 Image', raw: rawData });
         } catch {}
         
         // Handle reply relationship if this is a reply to another message
@@ -2866,21 +2994,21 @@ export default function registerInboxRoutes(app) {
       }
     } catch (e) {
       console.error("Image upload send error:", e);
-      return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Image send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
+      return res.redirect(`/inbox/${encodeURIComponent(to)}`);
     }
     
-    res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Image sent')}&type=success`);
+    res.redirect(`/inbox/${encodeURIComponent(to)}`);
   });
 
   // Upload and send document route
   app.post("/upload-document/:phone", ensureAuthed, uploadDocument.single('document'), async (req, res) => {
     const to = req.params.phone;
     const userId = getCurrentUserId(req);
-    const cfg = getSettingsForUser(userId);
+    const cfg = await getSettingsForUser(userId);
     const caption = (req.body?.caption || "").toString().trim();
     
     if (!req.file) {
-      return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('No document file provided')}&type=error`);
+      return res.redirect(`/inbox/${encodeURIComponent(to)}`);
     }
 
     // Create a public URL for the uploaded document
@@ -2911,10 +3039,10 @@ export default function registerInboxRoutes(app) {
       if (over24h) {
         try {
           await sendWhatsAppTemplate(to, 'hello_world', 'en_US', [], cfg);
-          return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Template sent. Ask the user to reply to reopen the session.')}&type=success`);
+          return res.redirect(`/inbox/${encodeURIComponent(to)}`);
         } catch (e) {
           console.error('Template send failed, falling back to document within 24h only:', e?.message || e);
-          return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Template send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
+          return res.redirect(`/inbox/${encodeURIComponent(to)}`);
         }
       }
     } catch {}
@@ -2949,13 +3077,27 @@ export default function registerInboxRoutes(app) {
       const fromBiz = (cfg.business_phone || "").replace(/\D/g, "") || null;
       
       if (outboundId) {
-        const stmt = db.prepare(`
-          INSERT OR IGNORE INTO messages (id, user_id, direction, from_id, to_id, from_digits, to_digits, type, text_body, timestamp, raw)
-          VALUES (?, ?, 'outbound', ?, ?, ?, ?, 'document', ?, strftime('%s','now'), ?)
-        `);
         try { 
           const rawData = { to, documentUrl, caption, filename: req.file.filename };
-          stmt.run(outboundId, userId, fromBiz, to, normalizePhone(fromBiz), normalizePhone(to), caption || '📄 Document', JSON.stringify(rawData)); 
+          await recordOutboundMessage({ messageId: outboundId, userId, cfg, to, type: 'document', text: caption || '📄 Document', raw: rawData });
+        } catch {}
+        try {
+          const { broadcastNewMessage } = await import('../routes/realtime.mjs');
+          const messageData = {
+            id: outboundId,
+            direction: 'outbound',
+            type: 'document',
+            text_body: caption || '📄 Document',
+            timestamp: Math.floor(Date.now() / 1000),
+            from_digits: (cfg.business_phone || "").replace(/\D/g, "") || null,
+            to_digits: String(to),
+            contact_name: null,
+            contact: String(to),
+            formatted_time: new Date().toLocaleString(),
+            delivery_status: 'sent',
+            read_status: 'unread'
+          };
+          broadcastNewMessage(userId, String(to), messageData);
         } catch {}
         
         // Handle reply relationship if this is a reply to another message
@@ -2972,16 +3114,16 @@ export default function registerInboxRoutes(app) {
       }
     } catch (e) {
       console.error("Document upload send error:", e);
-      return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Document send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
+      return res.redirect(`/inbox/${encodeURIComponent(to)}`);
     }
     
-    res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Document sent')}&type=success`);
+    res.redirect(`/inbox/${encodeURIComponent(to)}`);
   });
 
   app.post("/inbox/:phone/send-template", ensureAuthed, async (req, res) => {
     const to = req.params.phone;
     const userId = getCurrentUserId(req);
-    const cfg = getSettingsForUser(userId);
+    const cfg = await getSettingsForUser(userId);
     const tname = cfg.wa_template_name || 'hello_world';
     const tlang = cfg.wa_template_language || 'en_US';
     const components = [];
@@ -2993,10 +3135,10 @@ export default function registerInboxRoutes(app) {
     if (bodyParams.length) components.push({ type: 'body', parameters: bodyParams });
     try { 
       await sendWhatsAppTemplate(to, tname, tlang, components, cfg);
-      return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Template sent successfully')}&type=success`);
+      return res.redirect(`/inbox/${encodeURIComponent(to)}`);
     } catch (e) { 
       console.error('Template send error:', e?.message || e);
-      return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Template send failed: ' + (e?.message || 'Unknown error'))}&type=error`);
+      return res.redirect(`/inbox/${encodeURIComponent(to)}`);
     }
   });
 
@@ -3057,7 +3199,7 @@ export default function registerInboxRoutes(app) {
             
             if (whatsappMessageId) {
               // Get user settings for WhatsApp configuration
-              const settings = getSettingsForUser(userId);
+              const settings = await getSettingsForUser(userId);
               
               if (settings.whatsapp_token && settings.phone_number_id) {
                 if (result.added) {

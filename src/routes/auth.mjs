@@ -1,5 +1,6 @@
 import { CLERK_ENABLED, CLERK_PUBLISHABLE, CLERK_SIGN_IN_URL, CLERK_SIGN_UP_URL, PUBLIC_BASE_URL } from "../config.mjs";
 import { getAuth, clerkClient } from "@clerk/express";
+import { signSessionToken } from "../middleware/auth.mjs";
 
 export default function registerAuthRoutes(app) {
   // Redirect main auth route to signin
@@ -254,6 +255,21 @@ export default function registerAuthRoutes(app) {
         needsRefresh: false,
         error: 'Auth check failed'
       });
+    }
+  });
+
+  // Issue a short-lived signed token for WebSocket auth
+  app.get("/auth/ws-token", (req, res) => {
+    try {
+      const { userId } = getAuth(req) || {};
+      if (!userId) {
+        return res.status(401).json({ error: "Not signed in" });
+      }
+      const token = signSessionToken(userId, 900);
+      return res.json({ token, userId });
+    } catch (error) {
+      console.error("Failed to issue WS token:", error);
+      return res.status(500).json({ error: "Failed to issue token" });
     }
   });
 

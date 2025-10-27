@@ -8,24 +8,55 @@ import path from "path";
 import FormData from "form-data";
 
 async function postWhatsAppMessage(cfg, payload, { retry = false } = {}) {
-  if (!cfg.phone_number_id || !cfg.whatsapp_token) throw new Error("WhatsApp is not configured");
+  if (!cfg.phone_number_id || !cfg.whatsapp_token) {
+    try {
+      console.error('[WA] Missing configuration', {
+        hasPhoneId: !!cfg?.phone_number_id,
+        hasToken: !!cfg?.whatsapp_token,
+        phoneId_tail: String(cfg?.phone_number_id || '').slice(-6)
+      });
+    } catch {}
+    throw new Error("WhatsApp is not configured");
+  }
   const url = `https://graph.facebook.com/v20.0/${cfg.phone_number_id}/messages`;
   const headers = {
     "Authorization": `Bearer ${cfg.whatsapp_token}`,
     "Content-Type": "application/json"
   };
 
+  // Diagnostics: log request metadata without secrets
+  try {
+    const meta = {
+      target: 'whatsapp_send',
+      phoneId_tail: String(cfg.phone_number_id || '').slice(-6),
+      hasToken: !!cfg.whatsapp_token,
+      payload_type: payload?.type || 'text',
+      to_tail: String(payload?.to || '').slice(-6),
+      has_context: !!payload?.context,
+      retry
+    };
+    console.log('[WA] Request meta:', meta);
+  } catch {}
+
   if (!retry) {
-    const resp = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload) });
-    if (!resp.ok) {
-      const text = await resp.text();
-      // Handle 401 authentication errors specifically
-      if (resp.status === 401) {
-        throw new Error(`WhatsApp authentication failed (401): Invalid or expired token. Please check your WhatsApp Business API configuration.`);
+    try {
+      const resp = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload) });
+      if (!resp.ok) {
+        const text = await resp.text();
+        console.error('[WA] HTTP error', { status: resp.status, body: text.slice(0, 2000) });
+        // Handle 401 authentication errors specifically
+        if (resp.status === 401) {
+          throw new Error(`WhatsApp authentication failed (401): Invalid or expired token. Please check your WhatsApp Business API configuration.`);
+        }
+        throw new Error(`WhatsApp error ${resp.status}: ${text}`);
       }
-      throw new Error(`WhatsApp error ${resp.status}: ${text}`);
+      const json = await resp.json();
+      try { console.log('[WA] HTTP ok', { hasMessages: !!json?.messages?.[0]?.id, keys: Object.keys(json||{}).slice(0, 12) }); } catch {}
+      return json;
+    } catch (e) {
+      console.error('[WA] Network/Fetch error:', e?.message || e);
+      throw e;
     }
-    return await resp.json();
   }
 
   const maxRetries = 3;
@@ -38,14 +69,18 @@ async function postWhatsAppMessage(cfg, payload, { retry = false } = {}) {
       if (resp.status === 401) {
         // Don't retry 401 errors - they indicate authentication issues
         const text = await resp.text();
+        console.error('[WA] Auth 401 during retry', { body: text.slice(0, 2000) });
         throw new Error(`WhatsApp authentication failed (401): Invalid or expired token. Please check your WhatsApp Business API configuration.`);
       }
       if (resp.status >= 500) throw new Error(`WhatsApp 5xx ${resp.status}`);
       if (!resp.ok) {
         const text = await resp.text();
+        console.error('[WA] Non-OK response during retry', { status: resp.status, body: text.slice(0, 2000) });
         throw new Error(`WhatsApp error ${resp.status}: ${text}`);
       }
-      return await resp.json();
+      const json = await resp.json();
+      try { console.log('[WA] Retry HTTP ok', { hasMessages: !!json?.messages?.[0]?.id, keys: Object.keys(json||{}).slice(0, 12) }); } catch {}
+      return json;
     } catch (e) {
       lastErr = e;
       // Don't retry if it's an authentication error
@@ -78,8 +113,25 @@ export async function sendWhatsAppText(to, body, cfg, replyToMessageId = null) {
   if (replyToMessageId) {
     payload.context = { message_id: replyToMessageId };
   }
-  
-  const result = await postWhatsAppMessage(cfg, payload, { retry: true });
+  // Debug: minimal payload log (no secrets)
+  try { console.log('[WA] Sending text', { to: String(to).slice(-6), hasToken: !!cfg?.whatsapp_token, hasPhoneId: !!cfg?.phone_number_id }); } catch {}
+
+  let result;
+  try {
+    result = await postWhatsAppMessage(cfg, payload, { retry: true });
+  } catch (e) {
+    console.error('[WA] Send text error:', { message: e?.message || String(e) });
+    throw e;
+  }
+
+  // Debug: log shape of response to diagnose missing message id
+  try {
+    const meta = {
+      hasMessages: !!(result && result.messages && result.messages[0] && result.messages[0].id),
+      rawKeys: result ? Object.keys(result).slice(0, 10) : null
+    };
+    console.log('[WA] Send text API result', meta);
+  } catch {}
   
   // Track outbound message usage
   if (cfg.user_id && result?.messages?.[0]?.id) {

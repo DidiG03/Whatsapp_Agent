@@ -20,6 +20,7 @@ export async function initMongoDB() {
   try {
     // Connect using mongoose for better connection management
     await mongoose.connect(MONGODB_URI, {
+      dbName: MONGODB_DB_NAME,
       useNewUrlParser: true,
       useUnifiedTopology: true,
       maxPoolSize: 10,
@@ -104,42 +105,202 @@ class MongoDBAdapter {
 
   prepare(collectionName, operation = 'find') {
     return {
-      get: async (query = {}) => {
+      get: async (...args) => {
         await this.init();
-        // Reject SQL-like collection names
+        // Support legacy SQL-shaped calls used throughout the codebase
+        if (typeof collectionName === 'string' && /FROM\s+handoff/i.test(collectionName) && /is_human/i.test(collectionName)) {
+          const [contactId, userId] = args;
+          const doc = await this.db.collection('handoff').findOne({ contact_id: contactId, user_id: userId }, { projection: { is_human: 1, human_expires_ts: 1 } });
+          if (!doc) return null;
+          return { is_human: !!doc.is_human, exp: Number(doc.human_expires_ts || 0) };
+        }
+
+        // Legacy: SELECT escalation_step FROM handoff WHERE contact_id = ? AND user_id = ?
+        if (typeof collectionName === 'string' && /FROM\s+handoff/i.test(collectionName) && /escalation_step/i.test(collectionName) && !/escalation_questions_json|escalation_question_index|escalation_reason/i.test(collectionName)) {
+          const [contactId, userId] = args;
+          const doc = await this.db.collection('handoff').findOne({ contact_id: contactId, user_id: userId }, { projection: { escalation_step: 1 } });
+          if (!doc) return null;
+          return { escalation_step: doc.escalation_step };
+        }
+
+        // Legacy: SELECT escalation_step, escalation_questions_json, escalation_question_index FROM handoff ...
+        if (typeof collectionName === 'string' && /FROM\s+handoff/i.test(collectionName) && /escalation_step/i.test(collectionName) && /escalation_questions_json|escalation_question_index/i.test(collectionName)) {
+          const [contactId, userId] = args;
+          const doc = await this.db.collection('handoff').findOne({ contact_id: contactId, user_id: userId }, { projection: { escalation_step: 1, escalation_questions_json: 1, escalation_question_index: 1 } });
+          if (!doc) return null;
+          return { escalation_step: doc.escalation_step, escalation_questions_json: doc.escalation_questions_json, escalation_question_index: doc.escalation_question_index };
+        }
+
+        // Legacy: SELECT escalation_step, escalation_reason FROM handoff WHERE contact_id = ? AND user_id = ?
+        if (typeof collectionName === 'string' && /FROM\s+handoff/i.test(collectionName) && /escalation_step/i.test(collectionName) && /escalation_reason/i.test(collectionName)) {
+          const [contactId, userId] = args;
+          const doc = await this.db.collection('handoff').findOne({ contact_id: contactId, user_id: userId }, { projection: { escalation_step: 1, escalation_reason: 1 } });
+          if (!doc) return null;
+          return { escalation_step: doc.escalation_step, escalation_reason: doc.escalation_reason };
+        }
+
+        // Legacy: SELECT display_name FROM customers WHERE user_id = ? AND contact_id = ?
+        if (typeof collectionName === 'string' && /FROM\s+customers/i.test(collectionName) && /display_name/i.test(collectionName)) {
+          const [a, b] = args;
+          // Try both argument orders for compatibility
+          let doc = await this.db.collection('customers').findOne({ user_id: a, contact_id: b }, { projection: { display_name: 1 } });
+          if (!doc) doc = await this.db.collection('customers').findOne({ user_id: b, contact_id: a }, { projection: { display_name: 1 } });
+          if (!doc) return null;
+          return { display_name: doc.display_name };
+        }
+
+        // Normal path: collection name + query object
+        const query = args[0] || {};
+        // Legacy MAX(timestamp) via .get
+        if (typeof collectionName === 'string' && /FROM\s+messages/i.test(collectionName) && /MAX\(timestamp\)/i.test(collectionName)) {
+          const [userId, fromId] = args;
+          const doc = await this.db.collection('messages').find({ user_id: userId, from_id: fromId, direction: 'inbound' }, { projection: { timestamp: 1 } }).sort({ timestamp: -1 }).limit(1).next();
+          return doc ? { ts: Number(doc.timestamp || 0) } : { ts: 0 };
+        }
         if (typeof collectionName !== 'string' || /\s|SELECT|INSERT|UPDATE|DELETE|FROM|WHERE|JOIN|PRAGMA|strftime/i.test(collectionName)) {
           console.warn(`Invalid MongoDB get target:`, collectionName);
           return null;
         }
         const collection = this.db.collection(collectionName);
-        // Ensure query is a valid MongoDB query object
         if (typeof query === 'string' || !query || typeof query !== 'object') {
           console.warn(`Invalid MongoDB query for ${collectionName}:`, query);
           return null;
         }
         return await collection.findOne(query);
       },
-      all: async (query = {}) => {
+      all: async (...args) => {
         await this.init();
-        // Reject SQL-like collection names
+        // Legacy compatibility: translate a few common SQL-shaped queries
+        if (typeof collectionName === 'string' && /FROM\s+messages/i.test(collectionName) && /text_body/i.test(collectionName)) {
+          const [userId, digitsA, digitsB, sinceTs] = args;
+          const collection = this.db.collection('messages');
+          const orDigits = [];
+          if (digitsA) orDigits.push({ from_digits: String(digitsA) });
+          if (digitsB) orDigits.push({ from_digits: String(digitsB) });
+          // Also try match on from_id suffix digits
+          if (digitsA) orDigits.push({ from_id: new RegExp(`${digitsA}$`) });
+          const cursor = collection.find({
+            user_id: userId,
+            direction: 'inbound',
+            type: 'text',
+            timestamp: { $gte: Number(sinceTs || 0) },
+            $or: orDigits.length ? orDigits : undefined
+          }, { projection: { text_body: 1, timestamp: 1 } }).sort({ timestamp: 1 }).limit(8);
+          const rows = await cursor.toArray();
+          return rows.map(r => ({ t: r.text_body, ts: r.timestamp }));
+        }
+
+        // Legacy FTS: kb_items_fts JOIN kb_items ... MATCH ? [LIMIT ?]
+        if (typeof collectionName === 'string' && /FROM\s+kb_items_fts/i.test(collectionName)) {
+          // Patterns with user filter: (userId, matchQuery, limit)
+          // Or without user filter: (matchQuery, limit)
+          let userId = null;
+          let matchQuery = '';
+          let limit = 3;
+          if (/WHERE\s+k\.user_id\s*=\s*\?/i.test(collectionName)) {
+            [userId, matchQuery, limit] = args;
+          } else {
+            [matchQuery, limit] = args;
+          }
+          limit = Number(limit || 3);
+          const tokens = String(matchQuery || '')
+            .replace(/[()"']/g,' ')
+            .split(/\bOR\b|\s+/i)
+            .map(t => t.trim())
+            .filter(t => t && t.length >= 2)
+            .slice(0, 16);
+          const or = tokens.map(t => ({ title: { $regex: t, $options: 'i' } }))
+            .concat(tokens.map(t => ({ content: { $regex: t, $options: 'i' } })));
+          const query = { ...(userId ? { user_id: userId } : {}), ...(or.length ? { $or: or } : {}) };
+          const rows = await this.db.collection('kb_items').find(query, { projection: { id: 1, title: 1, content: 1 } }).limit(limit).toArray();
+          return rows.map(r => ({ id: r.id || r._id?.toString(), title: r.title, content: r.content, rank: 0 }));
+        }
+
+        if (typeof collectionName === 'string' && /FROM\s+kb_items/i.test(collectionName) && /show_in_menu/i.test(collectionName)) {
+          const [userId] = args;
+          const rows = await this.db.collection('kb_items').find({ user_id: userId, $or: [ { show_in_menu: 1 }, { show_in_menu: true } ], title: { $exists: true, $ne: '' } }, { projection: { title: 1 } }).sort({ created_at: -1, id: -1 }).limit(20).toArray();
+          return rows.map(r => ({ title: r.title }));
+        }
+
+        // Legacy: SELECT MAX(timestamp) AS ts FROM messages WHERE user_id = ? AND from_id = ? AND direction = 'inbound'
+        if (typeof collectionName === 'string' && /FROM\s+messages/i.test(collectionName) && /MAX\(timestamp\)/i.test(collectionName)) {
+          const [userId, fromId] = args;
+          const doc = await this.db.collection('messages').find({ user_id: userId, from_id: fromId, direction: 'inbound' }, { projection: { timestamp: 1 } }).sort({ timestamp: -1 }).limit(1).next();
+          return doc ? { ts: Number(doc.timestamp || 0) } : { ts: 0 };
+        }
+
+        // Normal path
+        const query = args[0] || {};
         if (typeof collectionName !== 'string' || /\s|SELECT|INSERT|UPDATE|DELETE|FROM|WHERE|JOIN|PRAGMA|strftime/i.test(collectionName)) {
           console.warn(`Invalid MongoDB all target:`, collectionName);
           return [];
         }
         const collection = this.db.collection(collectionName);
-        
-        // Ensure query is a valid MongoDB query object
         if (typeof query === 'string' || !query || typeof query !== 'object') {
           console.warn(`Invalid MongoDB query for ${collectionName}:`, query);
           return [];
         }
-        
         return await collection.find(query).toArray();
       },
-      run: async (data) => {
+      run: async (...args) => {
         await this.init();
         // Reject SQL-like inputs; expect a simple collection name
         if (typeof collectionName !== 'string' || /\s|SELECT|INSERT|UPDATE|DELETE|FROM|WHERE|JOIN|PRAGMA|strftime/i.test(collectionName)) {
+          // Legacy translation: INSERT INTO messages ...
+          if (typeof collectionName === 'string' && /INSERT\s+INTO\s+messages/i.test(collectionName)) {
+            try {
+              // Map positional args from SQLite-style run
+              if (args && args.length >= 11) {
+                const [id, user_id, from_id, to_id, from_digits, to_digits, text_body, timestamp, raw, delivery_status, error_message] = args;
+                const doc = { id, user_id, direction: 'outbound', from_id, to_id, from_digits, to_digits, type: 'text', text_body, timestamp: Number(timestamp||0), raw, delivery_status, error_message };
+                await this.db.collection('messages').insertOne(doc);
+                return { changes: 1, lastInsertRowid: id };
+              }
+              // If a single object was passed
+              const payload = args?.[0];
+              if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+                await this.db.collection('messages').insertOne(payload);
+                return { changes: 1, lastInsertRowid: payload.id || null };
+              }
+            } catch (e) {}
+            console.warn(`Invalid MongoDB run target:`, collectionName);
+            return { changes: 0, lastInsertRowid: null };
+          }
+          // Legacy translation: INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at) ... ON CONFLICT ...
+          if (typeof collectionName === 'string' && /INSERT\s+INTO\s+handoff/i.test(collectionName)) {
+            try {
+              // Args may be (contactId, userId) with step embedded in SQL, or (contactId, userId, step)
+              let [contactId, userId, step] = args;
+              if (!step) {
+                const m = /VALUES\s*\(\s*\?,\s*\?,\s*'([^']+)'/i.exec(collectionName);
+                if (m) step = m[1];
+              }
+              const update = { updatedAt: new Date() };
+              if (step) update.escalation_step = step;
+              await this.db.collection('handoff').updateOne(
+                { contact_id: String(contactId), user_id: String(userId) },
+                { $set: update },
+                { upsert: true }
+              );
+              return { changes: 1, lastInsertRowid: null };
+            } catch (e) {}
+            console.warn(`Invalid MongoDB run target:`, collectionName);
+            return { changes: 0, lastInsertRowid: null };
+          }
+          // Legacy translation: UPDATE handoff SET is_human = 0 ... WHERE contact_id = ? AND user_id = ?
+          if (typeof collectionName === 'string' && /UPDATE\s+handoff\s+SET\s+is_human\s*=\s*0/i.test(collectionName)) {
+            try {
+              const [contactId, userId] = args;
+              await this.db.collection('handoff').updateOne(
+                { contact_id: String(contactId), user_id: String(userId) },
+                { $set: { is_human: false, updatedAt: new Date() } },
+                { upsert: false }
+              );
+              return { changes: 1, lastInsertRowid: null };
+            } catch (e) {}
+            console.warn(`Invalid MongoDB run target:`, collectionName);
+            return { changes: 0, lastInsertRowid: null };
+          }
           console.warn(`Invalid MongoDB run target:`, collectionName);
           return { changes: 0, lastInsertRowid: null };
         }

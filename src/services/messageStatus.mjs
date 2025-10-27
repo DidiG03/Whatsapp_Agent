@@ -3,7 +3,7 @@
  * Handles WhatsApp-style message delivery and read status tracking
  */
 
-import { db } from "../db-mongodb.mjs";
+import { getDB } from "../db-mongodb.mjs";
 
 // Message status constants
 export const MESSAGE_STATUS = {
@@ -22,20 +22,59 @@ export const READ_STATUS = {
 /**
  * Update message delivery status
  */
-export function updateMessageDeliveryStatus(messageId, status, timestamp = null) {
+export async function updateMessageDeliveryStatus(messageId, status, timestamp = null) {
   if (!Object.values(MESSAGE_STATUS).includes(status)) {
     throw new Error(`Invalid message status: ${status}`);
   }
 
-  const stmt = db.prepare(`
-    UPDATE messages 
-    SET delivery_status = ?, delivery_timestamp = ?
-    WHERE id = ?
-  `);
-  
-  const result = stmt.run(status, timestamp || Math.floor(Date.now() / 1000), messageId);
-  
-  if (result.changes > 0) {
+  // Enforce monotonic progression of delivery_status: sent < delivered < read; failed overrides
+  const rank = {
+    [MESSAGE_STATUS.SENT]: 1,
+    [MESSAGE_STATUS.DELIVERED]: 2,
+    [MESSAGE_STATUS.READ]: 3,
+    [MESSAGE_STATUS.FAILED]: 99
+  };
+
+  const db = getDB();
+  const now = timestamp || Math.floor(Date.now() / 1000);
+
+  // If the target is failed, always set failed (do not downgrade from failed later)
+  if (status === MESSAGE_STATUS.FAILED) {
+    const resFailed = await db.collection('messages').updateOne(
+      { id: messageId },
+      { $set: { delivery_status: MESSAGE_STATUS.FAILED, delivery_timestamp: now } }
+    );
+    if (resFailed.modifiedCount > 0) {
+      console.log(`📤 Message ${messageId} delivery status updated to: ${MESSAGE_STATUS.FAILED}`);
+      return true;
+    }
+    return false;
+  }
+
+  // Only update if current status rank is lower than incoming
+  const res = await db.collection('messages').updateOne(
+    { id: messageId, $or: [ { delivery_status: { $exists: false } }, { delivery_status: null }, { delivery_status: { $in: [MESSAGE_STATUS.SENT, MESSAGE_STATUS.DELIVERED] } } ] },
+    [
+      {
+        $set: {
+          delivery_status: {
+            $cond: [
+              { $or: [
+                { $eq: ['$delivery_status', null] },
+                { $lt: [ { $ifNull: [ { $getField: { field: '$delivery_status', input: { sent: 1, delivered: 2, read: 3 } } }, 0 ] }, rank[status] ] }
+              ] },
+              status,
+              '$delivery_status'
+            ]
+          },
+          delivery_timestamp: now,
+          // Initialize read_status if missing
+          read_status: { $ifNull: ['$read_status', 'unread'] }
+        }
+      }
+    ]
+  );
+  if (res.modifiedCount > 0) {
     console.log(`📤 Message ${messageId} delivery status updated to: ${status}`);
     return true;
   }
@@ -46,20 +85,17 @@ export function updateMessageDeliveryStatus(messageId, status, timestamp = null)
 /**
  * Update message read status
  */
-export function updateMessageReadStatus(messageId, status, timestamp = null) {
+export async function updateMessageReadStatus(messageId, status, timestamp = null) {
   if (!Object.values(READ_STATUS).includes(status)) {
     throw new Error(`Invalid read status: ${status}`);
   }
 
-  const stmt = db.prepare(`
-    UPDATE messages 
-    SET read_status = ?, read_timestamp = ?
-    WHERE id = ?
-  `);
-  
-  const result = stmt.run(status, timestamp || Math.floor(Date.now() / 1000), messageId);
-  
-  if (result.changes > 0) {
+  const db = getDB();
+  const res = await db.collection('messages').updateOne(
+    { id: messageId },
+    { $set: { read_status: status, read_timestamp: timestamp || Math.floor(Date.now() / 1000), delivery_status: MESSAGE_STATUS.READ, delivery_timestamp: timestamp || Math.floor(Date.now() / 1000) } }
+  );
+  if (res.modifiedCount > 0) {
     console.log(`👁️ Message ${messageId} read status updated to: ${status}`);
     return true;
   }
@@ -70,50 +106,39 @@ export function updateMessageReadStatus(messageId, status, timestamp = null) {
 /**
  * Get message status for display
  */
-export function getMessageStatus(messageId) {
-  const stmt = db.prepare(`
-    SELECT delivery_status, read_status, delivery_timestamp, read_timestamp
-    FROM messages 
-    WHERE id = ?
-  `);
-  
-  return stmt.get(messageId);
+export async function getMessageStatus(messageId) {
+  const db = getDB();
+  return await db.collection('messages').findOne(
+    { id: messageId },
+    { projection: { _id: 0, delivery_status: 1, read_status: 1, delivery_timestamp: 1, read_timestamp: 1 } }
+  );
 }
 
 /**
  * Mark all messages in a conversation as read
  */
-export function markConversationAsRead(userId, contactId) {
-  const stmt = db.prepare(`
-    UPDATE messages 
-    SET read_status = 'read', read_timestamp = ?
-    WHERE user_id = ? 
-      AND direction = 'inbound' 
-      AND (from_digits = ? OR from_id = ?)
-      AND read_status = 'unread'
-  `);
-  
+export async function markConversationAsRead(userId, contactId) {
+  const db = getDB();
   const timestamp = Math.floor(Date.now() / 1000);
-  const result = stmt.run(timestamp, userId, contactId, contactId);
-  
-  console.log(`👁️ Marked ${result.changes} messages as read for conversation: ${contactId}`);
-  return result.changes;
+  const result = await db.collection('messages').updateMany(
+    { user_id: userId, direction: 'inbound', $or: [ { from_digits: contactId }, { from_id: contactId } ], read_status: { $ne: 'read' } },
+    { $set: { read_status: 'read', read_timestamp: timestamp } }
+  );
+  console.log(`👁️ Marked ${result.modifiedCount || 0} messages as read for conversation: ${contactId}`);
+  return result.modifiedCount || 0;
 }
 
 /**
  * Mark a message as failed
  */
-export function markMessageAsFailed(messageId, errorMessage = null) {
-  const stmt = db.prepare(`
-    UPDATE messages 
-    SET delivery_status = ?, delivery_timestamp = ?, error_message = ?
-    WHERE id = ?
-  `);
-  
+export async function markMessageAsFailed(messageId, errorMessage = null) {
+  const db = getDB();
   const timestamp = Math.floor(Date.now() / 1000);
-  const result = stmt.run(MESSAGE_STATUS.FAILED, timestamp, errorMessage, messageId);
-  
-  if (result.changes > 0) {
+  const res = await db.collection('messages').updateOne(
+    { id: messageId },
+    { $set: { delivery_status: MESSAGE_STATUS.FAILED, delivery_timestamp: timestamp, error_message: errorMessage } }
+  );
+  if (res.modifiedCount > 0) {
     console.log(`❌ Message ${messageId} marked as failed: ${errorMessage || 'Unknown error'}`);
     return true;
   }
@@ -124,28 +149,17 @@ export function markMessageAsFailed(messageId, errorMessage = null) {
 /**
  * Retry sending a failed message
  */
-export function retryFailedMessage(messageId) {
-  const stmt = db.prepare(`
-    SELECT id, user_id, text_body, to_digits, from_digits, raw
-    FROM messages 
-    WHERE id = ? AND delivery_status = ?
-  `);
-  
-  const message = stmt.get(messageId, MESSAGE_STATUS.FAILED);
+export async function retryFailedMessage(messageId) {
+  const db = getDB();
+  const message = await db.collection('messages').findOne({ id: messageId, delivery_status: MESSAGE_STATUS.FAILED }, { projection: { id: 1, user_id: 1, text_body: 1, to_digits: 1, from_digits: 1, raw: 1 } });
   
   if (!message) {
     return { success: false, error: 'Message not found or not in failed state' };
   }
   
   // Reset status to sent for retry
-  const updateStmt = db.prepare(`
-    UPDATE messages 
-    SET delivery_status = ?, delivery_timestamp = ?, error_message = NULL
-    WHERE id = ?
-  `);
-  
   const timestamp = Math.floor(Date.now() / 1000);
-  updateStmt.run(MESSAGE_STATUS.SENT, timestamp, messageId);
+  await db.collection('messages').updateOne({ id: messageId }, { $set: { delivery_status: MESSAGE_STATUS.SENT, delivery_timestamp: timestamp, error_message: null } });
   
   console.log(`🔄 Retrying failed message ${messageId}`);
   
@@ -166,19 +180,19 @@ export function retryFailedMessage(messageId) {
  * Simulate WhatsApp webhook delivery status updates
  * In a real implementation, this would be called by WhatsApp webhooks
  */
-export function simulateDeliveryStatusUpdate(messageId, status) {
+export async function simulateDeliveryStatusUpdate(messageId, status) {
   const timestamp = Math.floor(Date.now() / 1000);
   
   switch (status) {
     case 'delivered':
-      updateMessageDeliveryStatus(messageId, MESSAGE_STATUS.DELIVERED, timestamp);
+      await updateMessageDeliveryStatus(messageId, MESSAGE_STATUS.DELIVERED, timestamp);
       break;
     case 'read':
-      updateMessageDeliveryStatus(messageId, MESSAGE_STATUS.READ, timestamp);
-      updateMessageReadStatus(messageId, READ_STATUS.READ, timestamp);
+      await updateMessageDeliveryStatus(messageId, MESSAGE_STATUS.READ, timestamp);
+      await updateMessageReadStatus(messageId, READ_STATUS.READ, timestamp);
       break;
     case 'failed':
-      markMessageAsFailed(messageId, 'Simulated failure');
+      await markMessageAsFailed(messageId, 'Simulated failure');
       break;
     default:
       console.warn(`Unknown delivery status: ${status}`);

@@ -5,7 +5,24 @@ import { getOnboarding } from "../services/onboarding.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
 import { renderSidebar, renderTopbar } from "../utils.mjs";
 import { getSignedInEmail } from "../middleware/auth.mjs";
-import { Calendar, Staff } from "../schemas/mongodb.mjs";
+import {
+  Calendar,
+  Staff,
+  KBItem,
+  Message,
+  MessageStatus,
+  BookingSession,
+  Appointment,
+  ContactState,
+  Customer,
+  Handoff,
+  OnboardingState,
+  SettingsMulti,
+  Notification,
+  UsageStats,
+  UserPlan,
+  QuickReply
+} from "../schemas/mongodb.mjs";
 import { getQuickReplies, getQuickReplyCategories, createQuickReply, updateQuickReply, deleteQuickReply, reorderQuickReplies } from "../services/quickReplies.mjs";
 
 export default function registerSettingsRoutes(app) {

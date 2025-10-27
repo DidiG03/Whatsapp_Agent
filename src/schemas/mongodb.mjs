@@ -87,6 +87,9 @@ const handoffSchema = new mongoose.Schema({
   last_seen_ts: { type: Number, default: 0 },
   escalation_step: String,
   escalation_reason: String,
+  escalation_questions_json: String,
+  escalation_question_index: { type: Number, default: 0 },
+  escalation_answers_json: String,
   human_expires_ts: { type: Number, default: 0 }
 }, {
   timestamps: true,
@@ -128,6 +131,7 @@ const settingsMultiSchema = new mongoose.Schema({
   ai_tone: String,
   ai_blocked_topics: String,
   ai_style: String,
+  conversation_mode: { type: String, enum: ['full', 'escalation'], default: 'full' },
   entry_greeting: String,
   bookings_enabled: { type: Boolean, default: false },
   booking_questions_json: String,
@@ -254,6 +258,8 @@ const customerSchema = new mongoose.Schema({
   custom_fields: mongoose.Schema.Types.Mixed,
   tags: [String],
   status: { type: String, default: 'active' },
+  opted_out: { type: Boolean, default: false },
+  blocked_until_ts: { type: Number, default: 0 },
   source: String,
   last_contacted: Number,
   total_messages: { type: Number, default: 0 }
@@ -363,42 +369,56 @@ const enquirySchema = new mongoose.Schema({
 const createIndexes = async () => {
   try {
     // Messages indexes
-    await messageSchema.index({ user_id: 1, timestamp: -1 });
-    await messageSchema.index({ from_digits: 1 });
-    await messageSchema.index({ to_digits: 1 });
-    await messageSchema.index({ direction: 1 });
+    await Message.collection.createIndex({ user_id: 1, timestamp: -1 });
+    await Message.collection.createIndex({ from_digits: 1 });
+    await Message.collection.createIndex({ to_digits: 1 });
+    await Message.collection.createIndex({ direction: 1 });
 
-    // Message statuses indexes
-    await messageStatusSchema.index({ message_id: 1 });
-    await messageStatusSchema.index({ user_id: 1 });
+    // Message statuses indexes + TTL
+    await MessageStatus.collection.createIndex({ message_id: 1, status: 1, timestamp: 1, user_id: 1 }, { unique: true, name: 'uniq_message_status_event' });
+    await MessageStatus.collection.createIndex({ user_id: 1, message_id: 1 });
+    try {
+      const statusTtlDays = Number(process.env.MESSAGE_STATUS_TTL_DAYS || 30);
+      if (statusTtlDays > 0) {
+        await MessageStatus.collection.createIndex({ createdAt: 1 }, { expireAfterSeconds: statusTtlDays * 86400, name: 'ttl_message_status_createdAt' });
+      }
+    } catch {}
 
     // Message reactions indexes
-    await messageReactionSchema.index({ message_id: 1 });
-    await messageReactionSchema.index({ user_id: 1 });
+    await MessageReaction.collection.createIndex({ message_id: 1, user_id: 1, emoji: 1 }, { unique: true, name: 'uniq_message_reaction' });
+    await MessageReaction.collection.createIndex({ user_id: 1 });
 
     // KB items indexes
-    await kbItemSchema.index({ user_id: 1 });
-    await kbItemSchema.index({ title: 1 });
+    await KBItem.collection.createIndex({ user_id: 1 });
+    await KBItem.collection.createIndex({ title: 1 });
 
     // Handoff indexes
-    await handoffSchema.index({ contact_id: 1, user_id: 1 }, { unique: true });
-    await handoffSchema.index({ user_id: 1, conversation_status: 1 });
+    await Handoff.collection.createIndex({ contact_id: 1, user_id: 1 }, { unique: true });
+    await Handoff.collection.createIndex({ user_id: 1, conversation_status: 1 });
 
     // AI requests indexes
-    await aiRequestSchema.index({ user_id: 1 });
-    await aiRequestSchema.index({ created_at: -1 });
+    await AIRequest.collection.createIndex({ user_id: 1 });
+    await AIRequest.collection.createIndex({ createdAt: -1 });
 
     // Customer indexes
-    await customerSchema.index({ user_id: 1, contact_id: 1 }, { unique: true });
-    await customerSchema.index({ user_id: 1, email: 1 });
-    await customerSchema.index({ user_id: 1, status: 1 });
+    await Customer.collection.createIndex({ user_id: 1, contact_id: 1 }, { unique: true });
+    await Customer.collection.createIndex({ user_id: 1, email: 1 });
+    await Customer.collection.createIndex({ user_id: 1, status: 1 });
 
     // Notification indexes
-    await notificationSchema.index({ user_id: 1 });
-    await notificationSchema.index({ user_id: 1, is_read: 1 });
+    await Notification.collection.createIndex({ user_id: 1 });
+    await Notification.collection.createIndex({ user_id: 1, is_read: 1 });
 
     // Usage stats indexes
-    await usageStatsSchema.index({ user_id: 1, month_year: 1 }, { unique: true });
+    await UsageStats.collection.createIndex({ user_id: 1, month_year: 1 }, { unique: true });
+
+    // Booking sessions TTL cleanup
+    try {
+      const sessionTtlHours = Number(process.env.BOOKING_SESSION_TTL_HOURS || 24);
+      if (sessionTtlHours > 0) {
+        await BookingSession.collection.createIndex({ updatedAt: 1 }, { expireAfterSeconds: sessionTtlHours * 3600, name: 'ttl_booking_sessions_updatedAt' });
+      }
+    } catch {}
 
     console.log('MongoDB indexes created successfully');
   } catch (error) {

@@ -3,12 +3,19 @@
  * Provides helpers to get, upsert, and find settings by various keys.
  */
 import { SettingsMulti } from "../schemas/mongodb.mjs";
+import { dataCache } from "../scalability/redis.mjs";
 
 /** Fetch settings for a given user id. */
 export async function getSettingsForUser(userId) {
   if (!userId) return {};
+  const cacheKey = `settings:${userId}`;
+  const cached = await dataCache.getUserData(cacheKey);
+  if (cached) return cached;
   const row = await SettingsMulti.findOne({ user_id: userId }).lean();
-  return row || {};
+  const value = row || {};
+  // cache for 5 minutes
+  try { await dataCache.cacheUserData(cacheKey, value, 300); } catch {}
+  return value;
 }
 
 /** Upsert settings for a given user id, merging with existing values. */
@@ -55,6 +62,7 @@ export async function upsertSettingsForUser(userId, values) {
       { $set: merged },
       { upsert: true, new: true }
     );
+    try { await dataCache.cacheUserData(`settings:${userId}`, merged, 300); } catch {}
     return merged;
   } catch (e) {
     console.error('[settings.upsert] error', e?.message || e);

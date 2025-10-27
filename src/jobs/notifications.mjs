@@ -3,7 +3,7 @@
  * - Looks for T-24h and T-1h windows.
  * - Uses sendWhatsAppText; records status via existing webhook/status table.
  */
-import { db } from "../db-mongodb.mjs";
+import { getDB } from "../db-mongodb.mjs";
 import { getSettingsForUser } from "../services/settings.mjs";
 import { sendWhatsappButton } from "../services/whatsapp.mjs";
 
@@ -22,10 +22,11 @@ export function startNotificationsScheduler() {
       const t1Min = now + 1*3600 - 120;
       const t1Max = now + 1*3600 + 120;
 
-      // Per-tenant windows
-      const rows = db.prepare(`SELECT DISTINCT user_id FROM appointments WHERE status = 'confirmed' AND start_ts >= strftime('%s','now')-86400`).all();
-      for (const r of rows) {
-        const cfg = getSettingsForUser(r.user_id);
+      // Per-tenant windows (Mongo)
+      const db = getDB();
+      const distinctUserIds = await db.collection('appointments').distinct('user_id', { status: 'confirmed', start_ts: { $gte: now - 86400 } });
+      for (const uid of distinctUserIds) {
+        const cfg = await getSettingsForUser(uid);
         if (!cfg?.bookings_enabled || !cfg?.reminders_enabled) continue;
         let wins = [];
         try { wins = JSON.parse(cfg.reminder_windows || '[]'); } catch {}
@@ -34,28 +35,28 @@ export function startNotificationsScheduler() {
         const want2 = wins.includes('2h');
 
         if (want24) {
-          const list = db.prepare(`SELECT * FROM appointments WHERE user_id = ? AND status='confirmed' AND notify_24h_sent = 0 AND start_ts BETWEEN ? AND ?`).all(r.user_id, t24Min, t24Max);
+          const list = await db.collection('appointments').find({ user_id: String(uid), status: 'confirmed', notify_24h_sent: { $ne: true }, start_ts: { $gte: t24Min, $lte: t24Max } }).toArray();
           for (const a of list) {
             // Skip 1D if appointment is within the same calendar day as now
             const nowDay = new Date().getUTCDate();
             const apptDay = new Date(a.start_ts * 1000).getUTCDate();
             if (nowDay === apptDay) continue;
             await sendReminderWithButtons(a, cfg);
-            try { db.prepare(`UPDATE appointments SET notify_24h_sent = 1 WHERE id = ?`).run(a.id); } catch {}
+            try { await db.collection('appointments').updateOne({ _id: a._id }, { $set: { notify_24h_sent: true, updatedAt: new Date() } }); } catch {}
           }
         }
         if (want4) {
-          const list = db.prepare(`SELECT * FROM appointments WHERE user_id = ? AND status='confirmed' AND notify_4h_sent = 0 AND start_ts BETWEEN ? AND ?`).all(r.user_id, now + 4*3600 - 120, now + 4*3600 + 120);
+          const list = await db.collection('appointments').find({ user_id: String(uid), status: 'confirmed', notify_4h_sent: { $ne: true }, start_ts: { $gte: now + 4*3600 - 120, $lte: now + 4*3600 + 120 } }).toArray();
           for (const a of list) {
             const sent = await sendReminderWithButtons(a, cfg);
-            if (sent) { try { db.prepare(`UPDATE appointments SET notify_4h_sent = 1, updated_at = strftime('%s','now') WHERE id = ?`).run(a.id); } catch {} }
+            if (sent) { try { await db.collection('appointments').updateOne({ _id: a._id }, { $set: { notify_4h_sent: true, updatedAt: new Date() } }); } catch {} }
           }
         }
         if (want2) {
-          const list = db.prepare(`SELECT * FROM appointments WHERE user_id = ? AND status='confirmed' AND notify_2h_sent = 0 AND start_ts BETWEEN ? AND ?`).all(r.user_id, now + 2*3600 - 120, now + 2*3600 + 120);
+          const list = await db.collection('appointments').find({ user_id: String(uid), status: 'confirmed', notify_2h_sent: { $ne: true }, start_ts: { $gte: now + 2*3600 - 120, $lte: now + 2*3600 + 120 } }).toArray();
           for (const a of list) {
             const sent = await sendReminderWithButtons(a, cfg);
-            if (sent) { try { db.prepare(`UPDATE appointments SET notify_2h_sent = 1, updated_at = strftime('%s','now') WHERE id = ?`).run(a.id); } catch {} }
+            if (sent) { try { await db.collection('appointments').updateOne({ _id: a._id }, { $set: { notify_2h_sent: true, updatedAt: new Date() } }); } catch {} }
           }
         }
       }

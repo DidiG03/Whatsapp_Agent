@@ -3,7 +3,9 @@
  * - Compute availability (via Google FreeBusy + working hours)
  * - Create, cancel, and reschedule appointments (mirrors in Google Calendar)
  */
-import { db } from "../db-mongodb.mjs";
+import { getDB } from "../db-mongodb.mjs";
+import mongoose from 'mongoose';
+import { Staff, Calendar, Appointment } from "../schemas/mongodb.mjs";
 import { freeBusy, createEvent, updateEvent, deleteEvent } from "./google.mjs";
 
 // (removed unused toISO)
@@ -45,17 +47,28 @@ function computeDaySlots(dayDate, slotMinutes, tz, workingHours, busyBlocks) {
 }
 
 export function getStaffById(staffId, userId) {
-  return db.prepare(`SELECT * FROM staff WHERE id = ? AND user_id = ?`).get(staffId, userId) || null;
+  try {
+    if (mongoose.Types.ObjectId.isValid(String(staffId))) {
+      return Staff.findOne({ _id: new mongoose.Types.ObjectId(String(staffId)), user_id: String(userId) }).lean();
+    }
+    // Fallback: treat as legacy numeric id stored in a shadow field
+    return Staff.findOne({ legacy_id: Number(staffId), user_id: String(userId) }).lean();
+  } catch { return null; }
 }
 
 export function getCalendarById(calendarId, userId) {
-  return db.prepare(`SELECT * FROM calendars WHERE id = ? AND user_id = ?`).get(calendarId, userId) || null;
+  try {
+    if (mongoose.Types.ObjectId.isValid(String(calendarId))) {
+      return Calendar.findOne({ _id: new mongoose.Types.ObjectId(String(calendarId)), user_id: String(userId) }).lean();
+    }
+    return Calendar.findOne({ legacy_id: Number(calendarId), user_id: String(userId) }).lean();
+  } catch { return null; }
 }
 
 export async function listAvailability({ userId, staffId, dateISO, days = 1, slotMinutes }) {
-  const staff = getStaffById(staffId, userId);
+  const staff = await getStaffById(staffId, userId);
   if (!staff) return [];
-  const calendar = staff.calendar_id ? getCalendarById(staff.calendar_id, userId) : null;
+  const calendar = staff.calendar_id ? await getCalendarById(staff.calendar_id, userId) : null;
   const tz = staff.timezone || calendar?.timezone || "UTC";
   const minutes = Number(slotMinutes || staff.slot_minutes || 30);
   const working = (() => { try { return JSON.parse(staff.working_hours_json || '{}'); } catch { return {}; } })();
@@ -76,9 +89,9 @@ export async function listAvailability({ userId, staffId, dateISO, days = 1, slo
 }
 
 export async function createBooking({ userId, staffId, startISO, endISO, contactPhone, notes }) {
-  const staff = getStaffById(staffId, userId);
+  const staff = await getStaffById(staffId, userId);
   if (!staff) throw new Error("staff not found");
-  const calendar = staff.calendar_id ? getCalendarById(staff.calendar_id, userId) : null;
+  const calendar = staff.calendar_id ? await getCalendarById(staff.calendar_id, userId) : null;
   // Double-check FreeBusy for the requested range
   if (calendar) {
     const busy = await freeBusy(calendar, startISO, endISO);
@@ -100,34 +113,61 @@ export async function createBooking({ userId, staffId, startISO, endISO, contact
     const r = await createEvent(calendar, evt);
     gcalId = r?.id || null;
   }
-  const ins = db.prepare(`INSERT INTO appointments (user_id, staff_id, contact_phone, start_ts, end_ts, gcal_event_id, status, notes, created_at, updated_at)
-    VALUES (?, ?, ?, strftime('%s', ?), strftime('%s', ?), ?, 'confirmed', ?, strftime('%s','now'), strftime('%s','now'))`);
-  const info = ins.run(userId, staffId, contactPhone || null, startISO, endISO, gcalId, notes || null);
-  const id = info.lastInsertRowid;
-  return { id, gcal_event_id: gcalId };
+  // Create appointment in Mongo; include a legacy-compatible 'id' field (numeric seconds) to reference in flows
+  const startTs = Math.floor(new Date(startISO).getTime() / 1000);
+  const endTs = Math.floor(new Date(endISO).getTime() / 1000);
+  const db = getDB();
+  let legacyId = Math.floor(Date.now() / 1000);
+  try {
+    // ensure uniqueness by bumping if collision for this user
+    // eslint-disable-next-line no-constant-condition
+    for (let i = 0; i < 5; i++) {
+      const exists = await db.collection('appointments').findOne({ user_id: String(userId), id: legacyId });
+      if (!exists) break;
+      legacyId += 1;
+    }
+  } catch {}
+  const apptDoc = await Appointment.create({
+    user_id: String(userId),
+    staff_id: mongoose.Types.ObjectId.isValid(String(staffId)) ? new mongoose.Types.ObjectId(String(staffId)) : undefined,
+    contact_phone: contactPhone || null,
+    start_ts: startTs,
+    end_ts: endTs,
+    gcal_event_id: gcalId,
+    status: 'confirmed',
+    notes: notes || null,
+    notify_24h_sent: false,
+    notify_4h_sent: false,
+    notify_2h_sent: false,
+    id: legacyId
+  });
+  return { id: legacyId, gcal_event_id: gcalId, _id: apptDoc._id };
 }
 
 export async function cancelBooking({ userId, appointmentId }) {
-  const row = db.prepare(`SELECT a.*, s.calendar_id, c.calendar_id AS cal_key FROM appointments a
-    JOIN staff s ON s.id = a.staff_id
-    LEFT JOIN calendars c ON c.id = s.calendar_id
-    WHERE a.id = ? AND a.user_id = ?`).get(appointmentId, userId);
-  if (!row) return false;
-  if (row.gcal_event_id && row.calendar_id) {
-    const cal = getCalendarById(row.calendar_id, userId);
-    if (cal) { try { await deleteEvent(cal, row.gcal_event_id); } catch {} }
-  }
+  const db = getDB();
+  const appt = await db.collection('appointments').findOne({ user_id: String(userId), id: Number(appointmentId) });
+  if (!appt) return false;
+  // Try to delete Google event when possible
   try {
-    db.prepare(`UPDATE appointments SET status = 'canceled', updated_at = strftime('%s','now') WHERE id = ?`).run(appointmentId);
+    if (appt.gcal_event_id && appt.staff_id) {
+      const calOwner = await Staff.findOne({ _id: appt.staff_id }).lean();
+      if (calOwner?.calendar_id) {
+        const cal = await getCalendarById(calOwner.calendar_id, userId);
+        if (cal) { try { await deleteEvent(cal, appt.gcal_event_id); } catch {} }
+      }
+    }
   } catch {}
+  await Appointment.updateOne({ _id: appt._id }, { $set: { status: 'canceled', updatedAt: new Date() } });
   return true;
 }
 
 export async function rescheduleBooking({ userId, appointmentId, startISO, endISO }) {
-  const row = db.prepare(`SELECT a.*, s.calendar_id FROM appointments a
-    JOIN staff s ON s.id = a.staff_id WHERE a.id = ? AND a.user_id = ?`).get(appointmentId, userId);
-  if (!row) throw new Error("appointment not found");
-  const cal = row.calendar_id ? getCalendarById(row.calendar_id, userId) : null;
+  const db = getDB();
+  const appt = await db.collection('appointments').findOne({ user_id: String(userId), id: Number(appointmentId) });
+  if (!appt) throw new Error("appointment not found");
+  const calOwner = appt.staff_id ? await Staff.findOne({ _id: appt.staff_id }).lean() : null;
+  const cal = calOwner?.calendar_id ? await getCalendarById(calOwner.calendar_id, userId) : null;
   if (cal) {
     const busy = await freeBusy(cal, startISO, endISO);
     const overlaps = (Array.isArray(busy) ? busy : []).some(b => {
@@ -137,10 +177,12 @@ export async function rescheduleBooking({ userId, appointmentId, startISO, endIS
     });
     if (overlaps) throw new Error("time slot no longer available");
   }
-  if (cal && row.gcal_event_id) {
-    await updateEvent(cal, row.gcal_event_id, { start: { dateTime: startISO }, end: { dateTime: endISO } });
+  if (cal && appt.gcal_event_id) {
+    await updateEvent(cal, appt.gcal_event_id, { start: { dateTime: startISO }, end: { dateTime: endISO } });
   }
-  db.prepare(`UPDATE appointments SET start_ts = strftime('%s', ?), end_ts = strftime('%s', ?), status = 'confirmed', updated_at = strftime('%s','now') WHERE id = ?`).run(startISO, endISO, appointmentId);
+  const startTs = Math.floor(new Date(startISO).getTime() / 1000);
+  const endTs = Math.floor(new Date(endISO).getTime() / 1000);
+  await Appointment.updateOne({ _id: appt._id }, { $set: { start_ts: startTs, end_ts: endTs, status: 'confirmed', updatedAt: new Date() } });
   return true;
 }
 

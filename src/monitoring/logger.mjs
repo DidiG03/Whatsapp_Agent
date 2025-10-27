@@ -11,20 +11,43 @@ export function generateCorrelationId() {
   return uuidv4();
 }
 
+// PII masking helper
+function maskPhone(value) {
+  try {
+    const d = String(value||'').replace(/\D/g,'');
+    if (d.length <= 4) return '***';
+    return d.slice(0,2) + '******' + d.slice(-2);
+  } catch { return '***'; }
+}
+
+function scrubPII(obj) {
+  if (process.env.DEBUG_LOGS === '1') return obj; // full logs when debugging
+  try {
+    const json = JSON.stringify(obj);
+    let redacted = json
+      // redact phone-like patterns
+      .replace(/\+?\d[\d\s\-()]{6,}\d/g, (m) => maskPhone(m))
+      // redact tokens/authorization headers (basic)
+      .replace(/("authorization"\s*:\s*")[^"]+(")/gi, '$1***$2')
+      .replace(/("whatsapp_token"\s*:\s*")[^"]+(")/gi, '$1***$2');
+    return JSON.parse(redacted);
+  } catch { return obj; }
+}
+
 // Custom format for structured logging
 const structuredFormat = winston.format.combine(
   winston.format.timestamp(),
   winston.format.errors({ stack: true }),
   winston.format.json(),
   winston.format.printf(({ timestamp, level, message, correlationId, userId, ...meta }) => {
-    const logEntry = {
+    const logEntry = scrubPII({
       timestamp,
       level,
       message,
       ...(correlationId && { correlationId }),
       ...(userId && { userId }),
       ...meta
-    };
+    });
     return JSON.stringify(logEntry);
   })
 );

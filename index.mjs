@@ -6,11 +6,13 @@ import { PORT } from "./src/config.mjs";
 import { startNotificationsScheduler } from "./src/jobs/notifications.mjs";
 import { logHelpers } from "./src/monitoring/logger.mjs";
 import { createServer } from "http";
+import { initTelemetry } from "./src/monitoring/otel.mjs";
 
 // Initialize server with scalability features
 async function startServer() {
   try {
     logHelpers.logBusinessEvent('server_startup_initiated');
+    await initTelemetry();
     
     // Create app with scalability features
     const { app, initializeSocketIO } = await createApp();

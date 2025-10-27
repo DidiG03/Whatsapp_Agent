@@ -23,7 +23,7 @@ export function getStripePublishableKey() {
 /**
  * Create a Stripe checkout session for plan subscription
  */
-export async function createCheckoutSession(userId, planName, customerEmail = null) {
+export async function createCheckoutSession(userId, planName, customerEmail = null, priceId = null) {
   if (!isStripeEnabled() || !stripe) {
     throw new Error('Stripe is not configured');
   }
@@ -61,6 +61,37 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
       }
     }
 
+    // Allow env-configured Prices per plan. Falls back to STRIPE_PRICE_ID (single price) if set.
+    try {
+      const envKey = `STRIPE_PRICE_ID_${String(planName || '').toUpperCase()}`;
+      const priceFromEnv = process.env[envKey] || process.env.STRIPE_PRICE_ID || null;
+      if (!priceId && priceFromEnv) priceId = priceFromEnv;
+    } catch {}
+
+    // If a specific price_id is provided, we will use that price directly (and currency is implied by it)
+    if (priceId) {
+      const session = await stripe.checkout.sessions.create({
+        customer: customerId,
+        payment_method_types: ['card'],
+        line_items: [ { price: priceId, quantity: 1 } ],
+        mode: 'subscription',
+        success_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/stripe/success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/plan?canceled=true`,
+        metadata: { user_id: userId, plan_name: planName, price_id: priceId }
+      });
+      return { url: session.url, sessionId: session.id, planName };
+    }
+
+    // Determine currency: match existing active subscription currency if present; else from env (default usd)
+    let currency = String(process.env.STRIPE_CURRENCY || 'usd').toLowerCase();
+    try {
+      if (customerId) {
+        const subs = await stripe.subscriptions.list({ customer: customerId, status: 'active', limit: 1 });
+        const existingCurrency = subs?.data?.[0]?.items?.data?.[0]?.price?.currency || subs?.data?.[0]?.plan?.currency;
+        if (existingCurrency) currency = existingCurrency.toLowerCase();
+      }
+    } catch {}
+
     // Create checkout session
     const session = await stripe.checkout.sessions.create({
       customer: customerId,
@@ -68,7 +99,7 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
       line_items: [
         {
           price_data: {
-            currency: 'usd',
+            currency,
             product_data: {
               name: `${planDetails.name} Plan`,
               description: planDetails.features.join(', ')
@@ -82,7 +113,7 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
         },
       ],
       mode: 'subscription',
-      success_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/plan?success=true&session_id={CHECKOUT_SESSION_ID}`,
+      success_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/stripe/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/plan?canceled=true`,
       metadata: {
         user_id: userId,
@@ -217,25 +248,76 @@ export async function handleSuccessfulPayment(session) {
  */
 export async function handleSubscriptionCanceled(subscription) {
   const customerId = subscription.customer;
-  
-  // Find user by customer ID
-  const { db } = await import('../db.mjs');
-  const userPlan = db.prepare(`
-    SELECT user_id FROM user_plans 
-    WHERE stripe_subscription_id = ? OR stripe_customer_id = ?
-  `).get(subscription.id, customerId);
-  
-  if (userPlan) {
-    // Downgrade to free plan
+  const subId = subscription.id;
+  try {
+    const { UserPlan } = await import('../schemas/mongodb.mjs');
+    const plan = await UserPlan.findOne({ $or: [ { stripe_subscription_id: subId }, { stripe_customer_id: customerId } ] }).lean();
+    if (plan?.user_id) {
+      const { updateUserPlan } = await import('./usage.mjs');
+      await updateUserPlan(plan.user_id, {
+        plan_name: 'free',
+        monthly_limit: 100,
+        whatsapp_numbers: 1,
+        billing_cycle_start: Math.floor(Date.now() / 1000),
+        stripe_subscription_id: null
+      });
+      console.log(`User ${plan.user_id} subscription canceled, downgraded to free plan`);
+    }
+  } catch (e) {
+    console.error('Failed to handle subscription cancellation:', e?.message || e);
+  }
+}
+
+/**
+ * Handle subscription.updated events to reflect cancel_at_period_end and schedule downgrades at period end.
+ */
+export async function handleSubscriptionUpdated(subscription) {
+  try {
+    const { UserPlan } = await import('../schemas/mongodb.mjs');
+    const plan = await UserPlan.findOne({ stripe_subscription_id: subscription.id }).lean();
+    if (!plan?.user_id) return;
+
+    const cancelAtPeriodEnd = !!subscription.cancel_at_period_end;
+    const currentPeriodEnd = subscription.current_period_end ? Math.floor(subscription.current_period_end) : Math.floor(Date.now()/1000);
+
     const { updateUserPlan } = await import('./usage.mjs');
-    updateUserPlan(userPlan.user_id, {
-      plan_name: 'free',
-      monthly_limit: 100,
-      whatsapp_numbers: 1,
-      billing_cycle_start: Math.floor(Date.now() / 1000),
-      stripe_subscription_id: null
+    await updateUserPlan(plan.user_id, {
+      // keep current paid plan active until the end of period
+      plan_name: plan.plan_name,
+      monthly_limit: plan.monthly_limit,
+      whatsapp_numbers: plan.whatsapp_numbers,
+      billing_cycle_start: plan.billing_cycle_start,
+      stripe_customer_id: subscription.customer || plan.stripe_customer_id || null,
+      stripe_subscription_id: subscription.id
     });
-    
-    console.log(`User ${userPlan.user_id} subscription canceled, downgraded to free plan`);
+
+    if (cancelAtPeriodEnd) {
+      // We don’t downgrade immediately; we mark and a background job (future) could enforce at period end.
+      console.log(`Subscription ${subscription.id} set to cancel at period end (${currentPeriodEnd}). User ${plan.user_id} will be downgraded then.`);
+    }
+  } catch (e) {
+    console.error('Failed to handle subscription update:', e?.message || e);
+  }
+}
+
+/**
+ * Handle invoice payment state; on failure we keep access but can flag the account, on success we ensure active status.
+ */
+export async function handleInvoicePaymentState(invoice, succeeded) {
+  try {
+    const subId = invoice.subscription;
+    if (!subId) return;
+    const { UserPlan } = await import('../schemas/mongodb.mjs');
+    const plan = await UserPlan.findOne({ stripe_subscription_id: subId }).lean();
+    if (!plan?.user_id) return;
+    const { updateUserPlan } = await import('./usage.mjs');
+    if (succeeded) {
+      await updateUserPlan(plan.user_id, { status: 'active' });
+    } else {
+      // Mark as past_due but do not downgrade yet; Stripe will retry.
+      await updateUserPlan(plan.user_id, { status: 'past_due' });
+    }
+  } catch (e) {
+    console.error('Failed to handle invoice payment state:', e?.message || e);
   }
 }

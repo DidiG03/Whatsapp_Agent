@@ -2,11 +2,14 @@
  * Enhanced realtime routes for WebSocket connections and real-time messaging.
  */
 
-import { ensureAuthed, getCurrentUserId } from '../middleware/auth.mjs';
-import { db } from '../db-mongodb.mjs';
+import { ensureAuthed, getCurrentUserId, verifySessionToken } from '../middleware/auth.mjs';
+import { Handoff } from '../schemas/mongodb.mjs';
+import { db, getDB } from '../db-mongodb.mjs';
 import { Server } from 'socket.io';
 import { createServer } from 'http';
 import { sendWhatsAppText } from '../services/whatsapp.mjs';
+import { enqueueOutboundMessage, isQueueEnabled, initOutboundQueue } from '../jobs/outboundQueue.mjs';
+import { recordOutboundMessage } from '../services/messages.mjs';
 import { getSettingsForUser } from '../services/settings.mjs';
 import { markMessageAsFailed, MESSAGE_STATUS } from '../services/messageStatus.mjs';
 import { getAllMetrics } from '../monitoring/metrics.mjs';
@@ -86,7 +89,7 @@ function enforceConnectionLimits(userId) {
 export function initializeSocketIO(server) {
   io = new Server(server, {
     cors: {
-      origin: "*",
+      origin: (process.env.SOCKETIO_ALLOWED_ORIGIN || "*") ,
       methods: ["GET", "POST"],
       credentials: true
     },
@@ -107,21 +110,38 @@ export function initializeSocketIO(server) {
     forceNew: false
   });
 
-  // Authentication middleware for Socket.IO
+  // Authentication middleware for Socket.IO with signed token verification
   io.use((socket, next) => {
-    const token = socket.handshake.auth.token || socket.handshake.query.token;
-    const userId = socket.handshake.auth.userId || socket.handshake.query.userId;
-    
-    console.log('🔐 Socket.IO auth attempt:', { userId, token: token ? 'present' : 'missing' });
-    
-    if (!userId) {
-      console.log('❌ Socket.IO auth failed: No userId provided');
-      return next(new Error('Authentication required'));
+    try {
+      const token = socket.handshake.auth.token || socket.handshake.query.token;
+      const userIdClaim = socket.handshake.auth.userId || socket.handshake.query.userId;
+      
+      console.log('🔐 Socket.IO auth attempt:', { userId: userIdClaim, token: token ? 'present' : 'missing' });
+      
+      const verifiedUid = token ? verifySessionToken(token) : null;
+      if (verifiedUid) {
+        if (userIdClaim && String(userIdClaim) !== String(verifiedUid)) {
+          console.log('❌ Socket.IO auth failed: Token/user mismatch');
+          return next(new Error('Auth user mismatch'));
+        }
+        socket.userId = String(verifiedUid);
+        console.log('✅ Socket.IO auth successful for userId:', socket.userId);
+        return next();
+      }
+      
+      // Fallback: allow connection with explicit userId claim only when enabled via env
+      if (!verifiedUid && userIdClaim && process.env.SOCKETIO_ALLOW_UNVERIFIED === '1') {
+        console.warn('⚠️ Socket.IO proceeding without token using claimed userId (fallback enabled by SOCKETIO_ALLOW_UNVERIFIED=1).');
+        socket.userId = String(userIdClaim);
+        return next();
+      }
+      
+      console.log('❌ Socket.IO auth failed: Invalid or missing credentials');
+      return next(new Error('Invalid auth token'));
+    } catch (e) {
+      console.log('❌ Socket.IO auth error:', e?.message || e);
+      next(new Error('Authentication required'));
     }
-    
-    socket.userId = userId;
-    console.log('✅ Socket.IO auth successful for userId:', userId);
-    next();
   });
 
   // Set up cleanup intervals
@@ -174,18 +194,21 @@ export function initializeSocketIO(server) {
     // Handle joining a chat room
     socket.on('join_chat', (data) => {
       const { phone } = data;
-      if (phone) {
-        socket.join(`chat:${phone}`);
-        socket.currentChat = phone;
-        console.log(`👤 User ${userId} joined chat ${phone}`);
-        
-        // Notify others in the chat that user is online
-        socket.to(`chat:${phone}`).emit('user_online', {
-          userId,
-          phone,
-          timestamp: Date.now()
-        });
+      if (!phone) return;
+      const room = `chat:${phone}`;
+      // Leave the previous room if different
+      if (socket.currentChat && socket.currentChat !== phone) {
+        socket.leave(`chat:${socket.currentChat}`);
       }
+      socket.join(room);
+      socket.currentChat = phone;
+      console.log(`👤 User ${userId} joined chat ${phone}`);
+      // Notify others in the chat that user is online
+      socket.to(room).emit('user_online', {
+        userId,
+        phone,
+        timestamp: Date.now()
+      });
     });
     
     // Handle leaving a chat room
@@ -251,38 +274,78 @@ export function initializeSocketIO(server) {
           }
           
           const { phone, message, type = 'text' } = data;
+          if (typeof message !== 'string' || message.length === 0) {
+            socket.emit('message_error', { error: 'Message must be a non-empty string' });
+            return;
+          }
+          const maxLen = Number(process.env.REALTIME_MAX_MESSAGE_LEN || 2000);
+          if (message.length > maxLen) {
+            socket.emit('message_error', { error: `Message too long (>${maxLen} chars)` });
+            return;
+          }
           if (phone && message) {
             try {
               console.log('📤 Real-time message send request:', { userId, phone, message, type });
               
               // Clean phone number to remove any URL parameters
-              const cleanPhone = phone.split('?')[0];
+              let cleanPhone = phone.split('?')[0];
               console.log('📱 Cleaned phone number:', cleanPhone);
               
               // Get user settings for WhatsApp API
-              const cfg = getSettingsForUser(userId);
+              const cfg = await getSettingsForUser(userId);
               
               if (!cfg || !cfg.whatsapp_token || !cfg.phone_number_id) {
                 throw new Error('WhatsApp configuration not found');
               }
           
-          // Send message via WhatsApp API
-          const whatsappResponse = await sendWhatsAppText(cleanPhone, message, cfg);
-          const outboundId = whatsappResponse?.messages?.[0]?.id;
+          // Queue-aware send
+          let outboundId = null;
+          let lastSendResponse = null;
+          // Prefer direct send when Redis is not connected (avoid silent no-ops)
+          const preferDirect = !isQueueEnabled();
+          if (!preferDirect) {
+            const ok = await initOutboundQueue();
+            if (!ok) {
+              console.warn('⚠️ Queue requested but not available; falling back to direct send');
+            }
+            if (ok) {
+              const jobId = await enqueueOutboundMessage({ userId, cfg, to: cleanPhone, message });
+              if (jobId) {
+                // Optimistic message id for UI; actual delivery events will update later
+                outboundId = `job_${jobId}`;
+              }
+            }
+          }
+          if (!outboundId) {
+            // Ensure user id is present in cfg for downstream usage tracking
+          if (!cfg.user_id) cfg.user_id = userId;
+            try {
+              console.log('📨 Sending WA text…', { to_tail: String(cleanPhone).slice(-6), cfg_meta: { hasPhoneId: !!cfg?.phone_number_id, hasToken: !!cfg?.whatsapp_token, phoneId_tail: String(cfg?.phone_number_id||'').slice(-6) } });
+              lastSendResponse = await sendWhatsAppText(cleanPhone, message, cfg);
+              console.log('📨 WhatsApp API response:', {
+                hasMessages: !!lastSendResponse?.messages?.[0]?.id,
+                keys: lastSendResponse ? Object.keys(lastSendResponse).slice(0, 12) : null
+              });
+            } catch (e) {
+              console.error('📨 WhatsApp send threw error:', e?.message || e);
+              lastSendResponse = null;
+            }
+          outboundId = lastSendResponse?.messages?.[0]?.id;
+          }
           
           if (outboundId) {
             console.log('✅ WhatsApp message sent successfully:', outboundId);
             
             // Store message in database with WhatsApp message ID
-            const fromBiz = (cfg.business_phone || "").replace(/\D/g, "") || null;
-            const timestamp = Math.floor(Date.now() / 1000);
-            
-            const stmt = db.prepare(`
-              INSERT OR IGNORE INTO messages (id, user_id, direction, from_id, to_id, from_digits, to_digits, type, text_body, timestamp, raw)
-              VALUES (?, ?, 'outbound', ?, ?, ?, ?, 'text', ?, ?, ?)
-            `);
-            
-            stmt.run(outboundId, userId, fromBiz, cleanPhone, fromBiz, cleanPhone, message, timestamp, JSON.stringify({ to: cleanPhone, text: message }));
+            await recordOutboundMessage({
+              messageId: outboundId,
+              userId,
+              cfg,
+              to: cleanPhone,
+              type: 'text',
+              text: message,
+              raw: { to: cleanPhone, text: message }
+            });
             
             // Broadcast message to chat room
             const messageData = {
@@ -290,17 +353,19 @@ export function initializeSocketIO(server) {
               direction: 'outbound',
               type: 'text',
               text_body: message,
-              timestamp,
-              from_digits: fromBiz,
+              timestamp: Math.floor(Date.now() / 1000),
+              from_digits: (cfg.business_phone || "").replace(/\D/g, "") || null,
               to_digits: cleanPhone,
               contact_name: null,
               contact: cleanPhone,
-              formatted_time: new Date(timestamp * 1000).toLocaleString(),
+              formatted_time: new Date().toLocaleString(),
               delivery_status: 'sent',
               read_status: 'unread'
             };
             
             io.to(`chat:${cleanPhone}`).emit('new_message', messageData);
+            // Also echo directly back to the sender to avoid race conditions
+            try { socket.emit('new_message', messageData); } catch {}
             
             // Stop typing indicator
             typingUsers.delete(`${userId}-${cleanPhone}`);
@@ -312,41 +377,9 @@ export function initializeSocketIO(server) {
             
             console.log('📡 Message broadcasted to chat room:', cleanPhone);
           } else {
-            console.error('❌ Failed to send WhatsApp message:', whatsappResponse);
-            
-            // Create a failed message record
-            const tempMessageId = `failed_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-            const timestamp = Math.floor(Date.now() / 1000);
-            
-            try {
-              const stmt = db.prepare(`
-                INSERT INTO messages (id, user_id, direction, from_id, to_id, from_digits, to_digits, type, text_body, timestamp, raw, delivery_status, error_message)
-                VALUES (?, ?, 'outbound', ?, ?, ?, ?, 'text', ?, ?, ?, ?, ?)
-              `);
-              
-              stmt.run(
-                tempMessageId, 
-                userId, 
-                fromBiz, 
-                cleanPhone, 
-                fromBiz, 
-                cleanPhone, 
-                message, 
-                timestamp, 
-                JSON.stringify({ to: cleanPhone, text: message }), 
-                MESSAGE_STATUS.FAILED,
-                'Failed to send message via WhatsApp'
-              );
-              
-              console.log(`❌ Created failed message record: ${tempMessageId}`);
-            } catch (dbError) {
-              console.error("Error creating failed message record:", dbError);
-            }
-            
-            socket.emit('message_error', { 
-              error: 'Failed to send message via WhatsApp',
-              messageId: tempMessageId
-            });
+            const detail = lastSendResponse ? JSON.stringify(lastSendResponse).slice(0, 1200) : 'no response';
+            console.error('❌ Failed to send WhatsApp message (no outbound id). Detail:', detail);
+            throw new Error('WhatsApp did not return message id. Check phone_number_id and token.');
           }
           
         } catch (error) {
@@ -357,26 +390,48 @@ export function initializeSocketIO(server) {
           const timestamp = Math.floor(Date.now() / 1000);
           
           try {
-            const stmt = db.prepare(`
-              INSERT INTO messages (id, user_id, direction, from_id, to_id, from_digits, to_digits, type, text_body, timestamp, raw, delivery_status, error_message)
-              VALUES (?, ?, 'outbound', ?, ?, ?, ?, 'text', ?, ?, ?, ?, ?)
-            `);
-            
-            stmt.run(
-              tempMessageId, 
-              userId, 
-              fromBiz, 
-              cleanPhone, 
-              fromBiz, 
-              cleanPhone, 
-              message, 
-              timestamp, 
-              JSON.stringify({ to: cleanPhone, text: message }), 
-              MESSAGE_STATUS.FAILED,
-              error.message
-            );
-            
+            const dbNative = getDB();
+            // cfg may be unavailable here; try to recompute business phone from settings
+            let fromBiz = null;
+            try {
+              const cfg2 = await getSettingsForUser(userId);
+              fromBiz = (cfg2?.business_phone || "").replace(/\D/g, "") || null;
+            } catch {}
+            const toDigits = (phone ? phone.split('?')[0] : null);
+            await dbNative.collection('messages').insertOne({
+              id: tempMessageId,
+              user_id: userId,
+              direction: 'outbound',
+              from_id: fromBiz,
+              to_id: toDigits,
+              from_digits: fromBiz,
+              to_digits: toDigits,
+              type: 'text',
+              text_body: message,
+              timestamp,
+              raw: { to: toDigits, text: message },
+              delivery_status: MESSAGE_STATUS.FAILED,
+              error_message: error.message
+            });
             console.log(`❌ Created failed message record: ${tempMessageId}`);
+            
+            // Broadcast failed message to UI immediately so agent sees it without refresh
+            const failedMessageData = {
+              id: tempMessageId,
+              direction: 'outbound',
+              type: 'text',
+              text_body: message,
+              timestamp,
+              from_digits: fromBiz,
+              to_digits: toDigits,
+              contact_name: null,
+              contact: toDigits,
+              formatted_time: new Date(timestamp * 1000).toLocaleString(),
+              delivery_status: 'failed',
+              read_status: 'unread'
+            };
+            try { io.to(`chat:${toDigits}`).emit('new_message', failedMessageData); } catch {}
+            try { socket.emit('new_message', failedMessageData); } catch {}
           } catch (dbError) {
             console.error("Error creating failed message record:", dbError);
           }
@@ -451,6 +506,17 @@ export function broadcastNewMessage(userId, phone, messageData) {
     if (io) {
       console.log('📡 Socket.IO available, emitting to chat:', `chat:${phone}`);
       io.to(`chat:${phone}`).emit('new_message', messageData);
+      // Heuristic: if a new inbound arrives, notify clients to refresh status
+      try {
+        if (messageData && messageData.direction === 'inbound') {
+          io.to(`chat:${phone}`).emit('conversation_status_changed', {
+            userId,
+            phone,
+            status: 'new',
+            timestamp: Date.now()
+          });
+        }
+      } catch {}
     } else {
       console.log('❌ Socket.IO not available for broadcasting');
     }
@@ -635,16 +701,12 @@ export default function registerRealtimeRoutes(app) {
     }
     
     try {
-      // Update handoff table to reflect live mode
-      const stmt = db.prepare(`
-        INSERT INTO handoff (contact_id, user_id, is_human, updated_at)
-        VALUES (?, ?, ?, strftime('%s','now'))
-        ON CONFLICT(contact_id, user_id) DO UPDATE SET 
-          is_human = ?, 
-          updated_at = strftime('%s','now')
-      `);
-      
-      stmt.run(phone, userId, isLive ? 1 : 0, isLive ? 1 : 0);
+      // Update handoff document in Mongo to reflect live mode
+      await Handoff.findOneAndUpdate(
+        { user_id: userId, contact_id: phone },
+        { $set: { is_human: !!isLive, updatedAt: new Date() } },
+        { upsert: true }
+      );
       
       // Broadcast live mode change
       broadcastLiveModeChange(userId, phone, isLive);

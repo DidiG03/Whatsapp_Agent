@@ -2,20 +2,21 @@
  * Message replies service for handling thread-style conversations.
  */
 
-import { db } from '../db-mongodb.mjs';
+import { getDB } from '../db-mongodb.mjs';
 
 /**
  * Create a reply relationship between two messages
  */
-export function createReply(originalMessageId, replyMessageId) {
+export async function createReply(originalMessageId, replyMessageId) {
   try {
-    const result = db.prepare(`
-      INSERT INTO message_replies (original_message_id, reply_message_id)
-      VALUES (?, ?)
-      ON CONFLICT(original_message_id, reply_message_id) DO NOTHING
-    `).run(originalMessageId, replyMessageId);
-    
-    return { success: true, id: result.lastInsertRowid };
+    const db = getDB();
+    const coll = db.collection('message_replies');
+    await coll.updateOne(
+      { original_message_id: originalMessageId, reply_message_id: replyMessageId },
+      { $setOnInsert: { original_message_id: originalMessageId, reply_message_id: replyMessageId, createdAt: new Date() } },
+      { upsert: true }
+    );
+    return { success: true };
   } catch (error) {
     console.error('Error creating reply:', error);
     return { success: false, error: error.message };
@@ -25,18 +26,17 @@ export function createReply(originalMessageId, replyMessageId) {
 /**
  * Get all replies for a specific message
  */
-export function getMessageReplies(messageId) {
+export async function getMessageReplies(messageId) {
   try {
-    const replies = db.prepare(`
-      SELECT mr.reply_message_id, mr.created_at,
-             m.direction, m.type, m.text_body, m.timestamp, m.raw
-      FROM message_replies mr
-      JOIN messages m ON mr.reply_message_id = m.id
-      WHERE mr.original_message_id = ?
-      ORDER BY mr.created_at ASC
-    `).all(messageId);
-    
-    return replies;
+    const db = getDB();
+    const repliesColl = db.collection('message_replies');
+    const messagesColl = db.collection('messages');
+    const links = await repliesColl.find({ original_message_id: messageId }).sort({ createdAt: 1 }).toArray();
+    if (!links.length) return [];
+    const ids = links.map(l => l.reply_message_id);
+    const msgs = await messagesColl.find({ id: { $in: ids } }).project({ direction: 1, type: 1, text_body: 1, timestamp: 1, raw: 1, id: 1 }).toArray();
+    const map = new Map(msgs.map(m => [m.id, m]));
+    return links.map(l => ({ reply_message_id: l.reply_message_id, created_at: l.createdAt, ...(map.get(l.reply_message_id) || {}) }));
   } catch (error) {
     console.error('Error getting message replies:', error);
     return [];
@@ -46,17 +46,15 @@ export function getMessageReplies(messageId) {
 /**
  * Get the original message that a reply is responding to
  */
-export function getOriginalMessage(replyMessageId) {
+export async function getOriginalMessage(replyMessageId) {
   try {
-    const original = db.prepare(`
-      SELECT mr.original_message_id, mr.created_at,
-             m.direction, m.type, m.text_body, m.timestamp, m.raw
-      FROM message_replies mr
-      JOIN messages m ON mr.original_message_id = m.id
-      WHERE mr.reply_message_id = ?
-    `).get(replyMessageId);
-    
-    return original;
+    const db = getDB();
+    const repliesColl = db.collection('message_replies');
+    const messagesColl = db.collection('messages');
+    const link = await repliesColl.findOne({ reply_message_id: replyMessageId });
+    if (!link) return null;
+    const msg = await messagesColl.findOne({ id: link.original_message_id }, { projection: { direction: 1, type: 1, text_body: 1, timestamp: 1, raw: 1, id: 1 } });
+    return { original_message_id: link.original_message_id, created_at: link.createdAt, ...(msg || {}) };
   } catch (error) {
     console.error('Error getting original message:', error);
     return null;
@@ -66,30 +64,23 @@ export function getOriginalMessage(replyMessageId) {
 /**
  * Get replies for multiple messages
  */
-export function getMessagesReplies(messageIds) {
-  if (!messageIds.length) return {};
-  
+export async function getMessagesReplies(messageIds) {
+  if (!Array.isArray(messageIds) || messageIds.length === 0) return {};
   try {
-    const placeholders = messageIds.map(() => '?').join(',');
-    const replies = db.prepare(`
-      SELECT mr.original_message_id, mr.reply_message_id, mr.created_at,
-             m.direction, m.type, m.text_body, m.timestamp, m.raw
-      FROM message_replies mr
-      JOIN messages m ON mr.reply_message_id = m.id
-      WHERE mr.original_message_id IN (${placeholders})
-      ORDER BY mr.created_at ASC
-    `).all(...messageIds);
-    
-    // Group replies by original message ID
-    const groupedReplies = {};
-    replies.forEach(reply => {
-      if (!groupedReplies[reply.original_message_id]) {
-        groupedReplies[reply.original_message_id] = [];
-      }
-      groupedReplies[reply.original_message_id].push(reply);
-    });
-    
-    return groupedReplies;
+    const db = getDB();
+    const repliesColl = db.collection('message_replies');
+    const messagesColl = db.collection('messages');
+    const links = await repliesColl.find({ original_message_id: { $in: messageIds } }).sort({ createdAt: 1 }).toArray();
+    if (!links.length) return {};
+    const replyIds = Array.from(new Set(links.map(l => l.reply_message_id)));
+    const msgs = await messagesColl.find({ id: { $in: replyIds } }).project({ id: 1, direction: 1, type: 1, text_body: 1, timestamp: 1, raw: 1 }).toArray();
+    const msgMap = new Map(msgs.map(m => [m.id, m]));
+    const grouped = {};
+    for (const l of links) {
+      const arr = grouped[l.original_message_id] || (grouped[l.original_message_id] = []);
+      arr.push({ reply_message_id: l.reply_message_id, created_at: l.createdAt, ...(msgMap.get(l.reply_message_id) || {}) });
+    }
+    return grouped;
   } catch (error) {
     console.error('Error getting messages replies:', error);
     return {};
@@ -99,26 +90,22 @@ export function getMessagesReplies(messageIds) {
 /**
  * Get original messages for multiple reply messages
  */
-export function getReplyOriginals(replyMessageIds) {
-  if (!replyMessageIds.length) return {};
-  
+export async function getReplyOriginals(replyMessageIds) {
+  if (!Array.isArray(replyMessageIds) || replyMessageIds.length === 0) return {};
   try {
-    const placeholders = replyMessageIds.map(() => '?').join(',');
-    const originals = db.prepare(`
-      SELECT mr.reply_message_id, mr.original_message_id, mr.created_at,
-             m.direction, m.type, m.text_body, m.timestamp, m.raw
-      FROM message_replies mr
-      JOIN messages m ON mr.original_message_id = m.id
-      WHERE mr.reply_message_id IN (${placeholders})
-    `).all(...replyMessageIds);
-    
-    // Group by reply message ID
-    const groupedOriginals = {};
-    originals.forEach(original => {
-      groupedOriginals[original.reply_message_id] = original;
-    });
-    
-    return groupedOriginals;
+    const db = getDB();
+    const repliesColl = db.collection('message_replies');
+    const messagesColl = db.collection('messages');
+    const links = await repliesColl.find({ reply_message_id: { $in: replyMessageIds } }).toArray();
+    if (!links.length) return {};
+    const origIds = Array.from(new Set(links.map(l => l.original_message_id)));
+    const origMsgs = await messagesColl.find({ id: { $in: origIds } }).project({ id: 1, direction: 1, type: 1, text_body: 1, timestamp: 1, raw: 1 }).toArray();
+    const map = new Map(origMsgs.map(m => [m.id, m]));
+    const grouped = {};
+    for (const l of links) {
+      grouped[l.reply_message_id] = { original_message_id: l.original_message_id, created_at: l.createdAt, ...(map.get(l.original_message_id) || {}) };
+    }
+    return grouped;
   } catch (error) {
     console.error('Error getting reply originals:', error);
     return {};

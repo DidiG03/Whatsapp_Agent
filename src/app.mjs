@@ -38,6 +38,7 @@ import registerStripeRoutes from "./routes/stripe.mjs";
 import registerOnboardingRoutes from "./routes/onboarding.mjs";
 import registerRealtimeRoutes, { initializeSocketIO } from "./routes/realtime.mjs";
 import registerMonitoringRoutes from "./routes/monitoring.mjs";
+import { signMediaPath } from "./utils.mjs";
 import registerMetricsRoutes from "./routes/metrics.mjs";
 /**
  * Create and configure an Express app instance.
@@ -84,8 +85,28 @@ export async function createApp() {
   app.use(sanitizeInput);
 
   // Static file serving with security headers
-  app.use(express.static(STATIC_DIR));
-  app.use('/uploads', express.static('uploads'));
+  app.use(express.static(STATIC_DIR, {
+    setHeaders: (res, path) => {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    }
+  }));
+  // Signed media gate (optional via env)
+  app.use('/uploads', (req, res, next) => {
+    if (process.env.MEDIA_SIGNING_DISABLED === '1') return next();
+    const urlPath = `${req.baseUrl}${req.path}`; // full path e.g. /uploads/file.pdf
+    const exp = parseInt((req.query.exp || '0').toString(), 10);
+    const sig = (req.query.sig || '').toString();
+    try {
+      const secret = process.env.MEDIA_SIGN_SECRET || process.env.SESSION_TOKEN_SECRET || 'dev-media-secret';
+      const expected = require('node:crypto').createHmac('sha256', secret).update(`${urlPath}|${exp}`).digest('hex');
+      const now = Math.floor(Date.now()/1000);
+      if (!exp || !sig || exp < now || sig !== expected) {
+        return res.status(403).send('Invalid or expired media link');
+      }
+    } catch { return res.status(403).send('Invalid media link'); }
+    next();
+  });
+  app.use('/uploads', express.static('uploads', { setHeaders: (res)=> res.setHeader('Cache-Control','public, max-age=604800') }));
 
   // Clerk (if configured)
   initClerk(app);

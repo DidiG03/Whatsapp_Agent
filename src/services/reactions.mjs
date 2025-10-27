@@ -2,35 +2,37 @@
  * Message reactions service for handling emoji reactions to messages.
  */
 
-import { db } from '../db-mongodb.mjs';
+import { getDB } from '../db-mongodb.mjs';
 
 /**
  * Get all reactions for a specific message
  */
-export function getMessageReactions(messageId) {
-  const reactions = db.prepare(`
-    SELECT emoji, user_id, created_at, COUNT(*) as count
-    FROM message_reactions 
-    WHERE message_id = ?
-    GROUP BY emoji
-    ORDER BY created_at ASC
-  `).all(messageId);
-  
-  return reactions;
+export async function getMessageReactions(messageId) {
+  if (!messageId) return [];
+  const db = getDB();
+  const coll = db.collection('message_reactions');
+  const pipeline = [
+    { $match: { message_id: messageId } },
+    { $group: { _id: { emoji: '$emoji', user_id: '$user_id' }, count: { $sum: 1 }, created_at: { $min: '$createdAt' } } },
+    { $project: { emoji: '$_id.emoji', user_id: '$_id.user_id', count: 1, created_at: 1, _id: 0 } },
+    { $sort: { created_at: 1 } }
+  ];
+  return await coll.aggregate(pipeline).toArray();
 }
 
 /**
  * Add a reaction to a message
  */
-export function addReaction(messageId, userId, emoji) {
+export async function addReaction(messageId, userId, emoji) {
   try {
-    const result = db.prepare(`
-      INSERT INTO message_reactions (message_id, user_id, emoji)
-      VALUES (?, ?, ?)
-      ON CONFLICT(message_id, user_id, emoji) DO NOTHING
-    `).run(messageId, userId, emoji);
-    
-    return { success: true, id: result.lastInsertRowid };
+    const db = getDB();
+    const coll = db.collection('message_reactions');
+    await coll.updateOne(
+      { message_id: messageId, user_id, emoji },
+      { $setOnInsert: { message_id: messageId, user_id, emoji, createdAt: new Date() } },
+      { upsert: true }
+    );
+    return { success: true };
   } catch (error) {
     console.error('Error adding reaction:', error);
     return { success: false, error: error.message };
@@ -40,14 +42,12 @@ export function addReaction(messageId, userId, emoji) {
 /**
  * Remove a reaction from a message
  */
-export function removeReaction(messageId, userId, emoji) {
+export async function removeReaction(messageId, userId, emoji) {
   try {
-    const result = db.prepare(`
-      DELETE FROM message_reactions 
-      WHERE message_id = ? AND user_id = ? AND emoji = ?
-    `).run(messageId, userId, emoji);
-    
-    return { success: true, deleted: result.changes > 0 };
+    const db = getDB();
+    const coll = db.collection('message_reactions');
+    const result = await coll.deleteOne({ message_id: messageId, user_id: userId, emoji });
+    return { success: true, deleted: result.deletedCount > 0 };
   } catch (error) {
     console.error('Error removing reaction:', error);
     return { success: false, error: error.message };
@@ -57,19 +57,16 @@ export function removeReaction(messageId, userId, emoji) {
 /**
  * Toggle a reaction (add if not exists, remove if exists)
  */
-export function toggleReaction(messageId, userId, emoji) {
+export async function toggleReaction(messageId, userId, emoji) {
   try {
-    // Check if reaction exists
-    const existing = db.prepare(`
-      SELECT id FROM message_reactions 
-      WHERE message_id = ? AND user_id = ? AND emoji = ?
-    `).get(messageId, userId, emoji);
-    
+    const db = getDB();
+    const coll = db.collection('message_reactions');
+    const existing = await coll.findOne({ message_id: messageId, user_id: userId, emoji });
     if (existing) {
-      const result = removeReaction(messageId, userId, emoji);
+      const result = await removeReaction(messageId, userId, emoji);
       return { ...result, added: false, removed: true };
     } else {
-      const result = addReaction(messageId, userId, emoji);
+      const result = await addReaction(messageId, userId, emoji);
       return { ...result, added: true, removed: false };
     }
   } catch (error) {
@@ -81,51 +78,38 @@ export function toggleReaction(messageId, userId, emoji) {
 /**
  * Get reactions for multiple messages
  */
-export function getMessagesReactions(messageIds) {
-  if (!messageIds.length) return {};
-  
-  const placeholders = messageIds.map(() => '?').join(',');
-  const reactions = db.prepare(`
-    SELECT message_id, emoji, user_id, created_at, COUNT(*) as count
-    FROM message_reactions 
-    WHERE message_id IN (${placeholders})
-    GROUP BY message_id, emoji
-    ORDER BY created_at ASC
-  `).all(...messageIds);
-  
-  // Group reactions by message_id
+export async function getMessagesReactions(messageIds) {
+  if (!Array.isArray(messageIds) || messageIds.length === 0) return {};
+  const db = getDB();
+  const coll = db.collection('message_reactions');
+  const reactions = await coll.aggregate([
+    { $match: { message_id: { $in: messageIds } } },
+    { $group: { _id: { message_id: '$message_id', emoji: '$emoji', user_id: '$user_id' }, count: { $sum: 1 }, created_at: { $min: '$createdAt' } } },
+    { $project: { message_id: '$_id.message_id', emoji: '$_id.emoji', user_id: '$_id.user_id', count: 1, created_at: 1, _id: 0 } },
+    { $sort: { created_at: 1 } }
+  ]).toArray();
+
   const groupedReactions = {};
-  reactions.forEach(reaction => {
-    if (!groupedReactions[reaction.message_id]) {
-      groupedReactions[reaction.message_id] = [];
-    }
+  for (const reaction of reactions) {
+    if (!groupedReactions[reaction.message_id]) groupedReactions[reaction.message_id] = [];
     groupedReactions[reaction.message_id].push(reaction);
-  });
-  
+  }
   return groupedReactions;
 }
 
 /**
  * Get user's reactions for multiple messages (only agent reactions, not customer reactions)
  */
-export function getUserReactionsForMessages(messageIds, userId) {
-  if (!messageIds.length) return {};
-  
-  const placeholders = messageIds.map(() => '?').join(',');
-  const userReactions = db.prepare(`
-    SELECT message_id, emoji
-    FROM message_reactions 
-    WHERE message_id IN (${placeholders}) AND user_id = ? AND user_id NOT LIKE 'customer_%'
-  `).all(...messageIds, userId);
-  
-  // Group by message_id
-  const groupedUserReactions = {};
-  userReactions.forEach(reaction => {
-    if (!groupedUserReactions[reaction.message_id]) {
-      groupedUserReactions[reaction.message_id] = [];
-    }
-    groupedUserReactions[reaction.message_id].push(reaction.emoji);
-  });
-  
-  return groupedUserReactions;
+export async function getUserReactionsForMessages(messageIds, userId) {
+  if (!Array.isArray(messageIds) || messageIds.length === 0 || !userId) return {};
+  const db = getDB();
+  const coll = db.collection('message_reactions');
+  const cursor = await coll.find({ message_id: { $in: messageIds }, user_id: userId, user_id: { $not: /^customer_/ } }, { projection: { message_id: 1, emoji: 1 } });
+  const list = await cursor.toArray();
+  const grouped = {};
+  for (const r of list) {
+    if (!grouped[r.message_id]) grouped[r.message_id] = [];
+    grouped[r.message_id].push(r.emoji);
+  }
+  return grouped;
 }

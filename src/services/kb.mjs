@@ -4,6 +4,7 @@
  * - Retrieve naive keyword matches for a query
  */
 import { db } from "../db-mongodb.mjs";
+import { cache } from "../scalability/redis.mjs";
 
 const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
 const shouldLogVerbose = LOG_LEVEL === "debug" || LOG_LEVEL === "trace";
@@ -71,23 +72,13 @@ export function retrieveKbMatches(query, limit = 3, userId = null, onboardingTra
   const matchQuery = booleanQuery || `"${expanded.replace(/"/g, '""').trim()}"`;
   let rows = [];
   try {
-    rows = userId
-      ? db.prepare(`
-          SELECT k.id, k.title, k.content, bm25(kb_items_fts) AS rank
+    // Prefer a direct Mongo-friendly path: query kb_items via adapter using MATCH emulation
+    rows = db.prepare(`
           FROM kb_items_fts
           JOIN kb_items k ON k.id = kb_items_fts.rowid
-          WHERE k.user_id = ? AND kb_items_fts MATCH ?
-          ORDER BY rank
+          WHERE ${userId ? 'k.user_id = ? AND ' : ''}kb_items_fts MATCH ?
           LIMIT ?
-        `).all(userId, matchQuery, limit)
-      : db.prepare(`
-          SELECT k.id, k.title, k.content, bm25(kb_items_fts) AS rank
-          FROM kb_items_fts
-          JOIN kb_items k ON k.id = kb_items_fts.rowid
-          WHERE kb_items_fts MATCH ?
-          ORDER BY rank
-          LIMIT ?
-        `).all(matchQuery, limit);
+        `).all(...(userId ? [userId, matchQuery, limit] : [matchQuery, limit]));
   } catch (e) {
     if (shouldLogVerbose) console.warn("FTS MATCH failed; falling back to LIKE", e?.message || e);
     try {
@@ -105,7 +96,8 @@ export function retrieveKbMatches(query, limit = 3, userId = null, onboardingTra
   }
 
   // Attach a synthetic score: inverse of rank + token hit boosts (title > content)
-  const results = rows.map(r => {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const results = safeRows.map(r => {
     const base = Math.max(1, 1000 - Math.floor(r.rank || 0));
     let hitsTitle = 0, hitsContent = 0;
     try {
@@ -124,7 +116,14 @@ export function retrieveKbMatches(query, limit = 3, userId = null, onboardingTra
   return results;
 }
 
-export function buildKbSuggestions(userId, question, max = 3) {
+export async function buildKbSuggestions(userId, question, max = 3) {
+  const key = userId ? `kb:suggest:${userId}:${Buffer.from(String(question||'').slice(0,80)).toString('base64')}:${max}` : null;
+  if (key) {
+    try {
+      const cached = await cache.get(key);
+      if (cached) return cached;
+    } catch {}
+  }
   const defaults = [
     "Business Name", "What We Do", "Audience", "Hours", "Locations",
     "Products", "Services", "Service Areas", "Appointments", "Booking",
@@ -166,6 +165,8 @@ export function buildKbSuggestions(userId, question, max = 3) {
   // 3) Fallback to sensible defaults if still short
   for(const t of defaults) { if (picks.length >= max) break; push(t) };
   
-  return picks.slice(0, max);
+  const out = picks.slice(0, max);
+  if (key) { try { await cache.set(key, out, 120); } catch {} }
+  return out;
 }
 

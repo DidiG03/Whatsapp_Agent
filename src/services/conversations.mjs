@@ -6,8 +6,10 @@
 import { Message, Handoff } from "../schemas/mongodb.mjs";
 
 /** List the latest 100 contacts with last timestamp and last text preview. */
-export async function listContactsForUser(userId) {
+export async function listContactsForUser(userId, opts = {}) {
   try {
+    const page = Math.max(1, parseInt(opts.page||1,10));
+    const pageSize = Math.min(50, Math.max(10, parseInt(opts.pageSize||20,10)));
     // Get all unique contacts from messages
     const contacts = await Message.aggregate([
       {
@@ -76,12 +78,9 @@ export async function listContactsForUser(userId) {
           ]
         }
       },
-      {
-        $sort: { last_ts: -1 }
-      },
-      {
-        $limit: 100
-      },
+      { $sort: { last_ts: -1 } },
+      { $skip: (page-1)*pageSize },
+      { $limit: pageSize },
       {
         $project: {
           contact: '$_id',

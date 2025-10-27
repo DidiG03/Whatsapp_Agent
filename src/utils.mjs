@@ -281,13 +281,13 @@ export function renderTopbar(crumbs, email) {
     <div class="card topbar">
       <div class="crumbs">${crumbs}</div>
       <div style="display: flex; align-items: center; gap: 16px;">
-        <div id="notification-bell" class="notification-bell" onclick="toggleNotifications(event)">
+        <div id="notification-bell" class="notification-bell" onclick="toggleNotifications(event)" style="position:relative; z-index:10000;">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
             <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
           </svg>
           <span id="notification-badge" class="notification-badge" style="display: none;">0</span>
-          <div id="notification-dropdown" class="notification-dropdown" style="display: none;">
+          <div id="notification-dropdown" class="notification-dropdown" style="display: none; z-index:10001;">
             <div class="notification-header">
               <span style="font-weight: 600;">Notifications</span>
               <button onclick="markAllAsRead(event)" class="mark-all-read">Mark all read</button>
@@ -298,5 +298,20 @@ export function renderTopbar(crumbs, email) {
       </div>
     </div>
   `;
+}
+
+// --- Signed media URLs -------------------------------------------------------
+import crypto from 'node:crypto';
+
+/** Create a time-limited signature for a local uploads path (e.g., "/uploads/abc.pdf"). */
+export function signMediaPath(path, ttlSeconds = 300) {
+  try {
+    const secret = process.env.MEDIA_SIGN_SECRET || process.env.SESSION_TOKEN_SECRET || 'dev-media-secret';
+    const exp = Math.floor(Date.now() / 1000) + Math.max(60, ttlSeconds);
+    const h = crypto.createHmac('sha256', secret).update(`${path}|${exp}`).digest('hex');
+    return { exp, sig: h };
+  } catch {
+    return { exp: 0, sig: '' };
+  }
 }
 

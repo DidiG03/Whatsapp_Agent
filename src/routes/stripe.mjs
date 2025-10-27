@@ -11,7 +11,7 @@ export default function registerStripeRoutes(app) {
   // Create checkout session for plan upgrade
   app.post("/stripe/create-checkout", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
-    const { plan_name } = req.body;
+    const { plan_name, price_id } = req.body;
     const email = await getSignedInEmail(req);
     
     if (!plan_name || !['free', 'starter'].includes(plan_name)) {
@@ -19,7 +19,7 @@ export default function registerStripeRoutes(app) {
     }
     
     try {
-      const result = await createCheckoutSession(userId, plan_name, email);
+      const result = await createCheckoutSession(userId, plan_name, email, price_id);
       
       if (plan_name === 'free') {
         // Handle free plan upgrade immediately
@@ -47,7 +47,6 @@ export default function registerStripeRoutes(app) {
   // Handle successful checkout
   app.get("/stripe/success", ensureAuthed, async (req, res) => {
     const { session_id } = req.query;
-    const email = await getSignedInEmail(req);
     
     if (!session_id) {
       return res.redirect('/plan?error=no_session_id');
@@ -107,23 +106,39 @@ export default function registerStripeRoutes(app) {
         break;
         
       case 'customer.subscription.updated':
-        const subscriptionUpdated = event.data.object;
-        console.log('Subscription updated:', subscriptionUpdated.id);
+        try {
+          const { handleSubscriptionUpdated } = await import('../services/stripe.mjs');
+          await handleSubscriptionUpdated(event.data.object);
+        } catch (e) {
+          console.error('Failed to handle subscription.updated:', e?.message || e);
+        }
         break;
         
       case 'customer.subscription.deleted':
-        const subscriptionDeleted = event.data.object;
-        await handleSubscriptionCanceled(subscriptionDeleted);
+        try {
+          const subscriptionDeleted = event.data.object;
+          await handleSubscriptionCanceled(subscriptionDeleted);
+        } catch (e) {
+          console.error('Failed to handle subscription.deleted:', e?.message || e);
+        }
         break;
         
       case 'invoice.payment_succeeded':
-        const invoice = event.data.object;
-        console.log('Invoice payment succeeded:', invoice.id);
+        try {
+          const { handleInvoicePaymentState } = await import('../services/stripe.mjs');
+          await handleInvoicePaymentState(event.data.object, true);
+        } catch (e) {
+          console.error('Failed to handle invoice.payment_succeeded:', e?.message || e);
+        }
         break;
         
       case 'invoice.payment_failed':
-        const failedInvoice = event.data.object;
-        console.log('Invoice payment failed:', failedInvoice.id);
+        try {
+          const { handleInvoicePaymentState } = await import('../services/stripe.mjs');
+          await handleInvoicePaymentState(event.data.object, false);
+        } catch (e) {
+          console.error('Failed to handle invoice.payment_failed:', e?.message || e);
+        }
         break;
         
       default:

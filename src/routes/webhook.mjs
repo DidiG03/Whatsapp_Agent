@@ -4,18 +4,22 @@
  * - POST /webhook: inbound messages and status updates
  */
 import crypto from "node:crypto";
-import { db } from "../db-mongodb.mjs";
+import { getRedisClient, isRedisConnected, rateLimiter } from "../scalability/redis.mjs";
+import { db, getDB } from "../db-mongodb.mjs";
 import { findSettingsByVerifyToken, findSettingsByPhoneNumberId, findSettingsByBusinessPhone } from "../services/settings.mjs";
 import { retrieveKbMatches, buildKbSuggestions } from "../services/kb.mjs";
+import { Customer, Handoff } from "../schemas/mongodb.mjs";
 import { sendWhatsappButton, sendWhatsAppText, sendWhatsappList, sendWhatsappReaction, sendWhatsappDocument } from "../services/whatsapp.mjs";
 import { normalizePhone } from "../utils.mjs";
 import { generateAiReply } from "../services/ai.mjs";
 import { listAvailability, createBooking, rescheduleBooking, cancelBooking, buildDayRows, buildTimeRows } from "../services/booking.mjs";
-import { recordOutboundMessage } from "../services/messages.mjs";
+import { recordOutboundMessage, recordInboundMessage } from "../services/messages.mjs";
 import { sendEscalationNotification, sendBookingNotification } from "../services/email.mjs";
 import { incrementUsage } from "../services/usage.mjs";
 import { addReaction, removeReaction } from "../services/reactions.mjs";
 import { broadcastNewMessage, broadcastReaction, broadcastMessageStatus } from "./realtime.mjs";
+import { updateMessageDeliveryStatus, updateMessageReadStatus, READ_STATUS, MESSAGE_STATUS } from "../services/messageStatus.mjs";
+import { getConversationStatus, updateConversationStatus, CONVERSATION_STATUSES } from "../services/conversationStatus.mjs";
 
 function isGreeting(raw) {
   const s = String(raw || "").trim().toLowerCase();
@@ -209,8 +213,39 @@ function parseNameFromMessage(raw) {
 }
 
 export default function registerWebhookRoutes(app) {
+  const DEBUG_LOGS = process.env.DEBUG_LOGS === '1';
+  function maskPhone(p) {
+    try {
+      const d = String(p||'').replace(/\D/g,'');
+      if (d.length <= 4) return '***';
+      return d.slice(0,2) + '******' + d.slice(-2);
+    } catch { return '***'; }
+  }
+  // Basic in-memory rate limiter for webhook (IP-based)
+  const rateWindowMs = Number(process.env.WEBHOOK_RATE_WINDOW_MS || 15_000);
+  const maxHits = Number(process.env.WEBHOOK_RATE_MAX || 60);
+  const hits = new Map(); // key -> { count, ts }
+  const rateLimit = (req, res, next) => {
+    try {
+      const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || req.connection?.remoteAddress || 'unknown';
+      const now = Date.now();
+      const rec = hits.get(ip) || { count: 0, ts: now };
+      if (now - rec.ts > rateWindowMs) {
+        rec.count = 0; rec.ts = now;
+      }
+      rec.count += 1;
+      hits.set(ip, rec);
+      if (rec.count > maxHits) {
+        return res.status(429).send('Too Many Requests');
+      }
+    } catch {}
+    next();
+  };
   // Test endpoint for debugging (bypasses signature verification)
   app.post("/test-webhook", async (req, res) => {
+    if (!process.env.ENABLE_TEST_WEBHOOK) {
+      return res.status(404).send('Not Found');
+    }
     try {
       const payload = req.body;
       const entry = payload.entry?.[0];
@@ -222,9 +257,15 @@ export default function registerWebhookRoutes(app) {
       }
 
       const metadata = change?.metadata;
-      const tenant = findSettingsByPhoneNumberId(metadata?.phone_number_id) || findSettingsByBusinessPhone(metadata?.display_phone_number?.replace(/\D/g, ""));
+      const tenant = (await findSettingsByPhoneNumberId(metadata?.phone_number_id)) || (await findSettingsByBusinessPhone(metadata?.display_phone_number?.replace(/\D/g, "")));
       const tenantUserId = tenant?.user_id || null;
       const businessNumber = metadata?.display_phone_number?.replace(/\D/g, "");
+      console.log('[Webhook] Tenant resolution:', {
+        phone_number_id: metadata?.phone_number_id || null,
+        businessNumber,
+        tenantFound: !!tenant,
+        tenantUserId
+      });
       
       if (businessNumber && message.from === businessNumber) {
         return res.sendStatus(200);
@@ -340,7 +381,7 @@ export default function registerWebhookRoutes(app) {
   });
 
   // Webhook verification (Meta)
-  app.get("/webhook", (req, res) => {
+  app.get("/webhook", rateLimit, (req, res) => {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
@@ -357,8 +398,24 @@ export default function registerWebhookRoutes(app) {
   });
 
   // Receive messages
-  app.post("/webhook", async (req, res) => {
+  app.post("/webhook", rateLimit, async (req, res) => {
     try {
+      // Guard: enforce small payload size for webhook
+      const maxBytes = Number(process.env.WEBHOOK_MAX_BYTES || 1048576); // 1MB default
+      const contentLen = Number(req.headers['content-length'] || 0);
+      if (contentLen && contentLen > maxBytes) {
+        res.setHeader('Connection', 'close');
+        return res.status(413).send('Payload too large');
+      }
+      try {
+        const rawLen = req.rawBody instanceof Buffer
+          ? req.rawBody.length
+          : Buffer.byteLength(JSON.stringify(req.body || {}));
+        if (rawLen > maxBytes) {
+          res.setHeader('Connection', 'close');
+          return res.status(413).send('Payload too large');
+        }
+      } catch {}
       const sig = req.header("X-Hub-Signature-256") || req.header("x-hub-signature-256");
       const prospective = (() => {
         try {
@@ -370,14 +427,20 @@ export default function registerWebhookRoutes(app) {
       const s = prospective || {};
       // Verify webhook signature for security
       if (s.app_secret && sig) {
-        const [algo, their] = sig.split("=");
+        const [algo, theirHex] = String(sig||'').split("=");
         if (algo !== "sha256") return res.sendStatus(403);
-        const hmac = crypto.createHmac("sha256", s.app_secret);
         const raw = req.rawBody instanceof Buffer ? req.rawBody : Buffer.from(JSON.stringify(req.body || {}));
+        const hmac = crypto.createHmac("sha256", s.app_secret);
         hmac.update(raw);
-        const ours = hmac.digest("hex");
-        if (ours !== their) {
-          req.log?.warn({ theirs, ours }, "Invalid webhook signature");
+        const oursHex = hmac.digest("hex");
+        try {
+          const a = Buffer.from(oursHex, 'hex');
+          const b = Buffer.from(theirHex || '', 'hex');
+          if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+            req.log?.warn({ theirs: theirHex ? theirHex.slice(0,8)+'...' : 'missing' }, "Invalid webhook signature");
+            return res.sendStatus(403);
+          }
+        } catch {
           return res.sendStatus(403);
         }
       }
@@ -386,60 +449,90 @@ export default function registerWebhookRoutes(app) {
       const entry = payload.entry?.[0];
       const change = entry?.changes?.[0]?.value;
       const statuses = change?.statuses;
+      const metadata = change?.metadata;
+      const tenantSettings = (await findSettingsByPhoneNumberId(metadata?.phone_number_id)) || (await findSettingsByBusinessPhone(metadata?.display_phone_number?.replace(/\D/g, "")));
+      const tenantUserId = tenantSettings?.user_id || null;
+
+      // Per-tenant rate limit using Redis (if available)
+      try {
+        const limit = Number(process.env.WEBHOOK_TENANT_LIMIT || 120);
+        const windowSec = Number(process.env.WEBHOOK_TENANT_WINDOW || 60);
+        if (tenantUserId) {
+          const rl = await rateLimiter.checkLimit(`tenant:${tenantUserId}:webhook`, limit, windowSec);
+          if (!rl.allowed) {
+            res.setHeader('Retry-After', Math.ceil((rl.resetTime - Date.now())/1000));
+            return res.status(429).send('Rate limit exceeded');
+          }
+        }
+      } catch {}
       
-      console.log("Webhook received payload:", JSON.stringify(payload, null, 2));
+      if (DEBUG_LOGS) console.log("Webhook received payload:", JSON.stringify(payload, null, 2));
       if (Array.isArray(statuses) && statuses.length > 0) {
-        statuses.forEach((s) => {
-          const status = s.status;
-          const recipientId = s.recipient_id;
-          const messageId = s.id || s.message_id;
-          const timestamp = s.timestamp;
-          const error = Array.isArray(s.errors) ? s.errors[0] : undefined;
-          const insertStatus = db.prepare(
-            `INSERT INTO message_statuses (message_id, status, recipient_id, timestamp, error_code, error_title, error_message, user_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-          );
-          try {
-            insertStatus.run(
-              messageId || null,
-              status || null,
-              recipientId || null,
-              timestamp ? Number(timestamp) : null,
-              error?.code ?? null,
-              error?.title ?? null,
-              error?.message ?? null,
-              (change?.metadata?.phone_number_id ? (findSettingsByPhoneNumberId(change.metadata.phone_number_id)?.user_id || null) : null)
-            );
-            
+        try {
+          const dbNative = getDB();
+          const tenantUserId = change?.metadata?.phone_number_id ? (findSettingsByPhoneNumberId(change.metadata.phone_number_id)?.user_id || null) : null;
+          for (const st of statuses) {
+            const status = st.status;
+            const recipientId = st.recipient_id;
+            const messageId = st.id || st.message_id;
+            const tsNum = st.timestamp ? Number(st.timestamp) : null;
+            const error = Array.isArray(st.errors) ? st.errors[0] : undefined;
+            if (!messageId || !status) continue;
+
+            // Persist raw status event idempotently
+            try {
+              await dbNative.collection('message_statuses').updateOne(
+                { message_id: messageId, status, timestamp: tsNum, user_id: tenantUserId || null },
+                { $setOnInsert: {
+                    message_id: messageId,
+                    status,
+                    recipient_id: recipientId || null,
+                    timestamp: tsNum,
+                    error_code: error?.code ?? null,
+                    error_title: error?.title ?? null,
+                    error_message: error?.message ?? null,
+                    user_id: tenantUserId || null,
+                    createdAt: new Date(),
+                    updatedAt: new Date()
+                } },
+                { upsert: true }
+              );
+            } catch {}
+
+            // Update messages collection delivery/read status with monotonic rules
+            try {
+              if (status === 'read') {
+                await updateMessageDeliveryStatus(messageId, MESSAGE_STATUS.READ, tsNum || undefined);
+                await updateMessageReadStatus(messageId, READ_STATUS.READ, tsNum || undefined);
+              } else if (status === 'delivered') {
+                await updateMessageDeliveryStatus(messageId, MESSAGE_STATUS.DELIVERED, tsNum || undefined);
+              } else if (status === 'sent') {
+                await updateMessageDeliveryStatus(messageId, MESSAGE_STATUS.SENT, tsNum || undefined);
+              } else if (status === 'failed') {
+                await updateMessageDeliveryStatus(messageId, MESSAGE_STATUS.FAILED, tsNum || undefined);
+              }
+            } catch {}
+
             // Broadcast message status update in real-time
-            if (messageId && status) {
-              const tenantUserId = change?.metadata?.phone_number_id ? (findSettingsByPhoneNumberId(change.metadata.phone_number_id)?.user_id || null) : null;
+            try {
               if (tenantUserId) {
-                // Get the phone number from the message to determine the chat room
-                const messageQuery = db.prepare(`SELECT from_digits, to_digits FROM messages WHERE id = ? AND user_id = ?`).get(messageId, tenantUserId);
-                if (messageQuery) {
-                  const phone = messageQuery.from_digits || messageQuery.to_digits;
-                  if (phone) {
-                    const statusData = {
-                      messageId,
-                      status,
-                      recipientId,
-                      timestamp: timestamp ? Number(timestamp) : null,
-                      error: error ? {
-                        code: error.code,
-                        title: error.title,
-                        message: error.message
-                      } : null
-                    };
-                    
-                    broadcastMessageStatus(tenantUserId, phone, messageId, status, statusData);
-                    console.log(`📡 Broadcasted message status update: ${status} for message ${messageId}`);
-                  }
+                const messageDoc = await dbNative.collection('messages').findOne({ id: messageId, user_id: String(tenantUserId) }, { projection: { from_digits: 1, to_digits: 1 } });
+                const phone = messageDoc?.from_digits || messageDoc?.to_digits;
+                if (phone) {
+                  const statusData = {
+                    messageId,
+                    status,
+                    recipientId,
+                    timestamp: tsNum,
+                    error: error ? { code: error.code, title: error.title, message: error.message } : null
+                  };
+                  broadcastMessageStatus(tenantUserId, phone, messageId, status, statusData);
+                  console.log(`📡 Broadcasted message status update: ${status} for message ${messageId}`);
                 }
               }
-            }
-          } catch {}
-        });
+            } catch {}
+          }
+        } catch {}
       }
 
       const message = change?.messages?.[0];
@@ -457,7 +550,7 @@ export default function registerWebhookRoutes(app) {
         // Store the reaction in our database for the agent to see
         try {
           const metadata = change?.metadata;
-          const tenant = findSettingsByPhoneNumberId(metadata?.phone_number_id) || findSettingsByBusinessPhone(metadata?.display_phone_number?.replace(/\D/g, ""));
+          const tenant = (await findSettingsByPhoneNumberId(metadata?.phone_number_id)) || (await findSettingsByBusinessPhone(metadata?.display_phone_number?.replace(/\D/g, "")));
           const tenantUserId = tenant?.user_id || null;
           
           if (tenantUserId && message.reaction && message.reaction.message_id) {
@@ -489,13 +582,14 @@ export default function registerWebhookRoutes(app) {
               
               // We need to find which emoji was removed
               // WhatsApp doesn't tell us which emoji was removed, so we need to check the database
-              const existingReactions = db.prepare(`
-                SELECT emoji FROM message_reactions 
-                WHERE message_id = ? AND user_id = ?
-                ORDER BY created_at DESC
-                LIMIT 1
-              `).get(message.reaction.message_id, customerUserId);
-              
+              // Use Mongo to find the latest reaction for this customer on the message
+              const dbNative = getDB();
+              const latestReaction = await dbNative.collection('message_reactions')
+                .find({ message_id: message.reaction.message_id, user_id: customerUserId })
+                .sort({ createdAt: -1 })
+                .limit(1)
+                .toArray();
+              const existingReactions = latestReaction[0] || null;
               if (existingReactions) {
                 const emojiToRemove = existingReactions.emoji;
                 
@@ -539,24 +633,25 @@ export default function registerWebhookRoutes(app) {
           const tenantUserId = tenant?.user_id || null;
           
           if (tenantUserId && message.from && message.text?.body) {
-            // Store the reply message in the database
+            // Store the reply message in the database via Mongo (idempotent)
             const messageId = message.id;
             const textBody = message.text.body;
             const timestamp = message.timestamp;
-            
-            // Insert the message into the database
-            const db = (await import('../db.mjs')).db;
-            const stmt = db.prepare(`
-              INSERT OR IGNORE INTO messages (id, user_id, direction, from_id, to_id, from_digits, to_digits, type, text_body, timestamp, raw)
-              VALUES (?, ?, 'inbound', ?, ?, ?, ?, 'text', ?, ?, ?)
-            `);
-            
             const businessPhone = metadata?.display_phone_number?.replace(/\D/g, "");
-            const fromDigits = message.from.replace(/\D/g, "");
-            const toDigits = businessPhone;
-            
-            stmt.run(messageId, tenantUserId, message.from, businessPhone, fromDigits, toDigits, textBody, timestamp, JSON.stringify(message));
-            console.log("Stored customer reply message:", messageId);
+
+            const inserted = await recordInboundMessage({
+              messageId,
+              userId: tenantUserId,
+              from: message.from,
+              businessPhone,
+              type: 'text',
+              text: textBody,
+              timestamp: timestamp ? Number(timestamp) : undefined,
+              raw: message
+            });
+            if (inserted) {
+              console.log("Stored customer reply message:", messageId);
+            }
             
             // Create reply relationship
             if (message.context && message.context.id) {
@@ -576,9 +671,8 @@ export default function registerWebhookRoutes(app) {
         return res.sendStatus(200);
       }
 
-      const metadata = change?.metadata;
-      const tenant = findSettingsByPhoneNumberId(metadata?.phone_number_id) || findSettingsByBusinessPhone(metadata?.display_phone_number?.replace(/\D/g, ""));
-      const tenantUserId = tenant?.user_id || null;
+      const tenant = tenantSettings;
+      // tenantUserId already computed
       const businessNumber = metadata?.display_phone_number?.replace(/\D/g, "");
       if (businessNumber && message.from === businessNumber) {
         return res.sendStatus(200);
@@ -589,110 +683,144 @@ export default function registerWebhookRoutes(app) {
       const from = message.from;
       let text = message.text?.body || "";
 
-      // Check conversation mode - if Simple Escalation Mode, handle differently
-      if (cfg.conversation_mode === 'escalation') {
+      // Precompute live-mode status to avoid sending any bot messages when human is active
+      let humanActive = false;
+      try {
+        let hs = null;
+        try {
+          hs = db.prepare(`SELECT is_human, COALESCE(human_expires_ts,0) AS exp FROM handoff WHERE contact_id = ? AND user_id = ?`).get(from, tenantUserId);
+        } catch {}
+        if (!hs) {
+          try {
+            const doc = await Handoff.findOne({ user_id: tenantUserId, contact_id: from }).select('is_human human_expires_ts last_seen_ts').lean();
+            if (doc) hs = { is_human: !!doc.is_human, exp: Number(doc.human_expires_ts || 0), lastSeen: Number(doc.last_seen_ts || 0) };
+          } catch {}
+        }
+        const now = Math.floor(Date.now()/1000);
+        const seenWindow = Number(process.env.LIVE_SEEN_WINDOW_SEC || 180); // 3 min default
+        if (hs?.is_human && (!hs.exp || hs.exp > now)) humanActive = true;
+        // Also treat a recently viewed chat as live to suppress bot replies
+        if (!humanActive && hs?.lastSeen && (now - hs.lastSeen) <= seenWindow) humanActive = true;
+      } catch {}
+
+      // Check conversation mode - if Simple Escalation Mode, handle differently (but never while human is live)
+      if (cfg.conversation_mode === 'escalation' && !humanActive) {
         console.log("Simple Escalation Mode active");
         
-        // Check if this is the first message from this contact (show greeting first)
-        const state = db.prepare(`SELECT escalation_step FROM handoff WHERE contact_id = ? AND user_id = ?`).get(from, tenantUserId);
+        // Load or initialize handoff state in Mongo
+        const { Handoff } = await import('../schemas/mongodb.mjs');
+        let state = await Handoff.findOne({ user_id: tenantUserId, contact_id: from }).lean();
         
         if (!state) {
-          // First message: show greeting and additional message
+          // First message: greet and send additional/out-of-hours message
           const greetText = cfg.entry_greeting || "Hello! How can I help you today?";
           await sendWhatsAppText(from, greetText, cfg);
-          
-          // Send additional message if configured
-          if (cfg.escalation_additional_message) {
-            await sendWhatsAppText(from, cfg.escalation_additional_message, cfg);
+
+          // Determine working hours availability (basic: if staff configured later; for now always send additional if present)
+          const additional = cfg.escalation_additional_message;
+          const outOfHours = cfg.escalation_out_of_hours_message;
+          if (additional) {
+            await sendWhatsAppText(from, additional, cfg);
+          } else if (outOfHours) {
+            // If no additional message provided, fallback to out-of-hours when configured
+            await sendWhatsAppText(from, outOfHours, cfg);
           }
-          
-          // Get custom escalation questions
+
+          // Prepare questions
           let escalationQuestions = [];
-          try {
-            escalationQuestions = JSON.parse(cfg.escalation_questions_json || '[]');
-          } catch {}
-          
-          // Default questions if none configured
-          if (escalationQuestions.length === 0) {
+          try { escalationQuestions = JSON.parse(cfg.escalation_questions_json || '[]'); } catch {}
+          if (!Array.isArray(escalationQuestions) || escalationQuestions.length === 0) {
             escalationQuestions = ["What's your name?", "What's the reason for contacting support today?"];
           }
-          
-          // Start escalation flow with first question
-          try {
-            db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, escalation_questions_json, escalation_question_index, updated_at)
-              VALUES (?, ?, 'ask_question', ?, 0, strftime('%s','now'))
-              ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = excluded.escalation_step, escalation_questions_json = excluded.escalation_questions_json, escalation_question_index = excluded.escalation_question_index, updated_at = excluded.updated_at`).run(from, tenantUserId, JSON.stringify(escalationQuestions));
-          } catch {}
-          
-          await sendWhatsAppText(from, escalationQuestions[0], cfg);
+
+          // Save state and ask first question
+          await Handoff.findOneAndUpdate(
+            { user_id: tenantUserId, contact_id: from },
+            { 
+              $set: {
+                escalation_step: 'ask_question',
+                escalation_questions_json: JSON.stringify(escalationQuestions),
+                escalation_question_index: 0,
+                escalation_answers_json: JSON.stringify([]),
+                is_human: false,
+                human_expires_ts: 0
+              }
+            },
+            { upsert: true }
+          );
+
+          await sendWhatsAppText(from, String(escalationQuestions[0]).slice(0,200), cfg);
           return res.sendStatus(200);
         }
         
         // Continue with dynamic escalation questions flow for subsequent messages
-        const currentState = db.prepare(`SELECT escalation_step, escalation_questions_json, escalation_question_index FROM handoff WHERE contact_id = ? AND user_id = ?`).get(from, tenantUserId);
-        
+        const currentState = await Handoff.findOne({ user_id: tenantUserId, contact_id: from }).lean();
         if (currentState?.escalation_step === 'ask_question') {
           let escalationQuestions = [];
-          try {
-            escalationQuestions = JSON.parse(currentState.escalation_questions_json || '[]');
-          } catch {}
-          
-          if (escalationQuestions.length === 0) {
+          try { escalationQuestions = JSON.parse(currentState.escalation_questions_json || '[]'); } catch {}
+          if (!Array.isArray(escalationQuestions) || escalationQuestions.length === 0) {
             escalationQuestions = ["What's your name?", "What's the reason for contacting support today?"];
           }
-          
-          const currentIndex = currentState.escalation_question_index || 0;
+
+          const currentIndex = Number(currentState.escalation_question_index || 0);
           const nextIndex = currentIndex + 1;
-          
-          // Store the user's answer
-          const answerKey = `escalation_answer_${currentIndex}`;
-          try {
-            db.prepare(`UPDATE handoff SET ${answerKey} = ?, escalation_question_index = ?, updated_at = strftime('%s','now') WHERE contact_id = ? AND user_id = ?`).run(text, nextIndex, from, tenantUserId);
-          } catch {}
-          
-          // Check if there are more questions
+          let answers = [];
+          try { answers = JSON.parse(currentState.escalation_answers_json || '[]'); } catch { answers = []; }
+          answers[currentIndex] = String(text || '').trim().slice(0, 300);
+
+          await Handoff.updateOne(
+            { user_id: tenantUserId, contact_id: from },
+            { $set: { escalation_answers_json: JSON.stringify(answers), escalation_question_index: nextIndex } }
+          );
+
           if (nextIndex < escalationQuestions.length) {
-            await sendWhatsAppText(from, escalationQuestions[nextIndex], cfg);
+            await sendWhatsAppText(from, String(escalationQuestions[nextIndex]).slice(0,200), cfg);
           } else {
-            // All questions answered, escalate to human
             await sendWhatsAppText(from, "Got it. I'm connecting you with a human now. Please wait a moment.", cfg);
-            
-            // Mark as escalated
-            try {
-              db.prepare(`UPDATE handoff SET escalation_step = 'escalated', updated_at = strftime('%s','now') WHERE contact_id = ? AND user_id = ?`).run(from, tenantUserId);
-            } catch {}
+            const exp = Math.floor(Date.now()/1000) + 5*60;
+            await Handoff.updateOne(
+              { user_id: tenantUserId, contact_id: from },
+              { $set: { escalation_step: 'escalated', is_human: true, human_expires_ts: exp } }
+            );
+            // Optionally: create notification here (existing code later handles notifications)
           }
           return res.sendStatus(200);
         }
       }
 
       const inboundId = message.id;
+      // Replay protection: dedupe message.id per-tenant for short TTL
+      try {
+        if (inboundId && tenantUserId && isRedisConnected()) {
+          const redis = getRedisClient();
+          const nonceKey = `wp:nonce:${tenantUserId}:${inboundId}`;
+          const ttl = Number(process.env.WEBHOOK_NONCE_TTL || 600);
+          const result = await redis.set(nonceKey, '1', 'EX', ttl, 'NX');
+          if (result !== 'OK') {
+            // Duplicate delivery; acknowledge without reprocessing
+            return res.sendStatus(200);
+          }
+        }
+      } catch {}
       let isFirstTimeInbound = true;
       if (inboundId) {
-        const insertInbound = db.prepare(
-          `INSERT OR IGNORE INTO messages (id, user_id, direction, from_id, to_id, from_digits, to_digits, type, text_body, timestamp, raw)
-           VALUES (?, ?, 'inbound', ?, ?, ?, ?, ?, ?, ?, ?)`
-        );
         try {
-          const info = insertInbound.run(
-            inboundId,
-            tenantUserId,
-            from || null,
-            metadata?.display_phone_number?.replace(/\D/g, "") || null,
-            normalizePhone(from) || null,
-            normalizePhone(metadata?.display_phone_number) || null,
-            message.type || null,
-            text || null,
-            message.timestamp ? Number(message.timestamp) : null,
-            JSON.stringify(message)
-          );
-          isFirstTimeInbound = info.changes > 0;
-          
-          // Track inbound message usage
+          const inserted = await recordInboundMessage({
+            messageId: inboundId,
+            userId: tenantUserId,
+            from,
+            businessPhone: metadata?.display_phone_number?.replace(/\D/g, ""),
+            type: message.type,
+            text,
+            timestamp: message.timestamp ? Number(message.timestamp) : undefined,
+            raw: message
+          });
+          console.log('[Webhook] Inbound record result:', { inserted, inboundId });
+          isFirstTimeInbound = !!inserted;
+
           if (isFirstTimeInbound) {
             incrementUsage(tenantUserId, 'inbound_messages');
-            
-            // Broadcast new message to real-time clients
+
             const messageData = {
               id: inboundId,
               direction: 'inbound',
@@ -705,31 +833,67 @@ export default function registerWebhookRoutes(app) {
               contact: from,
               formatted_time: new Date((message.timestamp ? Number(message.timestamp) : Math.floor(Date.now() / 1000)) * 1000).toLocaleString()
             };
-            
             broadcastNewMessage(tenantUserId, from, messageData);
+            // If the conversation was resolved/closed, re-open to NEW on new inbound
+            try {
+              const current = await getConversationStatus(tenantUserId, from);
+              if (current === CONVERSATION_STATUSES.RESOLVED || current === CONVERSATION_STATUSES.CLOSED) {
+                await updateConversationStatus(tenantUserId, from, CONVERSATION_STATUSES.NEW, 'Customer sent a new message after resolution');
+              }
+            } catch {}
           }
-        } catch {
-          isFirstTimeInbound = false;
+        } catch (e) {
+          console.warn('[Webhook] Failed to record inbound message, continuing to process reply anyway:', e?.message || e);
+          // Continue processing to avoid dropping replies if DB write fails
+          isFirstTimeInbound = true;
         }
       }
 
-      if (!isFirstTimeInbound) {
-        return res.sendStatus(200);
-      }
-
-      // If agent handoff is active for this contact and not expired, do not auto‑reply at all
+      // Opt-out and temporary block checks per contact
       try {
-        const hs = db.prepare(`SELECT is_human, COALESCE(human_expires_ts,0) AS exp FROM handoff WHERE contact_id = ? AND user_id = ?`).get(from, tenantUserId);
-        const now = Math.floor(Date.now()/1000);
-        if (hs?.is_human) {
-          if (!hs.exp || hs.exp > now) {
-            return res.sendStatus(200);
-          } else {
-            // Expired → flip back to AI
-            try { db.prepare(`UPDATE handoff SET is_human = 0, updated_at = strftime('%s','now') WHERE contact_id = ? AND user_id = ?`).run(from, tenantUserId); } catch {}
-          }
+        if (tenantUserId && from) {
+          const cust = await Customer.findOne({ user_id: tenantUserId, contact_id: from }).lean();
+          const now = Math.floor(Date.now()/1000);
+          if (cust?.opted_out) return res.sendStatus(200);
+          if (cust?.blocked_until_ts && cust.blocked_until_ts > now) return res.sendStatus(200);
         }
       } catch {}
+
+      // Proceed with bot logic even if message was seen before; prevents missed replies when duplicate detection is inconclusive
+
+      // CSAT rating capture: if awaiting rating for this contact, capture first emoji and store
+      try {
+        const dbNative = getDB();
+        const cs = await dbNative.collection('contact_state').findOne({ user_id: String(tenantUserId), contact_id: String(from) }, { projection: { await_rating: 1 } });
+        const awaiting = !!cs?.await_rating;
+        const emojiMatch = /[\u{1F620}-\u{1F64F}\u{1F600}-\u{1F64F}\u{1F601}\u{1F603}\u{1F604}\u{1F606}\u{1F60A}\u{1F60D}\u{1F62D}\u{1F621}\u{1F620}\u{1F641}\u{1F642}\u{1F622}\u{1F610}\u{1F600}\u{1F929}]/u.exec(String(text||''));
+        if (awaiting && emojiMatch) {
+          const emoji = emojiMatch[0];
+          const scoreMap = { '😡':1, '😕':2, '🙂':3, '😀':4, '🤩':5 };
+          const score = scoreMap[emoji] || null;
+          try {
+            await dbNative.collection('csat_ratings').insertOne({
+              user_id: String(tenantUserId),
+              contact_id: String(from),
+              score,
+              emoji,
+              message_text: String(text||''),
+              createdAt: new Date()
+            });
+            await dbNative.collection('contact_state').updateOne(
+              { user_id: String(tenantUserId), contact_id: String(from) },
+              { $set: { await_rating: 0, updatedAt: new Date() } }
+            );
+          } catch {}
+          // Acknowledge without triggering further bot logic
+          return res.sendStatus(200);
+        }
+      } catch {}
+
+      // If human is active for this contact, do not auto‑reply at all
+      if (humanActive) {
+        return res.sendStatus(200);
+      }
 
       // Escalation state machine: collect name and reason before human handoff
       // Only run escalation state machine if in escalation mode
@@ -817,12 +981,14 @@ export default function registerWebhookRoutes(app) {
           const { id, title } = data.button_reply || {};
           if (id === "BOOKING_START") {
             // Begin booking: show date picker (today + next 6 days)
-            const staff = db.prepare(`SELECT id, slot_minutes FROM staff WHERE user_id = ? ORDER BY id LIMIT 1`).get(tenantUserId);
+            const staff = await (async () => {
+              try { const s = await getDB().collection('staff').find({ user_id: String(tenantUserId) }).project({ _id: 1, slot_minutes: 1 }).sort({ createdAt: 1 }).limit(1).toArray(); return s[0] || null; } catch { return null; }
+            })();
             if (!staff) {
               await sendWhatsAppText(from, "Bookings are enabled, but no staff is configured yet.", cfg);
               return res.sendStatus(200);
             }
-            const days = buildDayRows(staff.id);
+            const days = buildDayRows(staff._id, null);
             await sendWhatsappList(from, "Pick a day", "Choose a date:", "Select", days, cfg);
             return res.sendStatus(200);
           }
@@ -877,7 +1043,8 @@ export default function registerWebhookRoutes(app) {
           } else if (id?.startsWith("REM_OK_")) {
             const apptId = Number(id.split("_")[2] || 0);
             if (apptId) {
-              const row = db.prepare(`SELECT status, start_ts FROM appointments WHERE id = ? AND user_id = ?`).get(apptId, tenantUserId);
+              const dbNative = getDB();
+              const row = await dbNative.collection('appointments').findOne({ id: apptId, user_id: String(tenantUserId) }, { projection: { status: 1, start_ts: 1 } });
               if (row && row.status === 'confirmed') {
                 await sendWhatsAppText(from, "Great, see you then!", cfg);
               } else {
@@ -889,8 +1056,9 @@ export default function registerWebhookRoutes(app) {
             const apptId = Number(id.split("_")[2] || 0);
             if (apptId) {
               const now = Math.floor(Date.now()/1000);
-              const row = db.prepare(`SELECT start_ts FROM appointments WHERE id = ? AND user_id = ?`).get(apptId, tenantUserId);
-              const minsToStart = row ? Math.floor((row.start_ts - now)/60) : 99999;
+              const dbNative = getDB();
+              const row = await dbNative.collection('appointments').findOne({ id: apptId, user_id: String(tenantUserId) }, { projection: { start_ts: 1 } });
+              const minsToStart = row ? Math.floor(((row.start_ts || 0) - now)/60) : 99999;
               const minLead = Number(cfg.cancel_min_lead_minutes || 60);
               if (minsToStart < minLead) {
                 await sendWhatsAppText(from, `It's too close to your start time (less than ${minLead} min). Please contact us directly.`, cfg);
@@ -903,13 +1071,14 @@ export default function registerWebhookRoutes(app) {
             const apptId = Number(id.split("_")[2] || 0);
             if (apptId) {
               const now = Math.floor(Date.now()/1000);
-              const row = db.prepare(`SELECT start_ts, staff_id FROM appointments WHERE id = ? AND user_id = ?`).get(apptId, tenantUserId);
-              const minsToStart = row ? Math.floor((row.start_ts - now)/60) : 99999;
+              const dbNative = getDB();
+              const row = await dbNative.collection('appointments').findOne({ id: apptId, user_id: String(tenantUserId) }, { projection: { start_ts: 1, staff_id: 1 } });
+              const minsToStart = row ? Math.floor(((row.start_ts || 0) - now)/60) : 99999;
               const minLead = Number(cfg.reschedule_min_lead_minutes || 60);
               if (minsToStart < minLead) {
                 await sendWhatsAppText(from, `It's too close to your start time (less than ${minLead} min). Please contact us directly.`, cfg);
               } else if (row?.staff_id) {
-            const days = buildDayRows(row.staff_id, apptId);
+                const days = buildDayRows(row.staff_id, apptId);
                 await sendWhatsappList(from, "Pick a new day", "Choose a date:", "Select", days, cfg);
               }
             }
@@ -924,9 +1093,32 @@ export default function registerWebhookRoutes(app) {
           const { id, title } = data.list_reply || {};
           // Greeting list actions
           if (id === 'GREET_BOOK') {
-            const staff = db.prepare(`SELECT id FROM staff WHERE user_id = ? ORDER BY id LIMIT 1`).get(tenantUserId);
+          // CSAT: rating list selections
+          if (id && /^CSAT_[1-5]$/.test(id)) {
+            try {
+              const dbNative = getDB();
+              const score = Number(id.split('_')[1]);
+              const emojiMap = { 1: '😡', 2: '😕', 3: '🙂', 4: '😀', 5: '🤩' };
+              const emoji = emojiMap[score] || null;
+              await dbNative.collection('csat_ratings').insertOne({
+                user_id: String(tenantUserId),
+                contact_id: String(from),
+                score,
+                emoji,
+                message_text: `[List] ${title || ''}`,
+                createdAt: new Date()
+              });
+              await dbNative.collection('contact_state').updateOne(
+                { user_id: String(tenantUserId), contact_id: String(from) },
+                { $set: { await_rating: 0, updatedAt: new Date() } },
+                { upsert: true }
+              );
+            } catch {}
+            return res.sendStatus(200);
+          }
+            const staff = await (async () => { try { const s = await getDB().collection('staff').find({ user_id: String(tenantUserId) }).project({ _id: 1 }).sort({ createdAt: 1 }).limit(1).toArray(); return s[0] || null; } catch { return null; } })();
             if (!staff) { await sendWhatsAppText(from, "Bookings are enabled, but no staff is configured yet.", cfg); return res.sendStatus(200); }
-        const days = buildDayRows(staff.id);
+            const days = buildDayRows(staff._id, null);
             await sendWhatsappList(from, "Pick a day", "Choose a date:", "Select", days, cfg);
             return res.sendStatus(200);
           }
@@ -980,10 +1172,10 @@ export default function registerWebhookRoutes(app) {
               const parts = id.split("_");
               // Format: PICK_DAY_<YYYY-MM-DD>_<staffId>
               let dateStr = parts.slice(2, 3)[0];
-              let staffId = Number(parts.slice(3, 4)[0] || 0);
+              let staffId = parts.slice(3, 4)[0];
               if (!staffId) {
-                const staff = db.prepare(`SELECT id FROM staff WHERE user_id = ? ORDER BY id LIMIT 1`).get(tenantUserId);
-                staffId = staff?.id || 0;
+                const staff = await (async () => { try { const s = await getDB().collection('staff').find({ user_id: String(tenantUserId) }).project({ _id: 1 }).sort({ createdAt: 1 }).limit(1).toArray(); return s[0] || null; } catch { return null; } })();
+                staffId = staff?._id || null;
               }
               // Fallback: if dateStr missing or malformed, try parsing title (add current year)
               if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr || ''))) {
@@ -999,7 +1191,7 @@ export default function registerWebhookRoutes(app) {
               if (tenantUserId && staffId && dateStr) {
                 // Use midday UTC to avoid TZ boundary issues
                 const dateISO = new Date(`${dateStr}T12:00:00.000Z`).toISOString();
-                const rows = await buildTimeRows({ userId: tenantUserId, staffId, dateISO, limit: 10, apptId: null });
+                const rows = await buildTimeRows({ userId: tenantUserId, staffId: String(staffId), dateISO, limit: 10, apptId: null });
                 if (!rows.length) {
                   await sendWhatsAppText(from, "No available times on that date. Please pick another day.", cfg);
                   return res.sendStatus(200);
@@ -1085,25 +1277,27 @@ export default function registerWebhookRoutes(app) {
         }
       } catch {}
 
-      if(isGreeting(text)) {
+      if(!humanActive && isGreeting(text)) {
         // Throttle greetings: respond at most once per 60 seconds per contact
         try {
-          const st = db.prepare(`SELECT last_greet_ts FROM contact_state WHERE user_id = ? AND contact_id = ?`).get(tenantUserId, from);
+          const dbNative = getDB();
           const now = Math.floor(Date.now()/1000);
+          const st = await dbNative.collection('contact_state').findOne({ user_id: String(tenantUserId), contact_id: String(from) }, { projection: { last_greet_ts: 1 } });
           const last = st?.last_greet_ts || 0;
-          const delta = now - last;
-          const shouldRespond = delta > 60;
-          if (shouldRespond) {
-            db.prepare(`INSERT INTO contact_state (user_id, contact_id, last_greet_ts) VALUES (?, ?, ?)
-              ON CONFLICT(user_id, contact_id) DO UPDATE SET last_greet_ts = excluded.last_greet_ts`).run(tenantUserId, from, now);
-          } else {
-            // Within throttle window: silently ack
+          if ((now - last) <= 60) {
             return res.sendStatus(200);
           }
+          await dbNative.collection('contact_state').updateOne(
+            { user_id: String(tenantUserId), contact_id: String(from) },
+            { $set: { last_greet_ts: now, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } },
+            { upsert: true }
+          );
         } catch {}
 
         const greetText = cfg.entry_greeting || "Hello! How can I help you today?";
+        console.log('[Webhook] Sending greeting to customer:', { to: from, greetText });
         const greetResp = await sendWhatsAppText(from, greetText, cfg);
+        console.log('[Webhook] Greeting send result:', { id: greetResp?.messages?.[0]?.id || null });
         try {
           const outboundId = greetResp?.messages?.[0]?.id;
           if (outboundId) {
@@ -1141,7 +1335,7 @@ export default function registerWebhookRoutes(app) {
       }
 
       // Acknowledgements like "thanks", "ok" → react with 👍
-      if (isAcknowledgement(text)) {
+      if (!humanActive && isAcknowledgement(text)) {
         try { await sendWhatsappReaction(from, inboundId, "👍", cfg); } catch {}
         return res.sendStatus(200);
       }
@@ -1149,15 +1343,13 @@ export default function registerWebhookRoutes(app) {
       // Dev/test: manual reminder preview
       if (/\btest\s+reminder\b/i.test(text || "")) {
         const digits = String(from || '').replace(/\D/g, '');
-        let appt = db.prepare(`
-          SELECT a.id, a.start_ts, a.staff_id
-          FROM appointments a
-          WHERE a.user_id = ? AND a.status = 'confirmed'
-            AND (REPLACE(a.contact_phone,'+','') = ? OR a.contact_phone = ?)
-            AND a.start_ts >= strftime('%s','now')
-          ORDER BY a.start_ts ASC
-          LIMIT 1
-        `).get(tenantUserId, digits, digits);
+        let apptArr = await getDB().collection('appointments')
+          .find({ user_id: String(tenantUserId), status: 'confirmed', $or: [ { contact_phone: digits }, { contact_phone: '+' + digits } ], start_ts: { $gte: Math.floor(Date.now()/1000) } })
+          .project({ id: 1, start_ts: 1, staff_id: 1 })
+          .sort({ start_ts: 1 })
+          .limit(1)
+          .toArray();
+        let appt = apptArr[0] || null;
         if (!appt) {
           // Create a lightweight test appointment 60 minutes from now if none exists
           const staff = db.prepare(`SELECT id, slot_minutes FROM staff WHERE user_id = ? ORDER BY id LIMIT 1`).get(tenantUserId);
@@ -1166,8 +1358,12 @@ export default function registerWebhookRoutes(app) {
             const endISO = new Date(Date.now() + (60 + (Number(staff.slot_minutes||30))) * 60000).toISOString();
             try {
               const r = await createBooking({ userId: tenantUserId, staffId: staff.id, startISO, endISO, contactPhone: from, notes: 'TEST REMINDER' });
-              const row = db.prepare(`SELECT id, start_ts, staff_id FROM appointments WHERE id = ?`).get(r.id);
-              appt = row || null;
+              const createdArr = await getDB().collection('appointments')
+                .find({ id: r.id })
+                .project({ id: 1, start_ts: 1, staff_id: 1 })
+                .limit(1)
+                .toArray();
+              appt = createdArr[0] || null;
             } catch {}
           }
         }
@@ -1185,16 +1381,16 @@ export default function registerWebhookRoutes(app) {
       const bookingLookup = /(when|what\s*time|time|date|when\s*is)\b[\s\S]*\b(booking|appointment|reservation)s?/i.test(text || "");
       if (cfg?.bookings_enabled && bookingLookup) {
         const digits = String(from || '').replace(/\D/g, '');
-        const upcoming = db.prepare(`
-          SELECT a.id, a.start_ts, a.status, a.notes, s.name AS staff_name
-          FROM appointments a
-          LEFT JOIN staff s ON s.id = a.staff_id
-          WHERE a.user_id = ? AND a.status = 'confirmed'
-            AND (REPLACE(a.contact_phone, '+','') = ? OR a.contact_phone = ?)
-            AND a.start_ts >= strftime('%s','now')
-          ORDER BY a.start_ts ASC
-          LIMIT 3
-        `).all(tenantUserId, digits, digits);
+        const dbNative = getDB();
+        const upcoming = await dbNative.collection('appointments')
+          .aggregate([
+            { $match: { user_id: String(tenantUserId), status: 'confirmed', $or: [ { contact_phone: digits }, { contact_phone: '+' + digits } ], start_ts: { $gte: Math.floor(Date.now()/1000) } } },
+            { $lookup: { from: 'staff', localField: 'staff_id', foreignField: '_id', as: 'staff_docs' } },
+            { $addFields: { staff_name: { $arrayElemAt: ['$staff_docs.name', 0] } } },
+            { $sort: { start_ts: 1 } },
+            { $limit: 3 },
+            { $project: { id: 1, start_ts: 1, status: 1, notes: 1, staff_name: 1 } }
+          ]).toArray();
         if (upcoming && upcoming.length) {
           const lines = upcoming.map((r) => {
             const when = new Date((r.start_ts||0)*1000).toLocaleString();
@@ -1204,16 +1400,16 @@ export default function registerWebhookRoutes(app) {
           await sendWhatsAppText(from, `Your upcoming ${upcoming.length>1?'bookings':'booking'}:\n${lines}`, cfg);
           return res.sendStatus(200);
         }
-        const last = db.prepare(`
-          SELECT a.id, a.start_ts, a.status, s.name AS staff_name
-          FROM appointments a
-          LEFT JOIN staff s ON s.id = a.staff_id
-          WHERE a.user_id = ?
-            AND (REPLACE(a.contact_phone, '+','') = ? OR a.contact_phone = ?)
-            AND a.start_ts < strftime('%s','now')
-          ORDER BY a.start_ts DESC
-          LIMIT 1
-        `).get(tenantUserId, digits, digits);
+        const lastArr = await dbNative.collection('appointments')
+          .aggregate([
+            { $match: { user_id: String(tenantUserId), $or: [ { contact_phone: digits }, { contact_phone: '+' + digits } ], start_ts: { $lt: Math.floor(Date.now()/1000) } } },
+            { $lookup: { from: 'staff', localField: 'staff_id', foreignField: '_id', as: 'staff_docs' } },
+            { $addFields: { staff_name: { $arrayElemAt: ['$staff_docs.name', 0] } } },
+            { $sort: { start_ts: -1 } },
+            { $limit: 1 },
+            { $project: { id: 1, start_ts: 1, status: 1, staff_name: 1 } }
+          ]).toArray();
+        const last = lastArr[0] || null;
         if (last) {
           const when = new Date((last.start_ts||0)*1000).toLocaleString();
           const meta = `Ref #${last.id}${last.staff_name ? ' · ' + last.staff_name : ''}`;
@@ -1225,7 +1421,12 @@ export default function registerWebhookRoutes(app) {
       }
 
       // If in booking session: collect answers based on configured questions
-      const sess = tenantUserId ? db.prepare(`SELECT * FROM booking_sessions WHERE user_id = ? AND contact_id = ?`).get(tenantUserId, from) : null;
+      const sess = tenantUserId ? await (async () => {
+        try {
+          const dbNative = getDB();
+          return await dbNative.collection('booking_sessions').findOne({ user_id: String(tenantUserId), contact_id: String(from) });
+        } catch { return null; }
+      })() : null;
       if (tenantUserId && sess && message.type === 'text') {
         const settings = tenant || {};
         let questions = [];
@@ -1253,8 +1454,8 @@ export default function registerWebhookRoutes(app) {
           
           // Send email notification to account owner
           try {
-            const staff = db.prepare(`SELECT name FROM staff WHERE id = ?`).get(sess.staff_id);
-            const customerName = answers[0] || from; // First answer is usually the name
+          const staff = await (async () => { try { return await getDB().collection('staff').findOne({ _id: sess.staff_id }, { projection: { name: 1 } }); } catch { return null; } })();
+          const customerName = answers[0] || from; // First answer is usually the name
             await sendBookingNotification(tenantUserId, {
               customerName,
               customerPhone: from,
@@ -1292,7 +1493,10 @@ export default function registerWebhookRoutes(app) {
         } catch {
           await sendWhatsAppText(from, "Sorry, that slot could not be booked. Please try another time.", cfg);
         }
-        try { db.prepare(`DELETE FROM booking_sessions WHERE id = ?`).run(sess.id); } catch {}
+        try {
+          const dbNative = getDB();
+          await dbNative.collection('booking_sessions').deleteOne({ _id: sess._id });
+        } catch {}
         return res.sendStatus(200);
       }
 
@@ -1302,7 +1506,14 @@ export default function registerWebhookRoutes(app) {
       if (cfg?.bookings_enabled && (wantsReschedule || wantsCancel)) {
         const now = Math.floor(Date.now()/1000);
         const digits = String(from || '').replace(/\D/g, '');
-        const appt = db.prepare(`SELECT id, start_ts, staff_id FROM appointments WHERE user_id = ? AND status = 'confirmed' AND (REPLACE(contact_phone,'+','') = ? OR contact_phone = ?) AND start_ts >= strftime('%s','now') ORDER BY start_ts ASC LIMIT 1`).get(tenantUserId, digits, digits);
+        const dbNative = getDB();
+        const appt = await dbNative.collection('appointments')
+          .find({ user_id: String(tenantUserId), status: 'confirmed', $or: [ { contact_phone: digits }, { contact_phone: '+' + digits } ], start_ts: { $gte: Math.floor(Date.now()/1000) } })
+          .project({ id: 1, start_ts: 1, staff_id: 1 })
+          .sort({ start_ts: 1 })
+          .limit(1)
+          .toArray()
+          .then(arr => arr[0] || null);
         if (!appt) {
           await sendWhatsAppText(from, "I couldn't find an upcoming booking for your number.", cfg);
           return res.sendStatus(200);
@@ -1337,7 +1548,7 @@ export default function registerWebhookRoutes(app) {
       const wantsBooking = /\b(book|booking|appointment|schedule)\b/i.test(text || "");
       if (cfg?.bookings_enabled && wantsBooking) {
         // Pick first staff for tenant
-        const staff = db.prepare(`SELECT id, timezone, slot_minutes, working_hours_json FROM staff WHERE user_id = ? ORDER BY id LIMIT 1`).get(tenantUserId);
+        const staff = await (async () => { try { const s = await getDB().collection('staff').find({ user_id: String(tenantUserId) }).project({ _id: 1, timezone: 1, slot_minutes: 1, working_hours_json: 1 }).sort({ createdAt: 1 }).limit(1).toArray(); return s[0] || null; } catch { return null; } })();
         if (!staff) {
           await sendWhatsAppText(from, "Bookings are enabled, but no staff is configured yet.", cfg);
           return res.sendStatus(200);
@@ -1351,7 +1562,7 @@ export default function registerWebhookRoutes(app) {
           const start = new Date(base); start.setUTCHours(parsed.hour, parsed.minute || 0, 0, 0);
           const end = new Date(start.getTime() + (Number(staff.slot_minutes||30) * 60000));
           // Check availability for that date
-          const avail = await listAvailability({ userId: tenantUserId, staffId: staff.id, dateISO: base.toISOString(), days: 1 });
+          const avail = await listAvailability({ userId: tenantUserId, staffId: String(staff._id), dateISO: base.toISOString(), days: 1 });
           const slots = Array.isArray(avail) ? (avail[0]?.slots || []) : [];
           const match = slots.find(s => {
             const ss = new Date(s.start).getTime();
@@ -1363,7 +1574,7 @@ export default function registerWebhookRoutes(app) {
               const notesParts = [];
               if (providedName) notesParts.push(`Name: ${providedName}`);
               const notes = notesParts.join(' ');
-              const r = await createBooking({ userId: tenantUserId, staffId: staff.id, startISO: match.start, endISO: match.end, contactPhone: from, notes });
+              const r = await createBooking({ userId: tenantUserId, staffId: String(staff._id), startISO: match.start, endISO: match.end, contactPhone: from, notes });
               // Start dynamic questions if configured, skipping name if already provided
               let questions = [];
               try { questions = JSON.parse((tenant || {}).booking_questions_json || '[]'); } catch {}
@@ -1373,19 +1584,23 @@ export default function registerWebhookRoutes(app) {
               let startIndex = 0;
               if (providedName) {
                 // Auto-fill name answer and move to next question
-                try {
-                  db.prepare(`INSERT INTO booking_sessions (user_id, contact_id, staff_id, start_iso, end_iso, step, question_index, answers_json, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, 'pending', 1, json_set('[]', '$[0]', ?), strftime('%s','now'), strftime('%s','now'))
-                    ON CONFLICT(user_id, contact_id) DO UPDATE SET staff_id=excluded.staff_id, start_iso=excluded.start_iso, end_iso=excluded.end_iso, step='pending', question_index=1, answers_json=json_set('[]', '$[0]', ?), updated_at=strftime('%s','now')
-                  `).run(tenantUserId, from, staff.id, match.start, match.end, providedName, providedName);
-                } catch {}
+              try {
+                const dbNative = getDB();
+                await dbNative.collection('booking_sessions').updateOne(
+                  { user_id: String(tenantUserId), contact_id: String(from) },
+                  { $set: { staff_id: staff._id, start_iso: match.start, end_iso: match.end, step: 'pending', question_index: 1, answers_json: JSON.stringify([providedName]) }, $setOnInsert: { createdAt: new Date() }, $currentDate: { updatedAt: true } },
+                  { upsert: true }
+                );
+              } catch {}
                 startIndex = 1;
               } else {
                 try {
-                  db.prepare(`INSERT INTO booking_sessions (user_id, contact_id, staff_id, start_iso, end_iso, step, question_index, answers_json, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, 'pending', 0, '[]', strftime('%s','now'), strftime('%s','now'))
-                    ON CONFLICT(user_id, contact_id) DO UPDATE SET staff_id=excluded.staff_id, start_iso=excluded.start_iso, end_iso=excluded.end_iso, step='pending', question_index=0, answers_json='[]', updated_at=strftime('%s','now')
-                  `).run(tenantUserId, from, staff.id, match.start, match.end);
+                  const dbNative = getDB();
+                  await dbNative.collection('booking_sessions').updateOne(
+                    { user_id: String(tenantUserId), contact_id: String(from) },
+                    { $set: { staff_id: staff._id, start_iso: match.start, end_iso: match.end, step: 'pending', question_index: 0, answers_json: JSON.stringify([]) }, $setOnInsert: { createdAt: new Date() }, $currentDate: { updatedAt: true } },
+                    { upsert: true }
+                  );
                 } catch {}
               }
               const when = new Date(match.start).toLocaleString();
@@ -1403,7 +1618,7 @@ export default function registerWebhookRoutes(app) {
             }
           }
           // If date exists but exact time unavailable → show available times for that day
-          const rows = await buildTimeRows({ userId: tenantUserId, staffId: staff.id, dateISO: base.toISOString(), limit: 10, apptId: null });
+          const rows = await buildTimeRows({ userId: tenantUserId, staffId: String(staff._id), dateISO: base.toISOString(), limit: 10, apptId: null });
           if (!rows.length) {
             await sendWhatsAppText(from, "That day unfortunately is not available. Please pick another day.", cfg);
             const days = buildDayRows(staff.id);
@@ -1416,7 +1631,7 @@ export default function registerWebhookRoutes(app) {
         }
 
         // No parsed date/time → fallback to normal date picker
-        const days = buildDayRows(staff.id);
+        const days = buildDayRows(staff._id);
         await sendWhatsappList(from, "Pick a day", "Choose a date:", "Select", days, cfg);
         return res.sendStatus(200);
       }
@@ -1459,7 +1674,7 @@ export default function registerWebhookRoutes(app) {
       const hasMatch = Array.isArray(kbMatches) && kbMatches.length > 0;
       const topScore = hasMatch ? (kbMatches[0].score || 0) : 0;
       // PRIORITIZE: if top KB hit has a PDF attached, send it instead of AI text
-      if (hasMatch) {
+      if (!humanActive && hasMatch) {
         try {
           const kbTop = kbMatches[0];
           const row = db.prepare(`SELECT file_url, file_mime, title FROM kb_items WHERE id = ?`).get(kbTop.id);
@@ -1471,7 +1686,7 @@ export default function registerWebhookRoutes(app) {
         } catch {}
       }
       // Let AI decide using the KB. If it cannot answer from KB, it must return the exact OUT OF SCOPE phrase.
-      if (hasMatch) {
+      if (!humanActive && hasMatch) {
         const aiReply = await generateAiReply(text, kbMatches, aiOptions);
         const normalized = String(aiReply || '').trim();
         const OUT_OF_SCOPE = 'That seems outside my scope. Try choosing one of these topics';
@@ -1531,9 +1746,9 @@ export default function registerWebhookRoutes(app) {
           cfg
         );
       }
-      if (!hasName) {
+      if (!hasName && humanActive) {
         await sendWhatsAppText(from, "Before I connect you, what’s your name?", cfg);
-      } else {
+      } else if (humanActive) {
         await sendWhatsAppText(from, "What’s the reason for contacting a human today?", cfg);
       }
 

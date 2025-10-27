@@ -101,15 +101,30 @@ class RealtimeManager {
         // Import Socket.IO client
         this.scriptElement = document.createElement('script');
         this.scriptElement.src = '/socket.io/socket.io.js';
-        this.scriptElement.onload = () => {
+        this.scriptElement.onload = async () => {
           console.log('🔌 Socket.IO client loaded, connecting...');
+          // Fetch a short-lived auth token
+          let wsToken = null;
+          try {
+            const r = await fetch('/auth/ws-token', { credentials: 'include' });
+            if (r.ok) {
+              const j = await r.json();
+              wsToken = j.token;
+            } else {
+              console.warn('Failed to fetch WS token:', r.status);
+            }
+          } catch (e) {
+            console.warn('WS token fetch error:', e);
+          }
           // Configure Socket.IO with better connection options
           this.socket = io({
             auth: {
-              userId: this.userId
+              userId: this.userId,
+              token: wsToken
             },
             query: {
-              userId: this.userId
+              userId: this.userId,
+              token: wsToken
             },
             transports: ['polling', 'websocket'], // Start with polling, upgrade to websocket
             timeout: 30000, // 30 seconds
@@ -192,7 +207,10 @@ class RealtimeManager {
       console.warn('Socket not connected, cannot join chat');
       return;
     }
-    
+    // Avoid duplicate joins for the same chat
+    if (this.currentChat === phone) {
+      return;
+    }
     this.currentChat = phone;
     this.socket.emit('join_chat', { phone });
     console.log(`👤 Joined chat: ${phone}`);
@@ -680,19 +698,15 @@ class RealtimeManager {
   // Heartbeat mechanism to keep connection alive
   startHeartbeat() {
     this.stopHeartbeat(); // Clear any existing heartbeat
-    
     this.heartbeatInterval = setInterval(() => {
-      if (this.isConnected && this.socket) {
-        try {
-          // Send a ping to keep the connection alive
-          this.socket.emit('ping', { timestamp: Date.now() });
-          console.log('💓 Heartbeat sent');
-        } catch (error) {
-          console.error('💓 Heartbeat error:', error);
-          this.handleConnectionError();
-        }
+      if (!this.isConnected || !this.socket) return;
+      try {
+        this.socket.emit('ping', { timestamp: Date.now() });
+      } catch (error) {
+        console.error('💓 Heartbeat error:', error);
+        this.handleConnectionError();
       }
-    }, 20000); // Send heartbeat every 20 seconds
+    }, 20000);
   }
 
   stopHeartbeat() {
@@ -825,6 +839,16 @@ class RealtimeManager {
     // Store listeners for cleanup
     const listeners = {
       'new_message': (messageData) => this.handleNewMessage(messageData),
+      'conversation_status_changed': (data) => {
+        try {
+          // Update the status chip in the header to 'New'
+          const statusChip = document.querySelector('.status-chip');
+          if (statusChip) {
+            statusChip.textContent = 'New';
+            statusChip.style.backgroundColor = '#3b82f6';
+          }
+        } catch {}
+      },
       'typing_start': (data) => this.handleTypingStart(data),
       'typing_stop': (data) => this.handleTypingStop(data),
       'pong': (data) => console.log('💓 Heartbeat acknowledged:', data),
@@ -839,8 +863,11 @@ class RealtimeManager {
       }
     };
     
-    // Add listeners and track them
+    // Add listeners only once per event
     for (const [event, listener] of Object.entries(listeners)) {
+      if (this.eventListeners.has(event)) {
+        this.socket.off(event, this.eventListeners.get(event));
+      }
       this.socket.on(event, listener);
       this.eventListeners.set(event, listener);
     }
