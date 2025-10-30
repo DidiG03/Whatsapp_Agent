@@ -260,7 +260,7 @@ export default function registerWebhookRoutes(app) {
       const tenant = (await findSettingsByPhoneNumberId(metadata?.phone_number_id)) || (await findSettingsByBusinessPhone(metadata?.display_phone_number?.replace(/\D/g, "")));
       const tenantUserId = tenant?.user_id || null;
       const businessNumber = metadata?.display_phone_number?.replace(/\D/g, "");
-      console.log('[Webhook] Tenant resolution:', {
+      if (DEBUG_LOGS) console.log('[Webhook] Tenant resolution:', {
         phone_number_id: metadata?.phone_number_id || null,
         businessNumber,
         tenantFound: !!tenant,
@@ -275,11 +275,11 @@ export default function registerWebhookRoutes(app) {
       const from = message.from;
       let text = message.text?.body || "";
 
-      console.log("Test webhook received:", { from, text, tenantUserId, conversation_mode: cfg.conversation_mode });
+      if (DEBUG_LOGS) console.log("Test webhook received:", { from, text, tenantUserId, conversation_mode: cfg.conversation_mode });
 
       // Check conversation mode FIRST - if Simple Escalation Mode, handle differently
       if (cfg.conversation_mode === 'escalation') {
-        console.log("Simple Escalation Mode active in test");
+        if (DEBUG_LOGS) console.log("Simple Escalation Mode active in test");
         
         // Check if this is the first message from this contact (show greeting first)
         const state = db.prepare(`SELECT escalation_step FROM handoff WHERE contact_id = ? AND user_id = ?`).get(from, tenantUserId);
@@ -353,14 +353,14 @@ export default function registerWebhookRoutes(app) {
       // Test greeting response (only for full AI mode)
       if (isGreeting(text)) {
         const greetText = cfg.entry_greeting || "Hello! How can I help you today?";
-        console.log("Sending greeting:", greetText);
+        if (DEBUG_LOGS) console.log("Sending greeting:", greetText);
         // In test mode, just return the response instead of sending
         return res.json({ success: true, response: greetText, type: "greeting" });
       }
 
       // Test KB response
       const kbMatches = retrieveKbMatches(text, 8, tenantUserId, '');
-      console.log("KB Matches:", kbMatches);
+      if (DEBUG_LOGS) console.log("KB Matches:", kbMatches);
       
       if (Array.isArray(kbMatches) && kbMatches.length > 0) {
         const aiReply = await generateAiReply(text, kbMatches, {
@@ -368,7 +368,7 @@ export default function registerWebhookRoutes(app) {
           style: tenant?.ai_style,
           blockedTopics: tenant?.ai_blocked_topics
         });
-        console.log("AI Reply:", aiReply);
+        if (DEBUG_LOGS) console.log("AI Reply:", aiReply);
         return res.json({ success: true, response: aiReply, type: "kb_response", kbMatches: kbMatches.length });
       }
 
@@ -387,7 +387,7 @@ export default function registerWebhookRoutes(app) {
     const challenge = req.query["hub.challenge"];
     const s = findSettingsByVerifyToken(token);
     if (mode === "subscribe" && s) {
-      console.log("[WEBHOOK][GET] verified", {
+      if (DEBUG_LOGS) console.log("[WEBHOOK][GET] verified", {
         mode,
         tokenPresent: !!token,
         challengePresent: !!challenge
@@ -470,7 +470,6 @@ export default function registerWebhookRoutes(app) {
       if (Array.isArray(statuses) && statuses.length > 0) {
         try {
           const dbNative = getDB();
-          const tenantUserId = change?.metadata?.phone_number_id ? (findSettingsByPhoneNumberId(change.metadata.phone_number_id)?.user_id || null) : null;
           for (const st of statuses) {
             const status = st.status;
             const recipientId = st.recipient_id;
@@ -527,7 +526,7 @@ export default function registerWebhookRoutes(app) {
                     error: error ? { code: error.code, title: error.title, message: error.message } : null
                   };
                   broadcastMessageStatus(tenantUserId, phone, messageId, status, statusData);
-                  console.log(`📡 Broadcasted message status update: ${status} for message ${messageId}`);
+                  if (DEBUG_LOGS) console.log(`📡 Broadcasted message status update: ${status} for message ${messageId}`);
                 }
               }
             } catch {}
@@ -537,15 +536,15 @@ export default function registerWebhookRoutes(app) {
 
       const message = change?.messages?.[0];
       if (!message) {
-        console.log("No message found in webhook payload");
+      if (DEBUG_LOGS) console.log("No message found in webhook payload");
         return res.sendStatus(200);
       }
       
-      console.log("Processing message:", message);
+      if (DEBUG_LOGS) console.log("Processing message:", message);
 
       // Handle reaction messages - don't process them as regular messages
       if (message.type === 'reaction') {
-        console.log("Received reaction message, skipping bot processing");
+        if (DEBUG_LOGS) console.log("Received reaction message, skipping bot processing");
         
         // Store the reaction in our database for the agent to see
         try {
@@ -561,7 +560,7 @@ export default function registerWebhookRoutes(app) {
             if (message.reaction.emoji && message.reaction.emoji.trim() !== '') {
               // This is a reaction addition
               const result = addReaction(message.reaction.message_id, customerUserId, message.reaction.emoji);
-              console.log("Stored customer reaction:", result);
+              if (DEBUG_LOGS) console.log("Stored customer reaction:", result);
               
               // Broadcast the reaction in real-time to agents
               if (result.success) {
@@ -574,11 +573,11 @@ export default function registerWebhookRoutes(app) {
                 };
                 
                 broadcastReaction(tenantUserId, phone, message.reaction.message_id, message.reaction.emoji, 'added', reactionData);
-                console.log("📡 Broadcasted customer reaction addition to agents");
+                if (DEBUG_LOGS) console.log("📡 Broadcasted customer reaction addition to agents");
               }
             } else {
               // This is a reaction removal (empty emoji)
-              console.log("Received reaction removal from customer");
+              if (DEBUG_LOGS) console.log("Received reaction removal from customer");
               
               // We need to find which emoji was removed
               // WhatsApp doesn't tell us which emoji was removed, so we need to check the database
@@ -595,7 +594,7 @@ export default function registerWebhookRoutes(app) {
                 
                 // Remove the reaction from database
                 const result = removeReaction(message.reaction.message_id, customerUserId, emojiToRemove);
-                console.log("Removed customer reaction:", result);
+                if (DEBUG_LOGS) console.log("Removed customer reaction:", result);
                 
                 // Broadcast the reaction removal in real-time to agents
                 if (result.success) {
@@ -608,10 +607,10 @@ export default function registerWebhookRoutes(app) {
                   };
                   
                   broadcastReaction(tenantUserId, phone, message.reaction.message_id, emojiToRemove, 'removed', reactionData);
-                  console.log("📡 Broadcasted customer reaction removal to agents");
+                  if (DEBUG_LOGS) console.log("📡 Broadcasted customer reaction removal to agents");
                 }
               } else {
-                console.log("No existing reaction found to remove for customer");
+                if (DEBUG_LOGS) console.log("No existing reaction found to remove for customer");
               }
             }
           }
@@ -624,7 +623,7 @@ export default function registerWebhookRoutes(app) {
 
       // Handle reply messages - don't process them as regular messages in live mode
       if (message.context && message.context.id) {
-        console.log("Received reply message, skipping bot processing");
+        if (DEBUG_LOGS) console.log("Received reply message, skipping bot processing");
         
         // Store the reply message normally but don't trigger bot responses
         try {
@@ -650,7 +649,7 @@ export default function registerWebhookRoutes(app) {
               raw: message
             });
             if (inserted) {
-              console.log("Stored customer reply message:", messageId);
+              if (DEBUG_LOGS) console.log("Stored customer reply message:", messageId);
             }
             
             // Create reply relationship
@@ -658,7 +657,7 @@ export default function registerWebhookRoutes(app) {
               try {
                 const { createReply } = await import('../services/replies.mjs');
                 const replyResult = createReply(message.context.id, messageId);
-                console.log("Created customer reply relationship:", replyResult);
+                if (DEBUG_LOGS) console.log("Created customer reply relationship:", replyResult);
               } catch (error) {
                 console.error("Error creating customer reply relationship:", error);
               }
@@ -679,9 +678,18 @@ export default function registerWebhookRoutes(app) {
       }
       const cfg = { ...tenant, user_id: tenantUserId };
 
-      // Define sender and text early so all branches (including interactive) can use them
+      // Define sender and extract content by type
       const from = message.from;
       let text = message.text?.body || "";
+      let mediaUrl = null;
+      let normalizedType = message.type || 'text';
+      if (normalizedType === 'image' && message.image) {
+        // Prefer direct link. If missing, construct proxy URL so browser can download with our credentials
+        mediaUrl = message.image.link || null;
+        if (!mediaUrl && message.image.id) {
+          mediaUrl = `/wa-media/${encodeURIComponent(String(tenantUserId))}/${encodeURIComponent(String(message.image.id))}`;
+        }
+      }
 
       // Precompute live-mode status to avoid sending any bot messages when human is active
       let humanActive = false;
@@ -705,7 +713,7 @@ export default function registerWebhookRoutes(app) {
 
       // Check conversation mode - if Simple Escalation Mode, handle differently (but never while human is live)
       if (cfg.conversation_mode === 'escalation' && !humanActive) {
-        console.log("Simple Escalation Mode active");
+        if (DEBUG_LOGS) console.log("Simple Escalation Mode active");
         
         // Load or initialize handoff state in Mongo
         const { Handoff } = await import('../schemas/mongodb.mjs');
@@ -810,12 +818,12 @@ export default function registerWebhookRoutes(app) {
             userId: tenantUserId,
             from,
             businessPhone: metadata?.display_phone_number?.replace(/\D/g, ""),
-            type: message.type,
-            text,
+            type: normalizedType,
+            text: normalizedType === 'image' ? null : text,
             timestamp: message.timestamp ? Number(message.timestamp) : undefined,
             raw: message
           });
-          console.log('[Webhook] Inbound record result:', { inserted, inboundId });
+          if (DEBUG_LOGS) console.log('[Webhook] Inbound record result:', { inserted, inboundId });
           isFirstTimeInbound = !!inserted;
 
           if (isFirstTimeInbound) {
@@ -824,14 +832,15 @@ export default function registerWebhookRoutes(app) {
             const messageData = {
               id: inboundId,
               direction: 'inbound',
-              type: message.type || 'text',
-              text_body: text,
+              type: normalizedType || 'text',
+              text_body: normalizedType === 'image' ? null : text,
               timestamp: message.timestamp ? Number(message.timestamp) : Math.floor(Date.now() / 1000),
               from_digits: normalizePhone(from),
               to_digits: normalizePhone(metadata?.display_phone_number),
               contact_name: null,
               contact: from,
-              formatted_time: new Date((message.timestamp ? Number(message.timestamp) : Math.floor(Date.now() / 1000)) * 1000).toLocaleString()
+              formatted_time: new Date((message.timestamp ? Number(message.timestamp) : Math.floor(Date.now() / 1000)) * 1000).toLocaleString(),
+              media_url: mediaUrl
             };
             broadcastNewMessage(tenantUserId, from, messageData);
             // If the conversation was resolved/closed, re-open to NEW on new inbound
@@ -1295,9 +1304,9 @@ export default function registerWebhookRoutes(app) {
         } catch {}
 
         const greetText = cfg.entry_greeting || "Hello! How can I help you today?";
-        console.log('[Webhook] Sending greeting to customer:', { to: from, greetText });
+        if (DEBUG_LOGS) console.log('[Webhook] Sending greeting to customer:', { to: from, greetText });
         const greetResp = await sendWhatsAppText(from, greetText, cfg);
-        console.log('[Webhook] Greeting send result:', { id: greetResp?.messages?.[0]?.id || null });
+        if (DEBUG_LOGS) console.log('[Webhook] Greeting send result:', { id: greetResp?.messages?.[0]?.id || null });
         try {
           const outboundId = greetResp?.messages?.[0]?.id;
           if (outboundId) {
@@ -1669,7 +1678,7 @@ export default function registerWebhookRoutes(app) {
 
       // Retrieve candidate KB matches (expand to 8 for broader context)
       const kbMatches = retrieveKbMatches(text, 8, tenantUserId, '');
-      console.log("KB Matches:", kbMatches);
+      if (DEBUG_LOGS) console.log("KB Matches:", kbMatches);
       
       const hasMatch = Array.isArray(kbMatches) && kbMatches.length > 0;
       const topScore = hasMatch ? (kbMatches[0].score || 0) : 0;
@@ -1729,7 +1738,7 @@ export default function registerWebhookRoutes(app) {
       }
       // Low/no confidence → offer 3 smart options from KB
       const suggestions = buildKbSuggestions(tenantUserId, text, 3);
-      console.log("Suggestions:", suggestions);
+      if (DEBUG_LOGS) console.log("Suggestions:", suggestions);
       const customer = db.prepare(`SELECT display_name FROM customers WHERE user_id = ? AND contact_id = ?`).get(tenantUserId, from) || {};
       const hasName = !!customer.display_name;
       try {

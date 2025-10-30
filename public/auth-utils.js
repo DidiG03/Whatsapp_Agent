@@ -7,6 +7,18 @@ class AuthManager {
   constructor() {
     this.maxRetries = 2;
     this.retryDelay = 1000; // 1 second
+    this.autoCheckIntervalMs = 300000; // 5 minutes
+    try {
+      setInterval(async () => {
+        try {
+          const status = await this.checkAuthStatus();
+          if (!status?.signedIn) {
+            // Redirect softly if session expired while idle
+            window.location.href = '/auth';
+          }
+        } catch {}
+      }, this.autoCheckIntervalMs);
+    } catch {}
   }
 
   /**

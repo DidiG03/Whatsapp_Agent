@@ -59,15 +59,20 @@ export const securityHeaders = (req, res, next) => {
   res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
   
   // Basic CSP to prevent XSS (can be customized per route)
+  // Allow Stripe resources needed by Checkout/Elements
   res.setHeader('Content-Security-Policy', 
     "default-src 'self'; " +
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://clerk.accounts.dev https://accounts.clerk.com https://unpkg.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com; " +
+    // Scripts from our domain, Clerk, Cloudflare challenge, UNPKG, and Stripe.js
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://clerk.accounts.dev https://accounts.clerk.com https://unpkg.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com https://js.stripe.com; " +
     "worker-src 'self' blob:; " +
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-    "img-src 'self' data: https:; " +
+    // Images from our domain, data URIs, HTTPS, and Stripe telemetry
+    "img-src 'self' data: https: https://m.stripe.network https://*.stripe.com; " +
     "font-src 'self' data: https://fonts.gstatic.com; " +
-    "connect-src 'self' https://api.openai.com https://api.stripe.com https://graph.facebook.com https://*.clerk.accounts.dev https://accounts.clerk.com https://clerk.accounts.dev https://clerk-telemetry.com https://*.cloudflare.com; " +
-    "frame-src 'self' https://clerk.accounts.dev https://accounts.clerk.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com;"
+    // Allow connections to APIs we call, including Stripe and Clerk, and Stripe telemetry
+    "connect-src 'self' https://api.openai.com https://api.stripe.com https://m.stripe.network https://graph.facebook.com https://*.clerk.accounts.dev https://accounts.clerk.com https://clerk.accounts.dev https://clerk-telemetry.com https://*.cloudflare.com; " +
+    // Allow framing from Clerk and Stripe Checkout/Elements
+    "frame-src 'self' https://clerk.accounts.dev https://accounts.clerk.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com https://js.stripe.com https://hooks.stripe.com;"
   );
   
   // HSTS for HTTPS (only in production)

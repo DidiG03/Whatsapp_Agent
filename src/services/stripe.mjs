@@ -240,6 +240,20 @@ export async function handleSuccessfulPayment(session) {
     });
     
     console.log(`User ${userId} successfully subscribed to ${planName} plan`);
+
+    // Send receipt email (best-effort)
+    try {
+      const { sendPaymentReceiptEmail } = await import('./email.mjs');
+      const amountCents = typeof session.amount_total === 'number' ? session.amount_total : planDetails.price * 100;
+      await sendPaymentReceiptEmail(userId, {
+        amountCents,
+        currency: session.currency || (process.env.STRIPE_CURRENCY || 'usd'),
+        planName,
+        invoiceUrl: session?.invoice ? undefined : undefined // Checkout session may not provide invoice URL immediately
+      });
+    } catch (e) {
+      console.error('Failed to send payment receipt email:', e?.message || e);
+    }
   }
 }
 
@@ -313,9 +327,31 @@ export async function handleInvoicePaymentState(invoice, succeeded) {
     const { updateUserPlan } = await import('./usage.mjs');
     if (succeeded) {
       await updateUserPlan(plan.user_id, { status: 'active' });
+      try {
+        const { sendPaymentReceiptEmail } = await import('./email.mjs');
+        await sendPaymentReceiptEmail(plan.user_id, {
+          amountCents: invoice.amount_paid ?? invoice.amount_due,
+          currency: invoice.currency,
+          planName: plan.plan_name,
+          invoiceUrl: invoice.hosted_invoice_url || invoice.invoice_pdf
+        });
+      } catch (e) {
+        console.error('Failed to send invoice success email:', e?.message || e);
+      }
     } else {
       // Mark as past_due but do not downgrade yet; Stripe will retry.
       await updateUserPlan(plan.user_id, { status: 'past_due' });
+      try {
+        const { sendPaymentFailedEmail } = await import('./email.mjs');
+        await sendPaymentFailedEmail(plan.user_id, {
+          amountCents: invoice.amount_due,
+          currency: invoice.currency,
+          planName: plan.plan_name,
+          reason: invoice.last_payment_error?.message || invoice.collection_method || 'payment_failed'
+        });
+      } catch (e) {
+        console.error('Failed to send invoice failure email:', e?.message || e);
+      }
     }
   } catch (e) {
     console.error('Failed to handle invoice payment state:', e?.message || e);

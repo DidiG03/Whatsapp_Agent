@@ -360,37 +360,37 @@ export default function registerInboxRoutes(app) {
             <img src="/menu-icon.svg" alt="Menu" style="width:20px;height:20px;vertical-align:middle;border:none;"/>
           </button>
           <div id="${dropdownId}" class="dropdown-menu" style="position:absolute; right:0; top:36px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:6px; min-width:180px; display:none; box-shadow:0 10px 30px rgba(0,0,0,0.18); z-index:10001;" onclick="event.stopPropagation()">
-            <form method="post" action="/inbox/${c.contact}/archive" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
+            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/archive" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
               <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;">
                 <img src="/archive-icon.svg" alt="Archive"/> Archive
               </button>
             </form>
-            <form method="post" action="/inbox/${c.contact}/clear" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
+            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/clear" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
               <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;">
                 <img src="/clear-icon.svg" alt="Clear"/> Clear
               </button>
             </form>
-            <form method="post" action="/inbox/${c.contact}/delete" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
+            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/delete" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
               <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; color:#c00; border:none;">
                 <img src="/delete-icon.svg" alt="Delete"/> Delete
               </button>
             </form>
-            <form method="post" action="/inbox/${c.contact}/nameCustomer" style="margin:0;">
-              <button type="button" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;" onclick="openNameModal('${c.contact}'); return false;">
+            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/nameCustomer" style="margin:0;">
+              <button type="button" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;" data-cid="${String(c.contact).replace(/&/g,'&amp;').replace(/\"/g,'&quot;').replace(/'/g,'&#39;')}" onclick="openNameModal(this.dataset.cid); return false;">
                 <img src="/name-person-icon.svg" alt="Name Person"/> Name Customer
               </button>
             </form>
-            <form method="post" action="/inbox/${c.contact}/optout" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
+            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/optout" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
               <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;">
                 🚫 Opt-out
               </button>
             </form>
-            <form method="post" action="/inbox/${c.contact}/unoptout" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
+            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/unoptout" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
               <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;">
                 ✅ Remove opt-out
               </button>
             </form>
-            <form method="post" action="/inbox/${c.contact}/block24h" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
+            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/block24h" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
               <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;">
                 ⛔ Block 24h
               </button>
@@ -400,7 +400,7 @@ export default function registerInboxRoutes(app) {
       `;
       return `
         <li class="inbox-item">
-          <a href="/inbox/${c.contact}">
+          <a href="/inbox/${encodeURIComponent(c.contact)}">
             <div class="wa-row">
               <div class="wa-avatar">${initials}</div>
               <div class="wa-col">
@@ -455,8 +455,52 @@ export default function registerInboxRoutes(app) {
         </div>
         
         <script src="/toast.js"></script>
-        <script src="/notifications.js"></script>
         <script>
+          // WhatsApp token check and modal
+          async function checkWaTokenAndPrompt(){
+            try{
+              const r = await fetch('/api/settings/wa-token/status', { credentials: 'include' });
+              const j = await r.json();
+              if (j.status === 'invalid' || j.status === 'missing') {
+                openWaTokenModal(j.status);
+              }
+            }catch(_){ }
+          }
+
+          function openWaTokenModal(state){
+            var m = document.getElementById('waTokenModal');
+            if(!m) return; m.style.display='flex';
+            var msg = document.getElementById('waTokenMsg');
+            if(msg){
+              msg.textContent = state === 'missing' ? 'Your WhatsApp configuration is incomplete. Please add a valid token.' : 'Your WhatsApp token appears to be invalid or expired. Please enter a new token.';
+            }
+          }
+          function closeWaTokenModal(){
+            var m = document.getElementById('waTokenModal');
+            if(m) m.style.display='none';
+          }
+          async function saveWaToken(){
+            var input = document.getElementById('waTokenInput');
+            var btn = document.getElementById('waTokenSave');
+            if(!input || !input.value.trim()) return;
+            btn.disabled = true;
+            try{
+              const resp = await fetch('/api/settings/wa-token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ whatsapp_token: input.value.trim() })
+              });
+              const data = await resp.json();
+              if (!resp.ok || !data.success) {
+                alert(data?.error || 'Failed to update token');
+                btn.disabled = false; return;
+              }
+              closeWaTokenModal();
+              // Soft reload the page to refresh settings and media access
+              location.reload();
+            }catch(e){ btn.disabled=false; alert('Error: ' + (e?.message||e)); }
+          }
           // Loading management
           let loadingComplete = false;
           let pageReady = false;
@@ -501,6 +545,8 @@ export default function registerInboxRoutes(app) {
             
             // Auth check complete, show content
             showPageContent();
+            // After showing content, check token health and prompt if needed
+            setTimeout(checkWaTokenAndPrompt, 150);
           })();
           
           // Fallback: hide loading after maximum time
@@ -577,6 +623,20 @@ export default function registerInboxRoutes(app) {
                       <button type="submit">Save</button>
                     </div>
                   </form>
+                </div>
+                <!-- WhatsApp Token Modal -->
+                <div id="waTokenModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.35); z-index:1100; align-items:center; justify-content:center;">
+                  <div class="card" style="width:480px; max-width:95vw;">
+                    <div class="small" style="margin-bottom:8px;">WhatsApp Configuration</div>
+                    <div id="waTokenMsg" class="small" style="margin-bottom:8px; color:#92400e; background:#fffbeb; border:1px solid #fcd34d; padding:8px; border-radius:6px;">Your WhatsApp token appears to be invalid or expired. Please enter a new token.</div>
+                    <label>New WhatsApp Token
+                      <input id="waTokenInput" type="password" placeholder="E***************" class="settings-field" />
+                    </label>
+                    <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:8px;">
+                      <button type="button" class="btn-ghost" onclick="closeWaTokenModal()">Cancel</button>
+                      <button type="button" id="waTokenSave" onclick="saveWaToken()">Save Token</button>
+                    </div>
+                  </div>
                 </div>
               </div>
               <script>
@@ -1056,10 +1116,15 @@ export default function registerInboxRoutes(app) {
     const repliesByMessage = await getMessagesReplies(messageIds);
     const replyOriginals = await getReplyOriginals(messageIds);
     const status = await Handoff.findOne({ contact_id: phone, user_id: userId }).select('is_human human_expires_ts');
-    const isHuman = !!status?.is_human;
+    let isHuman = !!status?.is_human;
     const expTs = Number(status?.human_expires_ts || 0);
     const nowSec = Math.floor(Date.now()/1000);
     const remain = expTs > nowSec ? (expTs - nowSec) : 0;
+    // Normalize expired human mode back to AI by default
+    if (isHuman && remain <= 0) {
+      isHuman = false;
+      try { await Handoff.findOneAndUpdate({ contact_id: phone, user_id: userId }, { $set: { is_human: false, human_expires_ts: 0, updatedAt: new Date() } }, { upsert: true }); } catch {}
+    }
     
     // Get conversation status
     const conversationStatus = await getConversationStatus(userId, phone);
@@ -1083,8 +1148,13 @@ export default function registerInboxRoutes(app) {
       // For non-text messages, derive a readable label from raw payload
       // Also handle cases where text_body contains placeholder text like '[image]'
       if (!display || display === '[image]' || display === '[document]' || display === '[audio]' || display === '[video]' || (m.type && m.type !== 'text')) {
-        let raw;
-        try { raw = JSON.parse(m.raw || '{}'); } catch { raw = {}; }
+        // Raw can be stored as an object (Mongo) or as a JSON string (legacy)
+        let raw = {};
+        if (m && typeof m.raw === 'object' && m.raw !== null) {
+          raw = m.raw;
+        } else {
+          try { raw = JSON.parse(m.raw || '{}'); } catch { raw = {}; }
+        }
         if (m.type === 'interactive') {
           const br = raw?.interactive?.button_reply;
           const lr = raw?.interactive?.list_reply;
@@ -1127,8 +1197,12 @@ export default function registerInboxRoutes(app) {
             display = `[document] ${escapeHtml(filename)}`;
           }
         } else if (m.type === 'image') {
-          // Handle both inbound (raw.image.link) and outbound (raw.imageUrl) image formats
+          // Handle both inbound (raw.image.link) and outbound (raw.imageUrl) image formats.
+          // For inbound images without direct link, construct secure proxy via media id.
           let imageUrl = raw?.image?.link || raw?.imageUrl;
+          if (!imageUrl && raw?.image?.id) {
+            imageUrl = `/wa-media/${encodeURIComponent(String(userId))}/${encodeURIComponent(String(raw.image.id))}`;
+          }
           if (imageUrl) {
             // Fix localhost URLs to use current request's host
             if (imageUrl.includes('localhost:3000')) {
@@ -1251,477 +1325,491 @@ export default function registerInboxRoutes(app) {
     res.setHeader("Expires", "0");
     res.end(`
       <html><head><title>Code Orbit - Chat +${String(phone).replace(/^\+/, '')}</title><link rel="stylesheet" href="/styles.css"></head>
-      <body>
-        <!-- Loading Overlay -->
-        <div id="loadingOverlay" class="loading-overlay">
-          <div class="loading-container">
-            <div class="loading-spinner"></div>
-            <div class="loading-text">Loading conversation...</div>
-            <div class="loading-progress">
-              <div class="loading-progress-bar"></div>
-            </div>
-            <div class="loading-dots">
-              <div class="loading-dot"></div>
-              <div class="loading-dot"></div>
-              <div class="loading-dot"></div>
+        <body>
+          <!-- Loading Overlay -->
+          <div id="loadingOverlay" class="loading-overlay">
+            <div class="loading-container">
+              <div class="loading-spinner"></div>
+              <div class="loading-text">Loading conversation...</div>
+              <div class="loading-progress">
+                <div class="loading-progress-bar"></div>
+              </div>
+              <div class="loading-dots">
+                <div class="loading-dot"></div>
+                <div class="loading-dot"></div>
+                <div class="loading-dot"></div>
+              </div>
             </div>
           </div>
-        </div>
-        
-        <script src="/toast.js"></script>
-        <script src="/auth-utils.js"></script>
-        <script src="/realtime.js"></script>
-        <script>
-          // Loading management
-          let loadingComplete = false;
-          let pageReady = false;
-          
-          function hideLoading() {
-            if (loadingComplete) return;
-            loadingComplete = true;
+          <script src="/toast.js"></script>
+          <script src="/auth-utils.js"></script>
+          <script>
+            let loadingComplete = false;
+            let pageReady = false;
             
-            const overlay = document.getElementById('loadingOverlay');
-            if (overlay) {
-              overlay.classList.add('hidden');
+            function hideLoading() {
+              if (loadingComplete) return;
+              loadingComplete = true;
+              
+              const overlay = document.getElementById('loadingOverlay');
+              if (overlay) {
+                overlay.classList.add('hidden');
+                setTimeout(() => {
+                  overlay.style.display = 'none';
+                }, 300);
+              }
+            }
+            
+            function showPageContent() {
+              pageReady = true;
+              
+              // Ensure loading is hidden after a minimum time
               setTimeout(() => {
-                overlay.style.display = 'none';
-              }, 300);
+                hideLoading();
+                // Add loaded class to page transition elements
+                const pageElements = document.querySelectorAll('.page-transition');
+                pageElements.forEach(el => el.classList.add('loaded'));
+              }, 500);
             }
-          }
-          
-          function showPageContent() {
-            pageReady = true;
-            
-            // Ensure loading is hidden after a minimum time
-            setTimeout(() => {
-              hideLoading();
-              // Add loaded class to page transition elements
-              const pageElements = document.querySelectorAll('.page-transition');
-              pageElements.forEach(el => el.classList.add('loaded'));
-            }, 500);
-          }
-          
-          // Enhanced authentication check on page load
-          (async function checkAuthOnLoad(){
-            await window.authManager.checkAuthOnLoad();
-            
-            // Auth check complete, show content
-            showPageContent();
-          })();
-          
-          // Fallback: hide loading after maximum time
-          setTimeout(() => {
-            if (!loadingComplete) {
-              hideLoading();
-              // Add loaded class to page transition elements
-              const pageElements = document.querySelectorAll('.page-transition');
-              pageElements.forEach(el => el.classList.add('loaded'));
-            }
-          }, 3000);
-          
-          // Real-time functionality
-          let realtimeManager = null;
-          const phone = '${phone}'.split('?')[0]; // Clean phone number to remove query parameters
-          const phoneDigits = phone.replace(/\D/g, ''); // Normalize to digits for realtime rooms/APIs
-          const userId = '${userId}';
-          
-          // Debug: Log userId to console
-          console.log('🔍 Debug - userId from template:', userId);
-          
-          // Initialize real-time features
-          document.addEventListener('DOMContentLoaded', async () => {
-            // Wait for realtime manager to be available
-            const checkRealtime = async () => {
-              if (window.realtimeManager) {
-                realtimeManager = window.realtimeManager;
-                
-                // Ensure we have a valid userId
-                let finalUserId = userId;
-                if (!finalUserId || finalUserId === 'undefined' || finalUserId === 'null') {
-                  // Try to get userId from auth manager as fallback
-                  if (window.authManager && window.authManager.getCurrentUserId) {
-                    finalUserId = await window.authManager.getCurrentUserId();
-                    console.log('🔍 Debug - userId from auth manager:', finalUserId);
-                  }
-                }
-                
-                // Set the userId for the realtime manager
-                realtimeManager.userId = finalUserId;
-                console.log('🔍 Debug - Setting realtimeManager.userId to:', finalUserId);
-                // Connect to Socket.IO
-                await realtimeManager.connect();
-                realtimeManager.joinChat(phoneDigits);
-                setupRealtimeFeatures();
-              } else {
-                setTimeout(checkRealtime, 100);
-              }
-            };
-            checkRealtime();
-          });
-          
-          function setupRealtimeFeatures() {
-            if (!realtimeManager) return;
-            
-            // Set up typing detection
-            const messageInput = document.getElementById('messageInput');
-            if (messageInput) {
-              let typingTimer = null;
-              
-              messageInput.addEventListener('input', () => {
-                if (realtimeManager.isConnected) {
-                  realtimeManager.startTyping(phoneDigits);
-                  
-                  // Clear existing timer
-                  if (typingTimer) clearTimeout(typingTimer);
-                  
-                  // Stop typing after 1 second of inactivity
-                  typingTimer = setTimeout(() => {
-                    realtimeManager.stopTyping(phoneDigits);
-                  }, 1000);
-                }
-              });
-              
-              messageInput.addEventListener('blur', () => {
-                if (realtimeManager.isConnected) {
-                  realtimeManager.stopTyping(phoneDigits);
-                }
-              });
-            }
-            
-            // Override form submission to use real-time messaging
-            const messageForm = document.querySelector('form[action*="/inbox/' + phone + '/send"]');
-            if (messageForm) {
-              messageForm.addEventListener('submit', (e) => {
-                e.preventDefault();
-                // Use the central handler which ensures realtime and avoids page reloads
-                handleFormSubmit(e);
-                return false;
-              });
-            }
-          }
-          
-          function toggleHandoffMode() {
-            const handoffBtn = document.getElementById('handoffToggleBtn');
-            const isCurrentlyHuman = handoffBtn.getAttribute('data-is-human') === 'true';
-            const newHumanMode = !isCurrentlyHuman;
-            
-            // Update UI immediately
-            const img = handoffBtn.querySelector('img');
-            img.src = newHumanMode ? '/raise-hand-icon.svg' : '/bot-icon.svg';
-            img.alt = newHumanMode ? 'Human handling' : 'AI handling';
-            handoffBtn.setAttribute('data-is-human', newHumanMode);
-            
-            // Update the hidden input
-            const hiddenInput = handoffBtn.closest('form').querySelector('input[name="is_human"]');
-            hiddenInput.value = newHumanMode ? '1' : '';
-            
-            // Send via real-time if available
-            if (realtimeManager && realtimeManager.isConnected) {
-              realtimeManager.toggleLiveMode(phoneDigits, newHumanMode);
-            }
-            
-            // Submit the form with authentication
-            const form = handoffBtn.closest('form');
-            checkAuthThenSubmit(form).then(valid => {
-              if (valid) {
-                form.submit();
-              } else {
-                // Revert UI on auth failure
-                img.src = isCurrentlyHuman ? '/raise-hand-icon.svg' : '/bot-icon.svg';
-                img.alt = isCurrentlyHuman ? 'Human handling' : 'AI handling';
-                handoffBtn.setAttribute('data-is-human', isCurrentlyHuman);
-                hiddenInput.value = isCurrentlyHuman ? '1' : '';
-              }
-            });
-          }
-          function setupComposer(){
-            const ta=document.querySelector('#messageInput');
-            if(!ta) return; 
-            
-            ta.addEventListener('keydown', function(e){
-              if(e.key==='Enter' && !e.shiftKey){
-                e.preventDefault();
-                // Trigger the form's submit handler without bypassing listeners
-                if (this.form && typeof this.form.requestSubmit === 'function') {
-                  this.form.requestSubmit();
-                } else if (this.form) {
-                  this.form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
-                }
-              }
-            });
-            
-            // Auto-resize textarea and update send button state
-            ta.addEventListener('input', function() {
-              this.style.height = 'auto';
-              this.style.height = Math.min(this.scrollHeight, 100) + 'px';
-              updateSendButtonState();
-            });
-            
-            // Initial button state check
-            updateSendButtonState();
-          }
-          
-          function updateSendButtonState() {
-            const sendButton = document.getElementById('sendButton');
-            const messageInput = document.getElementById('messageInput');
-            const imagePreview = document.getElementById('imagePreview');
-            
-            if (!sendButton || !messageInput) return;
-            
-            const hasText = messageInput.value.trim().length > 0;
-            const hasImage = imagePreview && imagePreview.style.display !== 'none';
-            const isHuman = sendButton.getAttribute('data-original-disabled') !== 'true';
-            
-            // Enable send button only if user is human AND (has text OR has image)
-            if (isHuman && (hasText || hasImage)) {
-              sendButton.disabled = false;
-            } else {
-              sendButton.disabled = true;
-            }
-          }
-          
-          function scrollToBottom() {
-            const chatContainer = document.querySelector('.chat-thread');
-            if (chatContainer) {
-              chatContainer.scrollTop = chatContainer.scrollHeight;
-              // Force a reflow to ensure scroll happens
-              chatContainer.offsetHeight;
-            }
-          }
-          
-          function scrollToBottomAfterImages() {
-            // Wait for all images to load before scrolling
-            const images = document.querySelectorAll('.chat-thread img');
-            let loadedImages = 0;
-            
-            if (images.length === 0) {
-              // No images, scroll immediately
-              scrollToBottom();
-              return;
-            }
-            
-            images.forEach(img => {
-              if (img.complete) {
-                loadedImages++;
-              } else {
-                img.addEventListener('load', () => {
-                  loadedImages++;
-                  if (loadedImages === images.length) {
-                    setTimeout(scrollToBottom, 100);
-                  }
-                });
-                img.addEventListener('error', () => {
-                  loadedImages++;
-                  if (loadedImages === images.length) {
-                    setTimeout(scrollToBottom, 100);
-                  }
-                });
-              }
-            });
-            
-            if (loadedImages === images.length) {
-              setTimeout(scrollToBottom, 100);
-            }
-          }
-          
-          function toggleQuickReplies() {
-            const container = document.getElementById('quickRepliesContainer');
-            const grid = document.getElementById('quickRepliesGrid');
-            const toggle = document.getElementById('quickRepliesToggle');
-            
-            if (container && grid && toggle) {
-              if (grid.style.display === 'none') {
-                grid.style.display = 'grid';
-                toggle.style.transform = 'rotate(0deg)';
-                container.classList.remove('collapsed');
-              } else {
-                grid.style.display = 'none';
-                toggle.style.transform = 'rotate(180deg)';
-                container.classList.add('collapsed');
-              }
-            }
-          }
-          
-          function selectQuickReply(text) {
-            const messageInput = document.getElementById('messageInput');
-            if (messageInput) {
-              messageInput.value = text;
-              messageInput.focus();
-              updateSendButtonState();
-              // Auto-scroll to bottom after selecting quick reply
-              setTimeout(scrollToBottom, 100);
-            }
-          }
-          
-          function initTypingIndicator() {
-            const phone = '${phone}'.split('?')[0]; // Clean phone number
-            const userId = '${userId}';
-            
-            // Typing indicators are now handled by Socket.IO in realtime.js
-            console.log('Typing indicators initialized via Socket.IO');
-          }
-          
-          function showTypingIndicator() {
-            const indicator = document.getElementById('typingIndicator');
-            if (indicator) {
-              indicator.style.display = 'block';
-              scrollToBottom();
-            }
-          }
-          
-          function hideTypingIndicator() {
-            const indicator = document.getElementById('typingIndicator');
-            if (indicator) {
-              indicator.style.display = 'none';
-            }
-          }
-          
-          // Test functions for typing indicators
-          function testTypingStart() {
-            const phone = '${phone}'.split('?')[0]; // Clean phone number
-            const userId = '${userId}';
-            fetch('/api/typing/' + phone + '/start', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json'
-              },
-              body: JSON.stringify({ userId: userId })
-            }).then(response => response.json())
-              .then(data => {
-                console.log('Typing start test:', data);
-              })
-              .catch(error => {
-                console.error('Error testing typing start:', error);
-              });
-          }
-          
-          function testTypingStop() {
-            const phone = '${phone}'.split('?')[0]; // Clean phone number
-            const userId = '${userId}';
-            fetch('/api/typing/' + phone + '/stop', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json'
-              },
-              body: JSON.stringify({ userId: userId })
-            }).then(response => response.json())
-              .then(data => {
-                console.log('Typing stop test:', data);
-              })
-              .catch(error => {
-                console.error('Error testing typing stop:', error);
-              });
-          }
-          
-          // Reaction and Reply functions
-          let currentMessageId = null;
-          let currentReplyToMessageId = null;
-          
-          function showReactionPicker(messageId) {
-            currentMessageId = messageId;
-            const picker = document.getElementById('reactionPicker');
-            if (picker) {
-              picker.style.display = 'block';
-              picker.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-            }
-          }
-          
-          function hideReactionPicker() {
-            const picker = document.getElementById('reactionPicker');
-            if (picker) {
-              picker.style.display = 'none';
-            }
-            currentMessageId = null;
-          }
-          
-          function addReaction(emoji) {
-            if (!currentMessageId) return;
-            
-            const phone = '${phone}'.split('?')[0]; // Clean phone number
-            fetch('/api/reactions/' + currentMessageId, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json'
-              },
-              body: JSON.stringify({ emoji: emoji, phone: phone })
-            }).then(response => response.json())
-              .then(data => {
-                if (data.success) {
-                  // Reload the page to show updated reactions
-                  window.location.reload();
-                } else {
-                  console.error('Failed to add reaction:', data.error);
-                }
-              })
-              .catch(error => {
-                console.error('Error adding reaction:', error);
-              });
-            
-            hideReactionPicker();
-          }
-          
-          function toggleReaction(messageId, emoji) {
-            const phone = '${phone}'.split('?')[0]; // Clean phone number
-            fetch('/api/reactions/' + messageId, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json'
-              },
-              body: JSON.stringify({ emoji: emoji, phone: phone })
-            }).then(response => response.json())
-              .then(data => {
-                if (data.success) {
-                  // Reload the page to show updated reactions
-                  window.location.reload();
-                } else {
-                  console.error('Failed to toggle reaction:', data.error);
-                }
-              })
-              .catch(error => {
-                console.error('Error toggling reaction:', error);
-              });
-          }
 
-          // Retry failed message function
-          function retryMessage(messageId) {
-            console.log('🔄 Retrying message (raw id):', messageId);
-            // Normalize id (handle accidental spaces)
-            const cleanId = String(messageId || '').trim().replace(/\s+/g, '_');
-            console.log('🔄 Retrying message (normalized id):', cleanId);
+            // Enhanced authentication check on page load
+            (async function checkAuthOnLoad(){
+              await window.authManager.checkAuthOnLoad();
+              
+              // Auth check complete, show content
+              showPageContent();
+            })();
+
+            // Fallback: hide loading after maximum time
+            setTimeout(() => {
+              if (!loadingComplete) {
+                hideLoading();
+                // Add loaded class to page transition elements
+                const pageElements = document.querySelectorAll('.page-transition');
+                pageElements.forEach(el => el.classList.add('loaded'));
+              }
+            }, 3000);
+
+            let realtimeManager = null;
+            const phone = '${phone}'.split('?')[0]; // Clean phone number to remove query parameters
+            const phoneDigits = phone.replace(/\D/g, ''); // Normalize to digits for realtime rooms/APIs
+            const userId = '${userId}';
             
-            // Show loading state on the retry button
-            const retryButton = document.querySelector('[data-message-id="' + cleanId + '"]');
-            if (retryButton) {
-              retryButton.disabled = true;
-              retryButton.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>';
-              retryButton.style.opacity = '0.6';
+            // Debug: Log only when DEBUG_LOGS is enabled
+            if (window?.ENV?.DEBUG_LOGS === '1') console.log('🔍 Debug - userId from template:', userId);
+
+            // Initialize real-time features
+            document.addEventListener('DOMContentLoaded', async () => {
+              // Wait for realtime manager to be available
+              const checkRealtime = async () => {
+                if (window.realtimeManager) {
+                  realtimeManager = window.realtimeManager;
+                  
+                  // Ensure we have a valid userId
+                  let finalUserId = userId;
+                  if (!finalUserId || finalUserId === 'undefined' || finalUserId === 'null') {
+                    // Try to get userId from auth manager as fallback
+                    if (window.authManager && window.authManager.getCurrentUserId) {
+                      finalUserId = await window.authManager.getCurrentUserId();
+                      if (window?.ENV?.DEBUG_LOGS === '1') console.log('🔍 Debug - userId from auth manager:', finalUserId);
+                    }
+                  }
+                  
+                  // Set the userId for the realtime manager
+                  realtimeManager.userId = finalUserId;
+                  if (window?.ENV?.DEBUG_LOGS === '1') console.log('🔍 Debug - Setting realtimeManager.userId to:', finalUserId);
+                  // Connect to Socket.IO
+                  await realtimeManager.connect();
+                  realtimeManager.joinChat(phoneDigits);
+                  setupRealtimeFeatures();
+                } else {
+                  setTimeout(checkRealtime, 100);
+                }
+              };
+              checkRealtime();
+            });
+            function setupRealtimeFeatures() {
+              if (!realtimeManager) return;
+              
+              // Set up typing detection
+              const messageInput = document.getElementById('messageInput');
+              if (messageInput) {
+                let typingTimer = null;
+                
+                messageInput.addEventListener('input', () => {
+                  if (realtimeManager.isConnected) {
+                    realtimeManager.startTyping(phoneDigits);
+                    
+                    // Clear existing timer
+                    if (typingTimer) clearTimeout(typingTimer);
+                    
+                    // Stop typing after 1 second of inactivity
+                    typingTimer = setTimeout(() => {
+                      realtimeManager.stopTyping(phoneDigits);
+                    }, 1000);
+                  }
+                });
+                
+                messageInput.addEventListener('blur', () => {
+                  if (realtimeManager.isConnected) {
+                    realtimeManager.stopTyping(phoneDigits);
+                  }
+                });
+              }
+              
+              // Override form submission to use real-time messaging
+              const messageForm = document.querySelector('form[action*="/inbox/' + phone + '/send"]');
+              if (messageForm) {
+                messageForm.addEventListener('submit', (e) => {
+                  e.preventDefault();
+                  // Use the central handler which ensures realtime and avoids page reloads
+                  handleFormSubmit(e);
+                  return false;
+                });
+              }
+            }
+            function toggleHandoffMode() {
+              const handoffBtn = document.getElementById('handoffToggleBtn');
+              const isCurrentlyHuman = handoffBtn.getAttribute('data-is-human') === 'true';
+              const newHumanMode = !isCurrentlyHuman;
+              
+              // Update UI immediately
+              const img = handoffBtn.querySelector('img');
+              img.src = newHumanMode ? '/raise-hand-icon.svg' : '/bot-icon.svg';
+              img.alt = newHumanMode ? 'Human handling' : 'AI handling';
+              handoffBtn.setAttribute('data-is-human', newHumanMode);
+              
+              // Update the hidden input
+              const hiddenInput = handoffBtn.closest('form').querySelector('input[name="is_human"]');
+              hiddenInput.value = newHumanMode ? '1' : '';
+              
+              // Send via real-time if available
+              if (realtimeManager && realtimeManager.isConnected) {
+                realtimeManager.toggleLiveMode(phoneDigits, newHumanMode);
+              }
+              
+              // Submit the form with authentication
+              const form = handoffBtn.closest('form');
+              checkAuthThenSubmit(form).then(valid => {
+                if (valid) {
+                  form.submit();
+                } else {
+                  // Revert UI on auth failure
+                  img.src = isCurrentlyHuman ? '/raise-hand-icon.svg' : '/bot-icon.svg';
+                  img.alt = isCurrentlyHuman ? 'Human handling' : 'AI handling';
+                  handoffBtn.setAttribute('data-is-human', isCurrentlyHuman);
+                  hiddenInput.value = isCurrentlyHuman ? '1' : '';
+                }
+              });
+            }
+            function setupComposer(){
+              const ta=document.querySelector('#messageInput');
+              if(!ta) return; 
+              
+              ta.addEventListener('keydown', function(e){
+                if(e.key==='Enter' && !e.shiftKey){
+                  e.preventDefault();
+                  // Trigger the form's submit handler without bypassing listeners
+                  if (this.form && typeof this.form.requestSubmit === 'function') {
+                    this.form.requestSubmit();
+                  } else if (this.form) {
+                    this.form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+                  }
+                }
+              });
+              
+              // Auto-resize textarea and update send button state
+              ta.addEventListener('input', function() {
+                this.style.height = 'auto';
+                this.style.height = Math.min(this.scrollHeight, 100) + 'px';
+                updateSendButtonState();
+              });
+              
+              // Initial button state check
+              updateSendButtonState();
+            }
+
+            function updateSendButtonState() {
+              const sendButton = document.getElementById('sendButton');
+              const messageInput = document.getElementById('messageInput');
+              const imagePreview = document.getElementById('imagePreview');
+              
+              if (!sendButton || !messageInput) return;
+              
+              const hasText = messageInput.value.trim().length > 0;
+              const hasImage = imagePreview && imagePreview.style.display !== 'none';
+              const isHuman = sendButton.getAttribute('data-original-disabled') !== 'true';
+              
+              // Enable send button only if user is human AND (has text OR has image)
+              if (isHuman && (hasText || hasImage)) {
+                sendButton.disabled = false;
+              } else {
+                sendButton.disabled = true;
+              }
             }
             
-            fetch('/retry-message/' + encodeURIComponent(cleanId), {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json'
+            function scrollToBottom() {
+              const chatContainer = document.querySelector('.chat-thread');
+              if (chatContainer) {
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+                // Force a reflow to ensure scroll happens
+                chatContainer.offsetHeight;
               }
-            }).then(response => response.json())
-              .then(data => {
-                if (data.success) {
-                  console.log('✅ Message retried successfully:', data.newMessageId);
-                  // Show success toast
-                  if (typeof showToast === 'function') {
-                    showToast('Message sent successfully!', 'success');
-                  }
-                  // No need to reload if real-time broadcast works; fallback reload
-                  setTimeout(() => {
-                    try {
-                      if (window.realtimeManager && window.realtimeManager.isConnected) return;
-                    } catch {}
-                    window.location.reload();
-                  }, 800);
+            }
+
+            function scrollToBottomAfterImages() {
+              // Wait for all images to load before scrolling
+              const images = document.querySelectorAll('.chat-thread img');
+              let loadedImages = 0;
+              
+              if (images.length === 0) {
+                // No images, scroll immediately
+                scrollToBottom();
+                return;
+              }
+              
+              images.forEach(img => {
+                if (img.complete) {
+                  loadedImages++;
                 } else {
-                  console.error('❌ Failed to retry message:', data.error);
+                  img.addEventListener('load', () => {
+                    loadedImages++;
+                    if (loadedImages === images.length) {
+                      setTimeout(scrollToBottom, 100);
+                    }
+                  });
+                  img.addEventListener('error', () => {
+                    loadedImages++;
+                    if (loadedImages === images.length) {
+                      setTimeout(scrollToBottom, 100);
+                    }
+                  });
+                }
+              });
+              
+              if (loadedImages === images.length) {
+                setTimeout(scrollToBottom, 100);
+              }
+            }
+            
+            function toggleQuickReplies() {
+              const container = document.getElementById('quickRepliesContainer');
+              const grid = document.getElementById('quickRepliesGrid');
+              const toggle = document.getElementById('quickRepliesToggle');
+              
+              if (container && grid && toggle) {
+                if (grid.style.display === 'none') {
+                  grid.style.display = 'grid';
+                  toggle.style.transform = 'rotate(0deg)';
+                  container.classList.remove('collapsed');
+                } else {
+                  grid.style.display = 'none';
+                  toggle.style.transform = 'rotate(180deg)';
+                  container.classList.add('collapsed');
+                }
+              }
+            }
+            
+            function selectQuickReply(text) {
+              const messageInput = document.getElementById('messageInput');
+              if (messageInput) {
+                messageInput.value = text;
+                messageInput.focus();
+                updateSendButtonState();
+                // Auto-scroll to bottom after selecting quick reply
+                setTimeout(scrollToBottom, 100);
+              }
+            }
+            
+            function initTypingIndicator() {
+              const phone = '${phone}'.split('?')[0]; // Clean phone number
+              const userId = '${userId}';
+              
+              // Typing indicators are now handled by Socket.IO in realtime.js
+              if (window?.ENV?.DEBUG_LOGS === '1') console.log('Typing indicators initialized via Socket.IO');
+            }
+
+            function initTypingIndicator() {
+              const phone = '${phone}'.split('?')[0]; // Clean phone number
+              const userId = '${userId}';
+              
+              // Typing indicators are now handled by Socket.IO in realtime.js
+              if (window?.ENV?.DEBUG_LOGS === '1') console.log('Typing indicators initialized via Socket.IO');
+            }
+            
+            function showTypingIndicator() {
+              const indicator = document.getElementById('typingIndicator');
+              if (indicator) {
+                indicator.style.display = 'block';
+                scrollToBottom();
+              }
+            }
+            
+            function hideTypingIndicator() {
+              const indicator = document.getElementById('typingIndicator');
+              if (indicator) {
+                indicator.style.display = 'none';
+              }
+            }
+            
+            // Test functions for typing indicators
+            function testTypingStart() {
+              const phone = '${phone}'.split('?')[0]; // Clean phone number
+              const userId = '${userId}';
+              fetch('/api/typing/' + phone + '/start', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ userId: userId })
+              }).then(response => response.json())
+                .then(data => {
+                  if (window?.ENV?.DEBUG_LOGS === '1') console.log('Typing start test:', data);
+                })
+                .catch(error => {
+                  console.error('Error testing typing start:', error);
+                });
+            }
+            
+            function testTypingStop() {
+              const phone = '${phone}'.split('?')[0]; // Clean phone number
+              const userId = '${userId}';
+              fetch('/api/typing/' + phone + '/stop', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ userId: userId })
+              }).then(response => response.json())
+                .then(data => {
+                  if (window?.ENV?.DEBUG_LOGS === '1') console.log('Typing stop test:', data);
+                })
+                .catch(error => {
+                  console.error('Error testing typing stop:', error);
+                });
+            }
+            
+            // Reaction and Reply functions
+            let currentMessageId = null;
+            let currentReplyToMessageId = null;
+            
+            function showReactionPicker(messageId) {
+              currentMessageId = messageId;
+              const picker = document.getElementById('reactionPicker');
+              if (picker) {
+                picker.style.display = 'block';
+                picker.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+              }
+            }
+            
+            function hideReactionPicker() {
+              const picker = document.getElementById('reactionPicker');
+              if (picker) {
+                picker.style.display = 'none';
+              }
+              currentMessageId = null;
+            }
+            
+            function addReaction(emoji) {
+              if (!currentMessageId) return;
+              
+              const phone = '${phone}'.split('?')[0]; // Clean phone number
+              fetch('/api/reactions/' + currentMessageId, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ emoji: emoji, phone: phone })
+              }).then(response => response.json())
+                .then(data => {
+                  if (data.success) {
+                    // Reload the page to show updated reactions
+                    window.location.reload();
+                  } else {
+                    console.error('Failed to add reaction:', data.error);
+                  }
+                })
+                .catch(error => {
+                  console.error('Error adding reaction:', error);
+                });
+              
+              hideReactionPicker();
+            }
+            
+            function toggleReaction(messageId, emoji) {
+              const phone = '${phone}'.split('?')[0]; // Clean phone number
+              fetch('/api/reactions/' + messageId, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ emoji: emoji, phone: phone })
+              }).then(response => response.json())
+                .then(data => {
+                  if (data.success) {
+                    // Reload the page to show updated reactions
+                    window.location.reload();
+                  } else {
+                    console.error('Failed to toggle reaction:', data.error);
+                  }
+                })
+                .catch(error => {
+                  console.error('Error toggling reaction:', error);
+                });
+            }
+            function retryMessage(messageId) {
+              if (window?.ENV?.DEBUG_LOGS === '1') console.log('🔄 Retrying message (raw id):', messageId);
+              // Normalize id (handle accidental spaces)
+              const cleanId = String(messageId || '').trim().replace(/\s+/g, '_');
+              if (window?.ENV?.DEBUG_LOGS === '1') console.log('🔄 Retrying message (normalized id):', cleanId);
+              
+              // Show loading state on the retry button
+              const retryButton = document.querySelector('[data-message-id="' + cleanId + '"]');
+              if (retryButton) {
+                retryButton.disabled = true;
+                retryButton.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>';
+                retryButton.style.opacity = '0.6';
+              }
+              
+              fetch('/retry-message/' + encodeURIComponent(cleanId), {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json'
+                }
+              }).then(response => response.json())
+                .then(data => {
+                  if (data.success) {
+                    if (window?.ENV?.DEBUG_LOGS === '1') console.log('✅ Message retried successfully:', data.newMessageId);
+                    // Show success toast
+                    if (typeof showToast === 'function') {
+                      showToast('Message sent successfully!', 'success');
+                    }
+                    // No need to reload if real-time broadcast works; fallback reload
+                    setTimeout(() => {
+                      try {
+                        if (window.realtimeManager && window.realtimeManager.isConnected) return;
+                      } catch {}
+                      window.location.reload();
+                    }, 800);
+                  } else {
+                    console.error('❌ Failed to retry message:', data.error);
+                    // Show error toast
+                    if (typeof showToast === 'function') {
+                      showToast('Retry failed: ' + data.error, 'error');
+                    }
+                    // Reset button state
+                    if (retryButton) {
+                      retryButton.disabled = false;
+                      retryButton.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>';
+                      retryButton.style.opacity = '1';
+                    }
+                  }
+                })
+                .catch(error => {
+                  console.error('❌ Error retrying message:', error);
                   // Show error toast
                   if (typeof showToast === 'function') {
-                    showToast('Retry failed: ' + data.error, 'error');
+                    showToast('Retry failed: ' + error.message, 'error');
                   }
                   // Reset button state
                   if (retryButton) {
@@ -1729,522 +1817,509 @@ export default function registerInboxRoutes(app) {
                     retryButton.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>';
                     retryButton.style.opacity = '1';
                   }
-                }
-              })
-              .catch(error => {
-                console.error('❌ Error retrying message:', error);
-                // Show error toast
-                if (typeof showToast === 'function') {
-                  showToast('Retry failed: ' + error.message, 'error');
-                }
-                // Reset button state
-                if (retryButton) {
-                  retryButton.disabled = false;
-                  retryButton.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>';
-                  retryButton.style.opacity = '1';
-                }
-              });
-          }
-          
-          // Reply functions
-          function replyToMessage(messageId) {
-            currentReplyToMessageId = messageId;
-            const messageElement = document.getElementById('message-' + messageId);
-            
-            if (messageElement) {
-              // Highlight the message being replied to
-              messageElement.classList.add('replying-to');
+                });
+            }
+            // Reply functions
+            function replyToMessage(messageId) {
+              currentReplyToMessageId = messageId;
+              const messageElement = document.getElementById('message-' + messageId);
               
-              // Show reply indicator in input
-              showReplyIndicator(messageId);
-              
-              // Focus the message input
-              const messageInput = document.getElementById('messageInput');
-              if (messageInput) {
-                messageInput.focus();
+              if (messageElement) {
+                // Highlight the message being replied to
+                messageElement.classList.add('replying-to');
+                
+                // Show reply indicator in input
+                showReplyIndicator(messageId);
+                
+                // Focus the message input
+                const messageInput = document.getElementById('messageInput');
+                if (messageInput) {
+                  messageInput.focus();
+                }
               }
             }
-          }
-          
-          function showReplyIndicator(messageId) {
-            const messageElement = document.getElementById('message-' + messageId);
-            const messageText = messageElement ? messageElement.querySelector('.bubble')?.textContent?.trim() : 'Message';
-            const truncatedText = messageText.length > 35 ? messageText.substring(0, 35) + '...' : messageText;
-            
-            // Determine if it's a customer or agent message
-            const isCustomerMessage = messageElement && messageElement.classList.contains('msg-in');
-            const authorName = isCustomerMessage ? 'Customer' : 'You';
-            
-            // Create or update reply indicator
-            let replyIndicator = document.getElementById('replyIndicator');
-            if (!replyIndicator) {
-              replyIndicator = document.createElement('div');
-              replyIndicator.id = 'replyIndicator';
-              replyIndicator.className = 'reply-indicator';
-              replyIndicator.innerHTML = \`
-                <div class="reply-indicator-content">
-                  <div class="reply-indicator-text"><strong>\${authorName}</strong><br>\${truncatedText}</div>
-                  <button class="reply-indicator-close" onclick="clearReply()">×</button>
-                </div>
-              \`;
+
+            function showReplyIndicator(messageId) {
+              const messageElement = document.getElementById('message-' + messageId);
+              const messageText = messageElement ? messageElement.querySelector('.bubble')?.textContent?.trim() : 'Message';
+              const truncatedText = messageText.length > 35 ? messageText.substring(0, 35) + '...' : messageText;
+
+              // Determine if it's a customer or agent message
+              const isCustomerMessage = messageElement && messageElement.classList.contains('msg-in');
+              const authorName = isCustomerMessage ? 'Customer' : 'You';
+
+              // Create or update reply indicator
+              let replyIndicator = document.getElementById('replyIndicator');
+              if (!replyIndicator) {
+                replyIndicator = document.createElement('div');
+                replyIndicator.id = 'replyIndicator';
+                replyIndicator.className = 'reply-indicator';
+
+                // Combine everything under a single parent element
+                replyIndicator.innerHTML = [
+                  '<div class="reply-indicator-content">',
+                    '<div class="reply-indicator-text"><strong>' + authorName + '</strong><br>' + truncatedText + '</div>',
+                    '<button class="reply-indicator-close" onclick="clearReply()">×</button>',
+                  '</div>'
+                ].join('');
+
+                // Insert before the input container
+                const inputContainer = document.querySelector('.wa-input-container');
+                if (inputContainer) {
+                  inputContainer.parentNode.insertBefore(replyIndicator, inputContainer);
+                }
+              } else {
+                replyIndicator.querySelector('.reply-indicator-text').innerHTML =
+                  '<strong>' + authorName + '</strong><br>' + truncatedText;
+              }
+            }
+
+            function clearReply() {
+              currentReplyToMessageId = null;
               
+              // Remove highlight from message
+              document.querySelectorAll('.replying-to').forEach(el => {
+                el.classList.remove('replying-to');
+              });
+              
+              // Remove reply indicator
+              const replyIndicator = document.getElementById('replyIndicator');
+              if (replyIndicator) {
+                replyIndicator.remove();
+              }
+            }
+            
+            function scrollToMessage(messageId) {
+              const messageElement = document.getElementById('message-' + messageId);
+              if (messageElement) {
+                messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                // Temporarily highlight the message
+                messageElement.classList.add('highlighted');
+                setTimeout(() => {
+                  messageElement.classList.remove('highlighted');
+                }, 2000);
+              }
+            }
+            
+            function toggleAttachmentMenu() {
+              const menu = document.getElementById('attachMenu');
+              if (menu.style.display === 'none') {
+                menu.style.display = 'flex';
+                // Close menu when clicking outside
+                setTimeout(() => {
+                  document.addEventListener('click', function closeMenu(e) {
+                    if (!menu.contains(e.target) && !e.target.closest('.wa-attach-btn')) {
+                      menu.style.display = 'none';
+                      document.removeEventListener('click', closeMenu);
+                    }
+                  });
+                }, 100);
+              } else {
+                menu.style.display = 'none';
+              }
+            }
+            function handleDocumentSelect(event) {
+              const file = event.target.files[0];
+              if (!file) return;
+              
+              // Validate file size (max 100MB)
+              const maxSize = 100 * 1024 * 1024; // 100MB
+              if (file.size > maxSize) {
+                alert('File size must be less than 100MB');
+                event.target.value = '';
+                return;
+              }
+              
+              // Validate file type
+              const allowedTypes = ['.pdf', '.doc', '.docx', '.txt', '.rtf', '.odt', '.ppt', '.pptx', '.xls', '.xlsx', '.csv', '.zip', '.rar'];
+              const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
+              if (!allowedTypes.includes(fileExtension)) {
+                alert('File type not supported. Please select a PDF, Word document, text file, or other supported format.');
+                event.target.value = '';
+                return;
+              }
+              
+              showDocumentPreview(file);
+            }
+
+            function showDocumentPreview(file) {
+              // Hide attachment menu
+              document.getElementById('attachMenu').style.display = 'none';
+
+              // Create document preview
+              const preview = document.createElement('div');
+              preview.id = 'documentPreview';
+              preview.className = 'document-preview';
+
+              const fileExtension = file.name.split('.').pop().toUpperCase();
+              const fileSize = formatFileSize(file.size);
+
+              // Ensure all content is wrapped in a single parent <div>
+              preview.innerHTML = [
+                '<div class="document-icon">' + fileExtension + '</div>',
+                '<div class="document-info">',
+                  '<div class="document-name">' + escapeHtml(file.name) + '</div>',
+                  '<div class="document-size">' + fileSize + '</div>',
+                '</div>',
+                '<button type="button" class="document-remove" onclick="clearDocumentPreview()">Remove</button>'
+              ].join('');
+
               // Insert before the input container
               const inputContainer = document.querySelector('.wa-input-container');
-              if (inputContainer) {
-                inputContainer.parentNode.insertBefore(replyIndicator, inputContainer);
+              inputContainer.parentNode.insertBefore(preview, inputContainer);
+            }
+
+            function clearDocumentPreview() {
+              const preview = document.getElementById('documentPreview');
+              if (preview) {
+                preview.remove();
               }
-            } else {
-              replyIndicator.querySelector('.reply-indicator-text').innerHTML = '<strong>' + authorName + '</strong><br>' + truncatedText;
-            }
-          }
-          
-          function clearReply() {
-            currentReplyToMessageId = null;
-            
-            // Remove highlight from message
-            document.querySelectorAll('.replying-to').forEach(el => {
-              el.classList.remove('replying-to');
-            });
-            
-            // Remove reply indicator
-            const replyIndicator = document.getElementById('replyIndicator');
-            if (replyIndicator) {
-              replyIndicator.remove();
-            }
-          }
-          
-          function scrollToMessage(messageId) {
-            const messageElement = document.getElementById('message-' + messageId);
-            if (messageElement) {
-              messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-              // Temporarily highlight the message
-              messageElement.classList.add('highlighted');
-              setTimeout(() => {
-                messageElement.classList.remove('highlighted');
-              }, 2000);
-            }
-          }
-          
-          function toggleAttachmentMenu() {
-            const menu = document.getElementById('attachMenu');
-            if (menu.style.display === 'none') {
-              menu.style.display = 'flex';
-              // Close menu when clicking outside
-              setTimeout(() => {
-                document.addEventListener('click', function closeMenu(e) {
-                  if (!menu.contains(e.target) && !e.target.closest('.wa-attach-btn')) {
-                    menu.style.display = 'none';
-                    document.removeEventListener('click', closeMenu);
-                  }
-                });
-              }, 100);
-            } else {
-              menu.style.display = 'none';
-            }
-          }
-          
-          function handleDocumentSelect(event) {
-            const file = event.target.files[0];
-            if (!file) return;
-            
-            // Validate file size (max 100MB)
-            const maxSize = 100 * 1024 * 1024; // 100MB
-            if (file.size > maxSize) {
-              alert('File size must be less than 100MB');
-              event.target.value = '';
-              return;
+              document.getElementById('documentFileInput').value = '';
             }
             
-            // Validate file type
-            const allowedTypes = ['.pdf', '.doc', '.docx', '.txt', '.rtf', '.odt', '.ppt', '.pptx', '.xls', '.xlsx', '.csv', '.zip', '.rar'];
-            const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
-            if (!allowedTypes.includes(fileExtension)) {
-              alert('File type not supported. Please select a PDF, Word document, text file, or other supported format.');
-              event.target.value = '';
-              return;
+            function formatFileSize(bytes) {
+              if (bytes === 0) return '0 Bytes';
+              const k = 1024;
+              const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+              const i = Math.floor(Math.log(bytes) / Math.log(k));
+              return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
             }
             
-            showDocumentPreview(file);
-          }
-          
-          function showDocumentPreview(file) {
-            // Hide attachment menu
-            document.getElementById('attachMenu').style.display = 'none';
-            
-            // Create document preview
-            const preview = document.createElement('div');
-            preview.id = 'documentPreview';
-            preview.className = 'document-preview';
-            
-            const fileExtension = file.name.split('.').pop().toUpperCase();
-            const fileSize = formatFileSize(file.size);
-            
-            preview.innerHTML = \`
-              <div class="document-icon">\${fileExtension}</div>
-              <div class="document-info">
-                <div class="document-name">\${escapeHtml(file.name)}</div>
-                <div class="document-size">\${fileSize}</div>
-              </div>
-              <button type="button" class="document-remove" onclick="clearDocumentPreview()">Remove</button>
-            \`;
-            
-            // Insert before the input container
-            const inputContainer = document.querySelector('.wa-input-container');
-            inputContainer.parentNode.insertBefore(preview, inputContainer);
-          }
-          
-          function clearDocumentPreview() {
-            const preview = document.getElementById('documentPreview');
-            if (preview) {
-              preview.remove();
+            function escapeHtml(text) {
+              const div = document.createElement('div');
+              div.textContent = text;
+              return div.innerHTML;
             }
-            document.getElementById('documentFileInput').value = '';
-          }
-          
-          function formatFileSize(bytes) {
-            if (bytes === 0) return '0 Bytes';
-            const k = 1024;
-            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-          }
-          
-          function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-          }
-          
-          function toggleEmojiPicker() {
-            const picker = document.getElementById('emojiPicker');
-            if (picker.classList.contains('show')) {
-              picker.classList.remove('show');
-            } else {
-              picker.classList.add('show');
-              loadEmojiCategory('smileys');
-            }
-          }
-          
-          function startVoiceRecording() {
-            alert('Voice recording feature coming soon!');
-          }
-          
-          // Emoji data
-          const emojiCategories = {
-            smileys: ['😀', '😃', '😄', '😁', '😆', '😅', '😂', '🤣', '😊', '😇', '🙂', '🙃', '😉', '😌', '😍', '🥰', '😘', '😗', '😙', '😚', '😋', '😛', '😝', '😜', '🤪', '🤨', '🧐', '🤓', '😎', '🤩', '🥳', '😏', '😒', '😞', '😔', '😟', '😕', '🙁', '☹️', '😣', '😖', '😫', '😩', '🥺', '😢', '😭', '😤', '😠', '😡', '🤬', '🤯', '😳', '🥵', '🥶', '😱', '😨', '😰', '😥', '😓'],
-            people: ['👋', '🤚', '🖐', '✋', '🖖', '👌', '🤏', '✌️', '🤞', '🤟', '🤘', '🤙', '👈', '👉', '👆', '🖕', '👇', '☝️', '👍', '👎', '👊', '✊', '🤛', '🤜', '👏', '🙌', '👐', '🤲', '🤝', '🙏', '✍️', '💅', '🤳', '💪', '🦾', '🦿', '🦵', '🦶', '👂', '🦻', '👃', '🧠', '🦷', '🦴', '👀', '👁', '👅', '👄'],
-            animals: ['🐶', '🐱', '🐭', '🐹', '🐰', '🦊', '🐻', '🐼', '🐨', '🐯', '🦁', '🐮', '🐷', '🐸', '🐵', '🙈', '🙉', '🙊', '🐒', '🦍', '🦧', '🐕', '🐩', '🦮', '🐕‍🦺', '🐈', '🐈‍⬛', '🦄', '🐎', '🦓', '🦌', '🐂', '🐃', '🐄', '🐪', '🐫', '🦙', '🦒', '🐘', '🦏', '🦛', '🐐', '🐑', '🐏', '🐚', '🐌', '🦋', '🐛', '🐜', '🐝', '🐞', '🦗', '🕷', '🕸', '🦂', '🦟', '🦠'],
-            food: ['🍕', '🍔', '🍟', '🌭', '🥪', '🌮', '🌯', '🥙', '🥚', '🍳', '🥘', '🍲', '🥗', '🍿', '🧈', '🧀', '🥞', '🧇', '🥓', '🥩', '🍗', '🍖', '🦴', '🌽', '🍅', '🍆', '🥑', '🥦', '🥬', '🥒', '🌶', '🫑', '🌶️', '🫒', '🥕', '🌽', '🫐', '🍇', '🍈', '🍉', '🍊', '🍋', '🍌', '🍍', '🥭', '🍎', '🍏', '🍐', '🍑', '🍒', '🍓', '🫐', '🥝', '🍅', '🥥', '🥔', '🍠', '🥐', '🥯', '🍞', '🥖', '🥨', '🧀', '🥚', '🍳', '🧈', '🥞', '🧇', '🥓', '🥩', '🍗', '🍖', '🦴', '🌭', '🍔', '🍟', '🍕'],
-            travel: ['✈️', '🛫', '🛬', '🛩', '💺', '🛰', '🚀', '🛸', '🚁', '🛶', '⛵', '🚤', '🛥', '🛳', '⛴', '🚢', '⚓', '🚧', '⛽', '🚏', '🚦', '🚥', '🗺', '🗿', '🗽', '🗼', '🏰', '🏯', '🏟', '🎡', '🎢', '🎠', '⛲', '⛱', '🏖', '🏝', '🏔', '⛰', '🌋', '🗻', '🏕', '⛺', '🏠', '🏡', '🏘', '🏚', '🏗', '🏭', '🏢', '🏬', '🏣', '🏤', '🏥', '🏦', '🏨', '🏪', '🏫', '🏩', '💒', '🏛', '⛪', '🕌', '🕍', '🕋', '⛩', '🛤', '🛣', '🗾', '🎑', '🏞', '🌅', '🌄', '🌠', '🎇', '🎆', '🌇', '🌆', '🏙', '🌃', '🌌', '🌉', '🌁'],
-            objects: ['📱', '📲', '💻', '⌨️', '🖥', '🖨', '🖱', '🖲', '🕹', '🗜', '💽', '💾', '💿', '📀', '📼', '📷', '📸', '📹', '🎥', '📽', '🎞', '📞', '☎️', '📟', '📠', '📺', '📻', '🎙', '🎚', '🎛', '🧭', '⏱', '⏲', '⏰', '🕰', '⌛', '⏳', '📡', '🔋', '🔌', '💡', '🔦', '🕯', '🪔', '🧯', '🛢', '💸', '💵', '💴', '💶', '💷', '💰', '💳', '💎', '⚖', '🧰', '🔧', '🔨', '⚒', '🛠', '⛏', '🔩', '⚙', '🪚', '🧱', '⛓', '🧲', '🔫', '💣', '🧨', '🪓', '🔪', '🗡', '⚔', '🛡', '🚬', '⚰', '🪦', '⚱', '🏺', '🔮', '📿', '🧿', '💈', '⚗', '🔭', '🔬', '🕳', '🩹', '🩺', '💊', '💉', '🧬', '🦠', '🧫', '🧪', '🌡', '🧹', '🧺', '🧻', '🚽', '🚰', '🚿', '🛁', '🛀', '🧴', '🧷', '🧸', '🧵', '🧶', '🪡', '🪢', '🪣', '🪤', '🪥', '🪦', '🪧', '🪨', '🪩', '🪪', '🪫', '🪬', '🪭', '🪮', '🪯', '🪰', '🪱', '🪲', '🪳', '🪴', '🪵', '🪶', '🪷', '🪸', '🪹', '🪺', '🪻', '🪼', '🪽', '🪾', '🪿', '🫀', '🫁', '🫂', '🫃', '🫄', '🫅', '🫆', '🫇', '🫈', '🫉', '🫊', '🫋', '🫌', '🫍', '🫎', '🫏', '🫐', '🫑', '🫒', '🫓', '🫔', '🫕', '🫖', '🫗', '🫘', '🫙', '🫚', '🫛', '🫜', '🫝', '🫞', '🫟', '🫠', '🫡', '🫢', '🫣', '🫤', '🫥', '🫦', '🫧', '🫨', '🫩', '🫪', '🫫', '🫬', '🫭', '🫮', '🫯', '🫰', '🫱', '🫲', '🫳', '🫴', '🫵', '🫶', '🫷', '🫸', '🫹', '🫺', '🫻', '🫼', '🫽', '🫾', '🫿', '🬀', '🬁', '🬂', '🬃', '🬄', '🬅', '🬆', '🬇', '🬈', '🬉', '🬊', '🬋', '🬌', '🬍', '🬎', '🬏', '🬐', '🬑', '🬒', '🬓', '🬔', '🬕', '🬖', '🬗', '🬘', '🬙', '🬚', '🬛', '🬜', '🬝', '🬞', '🬟', '🬠', '🬡', '🬢', '🬣', '🬤', '🬥', '🬦', '🬧', '🬨', '🬩', '🬪', '🬫', '🬬', '🬭', '🬮', '🬯', '🬰', '🬱', '🬲', '🬳', '🬴', '🬵', '🬶', '🬷', '🬸', '🬹', '🬺', '🬻', '🬼', '🬽', '🬾', '🬿', '🭀', '🭁', '🭂', '🭃', '🭄', '🭅', '🭆', '🭇', '🭈', '🭉', '🭊', '🭋', '🭌', '🭍', '🭎', '🭏', '🭐', '🭑', '🭒', '🭓', '🭔', '🭕', '🭖', '🭗', '🭘', '🭙', '🭚', '🭛', '🭜', '🭝', '🭞', '🭟', '🭠', '🭡', '🭢', '🭣', '🭤', '🭥', '🭦', '🭧', '🭨', '🭩', '🭪', '🭫', '🭬', '🭭', '🭮', '🭯', '🭰', '🭱', '🭲', '🭳', '🭴', '🭵', '🭶', '🭷', '🭸', '🭹', '🭺', '🭻', '🭼', '🭽', '🭾', '🭿', '🮀', '🮁', '🮂', '🮃', '🮄', '🮅', '🮆', '🮇', '🮈', '🮉', '🮊', '🮋', '🮌', '🮍', '🮎', '🮏', '🮐', '🮑', '🮒', '🮓', '🮔', '🮕', '🮖', '🮗', '🮘', '🮙', '🮚', '🮛', '🮜', '🮝', '🮞', '🮟', '🮠', '🮡', '🮢', '🮣', '🮤', '🮥', '🮦', '🮧', '🮨', '🮩', '🮪', '🮫', '🮬', '🮭', '🮮', '🮯', '🮰', '🮱', '🮲', '🮳', '🮴', '🮵', '🮶', '🮷', '🮸', '🮹', '🮺', '🮻', '🮼', '🮽', '🮾', '🮿', '🯀', '🯁', '🯂', '🯃', '🯄', '🯅', '🯆', '🯇', '🯈', '🯉', '🯊', '🯋', '🯌', '🯍', '🯎', '🯏', '🯐', '🯑', '🯒', '🯓', '🯔', '🯕', '🯖', '🯗', '🯘', '🯙', '🯚', '🯛', '🯜', '🯝', '🯞', '🯟', '🯠', '🯡', '🯢', '🯣', '🯤', '🯥', '🯦', '🯧', '🯨', '🯩', '🯪', '🯫', '🯬', '🯭', '🯮', '🯯', '🯰', '🯱', '🯲', '🯳', '🯴', '🯵', '🯶', '🯷', '🯸', '🯹', '🯺', '🯻', '🯼', '🯽', '🯾', '🯿', '🰀', '🰁', '🰂', '🰃', '🰄', '🰅', '🰆', '🰇', '🰈', '🰉', '🰊', '🰋', '🰌', '🰍', '🰎', '🰏', '🰐', '🰑', '🰒', '🰓', '🰔', '🰕', '🰖', '🰗', '🰘', '🰙', '🰚', '🰛', '🰜', '🰝', '🰞', '🰟', '🰠', '🰡', '🰢', '🰣', '🰤', '🰥', '🰦', '🰧', '🰨', '🰩', '🰪', '🰫', '🰬', '🰭', '🰮', '🰯', '🰰', '🰱', '🰲', '🰳', '🰴', '🰵', '🰶', '🰷', '🰸', '🰹', '🰺', '🰻', '🰼', '🰽', '🰾', '🰿', '🱀', '🱁', '🱂', '🱃', '🱄', '🱅', '🱆', '🱇', '🱈', '🱉', '🱊', '🱋', '🱌', '🱍', '🱎', '🱏', '🱐', '🱑', '🱒', '🱓', '🱔', '🱕', '🱖', '🱗', '🱘', '🱙', '🱚', '🱛', '🱜', '🱝', '🱞', '🱟', '🱠', '🱡', '🱢', '🱣', '🱤', '🱥', '🱦', '🱧', '🱨', '🱩', '🱪', '🱫', '🱬', '🱭', '🱮', '🱯', '🱰', '🱱', '🱲', '🱳', '🱴', '🱵', '🱶', '🱷', '🱸', '🱹', '🱺', '🱻', '🱼', '🱽', '🱾', '🱿', '🲀', '🲁', '🲂', '🲃', '🲄', '🲅', '🲆', '🲇', '🲈', '🲉', '🲊', '🲋', '🲌', '🲍', '🲎', '🲏', '🲐', '🲑', '🲒', '🲓', '🲔', '🲕', '🲖', '🲗', '🲘', '🲙', '🲚', '🲛', '🲜', '🲝', '🲞', '🲟', '🲠', '🲡', '🲢', '🲣', '🲤', '🲥', '🲦', '🲧', '🲨', '🲩', '🲪', '🲫', '🲬', '🲭', '🲮', '🲯', '🲰', '🲱', '🲲', '🲳', '🲴', '🲵', '🲶', '🲷', '🲸', '🲹', '🲺', '🲻', '🲼', '🲽', '🲾', '🲿', '🳀', '🳁', '🳂', '🳃', '🳄', '🳅', '🳆', '🳇', '🳈', '🳉', '🳊', '🳋', '🳌', '🳍', '🳎', '🳏', '🳐', '🳑', '🳒', '🳓', '🳔', '🳕', '🳖', '🳗', '🳘', '🳙', '🳚', '🳛', '🳜', '🳝', '🳞', '🳟', '🳠', '🳡', '🳢', '🳣', '🳤', '🳥', '🳦', '🳧', '🳨', '🳩', '🳪', '🳫', '🳬', '🳭', '🳮', '🳯', '🳰', '🳱', '🳲', '🳳', '🳴', '🳵', '🳶', '🳷', '🳸', '🳹', '🳺', '🳻', '🳼', '🳽', '🳾', '🳿', '🴀', '🴁', '🴂', '🴃', '🴄', '🴅', '🴆', '🴇', '🴈', '🴉', '🴊', '🴋', '🴌', '🴍', '🴎', '🴏', '🴐', '🴑', '🴒', '🴓', '🴔', '🴕', '🴖', '🴗', '🴘', '🴙', '🴚', '🴛', '🴜', '🴝', '🴞', '🴟', '🴠', '🴡', '🴢', '🴣', '🴤', '🴥', '🴦', '🴧', '🴨', '🴩', '🴪', '🴫', '🴬', '🴭', '🴮', '🴯', '🴰', '🴱', '🴲', '🴳', '🴴', '🴵', '🴶', '🴷', '🴸', '🴹', '🴺', '🴻', '🴼', '🴽', '🴾', '🴿', '🵀', '🵁', '🵂', '🵃', '🵄', '🵅', '🵆', '🵇', '🵈', '🵉', '🵊', '🵋', '🵌', '🵍', '🵎', '🵏', '🵐', '🵑', '🵒', '🵓', '🵔', '🵕', '🵖', '🵗', '🵘', '🵙', '🵚', '🵛', '🵜', '🵝', '🵞', '🵟', '🵠', '🵡', '🵢', '🵣', '🵤', '🵥', '🵦', '🵧', '🵨', '🵩', '🵪', '🵫', '🵬', '🵭', '🵮', '🵯', '🵰', '🵱', '🵲', '🵳', '🵴', '🵵', '🵶', '🵷', '🵸', '🵹', '🵺', '🵻', '🵼', '🵽', '🵾', '🵿', '🶀', '🶁', '🶂', '🶃', '🶄', '🶅', '🶆', '🶇', '🶈', '🶉', '🶊', '🶋', '🶌', '🶍', '🶎', '🶏', '🶐', '🶑', '🶒', '🶓', '🶔', '🶕', '🶖', '🶗', '🶘', '🶙', '🶚', '🶛', '🶜', '🶝', '🶞', '🶟', '🶠', '🶡', '🶢', '🶣', '🶤', '🶥', '🶦', '🶧', '🶨', '🶩', '🶪', '🶫', '🶬', '🶭', '🶮', '🶯', '🶰', '🶱', '🶲', '🶳', '🶴', '🶵', '🶶', '🶷', '🶸', '🶹', '🶺', '🶻', '🶼', '🶽', '🶾', '🶿', '🷀', '🷁', '🷂', '🷃', '🷄', '🷅', '🷆', '🷇', '🷈', '🷉', '🷊', '🷋', '🷌', '🷍', '🷎', '🷏', '🷐', '🷑', '🷒', '🷓', '🷔', '🷕', '🷖', '🷗', '🷘', '🷙', '🷚', '🷛', '🷜', '🷝', '🷞', '🷟', '🷠', '🷡', '🷢', '🷣', '🷤', '🷥', '🷦', '🷧', '🷨', '🷩', '🷪', '🷫', '🷬', '🷭', '🷮', '🷯', '🷰', '🷱', '🷲', '🷳', '🷴', '🷵', '🷶', '🷷', '🷸', '🷹', '🷺', '🷻', '🷼', '🷽', '🷾', '🷿', '🸀', '🸁', '🸂', '🸃', '🸄', '🸅', '🸆', '🸇', '🸈', '🸉', '🸊', '🸋', '🸌', '🸍', '🸎', '🸏', '🸐', '🸑', '🸒', '🸓', '🸔', '🸕', '🸖', '🸗', '🸘', '🸙', '🸚', '🸛', '🸜', '🸝', '🸞', '🸟', '🸠', '🸡', '🸢', '🸣', '🸤', '🸥', '🸦', '🸧', '🸨', '🸩', '🸪', '🸫', '🸬', '🸭', '🸮', '🸯', '🸰', '🸱', '🸲', '🸳', '🸴', '🸵', '🸶', '🸷', '🸸', '🸹', '🸺', '🸻', '🸼', '🸽', '🸾', '🸿', '🹀', '🹁', '🹂', '🹃', '🹄', '🹅', '🹆', '🹇', '🹈', '🹉', '🹊', '🹋', '🹌', '🹍', '🹎', '🹏', '🹐', '🹑', '🹒', '🹓', '🹔', '🹕', '🹖', '🹗', '🹘', '🹙', '🹚', '🹛', '🹜', '🹝', '🹞', '🹟', '🹠', '🹡', '🹢', '🹣', '🹤', '🹥', '🹦', '🹧', '🹨', '🹩', '🹪', '🹫', '🹬', '🹭', '🹮', '🹯', '🹰', '🹱', '🹲', '🹳', '🹴', '🹵', '🹶', '🹷', '🹸', '🹹', '🹺', '🹻', '🹼', '🹽', '🹾', '🹿', '🺀', '🺁', '🺂', '🺃', '🺄', '🺅', '🺆', '🺇', '🺈', '🺉', '🺊', '🺋', '🺌', '🺍', '🺎', '🺏', '🺐', '🺑', '🺒', '🺓', '🺔', '🺕', '🺖', '🺗', '🺘', '🺙', '🺚', '🺛', '🺜', '🺝', '🺞', '🺟', '🺠', '🺡', '🺢', '🺣', '🺤', '🺥', '🺦', '🺧', '🺨', '🺩', '🺪', '🺫', '🺬', '🺭', '🺮', '🺯', '🺰', '🺱', '🺲', '🺳', '🺴', '🺵', '🺶', '🺷', '🺸', '🺹', '🺺', '🺻', '🺼', '🺽', '🺾', '🺿', '🻀', '🻁', '🻂', '🻃', '🻄', '🻅', '🻆', '🻇', '🻈', '🻉', '🻊', '🻋', '🻌', '🻍', '🻎', '🻏', '🻐', '🻑', '🻒', '🻓', '🻔', '🻕', '🻖', '🻗', '🻘', '🻙', '🻚', '🻛', '🻜', '🻝', '🻞', '🻟', '🻠', '🻡', '🻢', '🻣', '🻤', '🻥', '🻦', '🻧', '🻨', '🻩', '🻪', '🻫', '🻬', '🻭', '🻮', '🻯', '🻰', '🻱', '🻲', '🻳', '🻴', '🻵', '🻶', '🻷', '🻸', '🻹', '🻺', '🻻', '🻼', '🻽', '🻾', '🻿', '🼀', '🼁', '🼂', '🼃', '🼄', '🼅', '🼆', '🼇', '🼈', '🼉', '🼊', '🼋', '🼌', '🼍', '🼎', '🼏', '🼐', '🼑', '🼒', '🼓', '🼔', '🼕', '🼖', '🼗', '🼘', '🼙', '🼚', '🼛', '🼜', '🼝', '🼞', '🼟', '🼠', '🼡', '🼢', '🼣', '🼤', '🼥', '🼦', '🼧', '🼨', '🼩', '🼪', '🼫', '🼬', '🼭', '🼮', '🼯', '🼰', '🼱', '🼲', '🼳', '🼴', '🼵', '🼶', '🼷', '🼸', '🼹', '🼺', '🼻', '🼼', '🼽', '🼾', '🼿', '🽀', '🽁', '🽂', '🽃', '🽄', '🽅', '🽆', '🽇', '🽈', '🽉', '🽊', '🽋', '🽌', '🽍', '🽎', '🽏', '🽐', '🽑', '🽒', '🽓', '🽔', '🽕', '🽖', '🽗', '🽘', '🽙', '🽚', '🽛', '🽜', '🽝', '🽞', '🽟', '🽠', '🽡', '🽢', '🽣', '🽤', '🽥', '🽦', '🽧', '🽨', '🽩', '🽪', '🽫', '🽬', '🽭', '🽮', '🽯', '🽰', '🽱', '🽲', '🽳', '🽴', '🽵', '🽶', '🽷', '🽸', '🽹', '🽺', '🽻', '🽼', '🽽', '🽾', '🽿', '🾀', '🾁', '🾂', '🾃', '🾄', '🾅', '🾆', '🾇', '🾈', '🾉', '🾊', '🾋', '🾌', '🾍', '🾎', '🾏', '🾐', '🾑', '🾒', '🾓', '🾔', '🾕', '🾖', '🾗', '🾘', '🾙', '🾚', '🾛', '🾜', '🾝', '🾞', '🾟', '🾠', '🾡', '🾢', '🾣', '🾤', '🾥', '🾦', '🾧', '🾨', '🾩', '🾪', '🾫', '🾬', '🾭', '🾮', '🾯', '🾰', '🾱', '🾲', '🾳', '🾴', '🾵', '🾶', '🾷', '🾸', '🾹', '🾺', '🾻', '🾼', '🾽', '🾾', '🾿', '🿀', '🿁', '🿂', '🿃', '🿄', '🿅', '🿆', '🿇', '🿈', '🿉', '🿊', '🿋', '🿌', '🿍', '🿎', '🿏', '🿐', '🿑', '🿒', '🿓', '🿔', '🿕', '🿖', '🿗', '🿘', '🿙', '🿚', '🿛', '🿜', '🿝', '🿞', '🿟', '🿠', '🿡', '🿢', '🿣', '🿤', '🿥', '🿦', '🿧', '🿨', '🿩', '🿪', '🿫', '🿬', '🿭', '🿮', '🿯', '🿰', '🿱', '🿲', '🿳', '🿴', '🿵', '🿶', '🿷', '🿸', '🿹', '🿺', '🿻', '🿼', '🿽', '🿾', '🿿'],
-            symbols: ['❤️', '🧡', '💛', '💚', '💙', '💜', '🖤', '🤍', '🤎', '💔', '❣️', '💕', '💞', '💓', '💗', '💖', '💘', '💝', '💟', '☮️', '✝️', '☪️', '🕉', '☸️', '✡️', '🔯', '🕎', '☯️', '☦️', '🛐', '⛎', '♈', '♉', '♊', '♋', '♌', '♍', '♎', '♏', '♐', '♑', '♒', '♓', '🆔', '⚛️', '🉑', '☢️', '☣️', '📴', '📳', '🈶', '🈚', '🈸', '🈺', '🈷️', '✴️', '🆚', '💮', '🉐', '㊙️', '㊗️', '🈴', '🈵', '🈹', '🈲', '🅰️', '🅱️', '🆎', '🆑', '🅾️', '🆘', '❌', '⭕', '🛑', '⛔', '📛', '🚫', '💯', '💢', '♨️', '🚷', '🚯', '🚳', '🚱', '🔞', '📵', '🚭', '❗', '❕', '❓', '❔', '‼️', '⁉️', '🔅', '🔆', '〽️', '⚠️', '🚸', '🔱', '⚜️', '🔰', '♻️', '✅', '🈯', '💹', '❇️', '✳️', '❎', '🌐', '💠', 'Ⓜ️', '🌀', '💤', '🏧', '🚾', '♿', '🅿️', '🈳', '🈂️', '🛂', '🛃', '🛄', '🛅', '🚹', '🚺', '🚼', '⚧', '🚻', '🚮', '🎦', '📶', '🈁', '🔣', 'ℹ️', '🔤', '🔡', '🔠', '🆖', '🆗', '🆙', '🆒', '🆕', '🆓', '0️⃣', '1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟']
-          };
-          
-          function loadEmojiCategory(category) {
-            const grid = document.getElementById('emojiGrid');
-            const emojis = emojiCategories[category] || [];
             
-            grid.innerHTML = '';
-            emojis.forEach(emoji => {
-              const item = document.createElement('div');
-              item.className = 'wa-emoji-item';
-              item.textContent = emoji;
-              item.onclick = () => selectEmoji(emoji);
-              grid.appendChild(item);
-            });
-          }
-          
-          function selectEmoji(emoji) {
-            const ta = document.getElementById('messageInput');
-            ta.value += emoji;
-            ta.focus();
-            document.getElementById('emojiPicker').classList.remove('show');
-            updateSendButtonState(); // Update send button when emoji is added
-          }
-          function handleImageSelect(event){
-            const file = event.target.files[0];
-            if (!file) return;
-            
-            const reader = new FileReader();
-            reader.onload = function(e) {
-              const previewImg = document.getElementById('previewImg');
-              const imagePreview = document.getElementById('imagePreview');
-              if (previewImg && imagePreview) {
-                previewImg.src = e.target.result;
-                imagePreview.style.display = 'block';
-                updateSendButtonState(); // Update send button when image is selected
+            function toggleEmojiPicker() {
+              const picker = document.getElementById('emojiPicker');
+              if (picker.classList.contains('show')) {
+                picker.classList.remove('show');
+              } else {
+                picker.classList.add('show');
+                loadEmojiCategory('smileys');
               }
+            }
+
+            function startVoiceRecording() {
+              alert('Voice recording feature coming soon!');
+            }
+            // Emoji data
+            const emojiCategories = {
+              smileys: ['😀', '😃', '😄', '😁', '😆', '😅', '😂', '🤣', '😊', '😇', '🙂', '🙃', '😉', '😌', '😍', '🥰', '😘', '😗', '😙', '😚', '😋', '😛', '😝', '😜', '🤪', '🤨', '🧐', '🤓', '😎', '🤩', '🥳', '😏', '😒', '😞', '😔', '😟', '😕', '🙁', '☹️', '😣', '😖', '😫', '😩', '🥺', '😢', '😭', '😤', '😠', '😡', '🤬', '🤯', '😳', '🥵', '🥶', '😱', '😨', '😰', '😥', '😓'],
+              people: ['👋', '🤚', '🖐', '✋', '🖖', '👌', '🤏', '✌️', '🤞', '🤟', '🤘', '🤙', '👈', '👉', '👆', '🖕', '👇', '☝️', '👍', '👎', '👊', '✊', '🤛', '🤜', '👏', '🙌', '👐', '🤲', '🤝', '🙏', '✍️', '💅', '🤳', '💪', '🦾', '🦿', '🦵', '🦶', '👂', '🦻', '👃', '🧠', '🦷', '🦴', '👀', '👁', '👅', '👄'],
+              animals: ['🐶', '🐱', '🐭', '🐹', '🐰', '🦊', '🐻', '🐼', '🐨', '🐯', '🦁', '🐮', '🐷', '🐸', '🐵', '🙈', '🙉', '🙊', '🐒', '🦍', '🦧', '🐕', '🐩', '🦮', '🐕‍🦺', '🐈', '🐈‍⬛', '🦄', '🐎', '🦓', '🦌', '🐂', '🐃', '🐄', '🐪', '🐫', '🦙', '🦒', '🐘', '🦏', '🦛', '🐐', '🐑', '🐏', '🐚', '🐌', '🦋', '🐛', '🐜', '🐝', '🐞', '🦗', '🕷', '🕸', '🦂', '🦟', '🦠'],
+              food: ['🍕', '🍔', '🍟', '🌭', '🥪', '🌮', '🌯', '🥙', '🥚', '🍳', '🥘', '🍲', '🥗', '🍿', '🧈', '🧀', '🥞', '🧇', '🥓', '🥩', '🍗', '🍖', '🦴', '🌽', '🍅', '🍆', '🥑', '🥦', '🥬', '🥒', '🌶', '🫑', '🌶️', '🫒', '🥕', '🌽', '🫐', '🍇', '🍈', '🍉', '🍊', '🍋', '🍌', '🍍', '🥭', '🍎', '🍏', '🍐', '🍑', '🍒', '🍓', '🫐', '🥝', '🍅', '🥥', '🥔', '🍠', '🥐', '🥯', '🍞', '🥖', '🥨', '🧀', '🥚', '🍳', '🧈', '🥞', '🧇', '🥓', '🥩', '🍗', '🍖', '🦴', '🌭', '🍔', '🍟', '🍕'],
+              travel: ['✈️', '🛫', '🛬', '🛩', '💺', '🛰', '🚀', '🛸', '🚁', '🛶', '⛵', '🚤', '🛥', '🛳', '⛴', '🚢', '⚓', '🚧', '⛽', '🚏', '🚦', '🚥', '🗺', '🗿', '🗽', '🗼', '🏰', '🏯', '🏟', '🎡', '🎢', '🎠', '⛲', '⛱', '🏖', '🏝', '🏔', '⛰', '🌋', '🗻', '🏕', '⛺', '🏠', '🏡', '🏘', '🏚', '🏗', '🏭', '🏢', '🏬', '🏣', '🏤', '🏥', '🏦', '🏨', '🏪', '🏫', '🏩', '💒', '🏛', '⛪', '🕌', '🕍', '🕋', '⛩', '🛤', '🛣', '🗾', '🎑', '🏞', '🌅', '🌄', '🌠', '🎇', '🎆', '🌇', '🌆', '🏙', '🌃', '🌌', '🌉', '🌁'],
+              objects: ['📱', '📲', '💻', '⌨️', '🖥', '🖨', '🖱', '🖲', '🕹', '🗜', '💽', '💾', '💿', '📀', '📼', '📷', '📸', '📹', '🎥', '📽', '🎞', '📞', '☎️', '📟', '📠', '📺', '📻', '🎙', '🎚', '🎛', '🧭', '⏱', '⏲', '⏰', '🕰', '⌛', '⏳', '📡', '🔋', '🔌', '💡', '🔦', '🕯', '🪔', '🧯', '🛢', '💸', '💵', '💴', '💶', '💷', '💰', '💳', '💎', '⚖', '🧰', '🔧', '🔨', '⚒', '🛠', '⛏', '🔩', '⚙', '🪚', '🧱', '⛓', '🧲', '🔫', '💣', '🧨', '🪓', '🔪', '🗡', '⚔', '🛡', '🚬', '⚰', '🪦', '⚱', '🏺', '🔮', '📿', '🧿', '💈', '⚗', '🔭', '🔬', '🕳', '🩹', '🩺', '💊', '💉', '🧬', '🦠', '🧫', '🧪', '🌡', '🧹', '🧺', '🧻', '🚽', '🚰', '🚿', '🛁', '🛀', '🧴', '🧷', '🧸', '🧵', '🧶', '🪡', '🪢', '🪣', '🪤', '🪥', '🪦', '🪧', '🪨', '🪩', '🪪', '🪫', '🪬', '🪭', '🪮', '🪯', '🪰', '🪱', '🪲', '🪳', '🪴', '🪵', '🪶', '🪷', '🪸', '🪹', '🪺', '🪻', '🪼', '🪽', '🪾', '🪿', '🫀', '🫁', '🫂', '🫃', '🫄', '🫅', '🫆', '🫇', '🫈', '🫉', '🫊', '🫋', '🫌', '🫍', '🫎', '🫏', '🫐', '🫑', '🫒', '🫓', '🫔', '🫕', '🫖', '🫗', '🫘', '🫙', '🫚', '🫛', '🫜', '🫝', '🫞', '🫟', '🫠', '🫡', '🫢', '🫣', '🫤', '🫥', '🫦', '🫧', '🫨', '🫩', '🫪', '🫫', '🫬', '🫭', '🫮', '🫯', '🫰', '🫱', '🫲', '🫳', '🫴', '🫵', '🫶', '🫷', '🫸', '🫹', '🫺', '🫻', '🫼', '🫽', '🫾', '🫿', '🬀', '🬁', '🬂', '🬃', '🬄', '🬅', '🬆', '🬇', '🬈', '🬉', '🬊', '🬋', '🬌', '🬍', '🬎', '🬏', '🬐', '🬑', '🬒', '🬓', '🬔', '🬕', '🬖', '🬗', '🬘', '🬙', '🬚', '🬛', '🬜', '🬝', '🬞', '🬟', '🬠', '🬡', '🬢', '🬣', '🬤', '🬥', '🬦', '🬧', '🬨', '🬩', '🬪', '🬫', '🬬', '🬭', '🬮', '🬯', '🬰', '🬱', '🬲', '🬳', '🬴', '🬵', '🬶', '🬷', '🬸', '🬹', '🬺', '🬻', '🬼', '🬽', '🬾', '🬿', '🭀', '🭁', '🭂', '🭃', '🭄', '🭅', '🭆', '🭇', '🭈', '🭉', '🭊', '🭋', '🭌', '🭍', '🭎', '🭏', '🭐', '🭑', '🭒', '🭓', '🭔', '🭕', '🭖', '🭗', '🭘', '🭙', '🭚', '🭛', '🭜', '🭝', '🭞', '🭟', '🭠', '🭡', '🭢', '🭣', '🭤', '🭥', '🭦', '🭧', '🭨', '🭩', '🭪', '🭫', '🭬', '🭭', '🭮', '🭯', '🭰', '🭱', '🭲', '🭳', '🭴', '🭵', '🭶', '🭷', '🭸', '🭹', '🭺', '🭻', '🭼', '🭽', '🭾', '🭿', '🮀', '🮁', '🮂', '🮃', '🮄', '🮅', '🮆', '🮇', '🮈', '🮉', '🮊', '🮋', '🮌', '🮍', '🮎', '🮏', '🮐', '🮑', '🮒', '🮓', '🮔', '🮕', '🮖', '🮗', '🮘', '🮙', '🮚', '🮛', '🮜', '🮝', '🮞', '🮟', '🮠', '🮡', '🮢', '🮣', '🮤', '🮥', '🮦', '🮧', '🮨', '🮩', '🮪', '🮫', '🮬', '🮭', '🮮', '🮯', '🮰', '🮱', '🮲', '🮳', '🮴', '🮵', '🮶', '🮷', '🮸', '🮹', '🮺', '🮻', '🮼', '🮽', '🮾', '🮿', '🯀', '🯁', '🯂', '🯃', '🯄', '🯅', '🯆', '🯇', '🯈', '🯉', '🯊', '🯋', '🯌', '🯍', '🯎', '🯏', '🯐', '🯑', '🯒', '🯓', '🯔', '🯕', '🯖', '🯗', '🯘', '🯙', '🯚', '🯛', '🯜', '🯝', '🯞', '🯟', '🯠', '🯡', '🯢', '🯣', '🯤', '🯥', '🯦', '🯧', '🯨', '🯩', '🯪', '🯫', '🯬', '🯭', '🯮', '🯯', '🯰', '🯱', '🯲', '🯳', '🯴', '🯵', '🯶', '🯷', '🯸', '🯹', '🯺', '🯻', '🯼', '🯽', '🯾', '🯿', '🰀', '🰁', '🰂', '🰃', '🰄', '🰅', '🰆', '🰇', '🰈', '🰉', '🰊', '🰋', '🰌', '🰍', '🰎', '🰏', '🰐', '🰑', '🰒', '🰓', '🰔', '🰕', '🰖', '🰗', '🰘', '🰙', '🰚', '🰛', '🰜', '🰝', '🰞', '🰟', '🰠', '🰡', '🰢', '🰣', '🰤', '🰥', '🰦', '🰧', '🰨', '🰩', '🰪', '🰫', '🰬', '🰭', '🰮', '🰯', '🰰', '🰱', '🰲', '🰳', '🰴', '🰵', '🰶', '🰷', '🰸', '🰹', '🰺', '🰻', '🰼', '🰽', '🰾', '🰿', '🱀', '🱁', '🱂', '🱃', '🱄', '🱅', '🱆', '🱇', '🱈', '🱉', '🱊', '🱋', '🱌', '🱍', '🱎', '🱏', '🱐', '🱑', '🱒', '🱓', '🱔', '🱕', '🱖', '🱗', '🱘', '🱙', '🱚', '🱛', '🱜', '🱝', '🱞', '🱟', '🱠', '🱡', '🱢', '🱣', '🱤', '🱥', '🱦', '🱧', '🱨', '🱩', '🱪', '🱫', '🱬', '🱭', '🱮', '🱯', '🱰', '🱱', '🱲', '🱳', '🱴', '🱵', '🱶', '🱷', '🱸', '🱹', '🱺', '🱻', '🱼', '🱽', '🱾', '🱿', '🲀', '🲁', '🲂', '🲃', '🲄', '🲅', '🲆', '🲇', '🲈', '🲉', '🲊', '🲋', '🲌', '🲍', '🲎', '🲏', '🲐', '🲑', '🲒', '🲓', '🲔', '🲕', '🲖', '🲗', '🲘', '🲙', '🲚', '🲛', '🲜', '🲝', '🲞', '🲟', '🲠', '🲡', '🲢', '🲣', '🲤', '🲥', '🲦', '🲧', '🲨', '🲩', '🲪', '🲫', '🲬', '🲭', '🲮', '🲯', '🲰', '🲱', '🲲', '🲳', '🲴', '🲵', '🲶', '🲷', '🲸', '🲹', '🲺', '🲻', '🲼', '🲽', '🲾', '🲿', '🳀', '🳁', '🳂', '🳃', '🳄', '🳅', '🳆', '🳇', '🳈', '🳉', '🳊', '🳋', '🳌', '🳍', '🳎', '🳏', '🳐', '🳑', '🳒', '🳓', '🳔', '🳕', '🳖', '🳗', '🳘', '🳙', '🳚', '🳛', '🳜', '🳝', '🳞', '🳟', '🳠', '🳡', '🳢', '🳣', '🳤', '🳥', '🳦', '🳧', '🳨', '🳩', '🳪', '🳫', '🳬', '🳭', '🳮', '🳯', '🳰', '🳱', '🳲', '🳳', '🳴', '🳵', '🳶', '🳷', '🳸', '🳹', '🳺', '🳻', '🳼', '🳽', '🳾', '🳿', '🴀', '🴁', '🴂', '🴃', '🴄', '🴅', '🴆', '🴇', '🴈', '🴉', '🴊', '🴋', '🴌', '🴍', '🴎', '🴏', '🴐', '🴑', '🴒', '🴓', '🴔', '🴕', '🴖', '🴗', '🴘', '🴙', '🴚', '🴛', '🴜', '🴝', '🴞', '🴟', '🴠', '🴡', '🴢', '🴣', '🴤', '🴥', '🴦', '🴧', '🴨', '🴩', '🴪', '🴫', '🴬', '🴭', '🴮', '🴯', '🴰', '🴱', '🴲', '🴳', '🴴', '🴵', '🴶', '🴷', '🴸', '🴹', '🴺', '🴻', '🴼', '🴽', '🴾', '🴿', '🵀', '🵁', '🵂', '🵃', '🵄', '🵅', '🵆', '🵇', '🵈', '🵉', '🵊', '🵋', '🵌', '🵍', '🵎', '🵏', '🵐', '🵑', '🵒', '🵓', '🵔', '🵕', '🵖', '🵗', '🵘', '🵙', '🵚', '🵛', '🵜', '🵝', '🵞', '🵟', '🵠', '🵡', '🵢', '🵣', '🵤', '🵥', '🵦', '🵧', '🵨', '🵩', '🵪', '🵫', '🵬', '🵭', '🵮', '🵯', '🵰', '🵱', '🵲', '🵳', '🵴', '🵵', '🵶', '🵷', '🵸', '🵹', '🵺', '🵻', '🵼', '🵽', '🵾', '🵿', '🶀', '🶁', '🶂', '🶃', '🶄', '🶅', '🶆', '🶇', '🶈', '🶉', '🶊', '🶋', '🶌', '🶍', '🶎', '🶏', '🶐', '🶑', '🶒', '🶓', '🶔', '🶕', '🶖', '🶗', '🶘', '🶙', '🶚', '🶛', '🶜', '🶝', '🶞', '🶟', '🶠', '🶡', '🶢', '🶣', '🶤', '🶥', '🶦', '🶧', '🶨', '🶩', '🶪', '🶫', '🶬', '🶭', '🶮', '🶯', '🶰', '🶱', '🶲', '🶳', '🶴', '🶵', '🶶', '🶷', '🶸', '🶹', '🶺', '🶻', '🶼', '🶽', '🶾', '🶿', '🷀', '🷁', '🷂', '🷃', '🷄', '🷅', '🷆', '🷇', '🷈', '🷉', '🷊', '🷋', '🷌', '🷍', '🷎', '🷏', '🷐', '🷑', '🷒', '🷓', '🷔', '🷕', '🷖', '🷗', '🷘', '🷙', '🷚', '🷛', '🷜', '🷝', '🷞', '🷟', '🷠', '🷡', '🷢', '🷣', '🷤', '🷥', '🷦', '🷧', '🷨', '🷩', '🷪', '🷫', '🷬', '🷭', '🷮', '🷯', '🷰', '🷱', '🷲', '🷳', '🷴', '🷵', '🷶', '🷷', '🷸', '🷹', '🷺', '🷻', '🷼', '🷽', '🷾', '🷿', '🸀', '🸁', '🸂', '🸃', '🸄', '🸅', '🸆', '🸇', '🸈', '🸉', '🸊', '🸋', '🸌', '🸍', '🸎', '🸏', '🸐', '🸑', '🸒', '🸓', '🸔', '🸕', '🸖', '🸗', '🸘', '🸙', '🸚', '🸛', '🸜', '🸝', '🸞', '🸟', '🸠', '🸡', '🸢', '🸣', '🸤', '🸥', '🸦', '🸧', '🸨', '🸩', '🸪', '🸫', '🸬', '🸭', '🸮', '🸯', '🸰', '🸱', '🸲', '🸳', '🸴', '🸵', '🸶', '🸷', '🸸', '🸹', '🸺', '🸻', '🸼', '🸽', '🸾', '🸿', '🹀', '🹁', '🹂', '🹃', '🹄', '🹅', '🹆', '🹇', '🹈', '🹉', '🹊', '🹋', '🹌', '🹍', '🹎', '🹏', '🹐', '🹑', '🹒', '🹓', '🹔', '🹕', '🹖', '🹗', '🹘', '🹙', '🹚', '🹛', '🹜', '🹝', '🹞', '🹟', '🹠', '🹡', '🹢', '🹣', '🹤', '🹥', '🹦', '🹧', '🹨', '🹩', '🹪', '🹫', '🹬', '🹭', '🹮', '🹯', '🹰', '🹱', '🹲', '🹳', '🹴', '🹵', '🹶', '🹷', '🹸', '🹹', '🹺', '🹻', '🹼', '🹽', '🹾', '🹿', '🺀', '🺁', '🺂', '🺃', '🺄', '🺅', '🺆', '🺇', '🺈', '🺉', '🺊', '🺋', '🺌', '🺍', '🺎', '🺏', '🺐', '🺑', '🺒', '🺓', '🺔', '🺕', '🺖', '🺗', '🺘', '🺙', '🺚', '🺛', '🺜', '🺝', '🺞', '🺟', '🺠', '🺡', '🺢', '🺣', '🺤', '🺥', '🺦', '🺧', '🺨', '🺩', '🺪', '🺫', '🺬', '🺭', '🺮', '🺯', '🺰', '🺱', '🺲', '🺳', '🺴', '🺵', '🺶', '🺷', '🺸', '🺹', '🺺', '🺻', '🺼', '🺽', '🺾', '🺿', '🻀', '🻁', '🻂', '🻃', '🻄', '🻅', '🻆', '🻇', '🻈', '🻉', '🻊', '🻋', '🻌', '🻍', '🻎', '🻏', '🻐', '🻑', '🻒', '🻓', '🻔', '🻕', '🻖', '🻗', '🻘', '🻙', '🻚', '🻛', '🻜', '🻝', '🻞', '🻟', '🻠', '🻡', '🻢', '🻣', '🻤', '🻥', '🻦', '🻧', '🻨', '🻩', '🻪', '🻫', '🻬', '🻭', '🻮', '🻯', '🻰', '🻱', '🻲', '🻳', '🻴', '🻵', '🻶', '🻷', '🻸', '🻹', '🻺', '🻻', '🻼', '🻽', '🻾', '🻿', '🼀', '🼁', '🼂', '🼃', '🼄', '🼅', '🼆', '🼇', '🼈', '🼉', '🼊', '🼋', '🼌', '🼍', '🼎', '🼏', '🼐', '🼑', '🼒', '🼓', '🼔', '🼕', '🼖', '🼗', '🼘', '🼙', '🼚', '🼛', '🼜', '🼝', '🼞', '🼟', '🼠', '🼡', '🼢', '🼣', '🼤', '🼥', '🼦', '🼧', '🼨', '🼩', '🼪', '🼫', '🼬', '🼭', '🼮', '🼯', '🼰', '🼱', '🼲', '🼳', '🼴', '🼵', '🼶', '🼷', '🼸', '🼹', '🼺', '🼻', '🼼', '🼽', '🼾', '🼿', '🽀', '🽁', '🽂', '🽃', '🽄', '🽅', '🽆', '🽇', '🽈', '🽉', '🽊', '🽋', '🽌', '🽍', '🽎', '🽏', '🽐', '🽑', '🽒', '🽓', '🽔', '🽕', '🽖', '🽗', '🽘', '🽙', '🽚', '🽛', '🽜', '🽝', '🽞', '🽟', '🽠', '🽡', '🽢', '🽣', '🽤', '🽥', '🽦', '🽧', '🽨', '🽩', '🽪', '🽫', '🽬', '🽭', '🽮', '🽯', '🽰', '🽱', '🽲', '🽳', '🽴', '🽵', '🽶', '🽷', '🽸', '🽹', '🽺', '🽻', '🽼', '🽽', '🽾', '🽿', '🾀', '🾁', '🾂', '🾃', '🾄', '🾅', '🾆', '🾇', '🾈', '🾉', '🾊', '🾋', '🾌', '🾍', '🾎', '🾏', '🾐', '🾑', '🾒', '🾓', '🾔', '🾕', '🾖', '🾗', '🾘', '🾙', '🾚', '🾛', '🾜', '🾝', '🾞', '🾟', '🾠', '🾡', '🾢', '🾣', '🾤', '🾥', '🾦', '🾧', '🾨', '🾩', '🾪', '🾫', '🾬', '🾭', '🾮', '🾯', '🾰', '🾱', '🾲', '🾳', '🾴', '🾵', '🾶', '🾷', '🾸', '🾹', '🾺', '🾻', '🾼', '🾽', '🾾', '🾿', '🿀', '🿁', '🿂', '🿃', '🿄', '🿅', '🿆', '🿇', '🿈', '🿉', '🿊', '🿋', '🿌', '🿍', '🿎', '🿏', '🿐', '🿑', '🿒', '🿓', '🿔', '🿕', '🿖', '🿗', '🿘', '🿙', '🿚', '🿛', '🿜', '🿝', '🿞', '🿟', '🿠', '🿡', '🿢', '🿣', '🿤', '🿥', '🿦', '🿧', '🿨', '🿩', '🿪', '🿫', '🿬', '🿭', '🿮', '🿯', '🿰', '🿱', '🿲', '🿳', '🿴', '🿵', '🿶', '🿷', '🿸', '🿹', '🿺', '🿻', '🿼', '🿽', '🿾', '🿿'],
+              symbols: ['❤️', '🧡', '💛', '💚', '💙', '💜', '🖤', '🤍', '🤎', '💔', '❣️', '💕', '💞', '💓', '💗', '💖', '💘', '💝', '💟', '☮️', '✝️', '☪️', '🕉', '☸️', '✡️', '🔯', '🕎', '☯️', '☦️', '🛐', '⛎', '♈', '♉', '♊', '♋', '♌', '♍', '♎', '♏', '♐', '♑', '♒', '♓', '🆔', '⚛️', '🉑', '☢️', '☣️', '📴', '📳', '🈶', '🈚', '🈸', '🈺', '🈷️', '✴️', '🆚', '💮', '🉐', '㊙️', '㊗️', '🈴', '🈵', '🈹', '🈲', '🅰️', '🅱️', '🆎', '🆑', '🅾️', '🆘', '❌', '⭕', '🛑', '⛔', '📛', '🚫', '💯', '💢', '♨️', '🚷', '🚯', '🚳', '🚱', '🔞', '📵', '🚭', '❗', '❕', '❓', '❔', '‼️', '⁉️', '🔅', '🔆', '〽️', '⚠️', '🚸', '🔱', '⚜️', '🔰', '♻️', '✅', '🈯', '💹', '❇️', '✳️', '❎', '🌐', '💠', 'Ⓜ️', '🌀', '💤', '🏧', '🚾', '♿', '🅿️', '🈳', '🈂️', '🛂', '🛃', '🛄', '🛅', '🚹', '🚺', '🚼', '⚧', '🚻', '🚮', '🎦', '📶', '🈁', '🔣', 'ℹ️', '🔤', '🔡', '🔠', '🆖', '🆗', '🆙', '🆒', '🆕', '🆓', '0️⃣', '1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟']
             };
-            reader.readAsDataURL(file);
-          }
-          function clearImagePreview(){
-            const imagePreview = document.getElementById('imagePreview');
-            const imageFileInput = document.getElementById('imageFileInput');
-            const mainTextarea = document.getElementById('messageInput');
-            if (imagePreview) imagePreview.style.display = 'none';
-            if (imageFileInput) imageFileInput.value = '';
-            if (mainTextarea) mainTextarea.value = '';
-            updateSendButtonState(); // Update send button when image is cleared
-          }
-          function sendImageWithCaption(){
-            const mainTextarea = document.getElementById('messageInput');
-            const caption = mainTextarea ? mainTextarea.value : '';
-            const hiddenCaption = document.getElementById('hiddenCaption');
-            if (hiddenCaption) hiddenCaption.value = caption;
-            document.getElementById('imageUploadForm').submit();
-          }
-          function handleFormSubmit(event){
-            const imagePreview = document.getElementById('imagePreview');
-            const documentPreview = document.getElementById('documentPreview');
             
-            if (imagePreview && imagePreview.style.display !== 'none') {
-              // If image preview is visible, send the image
+            function loadEmojiCategory(category) {
+              const grid = document.getElementById('emojiGrid');
+              const emojis = emojiCategories[category] || [];
+              
+              grid.innerHTML = '';
+              emojis.forEach(emoji => {
+                const item = document.createElement('div');
+                item.className = 'wa-emoji-item';
+                item.textContent = emoji;
+                item.onclick = () => selectEmoji(emoji);
+                grid.appendChild(item);
+              });
+            }
+            
+            function selectEmoji(emoji) {
+              const ta = document.getElementById('messageInput');
+              ta.value += emoji;
+              ta.focus();
+              document.getElementById('emojiPicker').classList.remove('show');
+              updateSendButtonState(); // Update send button when emoji is added
+            }
+            function handleImageSelect(event){
+              const file = event.target.files[0];
+              if (!file) return;
+              
+              const reader = new FileReader();
+              reader.onload = function(e) {
+                const previewImg = document.getElementById('previewImg');
+                const imagePreview = document.getElementById('imagePreview');
+                if (previewImg && imagePreview) {
+                  previewImg.src = e.target.result;
+                  imagePreview.style.display = 'block';
+                  updateSendButtonState(); // Update send button when image is selected
+                }
+              };
+              reader.readAsDataURL(file);
+            }
+            function clearImagePreview(){
+              const imagePreview = document.getElementById('imagePreview');
+              const imageFileInput = document.getElementById('imageFileInput');
+              const mainTextarea = document.getElementById('messageInput');
+              if (imagePreview) imagePreview.style.display = 'none';
+              if (imageFileInput) imageFileInput.value = '';
+              if (mainTextarea) mainTextarea.value = '';
+              updateSendButtonState(); // Update send button when image is cleared
+            }
+            function sendImageWithCaption(){
               const mainTextarea = document.getElementById('messageInput');
               const caption = mainTextarea ? mainTextarea.value : '';
               const hiddenCaption = document.getElementById('hiddenCaption');
               if (hiddenCaption) hiddenCaption.value = caption;
+              document.getElementById('imageUploadForm').submit();
+            }
 
-              // Add reply information if replying to a message
-              const imageForm = document.getElementById('imageUploadForm');
-              if (currentReplyToMessageId) {
-                const replyInput = document.createElement('input');
-                replyInput.type = 'hidden';
-                replyInput.name = 'replyTo';
-                replyInput.value = currentReplyToMessageId;
-                imageForm.appendChild(replyInput);
-              }
+            function handleFormSubmit(event){
+              const imagePreview = document.getElementById('imagePreview');
+              const documentPreview = document.getElementById('documentPreview');
+              
+              if (imagePreview && imagePreview.style.display !== 'none') {
+                // If image preview is visible, send the image
+                const mainTextarea = document.getElementById('messageInput');
+                const caption = mainTextarea ? mainTextarea.value : '';
+                const hiddenCaption = document.getElementById('hiddenCaption');
+                if (hiddenCaption) hiddenCaption.value = caption;
 
-              // Use enhanced auth for image form submission
-              window.authManager.submitFormWithAuth(imageForm).then(success => {
-                if (success) {
-                  // Scroll to bottom after image is sent
-                  setTimeout(scrollToBottom, 500);
-                  clearReply(); // Clear reply state
+                // Add reply information if replying to a message
+                const imageForm = document.getElementById('imageUploadForm');
+                if (currentReplyToMessageId) {
+                  const replyInput = document.createElement('input');
+                  replyInput.type = 'hidden';
+                  replyInput.name = 'replyTo';
+                  replyInput.value = currentReplyToMessageId;
+                  imageForm.appendChild(replyInput);
                 }
-              });
-            } else if (documentPreview) {
-              // If document preview is visible, send the document
-              const mainTextarea = document.getElementById('messageInput');
-              const caption = mainTextarea ? mainTextarea.value : '';
-              const hiddenCaption = document.getElementById('hiddenDocumentCaption');
-              if (hiddenCaption) hiddenCaption.value = caption;
 
-              // Add reply information if replying to a message
-              const documentForm = document.getElementById('documentUploadForm');
-              if (currentReplyToMessageId) {
-                const replyInput = document.createElement('input');
-                replyInput.type = 'hidden';
-                replyInput.name = 'replyTo';
-                replyInput.value = currentReplyToMessageId;
-                documentForm.appendChild(replyInput);
-              }
+                // Use enhanced auth for image form submission
+                window.authManager.submitFormWithAuth(imageForm).then(success => {
+                  if (success) {
+                    // Scroll to bottom after image is sent
+                    setTimeout(scrollToBottom, 500);
+                    clearReply(); // Clear reply state
+                  }
+                });
+              } else if (documentPreview) {
+                // If document preview is visible, send the document
+                const mainTextarea = document.getElementById('messageInput');
+                const caption = mainTextarea ? mainTextarea.value : '';
+                const hiddenCaption = document.getElementById('hiddenDocumentCaption');
+                if (hiddenCaption) hiddenCaption.value = caption;
 
-              // Use enhanced auth for document form submission
-              window.authManager.submitFormWithAuth(documentForm).then(success => {
-                if (success) {
-                  // Scroll to bottom after document is sent
-                  setTimeout(scrollToBottom, 500);
-                  clearReply(); // Clear reply state
+                // Add reply information if replying to a message
+                const documentForm = document.getElementById('documentUploadForm');
+                if (currentReplyToMessageId) {
+                  const replyInput = document.createElement('input');
+                  replyInput.type = 'hidden';
+                  replyInput.name = 'replyTo';
+                  replyInput.value = currentReplyToMessageId;
+                  documentForm.appendChild(replyInput);
                 }
-              });
-            } else {
-              // Send text message via real-time system (no page refresh)
-              const textarea = document.getElementById('messageInput');
-              const message = textarea ? textarea.value.trim() : '';
-              
-              if (!message) {
-                console.log('No message to send');
-                return;
-              }
-              
-              // Ensure real-time is connected (attempt quick connect if needed)
-              const ensureConnected = async () => {
-                try {
-                  if (!realtimeManager) return false;
-                  if (realtimeManager.isConnected) return true;
-                  await realtimeManager.connect();
-                  realtimeManager.joinChat(phoneDigits);
-                  await new Promise(r => setTimeout(r, 500));
-                  return realtimeManager.isConnected;
-                } catch(_) { return false; }
-              };
-              
-              (async () => {
-                const ok = await ensureConnected();
-                if (!ok) {
-                  console.error('Real-time connection unavailable. Message not sent.');
-                  alert('Connection issue: message not sent. Please try again.');
+
+                // Use enhanced auth for document form submission
+                window.authManager.submitFormWithAuth(documentForm).then(success => {
+                  if (success) {
+                    // Scroll to bottom after document is sent
+                    setTimeout(scrollToBottom, 500);
+                    clearReply(); // Clear reply state
+                  }
+                });
+              } else {
+                // Send text message via real-time system (no page refresh)
+                const textarea = document.getElementById('messageInput');
+                const message = textarea ? textarea.value.trim() : '';
+                
+                if (!message) {
+                  if (window?.ENV?.DEBUG_LOGS === '1') console.log('No message to send');
                   return;
                 }
-                console.log('📤 Sending message via real-time:', message);
-                const success = realtimeManager.sendMessage(phoneDigits, message, 'text');
-                if (success) {
-                  textarea.value = '';
-                  clearReply();
-                } else {
-                  console.error('Failed to send message via real-time');
-                  alert('Failed to send message. Please try again.');
-                }
-              })();
+                
+                // Ensure real-time is connected (attempt quick connect if needed)
+                const ensureConnected = async () => {
+                  try {
+                    if (!realtimeManager) return false;
+                    if (realtimeManager.isConnected) return true;
+                    await realtimeManager.connect();
+                    realtimeManager.joinChat(phoneDigits);
+                    await new Promise(r => setTimeout(r, 500));
+                    return realtimeManager.isConnected;
+                  } catch(_) { return false; }
+                };
+                
+                (async () => {
+                  const ok = await ensureConnected();
+                  if (!ok) {
+                    console.error('Real-time connection unavailable. Message not sent.');
+                    alert('Connection issue: message not sent. Please try again.');
+                    return;
+                  }
+                  if (window?.ENV?.DEBUG_LOGS === '1') console.log('📤 Sending message via real-time:', message);
+                  const success = realtimeManager.sendMessage(phoneDigits, message, 'text');
+                  if (success) {
+                    textarea.value = '';
+                    clearReply();
+                  } else {
+                    console.error('Failed to send message via real-time');
+                    alert('Failed to send message. Please try again.');
+                  }
+                })();
+              }
+              return false;
             }
-            return false;
-          }
-          window.addEventListener('DOMContentLoaded', function() {
-            setupComposer();
-            
-            // Setup attachment menu
-            document.getElementById('attachDocumentBtn').addEventListener('click', function() {
-              document.getElementById('documentFileInput').click();
-              document.getElementById('attachMenu').style.display = 'none';
-            });
-            
-            document.getElementById('attachImageBtn').addEventListener('click', function() {
-              document.getElementById('imageFileInput').click();
-              document.getElementById('attachMenu').style.display = 'none';
-            });
-            
-            // Auto-scroll to bottom on page load with multiple attempts
-            setTimeout(scrollToBottom, 100);
-            setTimeout(scrollToBottom, 500);
-            setTimeout(scrollToBottomAfterImages, 1000);
-            
-            // Also scroll when window loads completely
-            window.addEventListener('load', function() {
-              setTimeout(scrollToBottomAfterImages, 100);
-            });
-            
-            // Initialize typing indicator
-            initTypingIndicator();
-            
-            // Setup emoji category buttons
-            document.querySelectorAll('.wa-emoji-category').forEach(btn => {
-              btn.addEventListener('click', function() {
-                // Remove active class from all buttons
-                document.querySelectorAll('.wa-emoji-category').forEach(b => b.classList.remove('active'));
-                // Add active class to clicked button
-                this.classList.add('active');
-                // Load the category
-                loadEmojiCategory(this.dataset.category);
+
+            window.addEventListener('DOMContentLoaded', function() {
+              setupComposer();
+              
+              // Setup attachment menu
+              document.getElementById('attachDocumentBtn').addEventListener('click', function() {
+                document.getElementById('documentFileInput').click();
+                document.getElementById('attachMenu').style.display = 'none';
+              });
+              
+              document.getElementById('attachImageBtn').addEventListener('click', function() {
+                document.getElementById('imageFileInput').click();
+                document.getElementById('attachMenu').style.display = 'none';
+              });
+              
+              // Auto-scroll to bottom on page load with multiple attempts
+              setTimeout(scrollToBottom, 100);
+              setTimeout(scrollToBottom, 500);
+              setTimeout(scrollToBottomAfterImages, 1000);
+              
+              // Also scroll when window loads completely
+              window.addEventListener('load', function() {
+                setTimeout(scrollToBottomAfterImages, 100);
+              });
+              
+              // Initialize typing indicator
+              initTypingIndicator();
+              
+              // Setup emoji category buttons
+              document.querySelectorAll('.wa-emoji-category').forEach(btn => {
+                btn.addEventListener('click', function() {
+                  // Remove active class from all buttons
+                  document.querySelectorAll('.wa-emoji-category').forEach(b => b.classList.remove('active'));
+                  // Add active class to clicked button
+                  this.classList.add('active');
+                  // Load the category
+                  loadEmojiCategory(this.dataset.category);
+                });
+              });
+              
+              // Close emoji picker when clicking outside
+              document.addEventListener('click', function(e) {
+                const picker = document.getElementById('emojiPicker');
+                const emojiBtn = document.querySelector('.wa-emoji-btn');
+                if (picker && !picker.contains(e.target) && !emojiBtn.contains(e.target)) {
+                  picker.classList.remove('show');
+                }
               });
             });
             
-            // Close emoji picker when clicking outside
-            document.addEventListener('click', function(e) {
-              const picker = document.getElementById('emojiPicker');
-              const emojiBtn = document.querySelector('.wa-emoji-btn');
-              if (picker && !picker.contains(e.target) && !emojiBtn.contains(e.target)) {
-                picker.classList.remove('show');
-              }
-            });
-          });
-          
-          // Status Management Functions
-          function toggleStatusDropdown() {
-            const dropdown = document.getElementById('statusDropdown');
-            if (!dropdown) return;
-            
-            // Close other dropdowns
-            document.querySelectorAll('.dropdown-menu').forEach(el => {
-              if (el.id !== 'statusDropdown') el.style.display = 'none';
-            });
-            
-            // Toggle status dropdown
-            dropdown.style.display = dropdown.style.display === 'block' ? 'none' : 'block';
-          }
-          
-          function updateConversationStatus(status) {
-            // Update UI immediately
-            const statusChip = document.querySelector('.status-chip');
-            const statusDisplay = getStatusDisplayName(status);
-            const statusColor = getStatusColor(status);
-            
-            if (statusChip) {
-              statusChip.textContent = statusDisplay;
-              statusChip.style.backgroundColor = statusColor;
+            // Status Management Functions
+            function toggleStatusDropdown() {
+              const dropdown = document.getElementById('statusDropdown');
+              if (!dropdown) return;
+              
+              // Close other dropdowns
+              document.querySelectorAll('.dropdown-menu').forEach(el => {
+                if (el.id !== 'statusDropdown') el.style.display = 'none';
+              });
+              
+              // Toggle status dropdown
+              dropdown.style.display = dropdown.style.display === 'block' ? 'none' : 'block';
             }
             
-            // Close dropdown
-            document.getElementById('statusDropdown').style.display = 'none';
-            
-            // Submit status update via fetch API
-            fetch('/inbox/' + phone + '/status', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-              },
-              body: 'status=' + encodeURIComponent(status)
-            })
-            .then(response => {
-              if (response.ok) {
-                // Show success message
-                window.location.href = '/inbox/' + phone + '?toast=' + encodeURIComponent('Status updated to ' + statusDisplay) + '&type=success';
-              } else {
-                throw new Error('Status update failed');
-              }
-            })
-            .catch(error => {
-              console.error('Status update failed:', error);
-              alert('Failed to update status. Please try again.');
-              // Revert UI changes on error
+            function updateConversationStatus(status) {
+              // Update UI immediately
+              const statusChip = document.querySelector('.status-chip');
+              const statusDisplay = getStatusDisplayName(status);
+              const statusColor = getStatusColor(status);
+              
               if (statusChip) {
-                statusChip.textContent = '${statusDisplay}';
-                statusChip.style.backgroundColor = '${statusColor}';
+                statusChip.textContent = statusDisplay;
+                statusChip.style.backgroundColor = statusColor;
+              }
+              
+              // Close dropdown
+              document.getElementById('statusDropdown').style.display = 'none';
+              
+              // Submit status update via fetch API
+              fetch('/inbox/' + phone + '/status', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: 'status=' + encodeURIComponent(status)
+              })
+              .then(response => {
+                if (response.ok) {
+                  // Show success message
+                  window.location.href = '/inbox/' + phone + '?toast=' + encodeURIComponent('Status updated to ' + statusDisplay) + '&type=success';
+                } else {
+                  throw new Error('Status update failed');
+                }
+              })
+              .catch(error => {
+                console.error('Status update failed:', error);
+                alert('Failed to update status. Please try again.');
+                // Revert UI changes on error
+                if (statusChip) {
+                  statusChip.textContent = '${statusDisplay}';
+                  statusChip.style.backgroundColor = '${statusColor}';
+                }
+              });
+            }
+            
+            function getStatusDisplayName(status) {
+              const statusNames = {
+                'new': 'New',
+                'in_progress': 'In Progress', 
+                'resolved': 'Resolved',
+              };
+              return statusNames[status] || status;
+            }
+            
+            function getStatusColor(status) {
+              const statusColors = {
+                'new': '#3b82f6',
+                'in_progress': '#f59e0b',
+                'resolved': '#10b981', 
+              };
+              return statusColors[status] || '#6b7280';
+            }
+
+            // Close status dropdown when clicking outside
+            document.addEventListener('click', function(e) {
+              const statusDropdown = document.getElementById('statusDropdown');
+              const statusButton = document.querySelector('.status-dropdown button');
+              
+              if (statusDropdown && statusButton && 
+                  !statusDropdown.contains(e.target) && 
+                  !statusButton.contains(e.target)) {
+                statusDropdown.style.display = 'none';
               }
             });
-          }
-          
-          function getStatusDisplayName(status) {
-            const statusNames = {
-              'new': 'New',
-              'in_progress': 'In Progress', 
-              'resolved': 'Resolved',
-              'closed': 'Closed'
-            };
-            return statusNames[status] || status;
-          }
-          
-          function getStatusColor(status) {
-            const statusColors = {
-              'new': '#3b82f6',
-              'in_progress': '#f59e0b',
-              'resolved': '#10b981', 
-              'closed': '#6b7280'
-            };
-            return statusColors[status] || '#6b7280';
-          }
-          
-          // Close status dropdown when clicking outside
-          document.addEventListener('click', function(e) {
-            const statusDropdown = document.getElementById('statusDropdown');
-            const statusButton = document.querySelector('.status-dropdown button');
-            
-            if (statusDropdown && statusButton && 
-                !statusDropdown.contains(e.target) && 
-                !statusButton.contains(e.target)) {
-              statusDropdown.style.display = 'none';
-            }
-          });
-        </script>
-        <script>
-          (function(){
-            try{
-              var secs = ${remain};
-              if(!secs) return;
-              function fmt(s){ var m = Math.floor(s/60), r = s%60; return (''+m)+":"+(''+r).padStart(2,'0'); }
-              function tick(){ var el = document.getElementById('exp_remain'); if(el){ el.textContent = fmt(secs); } if(secs>0){ secs--; setTimeout(tick,1000);} }
-              tick();
-            }catch(_){ }
-          })();
-        </script>
-        <div class="container page-transition">
-          ${renderTopbar(`<a href="/dashboard">Dashboard</a> / <a href="/inbox">Inbox</a> / +${String(phone).replace(/^\+/, '')}`, email)}
-          <div class="layout">
-            ${renderSidebar('inbox')}
-            <main class="main">
-              <div class="main-content">
+          </script>
+          <script>
+            (function(){
+              try{
+                var secs = ${remain};
+                if(!secs) return;
+                function fmt(s){ var m = Math.floor(s/60), r = s%60; return (''+m)+":"+(''+r).padStart(2,'0'); }
+                function tick(){ var el = document.getElementById('exp_remain'); if(el){ el.textContent = fmt(secs); } if(secs>0){ secs--; setTimeout(tick,1000);} }
+                tick();
+              }catch(_){ }
+            })();
+          </script>
+          <div class="container page-transition">
+            ${renderTopbar(`<a href="/dashboard">Dashboard</a> / <a href="/inbox">Inbox</a> / +${String(phone).replace(/^\+/, '')}`, email)}
+            <div class="layout">
+              ${renderSidebar('inbox')}
+              <main class="main">
+                <div class="main-content">
                   <div class="wa-chat-header">
                     <a href="/inbox" style="border:none; margin-right:20px;">
-                      <img src="/left-arrow-icon.svg" alt="Back" style="width:20px;height:20px;vertical-align:middle;"/>
+                      <img src="/left-arrow-icon.svg" alt="Back" style="width:10px;height:10px;vertical-align:middle;"/>
                     </a>
                     <div class="wa-avatar">${String(phone).slice(-2)}</div>
                       <div style="flex:1;">
@@ -2255,7 +2330,7 @@ export default function registerInboxRoutes(app) {
                     </div>
                     <form method="post" action="/handoff/${phone}" onsubmit="event.preventDefault(); toggleHandoffMode(); return false;">
                       <input type="hidden" name="is_human" value="${isHuman ? '' : '1'}"/>
-                      <button type="submit" class="btn-ghost handoff-toggle-btn" id="handoffToggleBtn" data-is-human="${isHuman}" style="border:none; background:transparent; padding:0; margin:0;">
+                      <button type="submit" class="btn-ghost handoff-toggle-btn" id="handoffToggleBtn" data-is-human="${isHuman}">
                         <img 
                           src="${isHuman ? '/raise-hand-icon.svg' : '/bot-icon.svg'}"
                           alt="${isHuman ? 'Human handling' : 'AI handling'}" 
@@ -2264,18 +2339,17 @@ export default function registerInboxRoutes(app) {
                       </button>
                     </form>
                     ${isHuman ? `<form method="post" action="/inbox/${phone}/renew" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
-                      <button type="submit" class="btn-ghost" title="Renew 5 minutes" style="border:none;"><img src="/restart-onboarding.svg" alt="Renew" style="width:20px;height:20px;vertical-align:middle;"/></button>
+                      <button type="submit" class="btn-ghost" title="Renew 5 minutes"><img src="/restart-onboarding.svg" alt="Renew" style="width:20px;height:20px;vertical-align:middle;"/></button>
                     </form>` : ''}
                     <form method="post" action="/inbox/${phone}/archive" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
-                      <button type="submit" class="btn-ghost" style="border:none;"><img src="/archive-icon.svg" alt="Archive" style="width:20px;height:20px;vertical-align:middle;"/></button>
+                      <button type="submit" class="btn-ghost"><img src="/archive-icon.svg" alt="Archive" style="width:20px;height:20px;vertical-align:middle;"/></button>
                     </form>
                     <form method="post" action="/inbox/${phone}/clear" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
-                      <button type="submit" class="btn-ghost" style="border:none;"><img src="/clear-icon.svg" alt="Clear" style="width:24px;height:24px;vertical-align:middle;"/></button>
+                      <button type="submit" class="btn-ghost"><img src="/clear-icon.svg" alt="Clear" style="width:24px;height:24px;vertical-align:middle;"/></button>
                     </form>
                     <form method="post" action="/inbox/${phone}/delete" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
-                      <button type="submit" class="btn-ghost" style="color:#c00; border:none;"><img src="/delete-icon.svg" alt="Delete" style="width:20px;height:20px;vertical-align:middle;"/></button>
+                      <button type="submit" class="btn-ghost"><img src="/delete-icon.svg" alt="Delete" style="width:20px;height:20px;vertical-align:middle;"/></button>
                     </form>
-                    
                     <!-- Conversation Status Management -->
                     <div class="status-dropdown" style="position:relative; margin-left:8px; margin-bottom:8px;">
                       <button type="button" class="btn-ghost" onclick="toggleStatusDropdown()" style="border:none; background:transparent; padding:4px 8px; border-radius:6px; display:flex; align-items:center; gap:4px;">
@@ -2294,116 +2368,120 @@ export default function registerInboxRoutes(app) {
                       </div>
                     </div>
                   </div>
-                        ${(() => {
-                          try{
-                            const lastInbound = (msgs||[]).filter(x=>x.direction==='inbound').map(x=>Number(x.ts||0)).sort((a,b)=>b-a)[0]||0;
-                            const over24 = lastInbound && (Math.floor(Date.now()/1000)-lastInbound) > 24*3600;
-                            if (over24) {
-                              return `<div class=\"small\" style=\"margin:8px 0; padding:8px; background:#fff8e1; border:1px solid #fde68a; border-radius:8px;\">Session expired (>24h). Send template to reopen window.
-                                <form method=\"post\" action=\"/inbox/${phone}/send-template\" data-auth-enhanced style=\"display:flex; gap:6px; align-items:center; margin-top:6px;\">
-                                  <input class=\"settings-field\" name=\"var1\" placeholder=\"{{1}} (optional)\" style=\"height:32px;\"/>
-                                  <input class=\"settings-field\" name=\"var2\" placeholder=\"{{2}} (optional)\" style=\"height:32px;\"/>
-                                  <button class=\"btn-ghost\" type=\"submit\" style=\"border:none;\">Send Template</button>
-                                </form>
-                              </div>`;
-                            }
-                          }catch(_){ }
-                          return '';
-                        })()}
-                        <div class="chat-thread">
-                          ${items || '<div class="small" style="text-align:center;padding:16px;">No messages</div>'}
-                          <div id="typingIndicator" class="typing-indicator" style="display:none;">
-                            <div class="msg msg-in">
-                              <div class="bubble">
-                                <div class="typing-dots">
-                                  <span></span>
-                                  <span></span>
-                                  <span></span>
-                        </div>
-                        <div class="meta">Typing...</div>
+                  ${(() => {
+                    try{
+                      const lastInbound = (msgs||[]).filter(x=>x.direction==='inbound').map(x=>Number(x.ts||0)).sort((a,b)=>b-a)[0]||0;
+                      const over24 = lastInbound && (Math.floor(Date.now()/1000)-lastInbound) > 24*3600;
+                      if (over24) {
+                        return `
+                          <div class="small" style="margin:8px 0; padding:8px; background:#fff8e1; border:1px solid #fde68a; border-radius:8px;">Session expired (>24h). Send template to reopen window.
+                            <form method="post" action="/inbox/${phone}/send-template" data-auth-enhanced style="display:flex; gap:6px; align-items:center; margin-top:6px;">
+                              <input class="settings-field" name="var1" placeholder="{{1}} (optional)" style="height:32px;"/>
+                              <input class="settings-field" name="var2" placeholder="{{2}} (optional)" style="height:32px;"/>
+                              <button class="btn-ghost" type="submit">Send Template</button>
+                            </form>
+                          </div>
+                        `;
+                      }
+                    }catch(_){ }
+                    return '';
+                  })()}
+                  <div class="chat-thread" style="overflow-y:auto; height:70vh; max-height:70vh;">
+                    ${items || '<div class="small" style="text-align:center;padding:16px;">No messages</div>'}
+                    ${quickReplies.length > 0 ? `
+                    <div class="quick-replies-container" id="quickRepliesContainer">
+                      <div class="quick-replies-header">
+                        <span class="quick-replies-title">Quick Replies</span>
+                        <button type="button" class="quick-replies-toggle" onclick="toggleQuickReplies()" id="quickRepliesToggle">
+                          <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+                            <path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/>
+                          </svg>
+                        </button>
+                      </div>
+                      <div class="quick-replies-grid" id="quickRepliesGrid">
+                        ${quickReplies.map(reply => `
+                          <button type="button" class="quick-reply-btn" onclick="selectQuickReply('${reply.text.replace(/'/g, "\\'").replace(/"/g, '&quot;')}')" data-text="${reply.text.replace(/"/g, '&quot;')}">
+                            <span class="quick-reply-text">${escapeHtml(reply.text)}</span>
+                            <span class="quick-reply-category">${reply.category || 'General'}</span>
+                          </button>
+                        `).join('')}
                       </div>
                     </div>
-                  </div>
-                
-                ${quickReplies.length > 0 ? `
-                <div class="quick-replies-container" id="quickRepliesContainer">
-                  <div class="quick-replies-header">
-                    <span class="quick-replies-title">Quick Replies</span>
-                    <button type="button" class="quick-replies-toggle" onclick="toggleQuickReplies()" id="quickRepliesToggle">
-                      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
-                        <path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/>
-                      </svg>
-                    </button>
-                  </div>
-                  <div class="quick-replies-grid" id="quickRepliesGrid">
-                    ${quickReplies.map(reply => `
-                      <button type="button" class="quick-reply-btn" onclick="selectQuickReply('${reply.text.replace(/'/g, "\\'").replace(/"/g, '&quot;')}')" data-text="${reply.text.replace(/"/g, '&quot;')}">
-                        <span class="quick-reply-text">${escapeHtml(reply.text)}</span>
-                        <span class="quick-reply-category">${reply.category || 'General'}</span>
-                      </button>
-                    `).join('')}
-                  </div>
-                </div>
-                ` : ''}
-                
-                <div>
-                  <div id="imagePreview" style="display:none; margin-bottom:8px; padding:8px; background:#f0f0f0; border-radius:8px;">
-                    <div style="display:flex; gap:8px; align-items:center;">
-                      <img id="previewImg" style="width:60px; height:60px; object-fit:cover; border-radius:8px;" />
-                      <div style="font-size:12px; color:#666;">Selected image</div>
-                      <div style="flex:1;"></div>
-                      <button type="button" onclick="clearImagePreview()" style="background:#ff4444; color:white; border:none; border-radius:4px; padding:4px 8px; cursor:pointer; font-size:12px;">Remove</button>
+                    ` : ''}
+                    <div>
+                      <div id="imagePreview" style="display:none; margin-bottom:8px; padding:8px; background:#f0f0f0; border-radius:8px;">
+                        <div style="display:flex; gap:8px; align-items:center;">
+                          <img id="previewImg" style="width:60px; height:60px; object-fit:cover; border-radius:8px;" />
+                          <div style="font-size:12px; color:#666;">Selected image</div>
+                          <div style="flex:1;"></div>
+                          <button type="button" onclick="clearImagePreview()" style="background:#ff4444; color:white; border:none; border-radius:4px; padding:4px 8px; cursor:pointer; font-size:12px;">Remove</button>
+                        </div>
+                      </div>
+                      <form id="imageUploadForm" method="post" action="/upload-image/${phone}" enctype="multipart/form-data" data-auth-enhanced style="display:none;">
+                          <input type="file" name="image" accept="image/*" id="imageFileInput" onchange="handleImageSelect(event)" />
+                          <textarea name="caption" id="hiddenCaption" style="display:none;"></textarea>
+                      </form>
+                      
+                      <form id="documentUploadForm" method="post" action="/upload-document/${phone}" enctype="multipart/form-data" data-auth-enhanced style="display:none;">
+                        <input type="file" name="document" accept=".pdf,.doc,.docx,.txt,.rtf,.odt,.ppt,.pptx,.xls,.xlsx,.csv,.zip,.rar" id="documentFileInput" onchange="handleDocumentSelect(event)" />
+                        <textarea name="caption" id="hiddenDocumentCaption" style="display:none;"></textarea>
+                      </form>
+
+                      <div id="emojiPicker" class="wa-emoji-picker">
+                        <div class="wa-emoji-categories">
+                          <button type="button" class="wa-emoji-category active" data-category="smileys">😀</button>
+                          <button type="button" class="wa-emoji-category" data-category="people">👋</button>
+                          <button type="button" class="wa-emoji-category" data-category="animals">🐶</button>
+                          <button type="button" class="wa-emoji-category" data-category="food">🍕</button>
+                          <button type="button" class="wa-emoji-category" data-category="travel">✈️</button>
+                          <button type="button" class="wa-emoji-category" data-category="objects">📱</button>
+                          <button type="button" class="wa-emoji-category" data-category="symbols">❤️</button>
+                        </div>
+                        <div id="emojiGrid" class="wa-emoji-grid">
+                          <!-- Emojis will be populated by JavaScript -->
+                        </div>
+                      </div>
+                      <div id="reactionPicker" class="reaction-picker" style="display:none;">
+                        <div class="reaction-picker-header">
+                          <span class="reaction-picker-title">React to message</span>
+                          <button type="button" class="reaction-picker-close" onclick="hideReactionPicker()">×</button>
+                        </div>
+                        <div class="reaction-picker-grid">
+                          <button type="button" class="reaction-option" onclick="addReaction('😀')">😀</button>
+                          <button type="button" class="reaction-option" onclick="addReaction('😂')">😂</button>
+                          <button type="button" class="reaction-option" onclick="addReaction('😍')">😍</button>
+                          <button type="button" class="reaction-option" onclick="addReaction('😮')">😮</button>
+                          <button type="button" class="reaction-option" onclick="addReaction('😢')">😢</button>
+                          <button type="button" class="reaction-option" onclick="addReaction('😡')">😡</button>
+                          <button type="button" class="reaction-option" onclick="addReaction('👍')">👍</button>
+                          <button type="button" class="reaction-option" onclick="addReaction('👎')">👎</button>
+                          <button type="button" class="reaction-option" onclick="addReaction('❤️')">❤️</button>
+                          <button type="button" class="reaction-option" onclick="addReaction('🎉')">🎉</button>
+                          <button type="button" class="reaction-option" onclick="addReaction('🔥')">🔥</button>
+                          <button type="button" class="reaction-option" onclick="addReaction('👏')">👏</button>
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                  
-                  <form id="imageUploadForm" method="post" action="/upload-image/${phone}" enctype="multipart/form-data" data-auth-enhanced style="display:none;">
-                      <input type="file" name="image" accept="image/*" id="imageFileInput" onchange="handleImageSelect(event)" />
-                      <textarea name="caption" id="hiddenCaption" style="display:none;"></textarea>
-                    </form>
-                  
-                  <form id="documentUploadForm" method="post" action="/upload-document/${phone}" enctype="multipart/form-data" data-auth-enhanced style="display:none;">
-                    <input type="file" name="document" accept=".pdf,.doc,.docx,.txt,.rtf,.odt,.ppt,.pptx,.xls,.xlsx,.csv,.zip,.rar" id="documentFileInput" onchange="handleDocumentSelect(event)" />
-                    <textarea name="caption" id="hiddenDocumentCaption" style="display:none;"></textarea>
-                  </form>
-                  
-                  <div id="emojiPicker" class="wa-emoji-picker">
-                    <div class="wa-emoji-categories">
-                      <button type="button" class="wa-emoji-category active" data-category="smileys">😀</button>
-                      <button type="button" class="wa-emoji-category" data-category="people">👋</button>
-                      <button type="button" class="wa-emoji-category" data-category="animals">🐶</button>
-                      <button type="button" class="wa-emoji-category" data-category="food">🍕</button>
-                      <button type="button" class="wa-emoji-category" data-category="travel">✈️</button>
-                      <button type="button" class="wa-emoji-category" data-category="objects">📱</button>
-                      <button type="button" class="wa-emoji-category" data-category="symbols">❤️</button>
+                    <div id="reactionPicker" class="reaction-picker" style="display:none;">
+                      <div class="reaction-picker-header">
+                        <span class="reaction-picker-title">React to message</span>
+                        <button type="button" class="reaction-picker-close" onclick="hideReactionPicker()">×</button>
+                      </div>
+                      <div class="reaction-picker-grid">
+                        <button type="button" class="reaction-option" onclick="addReaction('😀')">😀</button>
+                        <button type="button" class="reaction-option" onclick="addReaction('😂')">😂</button>
+                        <button type="button" class="reaction-option" onclick="addReaction('😍')">😍</button>
+                        <button type="button" class="reaction-option" onclick="addReaction('😮')">😮</button>
+                        <button type="button" class="reaction-option" onclick="addReaction('😢')">😢</button>
+                        <button type="button" class="reaction-option" onclick="addReaction('😡')">😡</button>
+                        <button type="button" class="reaction-option" onclick="addReaction('👍')">👍</button>
+                        <button type="button" class="reaction-option" onclick="addReaction('👎')">👎</button>
+                        <button type="button" class="reaction-option" onclick="addReaction('❤️')">❤️</button>
+                        <button type="button" class="reaction-option" onclick="addReaction('🎉')">🎉</button>
+                        <button type="button" class="reaction-option" onclick="addReaction('🔥')">🔥</button>
+                        <button type="button" class="reaction-option" onclick="addReaction('👏')">👏</button>
+                      </div>
                     </div>
-                    <div id="emojiGrid" class="wa-emoji-grid">
-                      <!-- Emojis will be populated by JavaScript -->
-                    </div>
-                  </div>
-                  
-                  <!-- Reaction Picker -->
-                  <div id="reactionPicker" class="reaction-picker" style="display:none;">
-                    <div class="reaction-picker-header">
-                      <span class="reaction-picker-title">React to message</span>
-                      <button type="button" class="reaction-picker-close" onclick="hideReactionPicker()">×</button>
-                    </div>
-                    <div class="reaction-picker-grid">
-                      <button type="button" class="reaction-option" onclick="addReaction('😀')">😀</button>
-                      <button type="button" class="reaction-option" onclick="addReaction('😂')">😂</button>
-                      <button type="button" class="reaction-option" onclick="addReaction('😍')">😍</button>
-                      <button type="button" class="reaction-option" onclick="addReaction('😮')">😮</button>
-                      <button type="button" class="reaction-option" onclick="addReaction('😢')">😢</button>
-                      <button type="button" class="reaction-option" onclick="addReaction('😡')">😡</button>
-                      <button type="button" class="reaction-option" onclick="addReaction('👍')">👍</button>
-                      <button type="button" class="reaction-option" onclick="addReaction('👎')">👎</button>
-                      <button type="button" class="reaction-option" onclick="addReaction('❤️')">❤️</button>
-                      <button type="button" class="reaction-option" onclick="addReaction('🎉')">🎉</button>
-                      <button type="button" class="reaction-option" onclick="addReaction('🔥')">🔥</button>
-                      <button type="button" class="reaction-option" onclick="addReaction('👏')">👏</button>
-                    </div>
-                  </div>
-                  
-                  </div>
                   </div>
                   <form method="post" action="/send/${phone}" onsubmit="event.preventDefault(); handleFormSubmit(event); return false;" style="margin-top: 8px;">
                     <div class="wa-attach-menu" id="attachMenu" style="display: none;">
@@ -2450,11 +2528,12 @@ export default function registerInboxRoutes(app) {
                       </button>
                     </div>
                   </form>
-              </div>
-            </main>
+                </div>
+              </main>
+            </div>  
           </div>
-        </div>
-      </body></html>
+        </body>
+      </html>
     `);
   });
 
@@ -2514,6 +2593,8 @@ export default function registerInboxRoutes(app) {
       
       // If resolved → request CSAT rating via WhatsApp and flag awaiting rating
       if (status === CONVERSATION_STATUSES.RESOLVED) {
+        // Ensure live mode is off when conversation is resolved
+        try { await Handoff.findOneAndUpdate({ contact_id: phone, user_id: userId }, { $set: { is_human: false, human_expires_ts: 0, updatedAt: new Date() } }, { upsert: true }); } catch {}
         try {
           const cfg = await getSettingsForUser(userId);
           if (cfg?.whatsapp_token && cfg?.phone_number_id) {
@@ -2529,7 +2610,7 @@ export default function registerInboxRoutes(app) {
             ];
             try {
               const resp = await sendWhatsappList(phone, header, body, 'Select', rows, cfg);
-              console.log('[CSAT] List prompt sent:', { hasId: !!resp?.messages?.[0]?.id });
+              if (window?.ENV?.DEBUG_LOGS === '1') console.log('[CSAT] List prompt sent:', { hasId: !!resp?.messages?.[0]?.id });
             } catch (e) {
               console.warn('[CSAT] Failed to send list prompt, falling back to text:', e?.message || e);
               const prompt = "Thanks for chatting with us! Please rate by replying with one emoji: 😡 😕 🙂 😀 🤩";
@@ -2763,7 +2844,7 @@ export default function registerInboxRoutes(app) {
           e?.message || 'Unknown error'
         );
         
-        console.log(`❌ Created failed message record: ${tempMessageId}`);
+        if (window?.ENV?.DEBUG_LOGS === '1') console.log(`❌ Created failed message record: ${tempMessageId}`);
       } catch (dbError) {
         console.error("Error creating failed message record:", dbError);
       }
@@ -2809,7 +2890,7 @@ export default function registerInboxRoutes(app) {
       }
       
       // Attempt to resend the message (with diagnostics)
-      try { console.log('[Retry] Resending WA text', { to_tail: String(message.to||'').slice(-6), hasPhoneId: !!cfg.phone_number_id, hasToken: !!cfg.whatsapp_token }); } catch {}
+      try { if (window?.ENV?.DEBUG_LOGS === '1') console.log('[Retry] Resending WA text', { to_tail: String(message.to||'').slice(-6), hasPhoneId: !!cfg.phone_number_id, hasToken: !!cfg.whatsapp_token }); } catch {}
       const data = await sendWhatsAppText(message.to, message.text, cfg);
       const outboundId = data?.messages?.[0]?.id;
       
@@ -2831,7 +2912,7 @@ export default function registerInboxRoutes(app) {
           console.error('Error updating contact activity:', error);
         }
         
-        console.log(`✅ Successfully retried message ${messageId} -> ${outboundId}`);
+        if (window?.ENV?.DEBUG_LOGS === '1') console.log(`✅ Successfully retried message ${messageId} -> ${outboundId}`);
         
         // Broadcast the newly sent message to the chat in real-time
         try {
@@ -2914,13 +2995,13 @@ export default function registerInboxRoutes(app) {
       // For WhatsApp API: use ngrok URL if available
       const ngrokUrl = process.env.NGROK_URL || 'https://85d9d75e0287.ngrok-free.app';
       whatsappImageUrl = `${ngrokUrl}/uploads/${req.file.filename}`;
-      console.log('⚠️ WARNING: Using localhost for display, ngrok for WhatsApp API');
+      if (window?.ENV?.DEBUG_LOGS === '1') console.log('⚠️ WARNING: Using localhost for display, ngrok for WhatsApp API');
     }
     
-    console.log('Image upload - Generated URL:', imageUrl);
-    console.log('Image upload - File:', req.file.filename);
-    console.log('Image upload - Using ngrok:', isNgrok);
-    console.log('Image upload - Note: WhatsApp needs this URL to be publicly accessible');
+    if (window?.ENV?.DEBUG_LOGS === '1') console.log('Image upload - Generated URL:', imageUrl);
+    if (window?.ENV?.DEBUG_LOGS === '1') console.log('Image upload - File:', req.file.filename);
+    if (window?.ENV?.DEBUG_LOGS === '1') console.log('Image upload - Using ngrok:', isNgrok);
+    if (window?.ENV?.DEBUG_LOGS === '1') console.log('Image upload - Note: WhatsApp needs this URL to be publicly accessible');
 
     // Enforce 24h window: if last inbound >24h ago, attempt a template instead
     try {
@@ -2948,7 +3029,7 @@ export default function registerInboxRoutes(app) {
         originalMessageId = originalMessage?.id;
       }
       
-      console.log('Sending image via WhatsApp API:', { to, whatsappImageUrl, caption });
+      if (window?.ENV?.DEBUG_LOGS === '1') console.log('Sending image via WhatsApp API:', { to, whatsappImageUrl, caption });
       
       let data;
       if (isNgrok) {
@@ -2956,20 +3037,20 @@ export default function registerInboxRoutes(app) {
         // Check if the image URL is accessible (for debugging)
         try {
           const response = await fetch(whatsappImageUrl, { method: 'HEAD' });
-          console.log('Image URL accessibility check:', response.status, response.statusText);
+          if (window?.ENV?.DEBUG_LOGS === '1') console.log('Image URL accessibility check:', response.status, response.statusText);
         } catch (urlError) {
-          console.log('Image URL not accessible:', urlError.message);
+          if (window?.ENV?.DEBUG_LOGS === '1') console.log('Image URL not accessible:', urlError.message);
         }
         
         data = await sendWhatsappImage(to, whatsappImageUrl, caption, cfg, originalMessageId);
       } else {
         // Use cloud upload method for localhost
-        console.log('Using cloud upload for localhost compatibility');
+        if (window?.ENV?.DEBUG_LOGS === '1') console.log('Using cloud upload for localhost compatibility');
         const { sendWhatsappImageBase64 } = await import('../services/whatsapp.mjs');
         data = await sendWhatsappImageBase64(to, req.file.path, caption, cfg);
       }
       
-      console.log('WhatsApp API response:', data);
+      if (window?.ENV?.DEBUG_LOGS === '1') console.log('WhatsApp API response:', data);
       const outboundId = data?.messages?.[0]?.id;
       const fromBiz = (cfg.business_phone || "").replace(/\D/g, "") || null;
       
@@ -3025,11 +3106,11 @@ export default function registerInboxRoutes(app) {
       documentUrl = `${req.protocol}://${host}/uploads/${req.file.filename}`;
       const ngrokUrl = process.env.NGROK_URL || 'https://85d9d75e0287.ngrok-free.app';
       whatsappDocumentUrl = `${ngrokUrl}/uploads/${req.file.filename}`;
-      console.log('⚠️ WARNING: Using localhost for display, ngrok for WhatsApp API');
+      if (window?.ENV?.DEBUG_LOGS === '1') console.log('⚠️ WARNING: Using localhost for display, ngrok for WhatsApp API');
     }
     
-    console.log('Document upload - Generated URL:', documentUrl);
-    console.log('Document upload - File:', req.file.filename);
+    if (window?.ENV?.DEBUG_LOGS === '1') console.log('Document upload - Generated URL:', documentUrl);
+    if (window?.ENV?.DEBUG_LOGS === '1') console.log('Document upload - File:', req.file.filename);
 
     // Enforce 24h window: if last inbound >24h ago, attempt a template instead
     try {
@@ -3056,8 +3137,8 @@ export default function registerInboxRoutes(app) {
         originalMessageId = originalMessage?.id;
       }
       
-      console.log('Sending document via WhatsApp API:', { to, whatsappDocumentUrl, caption });
-      console.log('WhatsApp config check:', { 
+      if (window?.ENV?.DEBUG_LOGS === '1') console.log('Sending document via WhatsApp API:', { to, whatsappDocumentUrl, caption });
+      if (window?.ENV?.DEBUG_LOGS === '1') console.log('WhatsApp config check:', { 
         hasToken: !!cfg.whatsapp_token, 
         hasPhoneId: !!cfg.phone_number_id,
         tokenLength: cfg.whatsapp_token?.length,
@@ -3072,7 +3153,7 @@ export default function registerInboxRoutes(app) {
         data = await sendWhatsappDocumentBase64(to, req.file.path, req.file.filename, caption, cfg);
       }
       
-      console.log('WhatsApp API response:', data);
+      if (window?.ENV?.DEBUG_LOGS === '1') console.log('WhatsApp API response:', data);
       const outboundId = data?.messages?.[0]?.id;
       const fromBiz = (cfg.business_phone || "").replace(/\D/g, "") || null;
       
@@ -3205,11 +3286,11 @@ export default function registerInboxRoutes(app) {
                 if (result.added) {
                   // Send reaction addition to WhatsApp
                   await sendWhatsappReaction(phone, whatsappMessageId, emoji, settings);
-                  console.log('Sent WhatsApp reaction addition');
+                  if (window?.ENV?.DEBUG_LOGS === '1') console.log('Sent WhatsApp reaction addition');
                 } else if (result.removed) {
                   // Send reaction removal to WhatsApp (empty emoji)
                   await sendWhatsappReaction(phone, whatsappMessageId, '', settings);
-                  console.log('Sent WhatsApp reaction removal');
+                  if (window?.ENV?.DEBUG_LOGS === '1') console.log('Sent WhatsApp reaction removal');
                 }
               }
             }

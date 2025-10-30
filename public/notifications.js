@@ -33,8 +33,13 @@ async function loadNotifications() {
       headers: {
         'Accept': 'application/json',
         'Content-Type': 'application/json'
-      }
+      },
+      credentials: 'include'
     });
+    if (response.status === 401) {
+      // Not signed in or session expired – avoid spamming console
+      return;
+    }
     const data = await response.json();
     
     if (data.success) {
@@ -43,7 +48,7 @@ async function loadNotifications() {
       renderNotifications(data.notifications);
     }
   } catch (error) {
-    console.error('Failed to load notifications:', error);
+    // Silently ignore network errors to avoid console spam
     renderNotificationError();
   }
 }
@@ -106,7 +111,8 @@ async function handleNotificationClick(notificationId, link, event) {
       headers: { 
         'Content-Type': 'application/json',
         'Accept': 'application/json'
-      }
+      },
+      credentials: 'include'
     });
     
     // Update UI
@@ -131,7 +137,8 @@ async function markAllAsRead(event) {
       headers: { 
         'Content-Type': 'application/json',
         'Accept': 'application/json'
-      }
+      },
+      credentials: 'include'
     });
     
     if (response.ok) {
@@ -166,15 +173,22 @@ function escapeHtml(text) {
 
 // Check for new notifications periodically
 function startNotificationPolling() {
-  // Check every 30 seconds
+  if (notificationCheckInterval) return;
+  // Check every 30 seconds (paused when tab hidden)
   notificationCheckInterval = setInterval(async () => {
     try {
       const response = await fetch('/api/notifications?limit=1&unread_only=true', {
         headers: {
           'Accept': 'application/json',
           'Content-Type': 'application/json'
-        }
+        },
+        credentials: 'include'
       });
+      if (response.status === 401) {
+        // Stop polling until user returns or session is renewed
+        stopNotificationPolling();
+        return;
+      }
       const data = await response.json();
       
       if (data.success) {
@@ -212,7 +226,51 @@ document.addEventListener('DOMContentLoaded', function() {
   // Start polling for new notifications
   startNotificationPolling();
   
+  // Pause/resume polling when tab visibility changes
+  document.addEventListener('visibilitychange', function() {
+    if (document.hidden) {
+      stopNotificationPolling();
+    } else {
+      startNotificationPolling();
+      // Refresh count on return
+      loadNotifications();
+    }
+  });
+  
   // Clean up on page unload
   window.addEventListener('beforeunload', stopNotificationPolling);
+  
+  // Attach realtime updates when socket is ready
+  (function attachRealtime(){
+    try {
+      const rm = window.realtimeManager;
+      if (rm && rm.socket) {
+        try { rm.socket.off && rm.socket.off('notification_created'); } catch {}
+        rm.socket.on('notification_created', (data) => {
+          try {
+            const notif = data?.notification;
+            if (notif) {
+              // Prepend to cache
+              notificationsCache = [notif].concat(notificationsCache || []);
+              // Update badge
+              const badge = document.getElementById('notification-badge');
+              const newCount = typeof data?.unreadCount === 'number' ? data.unreadCount : (function(){
+                const current = parseInt((badge?.textContent || '0').replace(/\D/g,''), 10) || 0;
+                return current + 1;
+              })();
+              updateNotificationBadge(newCount);
+              // Refresh list if dropdown open
+              const dropdown = document.getElementById('notification-dropdown');
+              if (dropdown && dropdown.style.display === 'block') {
+                renderNotifications(notificationsCache);
+              }
+            }
+          } catch {}
+        });
+        return;
+      }
+      setTimeout(attachRealtime, 500);
+    } catch {}
+  })();
 });
 

@@ -10,6 +10,7 @@ import { clerkMiddleware, getAuth, clerkClient } from "@clerk/express";
 import crypto from "node:crypto";
 import { CLERK_ENABLED, CLERK_PUBLISHABLE, CLERK_SECRET, CLERK_SIGN_IN_URL, CLERK_SIGN_UP_URL, PUBLIC_BASE_URL } from "../config.mjs";
 const SESSION_TOKEN_SECRET = process.env.SESSION_TOKEN_SECRET || CLERK_SECRET || "dev-secret-change";
+const WS_TOKEN_TTL_SECONDS = parseInt(process.env.WS_TOKEN_TTL_SECONDS || '7200', 10); // default 2h
 
 /**
  * Initialize Clerk middleware with GET-handshake optimization.
@@ -141,7 +142,7 @@ function fromB64u(str){
 }
 
 /** Sign a short-lived session token carrying user id. */
-export function signSessionToken(userId, ttlSeconds = 900) {
+export function signSessionToken(userId, ttlSeconds = WS_TOKEN_TTL_SECONDS) {
   const header = { alg: "HS256", typ: "JWT" };
   const payload = { uid: String(userId), exp: Math.floor(Date.now()/1000) + Math.max(60, ttlSeconds) };
   const h = b64uJson(header);

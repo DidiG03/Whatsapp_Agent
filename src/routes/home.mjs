@@ -12,7 +12,7 @@ export default function registerHomeRoutes(app) {
       res.end(`
         <html>${getProfessionalHead('Home')}<body>
           <script src="/toast.js"></script>
-          <script src="/notifications.js"></script>
+          
           <div class="container">
             ${renderTopbar('Home', email)}
             <div class="layout">

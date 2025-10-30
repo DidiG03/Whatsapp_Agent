@@ -18,6 +18,10 @@ class RealtimeManager {
     this.connectionAttempts = 0;
     this.maxConnectionAttempts = 5;
     this.isDestroyed = false;
+    this.wsToken = null;
+    this.wsTokenExpTs = 0;
+    this.tokenRefreshTimeout = null;
+    this.authExpired = false;
     
     this.init();
   }
@@ -39,11 +43,6 @@ class RealtimeManager {
     
     if (this.isConnected) {
       console.log('🔌 Already connected');
-      return;
-    }
-    
-    if (!this.userId) {
-      console.warn('No user ID found, cannot connect');
       return;
     }
     
@@ -110,21 +109,25 @@ class RealtimeManager {
             if (r.ok) {
               const j = await r.json();
               wsToken = j.token;
+              if (!this.userId && j.userId) {
+                this.userId = j.userId;
+              }
             } else {
               console.warn('Failed to fetch WS token:', r.status);
             }
           } catch (e) {
             console.warn('WS token fetch error:', e);
           }
+          this.setWsToken(wsToken);
           // Configure Socket.IO with better connection options
           this.socket = io({
             auth: {
               userId: this.userId,
-              token: wsToken
+              token: this.wsToken
             },
             query: {
               userId: this.userId,
-              token: wsToken
+              token: this.wsToken
             },
             transports: ['polling', 'websocket'], // Start with polling, upgrade to websocket
             timeout: 30000, // 30 seconds
@@ -140,6 +143,7 @@ class RealtimeManager {
           
           this.socket.on('connect', () => {
             this.isConnected = true;
+            this.connectionAttempts = 0;
             console.log('🔌 Connected to real-time server with userId:', this.userId);
             this.updateConnectionStatus(true);
             this.startHeartbeat();
@@ -164,6 +168,7 @@ class RealtimeManager {
             console.error('❌ Socket connection error:', error);
             this.isConnected = false;
             this.updateConnectionStatus(false);
+            this.maybeRefreshTokenOnAuthError(error);
             this.handleConnectionError();
           });
 
@@ -286,10 +291,36 @@ class RealtimeManager {
     // Scroll to bottom
     this.scrollToBottom();
     
-    // Show notification if not in focus
-    if (document.hidden) {
-      this.showNotification(messageData);
-    }
+    // Show actionable toast for inbound messages when not on this conversation
+    try {
+      const isInbound = String(messageData?.direction || '') === 'inbound';
+      const phone = messageData?.contact || messageData?.from_digits || null;
+      const isSameChat = phone && this.currentChat && String(this.currentChat) === String(phone);
+      if (isInbound && phone && (!isSameChat)) {
+        const preview = (messageData?.text_body || 'New message').slice(0, 120);
+        if (window.Toast && typeof window.Toast.showWithActions === 'function') {
+          window.Toast.showWithActions(
+            `New message from ${phone}: ${preview}`,
+            'info',
+            7000,
+            [
+              {
+                label: 'Reply',
+                onClick: () => {
+                  window.location.href = `/inbox/${encodeURIComponent(phone)}`;
+                }
+              }
+            ]
+          );
+        } else if (document.hidden) {
+          // Fallback to browser notification if toast not available
+          this.showNotification(messageData);
+        }
+      } else if (document.hidden) {
+        // Fallback notification when window not focused
+        this.showNotification(messageData);
+      }
+    } catch {}
   }
   
   // Handle typing start
@@ -343,64 +374,55 @@ class RealtimeManager {
     
     if (messageElement) {
       const statusTicksDiv = messageElement.querySelector('.message-status-ticks');
-      if (statusTicksDiv) {
-        // Update the status class
-        statusTicksDiv.className = `message-status-ticks message-status-${status}`;
-        
-        // Handle different status types
-        const firstTick = statusTicksDiv.querySelector('.message-tick:nth-child(1)');
-        const secondTick = statusTicksDiv.querySelector('.message-tick:nth-child(2)');
-        
-        if (firstTick && secondTick) {
-          switch (status) {
-            case 'sent':
-              // Only first tick visible (gray)
-              firstTick.style.display = 'block';
-              firstTick.style.color = '#999';
-              secondTick.style.display = 'none';
-              break;
-            case 'delivered':
-              // Both ticks visible, first tick green, second tick gray
-              firstTick.style.display = 'block';
-              firstTick.style.color = '#4CAF50';
-              secondTick.style.display = 'block';
-              secondTick.style.color = '#999';
-              break;
-            case 'read':
-              // Both ticks visible and green
-              firstTick.style.display = 'block';
-              firstTick.style.color = '#4CAF50';
-              secondTick.style.display = 'block';
-              secondTick.style.color = '#4CAF50';
-              break;
-            case 'failed':
-              // Show failed state with retry button
-              statusTicksDiv.innerHTML = `
-                <div class="message-failed-indicator" title="Message failed to send">
-                  <span class="failed-icon">!</span>
-                  <button class="retry-button" onclick="retryMessage('${messageId}')" title="Retry sending message">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
-                      <path d="M21 3v5h-5"/>
-                      <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
-                      <path d="M3 21v-5h5"/>
-                    </svg>
-                  </button>
-                </div>
-              `;
-              break;
-            default:
-              // Default to sent state
-              firstTick.style.display = 'block';
-              firstTick.style.color = '#999';
-              secondTick.style.display = 'none';
-          }
-        }
-        
-        console.log(`✅ Updated message ${messageId} status to: ${status}`);
-      } else {
+      if (!statusTicksDiv) {
         console.warn(`Status ticks div not found for message ${messageId}`);
+        return;
       }
+      if (status === 'failed') {
+        statusTicksDiv.className = 'message-status-ticks message-status-failed';
+        statusTicksDiv.innerHTML = `
+          <div class="message-failed-indicator" title="Message failed to send">
+            <span class="failed-icon">!</span>
+          </div>
+        `;
+        return;
+      }
+      // Ensure tick elements exist
+      if (!statusTicksDiv.querySelector('.message-tick')) {
+        statusTicksDiv.innerHTML = '<div class="message-tick"></div><div class="message-tick"></div>';
+      }
+      // Update the status class
+      statusTicksDiv.className = `message-status-ticks message-status-${status}`;
+      
+      const firstTick = statusTicksDiv.querySelector('.message-tick:nth-child(1)');
+      const secondTick = statusTicksDiv.querySelector('.message-tick:nth-child(2)');
+      if (firstTick && secondTick) {
+        switch (status) {
+          case 'pending':
+          case 'sent':
+            firstTick.style.display = 'block';
+            firstTick.style.color = '#999';
+            secondTick.style.display = 'none';
+            break;
+          case 'delivered':
+            firstTick.style.display = 'block';
+            firstTick.style.color = '#999';
+            secondTick.style.display = 'block';
+            secondTick.style.color = '#999';
+            break;
+          case 'read':
+            firstTick.style.display = 'block';
+            firstTick.style.color = '#4fc3f7';
+            secondTick.style.display = 'block';
+            secondTick.style.color = '#4fc3f7';
+            break;
+          default:
+            firstTick.style.display = 'block';
+            firstTick.style.color = '#999';
+            secondTick.style.display = 'none';
+        }
+      }
+      console.log(`✅ Updated message ${messageId} status to: ${status}`);
     } else {
       console.warn(`Message element not found for ID: ${messageId}`);
     }
@@ -556,18 +578,18 @@ class RealtimeManager {
         finalStatus = 'read';
       }
       
-      // Create status ticks
       const statusTicksDiv = document.createElement('div');
-      statusTicksDiv.className = `message-status-ticks message-status-${finalStatus}`;
-      
-      const tick1 = document.createElement('div');
-      tick1.className = 'message-tick';
-      const tick2 = document.createElement('div');
-      tick2.className = 'message-tick';
-      
-      statusTicksDiv.appendChild(tick1);
-      statusTicksDiv.appendChild(tick2);
-      
+      if (finalStatus === 'failed') {
+        statusTicksDiv.className = 'message-status-ticks message-status-failed';
+        statusTicksDiv.innerHTML = `
+          <div class="message-failed-indicator" title="Message failed to send">
+            <span class="failed-icon">!</span>
+          </div>
+        `;
+      } else {
+        statusTicksDiv.className = `message-status-ticks message-status-${finalStatus}`;
+        statusTicksDiv.innerHTML = '<div class="message-tick"></div><div class="message-tick"></div>';
+      }
       metaDiv.appendChild(statusTicksDiv);
     }
     
@@ -750,7 +772,7 @@ class RealtimeManager {
 
   // Schedule reconnection with exponential backoff
   scheduleReconnect() {
-    if (this.isDestroyed || this.isConnected) return;
+    if (this.isDestroyed || this.isConnected || this.authExpired) return;
     
     const delay = Math.min(1000 * Math.pow(2, this.connectionAttempts - 1), 30000);
     console.log(`🔄 Scheduling reconnect in ${delay}ms (attempt ${this.connectionAttempts})`);
@@ -774,6 +796,7 @@ class RealtimeManager {
   handleConnectionError() {
     this.clearReconnectTimeout();
     this.stopHeartbeat();
+    if (this.tokenRefreshTimeout) { clearTimeout(this.tokenRefreshTimeout); this.tokenRefreshTimeout = null; }
     
     if (this.connectionAttempts < this.maxConnectionAttempts) {
       this.scheduleReconnect();
@@ -781,6 +804,91 @@ class RealtimeManager {
       console.error('❌ Max connection attempts reached, giving up');
       this.updateConnectionStatus(false);
     }
+  }
+
+  // ---------------- Token refresh helpers ----------------
+  setWsToken(token) {
+    this.wsToken = token || null;
+    // Decode JWT exp (base64url)
+    try {
+      if (this.wsToken) {
+        const parts = this.wsToken.split('.')
+        if (parts.length === 3) {
+          const p = parts[1].replace(/-/g,'+').replace(/_/g,'/');
+          const pad = p.length % 4 === 2 ? '==' : (p.length % 4 === 3 ? '=' : '');
+          const json = atob(p + pad);
+          const payload = JSON.parse(json);
+          this.wsTokenExpTs = Number(payload.exp || 0) * 1000;
+        }
+      }
+    } catch { this.wsTokenExpTs = 0; }
+    this.scheduleTokenRefresh();
+  }
+
+  scheduleTokenRefresh() {
+    if (this.tokenRefreshTimeout) {
+      clearTimeout(this.tokenRefreshTimeout);
+      this.tokenRefreshTimeout = null;
+    }
+    if (!this.wsTokenExpTs) return;
+    const now = Date.now();
+    // Refresh 5 minutes before expiry; minimum delay 10s
+    const delay = Math.max(this.wsTokenExpTs - now - 5*60*1000, 10000);
+    this.tokenRefreshTimeout = setTimeout(() => this.refreshWsToken(), delay);
+  }
+
+  async refreshWsToken() {
+    try {
+      const r = await fetch('/auth/ws-token', { credentials: 'include' });
+      if (r.status === 401) {
+        this.handleAuthExpired();
+        return;
+      }
+      if (!r.ok) throw new Error('ws-token refresh failed: ' + r.status);
+      const j = await r.json();
+      this.userId = this.userId || j.userId || this.userId;
+      this.setWsToken(j.token);
+      if (this.socket) {
+        // Update auth/query and reconnect to apply new token
+        try { this.socket.auth = { userId: this.userId, token: this.wsToken }; } catch {}
+        try { this.socket.io.opts.query = { userId: this.userId, token: this.wsToken }; } catch {}
+        try { this.socket.disconnect(); } catch {}
+        try { this.socket.connect(); } catch {}
+      }
+    } catch (e) {
+      console.warn('WS token refresh error:', e);
+    }
+  }
+
+  maybeRefreshTokenOnAuthError(error) {
+    try {
+      const msg = String(error?.message || error || '').toLowerCase();
+      const isAuthError = msg.includes('401') || msg.includes('unauthorized') || msg.includes('invalid auth token');
+      if (isAuthError && !this.authExpired) this.refreshWsToken();
+    } catch {}
+  }
+
+  handleAuthExpired() {
+    this.authExpired = true;
+    this.clearReconnectTimeout();
+    this.stopHeartbeat();
+    if (this.tokenRefreshTimeout) { clearTimeout(this.tokenRefreshTimeout); this.tokenRefreshTimeout = null; }
+    try {
+      if (this.socket) {
+        this.socket.removeAllListeners();
+        this.socket.disconnect();
+      }
+    } catch {}
+    this.isConnected = false;
+    this.updateConnectionStatus(false);
+    // Inform user gently; avoid alert loops if tab is hidden
+    try {
+      if (window.Toast && typeof window.Toast.show === 'function') {
+        window.Toast.show('Session expired. Please sign in again.', 'warning');
+      } else {
+        console.warn('Session expired. Please sign in again.');
+      }
+    } catch {}
   }
 
   // Properly disconnect and cleanup
@@ -876,7 +984,11 @@ class RealtimeManager {
 
 // Initialize real-time manager when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
-  window.realtimeManager = new RealtimeManager();
+  if (!window.realtimeManager) {
+    window.realtimeManager = new RealtimeManager();
+  }
+  // Attempt auto-connect; server will infer userId from ws token
+  try { window.realtimeManager.connect(); } catch {}
   
   // Add visibility change listener to handle page focus/blur
   document.addEventListener('visibilitychange', () => {

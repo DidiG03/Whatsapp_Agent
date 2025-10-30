@@ -18,6 +18,7 @@ window.Toast = {
         <div class="toast-message">${message}</div>
         <button class="toast-close" onclick="Toast.close(this)">×</button>
       </div>
+      <div class="toast-actions" style="display:none"></div>
       <div class="toast-progress"></div>
     `;
     
@@ -35,6 +36,37 @@ window.Toast = {
         this.close(toast.querySelector('.toast-close'));
       }
     }, duration);
+    
+    return toast;
+  },
+  
+  // Show a toast with action buttons
+  showWithActions: function(message, type = 'info', duration = 5000, actions = []) {
+    const toast = this.show(message, type, duration);
+    if (!toast) return null;
+    
+    const actionsContainer = toast.querySelector('.toast-actions');
+    if (!actionsContainer) return toast;
+    
+    // Clear existing (if any) and render buttons
+    actionsContainer.innerHTML = '';
+    const validActions = Array.isArray(actions) ? actions.filter(a => a && a.label) : [];
+    if (validActions.length > 0) {
+      actionsContainer.style.display = 'flex';
+      validActions.forEach((action) => {
+        const btn = document.createElement('button');
+        btn.className = 'toast-action';
+        btn.textContent = String(action.label);
+        if (typeof action.onClick === 'function') {
+          btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            try { action.onClick(e); } catch {}
+            // Do not auto-close by default; allow handler to decide
+          });
+        }
+        actionsContainer.appendChild(btn);
+      });
+    }
     
     return toast;
   },

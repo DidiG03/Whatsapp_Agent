@@ -10,7 +10,6 @@ export const CONVERSATION_STATUSES = {
   NEW: 'new',
   IN_PROGRESS: 'in_progress', 
   RESOLVED: 'resolved',
-  CLOSED: 'closed'
 };
 
 // Status display names
@@ -18,7 +17,6 @@ export const STATUS_DISPLAY_NAMES = {
   [CONVERSATION_STATUSES.NEW]: 'New',
   [CONVERSATION_STATUSES.IN_PROGRESS]: 'In Progress',
   [CONVERSATION_STATUSES.RESOLVED]: 'Resolved', 
-  [CONVERSATION_STATUSES.CLOSED]: 'Closed'
 };
 
 // Status colors for UI
@@ -26,7 +24,6 @@ export const STATUS_COLORS = {
   [CONVERSATION_STATUSES.NEW]: '#3b82f6', // Blue
   [CONVERSATION_STATUSES.IN_PROGRESS]: '#f59e0b', // Amber
   [CONVERSATION_STATUSES.RESOLVED]: '#10b981', // Green
-  [CONVERSATION_STATUSES.CLOSED]: '#6b7280' // Gray
 };
 
 /**

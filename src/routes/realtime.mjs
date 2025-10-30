@@ -3,7 +3,7 @@
  */
 
 import { ensureAuthed, getCurrentUserId, verifySessionToken } from '../middleware/auth.mjs';
-import { Handoff } from '../schemas/mongodb.mjs';
+import { Handoff, Notification } from '../schemas/mongodb.mjs';
 import { db, getDB } from '../db-mongodb.mjs';
 import { Server } from 'socket.io';
 import { createServer } from 'http';
@@ -297,10 +297,27 @@ export function initializeSocketIO(server) {
               if (!cfg || !cfg.whatsapp_token || !cfg.phone_number_id) {
                 throw new Error('WhatsApp configuration not found');
               }
+            
+            // If queue is enabled, quickly validate token before optimistic enqueue
+            if (isQueueEnabled()) {
+              try {
+                const fetch = (await import('node-fetch')).default;
+                const resp = await fetch(`https://graph.facebook.com/v20.0/${encodeURIComponent(String(cfg.phone_number_id))}`, {
+                  headers: { Authorization: `Bearer ${cfg.whatsapp_token}` }
+                });
+                if (resp.status === 401 || resp.status === 403) {
+                  throw new Error('Invalid or expired WhatsApp token');
+                }
+              } catch (e) {
+                // Force immediate failure so UI shows red bang without needing refresh
+                throw new Error(e?.message || 'WhatsApp token validation failed');
+              }
+            }
           
           // Queue-aware send
           let outboundId = null;
           let lastSendResponse = null;
+          let initialDeliveryStatus = 'sent';
           // Prefer direct send when Redis is not connected (avoid silent no-ops)
           const preferDirect = !isQueueEnabled();
           if (!preferDirect) {
@@ -311,8 +328,9 @@ export function initializeSocketIO(server) {
             if (ok) {
               const jobId = await enqueueOutboundMessage({ userId, cfg, to: cleanPhone, message });
               if (jobId) {
-                // Optimistic message id for UI; actual delivery events will update later
+                // Optimistic placeholder id for UI; actual delivery events will update later
                 outboundId = `job_${jobId}`;
+                initialDeliveryStatus = 'pending';
               }
             }
           }
@@ -359,7 +377,7 @@ export function initializeSocketIO(server) {
               contact_name: null,
               contact: cleanPhone,
               formatted_time: new Date().toLocaleString(),
-              delivery_status: 'sent',
+              delivery_status: initialDeliveryStatus,
               read_status: 'unread'
             };
             
@@ -506,6 +524,32 @@ export function broadcastNewMessage(userId, phone, messageData) {
     if (io) {
       console.log('📡 Socket.IO available, emitting to chat:', `chat:${phone}`);
       io.to(`chat:${phone}`).emit('new_message', messageData);
+      // Also notify the account owner's user room for global toasts (e.g., dashboard)
+      try { io.to(`user:${userId}`).emit('new_message', messageData); } catch {}
+      // Create a web notification record for inbound messages and broadcast event
+      try {
+        if (messageData && String(messageData.direction) === 'inbound') {
+          const title = `New message from ${phone}`;
+          const preview = (messageData.text_body || '').toString().slice(0, 140);
+          const link = `/inbox/${encodeURIComponent(phone)}`;
+          Notification.create({
+            user_id: String(userId),
+            type: 'inbound_message',
+            title,
+            message: preview,
+            link,
+            is_read: false,
+            metadata: { phone, message_id: messageData.id }
+          }).then(async (doc) => {
+            try {
+              const unreadCount = await Notification.countDocuments({ user_id: String(userId), is_read: false });
+              io.to(`user:${userId}`).emit('notification_created', { notification: doc.toObject(), unreadCount });
+            } catch {
+              io.to(`user:${userId}`).emit('notification_created', { notification: doc.toObject() });
+            }
+          }).catch(() => {});
+        }
+      } catch {}
       // Heuristic: if a new inbound arrives, notify clients to refresh status
       try {
         if (messageData && messageData.direction === 'inbound') {

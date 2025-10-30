@@ -61,7 +61,7 @@ export default function registerMonitoringRoutes(app) {
       res.end(`
         <html>${getProfessionalHead('Monitoring Dashboard')}<body>
           <script src="/toast.js"></script>
-          <script src="/notifications.js"></script>
+          
           <script src="/auth-utils.js"></script>
           <script>
             // Enhanced authentication check on page load

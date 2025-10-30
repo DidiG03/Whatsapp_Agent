@@ -8,6 +8,7 @@
  * - Professional enhancements script inclusion
  */
 import { CLERK_ENABLED } from "./config.mjs";
+const ASSET_VER = process.env.STATIC_ASSETS_VERSION || process.env.VERCEL_GIT_COMMIT_SHA || process.env.GIT_COMMIT || 'dev';
 
 /**
  * Get the professional enhancements script tag for all pages
@@ -26,7 +27,7 @@ export function getProfessionalHead(title) {
   return `
     <head>
       <title>WhatsApp Agent - ${title}</title>
-      <link rel="stylesheet" href="/styles.css">
+      <link rel="stylesheet" href="/styles.css?v=${ASSET_VER}">
       <link rel="preconnect" href="https://fonts.googleapis.com">
       <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
       <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -297,6 +298,9 @@ export function renderTopbar(crumbs, email) {
         <div class="small">${email ? `Signed in as: ${email}` : ''}</div>
       </div>
     </div>
+    <script src="/toast.js"></script>
+    <script src="/realtime.js"></script>
+    <script src="/notifications.js"></script>
   `;
 }
 

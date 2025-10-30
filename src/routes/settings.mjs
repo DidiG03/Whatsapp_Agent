@@ -43,7 +43,7 @@ export default function registerSettingsRoutes(app) {
     res.setHeader("Expires", "0");
     res.end(`
       <html><head><title>Code Orbit - Settings</title><link rel="stylesheet" href="/styles.css"></head><body>
-        <script src="/notifications.js"></script>
+        
         <script src="/auth-utils.js"></script>
         <script>
           // Enhanced authentication check on page load
@@ -869,6 +869,62 @@ export default function registerSettingsRoutes(app) {
       console.error('[POST /settings] upsert error', e?.message || e);
     }
     res.redirect("/settings");
+  });
+
+  // WhatsApp token status check (used by Inbox modal)
+  app.get("/api/settings/wa-token/status", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
+    try {
+      const s = await getSettingsForUser(userId);
+      if (!s?.whatsapp_token || !s?.phone_number_id) {
+        return res.json({ status: 'missing', hasToken: !!s?.whatsapp_token, hasPhoneId: !!s?.phone_number_id });
+      }
+      try {
+        const fetch = (await import('node-fetch')).default;
+        const resp = await fetch(`https://graph.facebook.com/v20.0/${encodeURIComponent(String(s.phone_number_id))}`, {
+          headers: { Authorization: `Bearer ${s.whatsapp_token}` }
+        });
+        if (resp.status === 401 || resp.status === 403) {
+          return res.json({ status: 'invalid', code: resp.status });
+        }
+        if (!resp.ok) {
+          // Consider other non-OK statuses as unknown but not necessarily invalid
+          return res.json({ status: 'unknown', code: resp.status });
+        }
+        return res.json({ status: 'ok' });
+      } catch (e) {
+        return res.json({ status: 'unknown', error: String(e?.message || e) });
+      }
+    } catch {
+      return res.json({ status: 'unknown' });
+    }
+  });
+
+  // Update WhatsApp token (AJAX from Inbox modal)
+  app.post("/api/settings/wa-token", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
+    const newTokenRaw = (req.body?.whatsapp_token || '').toString();
+    const newToken = newTokenRaw.trim();
+    if (!newToken) return res.status(400).json({ success: false, error: 'Token is required' });
+    try {
+      // Optionally validate against phone_number_id if set
+      const s = await getSettingsForUser(userId);
+      if (s?.phone_number_id) {
+        try {
+          const fetch = (await import('node-fetch')).default;
+          const resp = await fetch(`https://graph.facebook.com/v20.0/${encodeURIComponent(String(s.phone_number_id))}`, {
+            headers: { Authorization: `Bearer ${newToken}` }
+          });
+          if (resp.status === 401 || resp.status === 403) {
+            return res.status(400).json({ success: false, error: 'Invalid or expired token (401/403 from Graph)' });
+          }
+        } catch {}
+      }
+      await upsertSettingsForUser(userId, { whatsapp_token: newToken });
+      return res.json({ success: true });
+    } catch (e) {
+      return res.status(500).json({ success: false, error: e?.message || 'Failed to update token' });
+    }
   });
 
   // Start email update: create email address and send verification

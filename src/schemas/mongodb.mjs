@@ -79,7 +79,7 @@ const handoffSchema = new mongoose.Schema({
   is_human: { type: Boolean, default: false },
   conversation_status: { 
     type: String, 
-    enum: ['new', 'in_progress', 'resolved', 'closed'],
+    enum: ['new', 'in_progress', 'resolved'],
     default: 'new'
   },
   is_archived: { type: Boolean, default: false },

@@ -351,6 +351,126 @@ To manage notification settings, visit: ${process.env.PUBLIC_BASE_URL || 'http:/
 }
 
 /**
+ * Send a payment receipt email to the account owner
+ * @param {string} userId
+ * @param {Object} data
+ * @param {number} data.amountCents
+ * @param {string} data.currency
+ * @param {string} [data.planName]
+ * @param {string} [data.invoiceUrl]
+ */
+export async function sendPaymentReceiptEmail(userId, data) {
+  try {
+    const settings = getSettingsForUser(userId) || {};
+    // Determine email destination: custom notification email or Clerk account email
+    let toEmail = settings?.escalation_email;
+    if (!toEmail) {
+      try {
+        const user = await clerkClient.users.getUser(userId);
+        const primaryId = user.primaryEmailAddressId;
+        toEmail = user.emailAddresses?.find(e => e.id === primaryId)?.emailAddress || user.emailAddresses?.[0]?.emailAddress;
+      } catch {}
+    }
+    if (!toEmail) return { success: false, reason: 'no_email' };
+
+    const transporter = createTransporter(settings);
+    if (!transporter) return { success: false, reason: 'no_smtp_config' };
+
+    const fromEmail = settings?.smtp_user || process.env.SMTP_USER;
+    const businessName = settings?.business_name || 'Your Business';
+    const amount = (Number(data?.amountCents || 0) / 100).toFixed(2);
+    const currency = String(data?.currency || 'usd').toUpperCase();
+    const plan = data?.planName ? ` for the ${data.planName} plan` : '';
+    const subject = `✅ Payment received: ${currency} ${amount}${plan}`;
+
+    const htmlBody = `
+      <!DOCTYPE html>
+      <html><body style="font-family:Arial, sans-serif;line-height:1.6;color:#111">
+        <div style="max-width:600px;margin:0 auto;padding:20px;background:#fff;border:1px solid #eee;border-radius:8px;">
+          <h2 style="margin-top:0;color:#16a34a;">Payment Successful</h2>
+          <p>We've received your payment of <strong>${currency} ${amount}</strong>${plan}.</p>
+          ${data?.invoiceUrl ? `<p>You can view your invoice here: <a href="${data.invoiceUrl}">${data.invoiceUrl}</a></p>` : ''}
+          <p>Thanks for being a customer of ${businessName}.</p>
+          <p style="margin-top:24px;font-size:12px;color:#6b7280;">This message was sent automatically by WhatsApp Agent.</p>
+        </div>
+      </body></html>`;
+
+    const textBody = `Payment Successful\n\nAmount: ${currency} ${amount}${plan}\n${data?.invoiceUrl ? `Invoice: ${data.invoiceUrl}\n` : ''}Thank you for your business.`;
+
+    const info = await transporter.sendMail({
+      from: `"${businessName}" <${fromEmail}>`,
+      to: toEmail,
+      subject,
+      text: textBody,
+      html: htmlBody,
+    });
+    return { success: true, messageId: info.messageId };
+  } catch (e) {
+    return { success: false, error: e?.message || String(e) };
+  }
+}
+
+/**
+ * Send a payment failed email to the account owner
+ * @param {string} userId
+ * @param {Object} data
+ * @param {number} [data.amountCents]
+ * @param {string} [data.currency]
+ * @param {string} [data.planName]
+ * @param {string} [data.reason]
+ */
+export async function sendPaymentFailedEmail(userId, data = {}) {
+  try {
+    const settings = getSettingsForUser(userId) || {};
+    let toEmail = settings?.escalation_email;
+    if (!toEmail) {
+      try {
+        const user = await clerkClient.users.getUser(userId);
+        const primaryId = user.primaryEmailAddressId;
+        toEmail = user.emailAddresses?.find(e => e.id === primaryId)?.emailAddress || user.emailAddresses?.[0]?.emailAddress;
+      } catch {}
+    }
+    if (!toEmail) return { success: false, reason: 'no_email' };
+
+    const transporter = createTransporter(settings);
+    if (!transporter) return { success: false, reason: 'no_smtp_config' };
+
+    const fromEmail = settings?.smtp_user || process.env.SMTP_USER;
+    const businessName = settings?.business_name || 'Your Business';
+    const amount = data?.amountCents != null ? (Number(data.amountCents) / 100).toFixed(2) : null;
+    const currency = data?.currency ? String(data.currency).toUpperCase() : null;
+    const plan = data?.planName ? ` for the ${data.planName} plan` : '';
+    const subject = `⚠️ Payment failed${amount && currency ? `: ${currency} ${amount}` : ''}${plan}`;
+
+    const reason = data?.reason ? `<p>Reason: ${data.reason}</p>` : '';
+    const htmlBody = `
+      <!DOCTYPE html>
+      <html><body style="font-family:Arial, sans-serif;line-height:1.6;color:#111">
+        <div style="max-width:600px;margin:0 auto;padding:20px;background:#fff;border:1px solid #eee;border-radius:8px;">
+          <h2 style="margin-top:0;color:#dc2626;">Payment Failed</h2>
+          <p>Your recent payment${plan} could not be processed${amount && currency ? ` (amount: <strong>${currency} ${amount}</strong>)` : ''}.</p>
+          ${reason}
+          <p>Please update your billing details in the app and try again.</p>
+          <p style="margin-top:24px;font-size:12px;color:#6b7280;">This message was sent automatically by WhatsApp Agent.</p>
+        </div>
+      </body></html>`;
+
+    const textBody = `Payment Failed\n\n${amount && currency ? `Amount: ${currency} ${amount}\n` : ''}${data?.planName ? `Plan: ${data.planName}\n` : ''}${data?.reason ? `Reason: ${data.reason}\n` : ''}Please update your billing details and try again.`;
+
+    const info = await transporter.sendMail({
+      from: `"${businessName}" <${fromEmail}>`,
+      to: toEmail,
+      subject,
+      text: textBody,
+      html: htmlBody,
+    });
+    return { success: true, messageId: info.messageId };
+  } catch (e) {
+    return { success: false, error: e?.message || String(e) };
+  }
+}
+
+/**
  * Test email configuration by sending a test email
  * @param {string} toEmail - Email address to send test to
  */

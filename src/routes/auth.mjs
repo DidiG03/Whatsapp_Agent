@@ -31,11 +31,7 @@ export default function registerAuthRoutes(app) {
               <p class="auth-subtitle">Join WhatsApp Agent and start automating your conversations</p>
             </div>
             
-            <div id="signup-component"></div>
-            
-            <div class="auth-divider">
-              <span>or</span>
-            </div>
+            <div style="margin-left: -30px;"  id="signup-component"></div>
             
             <div class="auth-footer">
               <p class="auth-switch">
@@ -48,19 +44,18 @@ export default function registerAuthRoutes(app) {
         
         <script>
           const clerkPublishableKey = '${CLERK_PUBLISHABLE}';
-          console.log('Clerk publishable key:', clerkPublishableKey);
           
           if (!clerkPublishableKey || clerkPublishableKey === 'undefined' || clerkPublishableKey === 'null') {
             document.getElementById('signup-component').innerHTML = 
               '<div class="error-message">Authentication is not configured. Please contact support.</div>';
           } else {
             // Wait for Clerk to be available, then initialize
+            let retryCount = 0;
+            const maxRetries = 50; // 5 seconds max
             function initializeClerk() {
               if (window.Clerk && window.Clerk.load) {
-                console.log('Clerk is available, waiting for ready state...');
                 // Wait for Clerk to be fully ready
                 window.Clerk.load().then(() => {
-                  console.log('Clerk is ready, mounting signup...');
                   // Mount the SignUp component
                   window.Clerk.mountSignUp(document.getElementById('signup-component'), {
                   appearance: {
@@ -105,7 +100,6 @@ export default function registerAuthRoutes(app) {
                     '<div class="error-message">Failed to load authentication. Please refresh the page.</div>';
                   return;
                 }
-                console.log('Clerk not available yet, retrying...', retryCount);
                 setTimeout(initializeClerk, 100);
               }
             }
@@ -142,11 +136,7 @@ export default function registerAuthRoutes(app) {
               <p class="auth-subtitle">Sign in to your WhatsApp Agent account</p>
             </div>
             
-            <div id="signin-component"></div>
-            
-            <div class="auth-divider">
-              <span>or</span>
-            </div>
+            <div style="margin-left: -30px;"  id="signin-component"></div>
             
             <div class="auth-footer">
               <p class="auth-switch">
@@ -159,7 +149,6 @@ export default function registerAuthRoutes(app) {
         
         <script>
           const clerkPublishableKey = '${CLERK_PUBLISHABLE}';
-          console.log('Clerk publishable key:', clerkPublishableKey);
           
           if (!clerkPublishableKey || clerkPublishableKey === 'undefined' || clerkPublishableKey === 'null') {
             document.getElementById('signin-component').innerHTML = 
@@ -171,10 +160,8 @@ export default function registerAuthRoutes(app) {
             
             function initializeClerk() {
               if (window.Clerk && window.Clerk.load) {
-                console.log('Clerk is available, waiting for ready state...');
                 // Wait for Clerk to be fully ready
                 window.Clerk.load().then(() => {
-                  console.log('Clerk is ready, mounting signin...');
                   // Mount the SignIn component
                   window.Clerk.mountSignIn(document.getElementById('signin-component'), {
                     appearance: {
@@ -200,6 +187,7 @@ export default function registerAuthRoutes(app) {
                       layout: {
                         socialButtonsPlacement: 'bottom',
                         socialButtonsVariant: 'blockButton'
+                        
                       }
                     },
                     afterSignInUrl: '/dashboard',
@@ -258,14 +246,14 @@ export default function registerAuthRoutes(app) {
     }
   });
 
-  // Issue a short-lived signed token for WebSocket auth
+  // Issue a signed token for WebSocket auth (ttl configurable via WS_TOKEN_TTL_SECONDS)
   app.get("/auth/ws-token", (req, res) => {
     try {
       const { userId } = getAuth(req) || {};
       if (!userId) {
         return res.status(401).json({ error: "Not signed in" });
       }
-      const token = signSessionToken(userId, 900);
+      const token = signSessionToken(userId);
       return res.json({ token, userId });
     } catch (error) {
       console.error("Failed to issue WS token:", error);

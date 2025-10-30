@@ -244,8 +244,6 @@ export default function registerDashboardRoutes(app) {
     res.end(`
       <html>${getProfessionalHead('Dashboard')}<body>
         <script src="/socket.io/socket.io.js"></script>
-        <script src="/toast.js"></script>
-        <script src="/notifications.js"></script>
         <script src="/auth-utils.js"></script>
         <script>
           // Enhanced authentication check on page load
@@ -612,40 +610,24 @@ export default function registerDashboardRoutes(app) {
           
           // Setup WebSocket for real-time updates
           function setupWebSocket() {
-            // Check if Socket.IO is available
-            if (typeof io !== 'undefined') {
-              const socket = io();
-              const userId = '${userId}'; // Server-side user ID
-              
-              // Join user-specific room for metrics updates
-              socket.emit('join_room', \`user:\${userId}\`);
-              
-              // Listen for metrics updates
-              socket.on('metrics_update', (data) => {
-                console.log('📊 Received real-time metrics update:', data);
-                if (data.userId === userId) {
-                  metricsData = data.data;
-                  renderMetrics();
-                  renderChart();
-                }
-              });
-              
-              // Handle connection events
-              socket.on('connect', () => {
-                console.log('📊 Connected to metrics WebSocket');
-              });
-              
-              socket.on('disconnect', () => {
-                console.log('📊 Disconnected from metrics WebSocket');
-              });
-              
-              // Cleanup on page unload
-              window.addEventListener('beforeunload', () => {
-                socket.disconnect();
-              });
-            } else {
-              console.log('📊 Socket.IO not available, using polling only');
+            const userId = '${userId}';
+            function attach() {
+              const rm = window.realtimeManager;
+              if (rm && rm.socket) {
+                try { rm.socket.off && rm.socket.off('metrics_update'); } catch {}
+                rm.socket.on('metrics_update', (data) => {
+                  console.log('📊 Received real-time metrics update:', data);
+                  if (data && String(data.userId) === String(userId)) {
+                    metricsData = data.data;
+                    renderMetrics();
+                    renderChart();
+                  }
+                });
+                return;
+              }
+              setTimeout(attach, 500);
             }
+            attach();
           }
           
           // Initialize metrics dashboard
