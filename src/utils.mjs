@@ -254,9 +254,9 @@ export function renderSidebar(activeKey) {
     <ul class="nav">
       ${link('/dashboard', 'Dashboard', 'dashboard')}
       ${link('/inbox', 'Inbox', 'inbox')}
-      ${link('/settings', 'Settings', 'settings')}
       ${link('/kb/ui', 'Knowledge Base', 'kb')}
       ${link('/plan', 'Plan', 'plan')}
+      ${link('/settings', 'Settings', 'settings')}
       ${link('/guide', 'Guide', 'guide')}
       ${link('/webhooks', 'Webhooks', 'webhooks')}
       ${link('/api-management', 'API Management', 'api-management')}
@@ -293,6 +293,7 @@ export function renderTopbar(crumbs, email) {
               <span style="font-weight: 600;">Notifications</span>
               <button onclick="markAllAsRead(event)" class="mark-all-read">Mark all read</button>
             </div>
+            <div id="notification-list" class="notification-list"></div>
           </div>
         </div>
         <div class="small">${email ? `Signed in as: ${email}` : ''}</div>

@@ -20,13 +20,49 @@ import { addReaction, removeReaction } from "../services/reactions.mjs";
 import { broadcastNewMessage, broadcastReaction, broadcastMessageStatus } from "./realtime.mjs";
 import { updateMessageDeliveryStatus, updateMessageReadStatus, READ_STATUS, MESSAGE_STATUS } from "../services/messageStatus.mjs";
 import { getConversationStatus, updateConversationStatus, CONVERSATION_STATUSES } from "../services/conversationStatus.mjs";
+import { businessMetrics, incrementCounter } from "../monitoring/metrics.mjs";
+import { enqueueOutboundMessage, isQueueEnabled } from "../jobs/outboundQueue.mjs";
+
+// Precompiled patterns and caches
+const RE_GREETING_SIMPLE = /^(hi|hello|hey|yo|hiya|howdy|greetings)\b/;
+const RE_GREETING_GOOD = /^good\s+(morning|afternoon|evening)\b/;
+const RE_ACK_ONLY_EMOJI = /^[\u{1F44D}\u{1F44C}\u{1F64F}\u{1F44F}\u{2764}\u{1F60A}\u{1F642}]+$/u;
+const ACK_TOKENS = [
+  'thanks','thank you','many thanks','appreciated','thx','tnx','thanx','ty','tks','thank u',
+  'ok','okay','k','kk','roger','got it','gotcha','cool','nice','great','perfect','awesome','cheers','sounds good','noted','understood'
+];
+const ACK_TOKENS_SET = new Set(ACK_TOKENS);
+const SUBSTANTIVE_INTENT_RE = /(book|booking|reserve|reservation|appointment|order|buy|purchase|price|cost|quote|hours|open|closing|when\s*open|location|address|where|near|deliver|delivery|ship|shipping|pickup|refund|return|exchange|warranty|support|help|issue|problem|complaint|agent|human|connect|cancel|resched|change|modify|update|subscribe|signup|register|payment|pay|invoice|billing|menu|service|services|product|products|availability|slot|table|contact|phone|email)/i;
+
+// In-memory cache for KB matches (per tenant+contact+query) with short TTL
+const memKb = new Map();
+const KB_CACHE_TTL_MS = Number(process.env.KB_CACHE_TTL_MS || 5000);
+function kbCacheKey(userId, contact, text) {
+  return `${String(userId||'')}:${String(contact||'')}:${String(text||'').toLowerCase().trim().slice(0,200)}`;
+}
+function cachedRetrieveKbMatches(text, limit, userId, scope, contact) {
+  try {
+    if (!KB_CACHE_TTL_MS || KB_CACHE_TTL_MS <= 0) {
+      return retrieveKbMatches(text, limit, userId, scope);
+    }
+    const key = kbCacheKey(userId, contact, text);
+    const now = Date.now();
+    const hit = memKb.get(key);
+    if (hit && hit.expires > now) return hit.val;
+    const val = retrieveKbMatches(text, limit, userId, scope);
+    memKb.set(key, { val, expires: now + KB_CACHE_TTL_MS });
+    return val;
+  } catch {
+    return retrieveKbMatches(text, limit, userId, scope);
+  }
+}
 
 function isGreeting(raw) {
   const s = String(raw || "").trim().toLowerCase();
   if (!s) return false;
 
-  if (/^(hi|hello|hey|yo|hiya|howdy|greetings)\b/.test(s)) return true;
-  if (/^good\s+(morning|afternoon|evening)\b/.test(s)) return true;
+  if (RE_GREETING_SIMPLE.test(s)) return true;
+  if (RE_GREETING_GOOD.test(s)) return true;
 
   if(["hi", "hello", "hey", "yo", "hiya", "howdy", "greetings", "good morning", "good afternoon", "good evening"].includes(s)) return true;
   return false;
@@ -40,21 +76,16 @@ function isAcknowledgement(raw) {
 
   // Quick emoji thumbs-up or similar
   const onlyEmoji = text.replace(/[\p{L}\p{N}\s]/gu, '').trim();
-  if (/^[\u{1F44D}\u{1F44C}\u{1F64F}\u{1F44F}\u{2764}\u{1F60A}\u{1F642}]+$/u.test(onlyEmoji)) return true;
-
-  const ACKS = [
-    'thanks','thank you','many thanks','appreciated','thx','tnx','thanx','ty','tks','thank u',
-    'ok','okay','k','kk','roger','got it','gotcha','cool','nice','great','perfect','awesome','cheers','sounds good','noted','understood'
-  ];
+  if (RE_ACK_ONLY_EMOJI.test(onlyEmoji)) return true;
 
   // Exact phrase or token match
-  if (ACKS.includes(text)) return true;
+  if (ACK_TOKENS_SET.has(text)) return true;
 
   // Fuzzy match with small typos on phrase and tokens
   const tokens = text.split(' ').filter(Boolean);
   const candidates = [text, ...tokens];
   for (const c of candidates) {
-    for (const a of ACKS) {
+    for (const a of ACK_TOKENS) {
       const lenOk = c.length >= 4 && a.length >= 4;
       if (!lenOk) continue; // avoid false positives like "ok" vs random tokens
       const dist = levenshtein(c, a);
@@ -99,7 +130,7 @@ async function sendKbItemByTitle({ tenantUserId, to, title, cfg }) {
       const isPdf = /pdf/i.test(String(row.file_mime||'')) || /\.pdf(\?|#|$)/i.test(String(row.file_url||''));
       if (isPdf) {
         try {
-          const resp = await sendWhatsappDocument(to, row.file_url, ((row.title||'document') + '.pdf'), cfg);
+          const resp = await sendDocumentTracked(to, row.file_url, ((row.title||'document') + '.pdf'), cfg);
           let outboundId = resp?.messages?.[0]?.id;
           if (!outboundId) outboundId = `local_${Date.now()}_${Math.floor(Math.random()*1e9)}`;
           recordOutboundMessage({ messageId: outboundId, userId: tenantUserId, cfg, to, type: 'document', text: null, raw: { to, reply: 'kb_pdf' } });
@@ -108,7 +139,7 @@ async function sendKbItemByTitle({ tenantUserId, to, title, cfg }) {
       }
     }
     const outText = row?.content || "I couldn't find that info.";
-    const resp = await sendWhatsAppText(to, outText, cfg);
+    const resp = await sendTextTracked(to, outText, cfg);
     try {
       let outboundId = resp?.messages?.[0]?.id;
       if (!outboundId) outboundId = `local_${Date.now()}_${Math.floor(Math.random()*1e9)}`;
@@ -212,8 +243,121 @@ function parseNameFromMessage(raw) {
   return null;
 }
 
+function hasSubstantiveRequest(raw) {
+  try {
+    const s = String(raw || '').toLowerCase().trim();
+    if (!s) return false;
+
+    // Ignore pure greetings (short and only greeting tokens)
+    const pureGreeting = isGreeting(s) && /^(hi|hello|hey|yo|hiya|howdy|greetings|good\s+(morning|afternoon|evening))\b/.test(s) && s.split(/\s+/).length <= 3;
+    if (pureGreeting) return false;
+
+    // Any explicit question is substantive
+    if (s.includes('?')) return true;
+
+    // Broad set of common intents across domains (pricing, hours, locations, delivery, support, etc.)
+    if (SUBSTANTIVE_INTENT_RE.test(s)) return true;
+
+    // Dates/times/numbers often indicate a request (e.g., "tomorrow 3pm", "2 people")
+    if (/(\d{1,2}[:.][0-5]\d\s*(am|pm)?|\b\d{1,2}\s*(am|pm)\b|today|tomorrow|next\s+(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|\b\d+\b)/i.test(s)) return true;
+
+    // Otherwise, consider non-trivial free text as substantive
+    const wc = s.split(/\s+/).filter(Boolean).length;
+    return wc >= 3 || s.length >= 15;
+  } catch { return false; }
+}
+
+// Escalation session storage: prefer Redis with TTL; fallback to in-memory Map
+const memEscalation = new Map();
+// Tenant settings cache (PNID/BusinessPhone) with TTL
+const memTenant = new Map();
+// Status idempotency fallback (when Redis not connected)
+const memStatus = new Map();
+function memKey(userId, contact) {
+  return `${String(userId || '')}:${String(contact || '')}`;
+}
+// In‑progress holding/throttle memory
+const memProgress = new Map(); // key -> { lastHoldingAtMs: number, hits: number[] (timestamps ms) }
+async function getMemSession(userId, contact) {
+  const key = memKey(userId, contact);
+  try {
+    if (isRedisConnected()) {
+      const redis = getRedisClient();
+      const rkey = `esc:${key}`;
+      const raw = await redis.get(rkey);
+      if (!raw) return { key, rec: null };
+      try { return { key, rec: JSON.parse(raw) || null }; } catch { return { key, rec: null }; }
+    }
+  } catch {}
+  const rec = memEscalation.get(key) || null;
+  const now = Date.now();
+  if (rec && rec.expires > now) return { key, rec };
+  if (rec) memEscalation.delete(key);
+  return { key, rec: null };
+}
+async function setMemSession(userId, contact, data, ttlMs = 30*60*1000) {
+  const key = memKey(userId, contact);
+  try {
+    if (isRedisConnected()) {
+      const redis = getRedisClient();
+      const rkey = `esc:${key}`;
+      await redis.set(rkey, JSON.stringify(data), 'PX', Math.max(1000, Number(ttlMs)||0));
+      return;
+    }
+  } catch {}
+  const now = Date.now();
+  memEscalation.set(key, { ...data, expires: now + ttlMs });
+}
+
+async function cachedFindSettingsByPhoneNumberId(pnid) {
+  if (!pnid) return null;
+  const ttlMs = Number(process.env.TENANT_CACHE_TTL_MS || 30000);
+  try {
+    if (isRedisConnected()) {
+      const redis = getRedisClient();
+      const key = `tenant:pnid:${pnid}`;
+      const hit = await redis.get(key);
+      if (hit) { try { return JSON.parse(hit); } catch { return null; } }
+      const val = await findSettingsByPhoneNumberId(pnid);
+      if (val) { try { await redis.set(key, JSON.stringify(val), 'PX', Math.max(1000, ttlMs)); } catch {} }
+      return val || null;
+    }
+  } catch {}
+  const now = Date.now();
+  const k = `pnid:${pnid}`;
+  const rec = memTenant.get(k);
+  if (rec && rec.expires > now) return rec.val;
+  const val = await findSettingsByPhoneNumberId(pnid);
+  memTenant.set(k, { val: val || null, expires: now + ttlMs });
+  return val || null;
+}
+
+async function cachedFindSettingsByBusinessPhone(digits) {
+  if (!digits) return null;
+  const ttlMs = Number(process.env.TENANT_CACHE_TTL_MS || 30000);
+  try {
+    if (isRedisConnected()) {
+      const redis = getRedisClient();
+      const key = `tenant:phone:${digits}`;
+      const hit = await redis.get(key);
+      if (hit) { try { return JSON.parse(hit); } catch { return null; } }
+      const val = await findSettingsByBusinessPhone(digits);
+      if (val) { try { await redis.set(key, JSON.stringify(val), 'PX', Math.max(1000, ttlMs)); } catch {} }
+      return val || null;
+    }
+  } catch {}
+  const now = Date.now();
+  const k = `phone:${digits}`;
+  const rec = memTenant.get(k);
+  if (rec && rec.expires > now) return rec.val;
+  const val = await findSettingsByBusinessPhone(digits);
+  memTenant.set(k, { val: val || null, expires: now + ttlMs });
+  return val || null;
+}
+
 export default function registerWebhookRoutes(app) {
   const DEBUG_LOGS = process.env.DEBUG_LOGS === '1';
+  const OUT_OF_SCOPE_PHRASE = 'That seems outside my scope. Try choosing one of these topics';
   function maskPhone(p) {
     try {
       const d = String(p||'').replace(/\D/g,'');
@@ -221,26 +365,696 @@ export default function registerWebhookRoutes(app) {
       return d.slice(0,2) + '******' + d.slice(-2);
     } catch { return '***'; }
   }
-  // Basic in-memory rate limiter for webhook (IP-based)
+  // IP-based rate limiter: Redis if available, fallback to in-memory map
   const rateWindowMs = Number(process.env.WEBHOOK_RATE_WINDOW_MS || 15_000);
   const maxHits = Number(process.env.WEBHOOK_RATE_MAX || 60);
-  const hits = new Map(); // key -> { count, ts }
-  const rateLimit = (req, res, next) => {
+  const hits = new Map(); // fallback: key -> { count, ts }
+  const rateLimit = async (req, res, next) => {
     try {
       const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || req.connection?.remoteAddress || 'unknown';
+      if (isRedisConnected()) {
+        const redis = getRedisClient();
+        const key = `rate:ip:${ip}`;
+        const count = await redis.incr(key);
+        if (count === 1) {
+          await redis.pexpire(key, Math.max(1000, rateWindowMs));
+        }
+        if (count > maxHits) {
+          res.setHeader('Retry-After', Math.ceil(rateWindowMs/1000));
+          return res.status(429).send('Too Many Requests');
+        }
+      } else {
       const now = Date.now();
       const rec = hits.get(ip) || { count: 0, ts: now };
-      if (now - rec.ts > rateWindowMs) {
-        rec.count = 0; rec.ts = now;
-      }
+        if (now - rec.ts > rateWindowMs) { rec.count = 0; rec.ts = now; }
       rec.count += 1;
       hits.set(ip, rec);
       if (rec.count > maxHits) {
         return res.status(429).send('Too Many Requests');
+        }
       }
     } catch {}
     next();
   };
+  
+  // Helpers to eliminate duplicated logic
+  async function getFirstStaffOrNotifyNoStaff(tenantUserId, from, cfg) {
+    try {
+      const s = await getDB().collection('staff')
+        .find({ user_id: String(tenantUserId) })
+        .project({ _id: 1, slot_minutes: 1, timezone: 1, working_hours_json: 1 })
+        .sort({ createdAt: 1 })
+        .limit(1)
+        .toArray();
+      const staff = s[0] || null;
+      if (!staff) {
+        await sendTextTracked(from, "Bookings are enabled, but no staff is configured yet.", cfg);
+        return null;
+      }
+      return staff;
+    } catch {
+      await sendTextTracked(from, "Bookings are enabled, but no staff is configured yet.", cfg);
+      return null;
+    }
+  }
+
+  async function sendDayPicker(from, staffId, apptId, cfg, header = 'Pick a day', body = 'Choose a date:') {
+    const days = buildDayRows(staffId, apptId);
+    await sendListTracked(from, header, body, 'Select', days, cfg);
+  }
+
+  async function notifyTooClose(from, minLead, cfg) {
+    await sendTextTracked(from, `It's too close to your start time (less than ${minLead} min). Please contact us directly.`, cfg);
+  }
+
+  // Unified outbound send helpers that also record outbound messages
+  async function sendTextTracked(to, text, cfg) {
+    if (isQueueEnabled()) {
+      try {
+        const jobId = await enqueueOutboundMessage({ userId: cfg?.user_id || null, cfg, to, message: text });
+        if (jobId) {
+          return { messages: [{ id: `queued:${jobId}` }] };
+        }
+      } catch {}
+    }
+    const resp = await sendWhatsAppText(to, text, cfg);
+    try {
+      const outboundId = resp?.messages?.[0]?.id;
+      if (outboundId) {
+        recordOutboundMessage({ messageId: outboundId, userId: cfg?.user_id || null, cfg, to, type: 'text', text, raw: { to, text } });
+        businessMetrics.trackWhatsAppMessage('sent', 'text', true);
+      }
+    } catch {}
+    return resp;
+  }
+
+  async function sendListTracked(to, header, body, buttonText, rows, cfg) {
+    const resp = await sendWhatsappList(to, header, body, buttonText, rows, cfg);
+    try {
+      const outboundId = resp?.messages?.[0]?.id;
+      if (outboundId) {
+        const combinedText = `${header}\n${body}`;
+        recordOutboundMessage({ messageId: outboundId, userId: cfg?.user_id || null, cfg, to, type: 'interactive', text: combinedText, raw: { to, interactive: 'list' } });
+        businessMetrics.trackWhatsAppMessage('sent', 'interactive', true);
+      }
+    } catch {}
+    return resp;
+  }
+
+  async function sendButtonTracked(to, text, buttons, cfg) {
+    const resp = await sendWhatsappButton(to, text, buttons, cfg);
+    try {
+      const outboundId = resp?.messages?.[0]?.id;
+      if (outboundId) {
+        recordOutboundMessage({ messageId: outboundId, userId: cfg?.user_id || null, cfg, to, type: 'interactive', text, raw: { to, interactive: 'button' } });
+        businessMetrics.trackWhatsAppMessage('sent', 'interactive', true);
+      }
+    } catch {}
+    return resp;
+  }
+
+  async function sendDocumentTracked(to, fileUrl, filename, cfg) {
+    const resp = await sendWhatsappDocument(to, fileUrl, filename, cfg);
+    try {
+      const outboundId = resp?.messages?.[0]?.id;
+      if (outboundId) {
+        recordOutboundMessage({ messageId: outboundId, userId: cfg?.user_id || null, cfg, to, type: 'document', text: null, raw: { to, document: fileUrl } });
+        businessMetrics.trackWhatsAppMessage('sent', 'document', true);
+      }
+    } catch {}
+    return resp;
+  }
+
+  // ---------- Refactor helpers (deduplication and flow control) ----------
+  async function recordAndBroadcastInbound({ message, tenantUserId, metadata, normalizedType, text, mediaUrl }) {
+    try {
+      const inboundId = message?.id;
+      if (!inboundId || !tenantUserId) return false;
+      const inserted = await recordInboundMessage({
+        messageId: inboundId,
+        userId: tenantUserId,
+        from: message.from,
+        businessPhone: metadata?.display_phone_number?.replace(/\D/g, ""),
+        type: normalizedType,
+        text: normalizedType === 'image' ? null : text,
+        timestamp: message.timestamp ? Number(message.timestamp) : undefined,
+        raw: message
+      });
+      if (inserted) {
+        try { incrementUsage(tenantUserId, 'inbound_messages'); } catch {}
+        const messageData = {
+          id: inboundId,
+          direction: 'inbound',
+          type: normalizedType || 'text',
+          text_body: normalizedType === 'image' ? null : text,
+          timestamp: message.timestamp ? Number(message.timestamp) : Math.floor(Date.now() / 1000),
+          from_digits: normalizePhone(message.from),
+          to_digits: normalizePhone(metadata?.display_phone_number),
+          contact_name: null,
+          contact: message.from,
+          formatted_time: new Date((message.timestamp ? Number(message.timestamp) : Math.floor(Date.now() / 1000)) * 1000).toLocaleString(),
+          media_url: mediaUrl || null
+        };
+        try { broadcastNewMessage(tenantUserId, message.from, messageData); } catch {}
+        try {
+          await Handoff.findOneAndUpdate(
+            { user_id: tenantUserId, contact_id: message.from },
+            { $set: { is_archived: false, deleted_at: null, updatedAt: new Date() }, $setOnInsert: { user_id: tenantUserId, contact_id: message.from } },
+            { upsert: true }
+          );
+        } catch {}
+        try {
+          const current = await getConversationStatus(tenantUserId, message.from);
+          if (current === CONVERSATION_STATUSES.RESOLVED || current === CONVERSATION_STATUSES.CLOSED) {
+            await updateConversationStatus(tenantUserId, message.from, CONVERSATION_STATUSES.NEW, 'Customer sent a new message after resolution');
+          }
+        } catch {}
+      }
+      return !!inserted;
+    } catch {
+      return false;
+    }
+  }
+
+  async function maybeSendHoldingMessage(tenantUserId, from, cfg) {
+    try {
+      if (!tenantUserId) return false;
+      const current = await getConversationStatus(tenantUserId, from);
+      if (current !== CONVERSATION_STATUSES.IN_PROGRESS) {
+        try { memProgress.delete(memKey(tenantUserId, from)); } catch {}
+        return false;
+      }
+      const nowMs = Date.now();
+      const key = memKey(tenantUserId, from);
+      const rec = memProgress.get(key) || { lastHoldingAtMs: 0, hits: [] };
+      const spamWindowMs = Number(process.env.INPROGRESS_SPAM_WINDOW_MS || 30000);
+      const spamThresh = Number(process.env.INPROGRESS_SPAM_THRESHOLD || 3);
+      rec.hits = (rec.hits || []).filter(ts => (nowMs - ts) <= spamWindowMs);
+      rec.hits.push(nowMs);
+      if (rec.hits.length >= spamThresh) { memProgress.set(key, rec); return true; }
+      const cooldownMs = Number(process.env.INPROGRESS_HOLDING_COOLDOWN_MS || 60000);
+      if (nowMs - (rec.lastHoldingAtMs || 0) >= cooldownMs) {
+        const holding = 'Bear with me — an agent will be with you shortly.';
+        try { await sendTextTracked(from, holding, cfg); } catch {}
+        rec.lastHoldingAtMs = nowMs;
+      }
+      memProgress.set(key, rec);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function handleOutOfHoursGuard(tenantUserId, from, cfg) {
+    try {
+      if (!tenantUserId) return false;
+      const within = await isWithinStaffWorkingHours(tenantUserId, cfg);
+      if (!within) {
+        const ok = await shouldSendOutOfHours(tenantUserId, from);
+        if (ok) {
+          const ooh = cfg.escalation_out_of_hours_message || 'We are currently outside our working hours. We will get back to you as soon as we can.';
+          await sendTextTracked(from, ooh, cfg);
+        }
+        return true;
+      }
+    } catch {}
+    return false;
+  }
+
+  async function maybeJoinRecentFragments({ text, from, tenantUserId, timestampSec }) {
+    try {
+      const nowSec = Number(timestampSec || Math.floor(Date.now()/1000));
+      const digits = String(from || '').replace(/\D/g, '');
+      const windowSec = 20;
+      const recent = db.prepare(`
+        SELECT text_body AS t, timestamp AS ts
+        FROM messages
+        WHERE user_id = ? AND direction = 'inbound' AND type = 'text'
+          AND (REPLACE(from_id,'+','') = ? OR from_digits = ?)
+          AND timestamp >= ?
+        ORDER BY timestamp ASC
+        LIMIT 8
+      `).all(tenantUserId, digits, digits, nowSec - windowSec);
+      const parts = (recent || []).map(r => String(r.t || '').trim()).filter(Boolean);
+      const joined = parts.join(' ').replace(/\s+/g, ' ').trim();
+      const isShort = (s) => {
+        const trimmed = String(s || '').trim();
+        const wc = trimmed ? trimmed.split(/\s+/).length : 0;
+        return trimmed.length <= 4 || wc <= 2;
+      };
+      if (joined && (isShort(text) || parts.length >= 3)) return joined;
+    } catch {}
+    return text;
+  }
+
+  async function maybeHandleGreeting({ text, tenantUserId, from, cfg }) {
+    if (!isGreeting(text)) return false;
+    try { incrementCounter('greeting_detected', 1, { userId: String(tenantUserId||'') }); } catch {}
+    try {
+      const dbNative = getDB();
+      const now = Math.floor(Date.now()/1000);
+      const st = await dbNative.collection('contact_state').findOne({ user_id: String(tenantUserId), contact_id: String(from) }, { projection: { last_greet_ts: 1 } });
+      const last = st?.last_greet_ts || 0;
+      const cooldown = Number(process.env.GREETING_COOLDOWN_SEC || 180);
+      if ((now - last) <= cooldown) return true;
+      await dbNative.collection('contact_state').updateOne(
+        { user_id: String(tenantUserId), contact_id: String(from) },
+        { $set: { last_greet_ts: now, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } },
+        { upsert: true }
+      );
+    } catch {}
+
+    const greetText = cfg.entry_greeting || "Hello! How can I help you today?";
+    if (DEBUG_LOGS) console.log('[Webhook] Sending greeting to customer:', { to: from, greetText });
+    const greetResp = await sendTextTracked(from, greetText, cfg);
+    if (DEBUG_LOGS) console.log('[Webhook] Greeting send result:', { id: greetResp?.messages?.[0]?.id || null });
+    const rows = [];
+    if (cfg?.bookings_enabled) rows.push({ id: 'GREET_BOOK', title: 'Bookings', description: '' });
+    try {
+      const titles = db.prepare(`
+        SELECT title FROM kb_items
+        WHERE user_id = ? AND COALESCE(show_in_menu,0) = 1 AND title IS NOT NULL AND TRIM(title) <> ''
+        ORDER BY created_at DESC, id DESC LIMIT 20
+      `).all(tenantUserId).map(r => String(r.title||'').trim()).filter(Boolean);
+      const seen = new Set();
+      for (const t of titles) {
+        if (rows.length >= 10) break;
+        if (seen.has(t)) continue; seen.add(t);
+        rows.push({ id: `GREET_KB_TITLE_${encodeURIComponent(t)}`, title: t, description: '' });
+      }
+    } catch {}
+    if (rows.length) {
+      const header = 'You can tap one of these to begin:';
+      const body = 'Select an option to get started.';
+      await sendListTracked(from, header, body, 'Select', rows, cfg);
+    }
+    return true;
+  }
+
+  // Holiday cache
+  const memHolidays = new Map(); // key=userId -> { dates:Set<string>, expires:number }
+  async function getHolidayDatesForTenant(cfg) {
+    const userId = cfg?.user_id || cfg?.userId || null;
+    const now = Date.now();
+    const ttlMs = Number(process.env.HOLIDAYS_TTL_MS || 12*60*60*1000);
+    const key = String(userId||'null');
+    const hit = memHolidays.get(key);
+    if (hit && hit.expires > now) return hit.dates;
+    let dates = new Set();
+    try {
+      // Closed dates from settings
+      try {
+        const arr = JSON.parse(cfg?.closed_dates_json || '[]');
+        if (Array.isArray(arr)) arr.forEach(d => { if (typeof d === 'string') dates.add(d); });
+      } catch {}
+      // Optional URL
+      if (cfg?.holidays_json_url) {
+        const url = String(cfg.holidays_json_url);
+        try {
+          // Try Redis-backed cache first
+          if (isRedisConnected()) {
+            const redis = getRedisClient();
+            const rkey = `holidays:url:${url}`;
+            const cached = await redis.get(rkey);
+            if (cached) {
+              try { const arr = JSON.parse(cached); if (Array.isArray(arr)) arr.forEach(d => dates.add(String(d))); }
+              catch {}
+            } else {
+              const fetch = (await import('node-fetch')).default;
+              const resp = await fetch(url, { timeout: Number(process.env.HOLIDAYS_FETCH_TIMEOUT_MS||5000) });
+              if (resp.ok) {
+                const body = await resp.json().catch(()=>null);
+                const arr = Array.isArray(body) ? body : (Array.isArray(body?.dates) ? body.dates : []);
+                if (Array.isArray(arr)) {
+                  await redis.set(rkey, JSON.stringify(arr), 'PX', Math.max(1000, ttlMs));
+                  arr.forEach(d => dates.add(String(d)));
+                }
+              }
+            }
+          } else {
+            // Memory-only fetch
+            const fetch = (await import('node-fetch')).default;
+            const resp = await fetch(url, { timeout: Number(process.env.HOLIDAYS_FETCH_TIMEOUT_MS||5000) });
+            if (resp.ok) {
+              const body = await resp.json().catch(()=>null);
+              const arr = Array.isArray(body) ? body : (Array.isArray(body?.dates) ? body.dates : []);
+              if (Array.isArray(arr)) arr.forEach(d => dates.add(String(d)));
+            }
+          }
+        } catch {}
+      }
+    } catch {}
+    memHolidays.set(key, { dates, expires: now + ttlMs });
+    return dates;
+  }
+
+  function isClosedByHolidayForMoment(cfg, tz, dateKey, minutesNow) {
+    try {
+      // Date-only closures
+      // Note: getHolidayDatesForTenant is async; but in this hot path we only use mem cache if available
+      // For simplicity, we will check sync sources first, then fallback to cached async elsewhere.
+      try {
+        const arr = JSON.parse(cfg?.closed_dates_json || '[]');
+        if (Array.isArray(arr) && arr.includes(dateKey)) return true;
+      } catch {}
+
+      // Structured rules with time windows
+      try {
+        const rules = JSON.parse(cfg?.holidays_rules_json || '[]');
+        if (Array.isArray(rules)) {
+          for (const r of rules) {
+            if (String(r?.date) !== dateKey) continue;
+            const sm = /^\s*(\d{2}):(\d{2})\s*$/.exec(String(r?.start||''));
+            const em = /^\s*(\d{2}):(\d{2})\s*$/.exec(String(r?.end||''));
+            if (!sm || !em) continue;
+            const startMin = Number(sm[1]) * 60 + Number(sm[2]);
+            const endMin = Number(em[1]) * 60 + Number(em[2]);
+            if (minutesNow >= startMin && minutesNow <= endMin) return true;
+          }
+        }
+      } catch {}
+    } catch {}
+    return false;
+  }
+
+  // Throttle helper for Out-of-Hours messages per contact
+  async function shouldSendOutOfHours(tenantUserId, contactId) {
+    try {
+      const dbNative = getDB();
+      const now = Math.floor(Date.now() / 1000);
+      const cooldown = Number(process.env.OOH_COOLDOWN_SEC || 300);
+      const st = await dbNative.collection('contact_state')
+        .findOne({ user_id: String(tenantUserId), contact_id: String(contactId) }, { projection: { last_ooh_ts: 1 } });
+      const last = Number(st?.last_ooh_ts || 0);
+      if (last && (now - last) <= cooldown) return false;
+      await dbNative.collection('contact_state').updateOne(
+        { user_id: String(tenantUserId), contact_id: String(contactId) },
+        { $set: { last_ooh_ts: now, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } },
+        { upsert: true }
+      );
+      return true;
+    } catch { return true; }
+  }
+
+  // Determine if now is within any working-hours slot for the first staff member, considering holidays/closures
+  async function isWithinStaffWorkingHours(tenantUserId, cfg) {
+    try {
+      const dbNative = getDB();
+      const staff = await dbNative.collection('staff')
+        .find({ user_id: String(tenantUserId) })
+        .project({ timezone: 1, working_hours_json: 1 })
+        .sort({ createdAt: 1 })
+        .limit(1)
+        .toArray();
+      const s = staff[0] || null;
+      if (!s) return true; // no staff configured → do not block
+      const working = (() => { try { return JSON.parse(s.working_hours_json || '{}'); } catch { return {}; } })();
+      const tz = s.timezone || 'UTC';
+      const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', weekday: 'short', hour12: false }).formatToParts(new Date());
+      const hh = Number(parts.find(p => p.type === 'hour')?.value || '00');
+      const mm = Number(parts.find(p => p.type === 'minute')?.value || '00');
+      const wd = (parts.find(p => p.type === 'weekday')?.value || 'Mon').slice(0,3).toLowerCase();
+      const dateParts = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+      const yyyy = dateParts.find(p=>p.type==='year')?.value || '0000';
+      const mm2 = dateParts.find(p=>p.type==='month')?.value || '00';
+      const dd2 = dateParts.find(p=>p.type==='day')?.value || '00';
+      const dateKey = `${yyyy}-${mm2}-${dd2}`;
+      const dayKey = ({ mon:'mon', tue:'tue', wed:'wed', thu:'thu', fri:'fri', sat:'sat', sun:'sun' })[wd] || 'mon';
+      const slots = Array.isArray(working[dayKey]) ? working[dayKey] : [];
+      // Holiday/closure hard stop (full-day and time-windowed)
+      try {
+        if (isClosedByHolidayForMoment(cfg||{}, tz, dateKey, hh*60+mm)) return false;
+        const hol = await getHolidayDatesForTenant(cfg||{});
+        if (hol && hol.has(dateKey)) return false;
+      } catch {}
+      if (!slots.length) return false; // day has no hours → out of hours
+      const nowMin = hh * 60 + mm;
+      for (const slot of slots) {
+        const m = /^(\d{2}):(\d{2})\s*[-–]\s*(\d{2}):(\d{2})$/.exec(String(slot||''));
+        if (!m) continue;
+        const start = Number(m[1]) * 60 + Number(m[2]);
+        const end = Number(m[3]) * 60 + Number(m[4]);
+        if (nowMin >= start && nowMin <= end) return true;
+      }
+      return false;
+    } catch { return true; }
+  }
+
+  // Encapsulated interactive handlers
+  async function handleButtonReply({ id, title, tenantUserId, from, cfg }) {
+    if (!id) return;
+    if (id === 'BOOKING_START') {
+      const staff = await getFirstStaffOrNotifyNoStaff(tenantUserId, from, cfg);
+      if (!staff) return;
+      await sendDayPicker(from, staff._id, null, cfg, 'Pick a day', 'Choose a date:');
+      return;
+    }
+    if (id === 'YES_GRAPH') {
+      await sendTextTracked(from, 'Great — sending the report graph now.', cfg);
+      return;
+    }
+    if (id === 'NO_GRAPH') {
+      await sendTextTracked(from, 'Okay. If you need it later, just ask.', cfg);
+      return;
+    }
+    if (id.startsWith('RESCHED_CONFIRM_')) {
+      try {
+        const parts = id.split('_');
+        const apptId = Number(parts[2] || 0);
+        const startISO = parts[3];
+        const endISO = parts[4];
+        if (apptId && startISO && endISO) {
+          const now = Math.floor(Date.now()/1000);
+          const row = db.prepare(`SELECT start_ts FROM appointments WHERE id = ? AND user_id = ?`).get(apptId, tenantUserId);
+          const minsToStart = row ? Math.floor((row.start_ts - now)/60) : 99999;
+          const minLead = Number(cfg.reschedule_min_lead_minutes || 60);
+          if (minsToStart < minLead) { await notifyTooClose(from, minLead, cfg); return; }
+          await rescheduleBooking({ userId: tenantUserId, appointmentId: apptId, startISO, endISO });
+          await sendTextTracked(from, `Rescheduled to ${new Date(startISO).toLocaleString()} (Ref #${apptId}).`, cfg);
+        }
+      } catch {}
+      return;
+    }
+    if (id.startsWith('RESCHED_CANCEL_')) {
+      await sendTextTracked(from, "Okay, I didn't change anything.", cfg);
+      return;
+    }
+    if (id.startsWith('CANCEL_CONFIRM_')) {
+      try {
+        const apptId = Number(id.split('_')[2] || 0);
+        if (apptId) {
+          const now = Math.floor(Date.now()/1000);
+          const row = db.prepare(`SELECT start_ts FROM appointments WHERE id = ? AND user_id = ?`).get(apptId, tenantUserId);
+          const minsToStart = row ? Math.floor((row.start_ts - now)/60) : 99999;
+          const minLead = Number(cfg.cancel_min_lead_minutes || 60);
+          if (minsToStart < minLead) { await notifyTooClose(from, minLead, cfg); return; }
+          await cancelBooking({ userId: tenantUserId, appointmentId: apptId });
+          await sendTextTracked(from, `Canceled (Ref #${apptId}).`, cfg);
+        }
+      } catch {}
+      return;
+    }
+    if (id.startsWith('CANCEL_ABORT_')) {
+      await sendTextTracked(from, 'Okay, kept as is.', cfg);
+      return;
+    }
+    if (id.startsWith('REM_OK_')) {
+      const apptId = Number(id.split('_')[2] || 0);
+      if (apptId) {
+        const dbNative = getDB();
+        const row = await dbNative.collection('appointments').findOne({ id: apptId, user_id: String(tenantUserId) }, { projection: { status: 1, start_ts: 1 } });
+        if (row && row.status === 'confirmed') {
+          await sendTextTracked(from, 'Great, see you then!', cfg);
+        } else {
+          await sendTextTracked(from, "It looks like that booking was already canceled or changed. If you need a new time, say 'book'.", cfg);
+        }
+      }
+      return;
+    }
+    if (id.startsWith('REM_CANCEL_')) {
+      const apptId = Number(id.split('_')[2] || 0);
+      if (apptId) {
+        const now = Math.floor(Date.now()/1000);
+        const dbNative = getDB();
+        const row = await dbNative.collection('appointments').findOne({ id: apptId, user_id: String(tenantUserId) }, { projection: { start_ts: 1 } });
+        const minsToStart = row ? Math.floor(((row.start_ts || 0) - now)/60) : 99999;
+        const minLead = Number(cfg.cancel_min_lead_minutes || 60);
+        if (minsToStart < minLead) { await notifyTooClose(from, minLead, cfg); }
+        else { try { await cancelBooking({ userId: tenantUserId, appointmentId: apptId }); await sendTextTracked(from, `Canceled (Ref #${apptId}).`, cfg); } catch {} }
+      }
+      return;
+    }
+    if (id.startsWith('REM_RESCHED_')) {
+      const apptId = Number(id.split('_')[2] || 0);
+      if (apptId) {
+        const now = Math.floor(Date.now()/1000);
+        const dbNative = getDB();
+        const row = await dbNative.collection('appointments').findOne({ id: apptId, user_id: String(tenantUserId) }, { projection: { start_ts: 1, staff_id: 1 } });
+        const minsToStart = row ? Math.floor(((row.start_ts || 0) - now)/60) : 99999;
+        const minLead = Number(cfg.reschedule_min_lead_minutes || 60);
+        if (minsToStart < minLead) { await notifyTooClose(from, minLead, cfg); }
+        else if (row?.staff_id) { await sendDayPicker(from, row.staff_id, apptId, cfg, 'Pick a new day', 'Choose a date:'); }
+      }
+      return;
+    }
+    if (id.startsWith('KB_TITLE_')) {
+      const wanted = id.replace('KB_TITLE_', '');
+      await sendKbItemByTitle({ tenantUserId, to: from, title: wanted, cfg });
+      return;
+    }
+    if (id.startsWith('CLINIC_')) {
+      await sendTextTracked(from, `You chose ${title}.`, cfg);
+      await sendButtonTracked(
+        from,
+        'Would you like me to send the report graph so you can forward it to your doctor?',
+        [{ id: 'YES_GRAPH', title: 'Yes' }, { id: 'NO_GRAPH', title: 'No' }],
+        cfg
+      );
+      return;
+    }
+  }
+
+  async function handleListReply({ id, title, tenantUserId, from, cfg }) {
+    if (!id) return;
+    if (/^CSAT_[1-5]$/.test(id)) {
+      try {
+        const dbNative = getDB();
+        const score = Number(id.split('_')[1]);
+        const emojiMap = { 1: '😡', 2: '😕', 3: '🙂', 4: '😀', 5: '🤩' };
+        const emoji = emojiMap[score] || null;
+        await dbNative.collection('csat_ratings').insertOne({
+          user_id: String(tenantUserId),
+          contact_id: String(from),
+          score,
+          emoji,
+          message_text: `[List] ${title || ''}`,
+          createdAt: new Date()
+        });
+        await dbNative.collection('contact_state').updateOne(
+          { user_id: String(tenantUserId), contact_id: String(from) },
+          { $set: { await_rating: 0, updatedAt: new Date() } },
+          { upsert: true }
+        );
+      } catch {}
+      return;
+    }
+    if (id === 'GREET_BOOK') {
+      const staff = await getFirstStaffOrNotifyNoStaff(tenantUserId, from, cfg);
+      if (!staff) return;
+      await sendDayPicker(from, staff._id, null, cfg, 'Pick a day', 'Choose a date:');
+      return;
+    }
+    if (id.startsWith('GREET_KB_TITLE_')) {
+      const titleDec = decodeURIComponent(id.replace('GREET_KB_TITLE_', ''));
+      await sendKbItemByTitle({ tenantUserId, to: from, title: titleDec, cfg });
+      return;
+    }
+    if (id.startsWith('RESCHED_PICK_DAY_')) {
+      try {
+        const parts = id.split('_');
+        const dateStr = parts.slice(3, 4)[0];
+        const staffId = Number(parts.slice(4, 5)[0] || 0);
+        const apptId = Number(parts.slice(5, 6)[0] || 0);
+        if (tenantUserId && staffId && dateStr && apptId) {
+          const dateISO = new Date(`${dateStr}T12:00:00.000Z`).toISOString();
+          const rows = await buildTimeRows({ userId: tenantUserId, staffId, dateISO, limit: 10, apptId });
+          if (!rows.length) { await sendTextTracked(from, 'No available times on that date. Please pick another day.', cfg); return; }
+          await sendListTracked(from, `${new Date(dateISO).toLocaleDateString()}`, 'Choose a new time:', 'Select', rows, cfg);
+        }
+      } catch {}
+      return;
+    }
+    if (id.startsWith('RESCHED_PICK_TIME_')) {
+      try {
+        const parts = id.split('_');
+        const apptId = Number(parts[3] || 0);
+        const staffId = Number(parts[4] || 0);
+        const startISO = parts[5];
+        const endISO = parts[6];
+        if (apptId && staffId && startISO && endISO) {
+          await sendButtonTracked(from, `Reschedule to ${new Date(startISO).toLocaleString()}?`, [
+            { id: `RESCHED_CONFIRM_${apptId}_${startISO}_${endISO}`, title: 'Yes' },
+            { id: `RESCHED_CANCEL_${apptId}`, title: 'No' }
+          ], cfg);
+        }
+      } catch {}
+      return;
+    }
+    if (id.startsWith('PICK_DAY_')) {
+      try {
+        const parts = id.split('_');
+        let dateStr = parts.slice(2, 3)[0];
+        let staffId = parts.slice(3, 4)[0];
+        if (!staffId) {
+          const staff = await (async () => { try { const s = await getDB().collection('staff').find({ user_id: String(tenantUserId) }).project({ _id: 1 }).sort({ createdAt: 1 }).limit(1).toArray(); return s[0] || null; } catch { return null; } })();
+          staffId = staff?._id || null;
+        }
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr || ''))) {
+          const yr = new Date().getUTCFullYear();
+          const maybe = Date.parse(`${title} ${yr}`);
+          if (!Number.isNaN(maybe)) {
+            const d = new Date(maybe);
+            const mm = String(d.getUTCMonth()+1).padStart(2,'0');
+            const dd = String(d.getUTCDate()).padStart(2,'0');
+            dateStr = `${d.getUTCFullYear()}-${mm}-${dd}`;
+          }
+        }
+        if (tenantUserId && staffId && dateStr) {
+          const dateISO = new Date(`${dateStr}T12:00:00.000Z`).toISOString();
+          const rows = await buildTimeRows({ userId: tenantUserId, staffId: String(staffId), dateISO, limit: 10, apptId: null });
+          if (!rows.length) { await sendTextTracked(from, 'No available times on that date. Please pick another day.', cfg); return; }
+          await sendListTracked(from, `${new Date(dateISO).toLocaleDateString()}`, 'Choose a time:', 'Select', rows, cfg);
+        } else {
+          await sendTextTracked(from, "I couldn't read that date. Please pick a day again.", cfg);
+        }
+      } catch {
+        await sendTextTracked(from, 'Something went wrong loading times. Please pick a day again.', cfg);
+      }
+      return;
+    }
+    if (id.startsWith('BOOK_SLOT_')) {
+      try {
+        const parts = id.split('_');
+        const startISO = parts.slice(2, 3)[0];
+        const endISO = parts.slice(3, 4)[0];
+        const staffId = Number(parts.slice(4, 5)[0] || 0);
+        if (tenantUserId && staffId && startISO && endISO) {
+          const settings = cfg || {};
+          let questions = [];
+          try { questions = JSON.parse(settings.booking_questions_json || '[]'); } catch {}
+          if (!Array.isArray(questions) || !questions.length) questions = ["What's your name?", "What's the reason for the booking?"];
+          try {
+            db.prepare(`INSERT INTO booking_sessions (user_id, contact_id, staff_id, start_iso, end_iso, step, question_index, answers_json, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, 'pending', 0, '[]', strftime('%s','now'), strftime('%s','now'))
+              ON CONFLICT(user_id, contact_id) DO UPDATE SET staff_id=excluded.staff_id, start_iso=excluded.start_iso, end_iso=excluded.end_iso, step='pending', question_index=0, answers_json='[]', updated_at=strftime('%s','now')
+            `).run(tenantUserId, from, staffId, startISO, endISO);
+          } catch {}
+          await sendTextTracked(from, String(questions[0]).slice(0, 200), cfg);
+        } else {
+          await sendTextTracked(from, "Sorry, I couldn't book that slot.", cfg);
+        }
+      } catch {
+        await sendTextTracked(from, 'Sorry, that slot is no longer available.', cfg);
+      }
+      return;
+    }
+  }
+  // Lightweight payload shape validator
+  function isValidWebhookPayload(p) {
+    try {
+      // Tolerant: accept when change value exists and has messages[] or statuses[]
+      const changeNode = (() => {
+        const entryNode = Array.isArray(p?.entry) ? p.entry[0] : (p?.entry && typeof p.entry === 'object' ? Object.values(p.entry)[0] : undefined);
+        const ch = Array.isArray(entryNode?.changes) ? entryNode.changes[0] : (entryNode?.changes && typeof entryNode.changes === 'object' ? Object.values(entryNode.changes)[0] : undefined);
+        return ch;
+      })();
+      const val = changeNode?.value || changeNode || {};
+      const hasMsgs = Array.isArray(val?.messages) || (val?.messages && typeof val.messages === 'object' && Object.values(val.messages).length > 0);
+      const hasStatuses = Array.isArray(val?.statuses) || (val?.statuses && typeof val.statuses === 'object' && Object.values(val.statuses).length > 0);
+      return hasMsgs || hasStatuses;
+    } catch { return false; }
+  }
+
   // Test endpoint for debugging (bypasses signature verification)
   app.post("/test-webhook", async (req, res) => {
     if (!process.env.ENABLE_TEST_WEBHOOK) {
@@ -248,16 +1062,19 @@ export default function registerWebhookRoutes(app) {
     }
     try {
       const payload = req.body;
-      const entry = payload.entry?.[0];
-      const change = entry?.changes?.[0]?.value;
-      const message = change?.messages?.[0];
+      const firstOf = (x) => Array.isArray(x) ? x[0] : (x && typeof x === 'object' ? Object.values(x)[0] : undefined);
+      const entry = firstOf(payload.entry);
+      const changeNode = firstOf(entry?.changes);
+      const change = changeNode?.value || changeNode;
+      const msgArr = Array.isArray(change?.messages) ? change.messages : (change?.messages && typeof change.messages === 'object' ? Object.values(change.messages) : []);
+      const message = msgArr?.[0];
       
       if (!message) {
         return res.sendStatus(200);
       }
 
       const metadata = change?.metadata;
-      const tenant = (await findSettingsByPhoneNumberId(metadata?.phone_number_id)) || (await findSettingsByBusinessPhone(metadata?.display_phone_number?.replace(/\D/g, "")));
+      const tenant = (await cachedFindSettingsByPhoneNumberId(metadata?.phone_number_id)) || (await cachedFindSettingsByBusinessPhone(metadata?.display_phone_number?.replace(/\D/g, "")));
       const tenantUserId = tenant?.user_id || null;
       const businessNumber = metadata?.display_phone_number?.replace(/\D/g, "");
       if (DEBUG_LOGS) console.log('[Webhook] Tenant resolution:', {
@@ -300,11 +1117,6 @@ export default function registerWebhookRoutes(app) {
             escalationQuestions = JSON.parse(cfg.escalation_questions_json || '[]');
           } catch {}
           
-          // Default questions if none configured
-          if (escalationQuestions.length === 0) {
-            escalationQuestions = ["What's your name?", "What's the reason for contacting support today?"];
-          }
-          
           response += "\n\n" + escalationQuestions[0];
           
           // Save the state for testing
@@ -325,10 +1137,7 @@ export default function registerWebhookRoutes(app) {
           try {
             escalationQuestions = JSON.parse(currentState.escalation_questions_json || '[]');
           } catch {}
-          
-          if (escalationQuestions.length === 0) {
-            escalationQuestions = ["What's your name?", "What's the reason for contacting support today?"];
-          }
+        
           
           const currentIndex = currentState.escalation_question_index || 0;
           const nextIndex = currentIndex + 1;
@@ -359,15 +1168,17 @@ export default function registerWebhookRoutes(app) {
       }
 
       // Test KB response
-      const kbMatches = retrieveKbMatches(text, 8, tenantUserId, '');
+      const kbMatches = cachedRetrieveKbMatches(text, 8, tenantUserId, '', from);
       if (DEBUG_LOGS) console.log("KB Matches:", kbMatches);
       
       if (Array.isArray(kbMatches) && kbMatches.length > 0) {
+        const aiStart = Date.now();
         const aiReply = await generateAiReply(text, kbMatches, {
           tone: tenant?.ai_tone,
           style: tenant?.ai_style,
           blockedTopics: tenant?.ai_blocked_topics
         });
+        try { businessMetrics.trackAIRequest(true, Date.now() - aiStart); } catch {}
         if (DEBUG_LOGS) console.log("AI Reply:", aiReply);
         return res.json({ success: true, response: aiReply, type: "kb_response", kbMatches: kbMatches.length });
       }
@@ -419,13 +1230,22 @@ export default function registerWebhookRoutes(app) {
       const sig = req.header("X-Hub-Signature-256") || req.header("x-hub-signature-256");
       const prospective = (() => {
         try {
-          const temp = JSON.parse((req.rawBody || Buffer.from("{}"))?.toString("utf8"));
-          const pnid = temp?.entry?.[0]?.changes?.[0]?.value?.metadata?.phone_number_id;
+          const obj = JSON.parse((req.rawBody || Buffer.from("{}"))?.toString("utf8"));
+          const firstOf = (x) => Array.isArray(x) ? x[0] : (x && typeof x === 'object' ? Object.values(x)[0] : undefined);
+          const entry = firstOf(obj.entry);
+          const changeNode = firstOf(entry?.changes);
+          const change = changeNode?.value || changeNode;
+          const pnid = change?.metadata?.phone_number_id || null;
+          if (!pnid) return null;
           return findSettingsByPhoneNumberId(pnid);
         } catch { return null; }
       })();
       const s = prospective || {};
       // Verify webhook signature for security
+      const REQUIRE_SIG = (process.env.NODE_ENV === 'production') && (process.env.REQUIRE_WEBHOOK_SIGNATURE !== '0');
+      if (REQUIRE_SIG && (!sig || !s.app_secret)) {
+        return res.sendStatus(403);
+      }
       if (s.app_secret && sig) {
         const [algo, theirHex] = String(sig||'').split("=");
         if (algo !== "sha256") return res.sendStatus(403);
@@ -446,11 +1266,21 @@ export default function registerWebhookRoutes(app) {
       }
 
       const payload = req.body;
-      const entry = payload.entry?.[0];
-      const change = entry?.changes?.[0]?.value;
-      const statuses = change?.statuses;
+      if (!isValidWebhookPayload(payload)) {
+        if (DEBUG_LOGS) {
+          try { console.log("[WEBHOOK] Invalid payload shape", JSON.stringify(payload).slice(0,500)); } catch { console.log("[WEBHOOK] Invalid payload shape"); }
+        }
+        // No-op ACK instead of 400 to avoid blocking/extra retries from Meta
+        return res.sendStatus(200);
+      }
+      const firstOf = (x) => Array.isArray(x) ? x[0] : (x && typeof x === 'object' ? Object.values(x)[0] : undefined);
+      const entry = firstOf(payload.entry);
+      const changeNode = firstOf(entry?.changes);
+      const change = changeNode?.value || changeNode;
+      const statusesRaw = change?.statuses;
+      const statuses = Array.isArray(statusesRaw) ? statusesRaw : (statusesRaw && typeof statusesRaw === 'object' ? Object.values(statusesRaw) : []);
       const metadata = change?.metadata;
-      const tenantSettings = (await findSettingsByPhoneNumberId(metadata?.phone_number_id)) || (await findSettingsByBusinessPhone(metadata?.display_phone_number?.replace(/\D/g, "")));
+      const tenantSettings = (await cachedFindSettingsByPhoneNumberId(metadata?.phone_number_id)) || (await cachedFindSettingsByBusinessPhone(metadata?.display_phone_number?.replace(/\D/g, "")));
       const tenantUserId = tenantSettings?.user_id || null;
 
       // Per-tenant rate limit using Redis (if available)
@@ -477,6 +1307,23 @@ export default function registerWebhookRoutes(app) {
             const tsNum = st.timestamp ? Number(st.timestamp) : null;
             const error = Array.isArray(st.errors) ? st.errors[0] : undefined;
             if (!messageId || !status) continue;
+
+            // Idempotency guard for statuses
+            try {
+              const ttl = Number(process.env.STATUS_NONCE_TTL || 600);
+              if (isRedisConnected()) {
+                const redis = getRedisClient();
+                const skey = `wp:status:${tenantUserId || 'null'}:${messageId}:${status}:${tsNum || 0}`;
+                const r = await redis.set(skey, '1', 'EX', ttl, 'NX');
+                if (r !== 'OK') continue; // duplicate status
+              } else {
+                const nkey = `status:${tenantUserId || 'null'}:${messageId}:${status}:${tsNum || 0}`;
+                const now = Date.now();
+                const rec = memStatus.get(nkey);
+                if (rec && rec > now) continue;
+                memStatus.set(nkey, now + ttl*1000);
+              }
+            } catch {}
 
             // Persist raw status event idempotently
             try {
@@ -534,7 +1381,8 @@ export default function registerWebhookRoutes(app) {
         } catch {}
       }
 
-      const message = change?.messages?.[0];
+      const _msgArr = Array.isArray(change?.messages) ? change.messages : (change?.messages && typeof change.messages === 'object' ? Object.values(change.messages) : []);
+      const message = _msgArr?.[0];
       if (!message) {
       if (DEBUG_LOGS) console.log("No message found in webhook payload");
         return res.sendStatus(200);
@@ -548,9 +1396,6 @@ export default function registerWebhookRoutes(app) {
         
         // Store the reaction in our database for the agent to see
         try {
-          const metadata = change?.metadata;
-          const tenant = (await findSettingsByPhoneNumberId(metadata?.phone_number_id)) || (await findSettingsByBusinessPhone(metadata?.display_phone_number?.replace(/\D/g, "")));
-          const tenantUserId = tenant?.user_id || null;
           
           if (tenantUserId && message.reaction && message.reaction.message_id) {
             const customerUserId = `customer_${message.from}`;
@@ -627,9 +1472,7 @@ export default function registerWebhookRoutes(app) {
         
         // Store the reply message normally but don't trigger bot responses
         try {
-          const metadata = change?.metadata;
-          const tenant = findSettingsByPhoneNumberId(metadata?.phone_number_id) || findSettingsByBusinessPhone(metadata?.display_phone_number?.replace(/\D/g, ""));
-          const tenantUserId = tenant?.user_id || null;
+          
           
           if (tenantUserId && message.from && message.text?.body) {
             // Store the reply message in the database via Mongo (idempotent)
@@ -690,107 +1533,174 @@ export default function registerWebhookRoutes(app) {
           mediaUrl = `/wa-media/${encodeURIComponent(String(tenantUserId))}/${encodeURIComponent(String(message.image.id))}`;
         }
       }
+      try { businessMetrics.trackWhatsAppMessage('received', normalizedType || 'text'); } catch {}
 
-      // Precompute live-mode status to avoid sending any bot messages when human is active
+      // Precompute live-mode status to avoid sending any bot messages when human is explicitly active
       let humanActive = false;
+      let humanLive = false; // true only when an agent explicitly toggled live mode (is_human)
+      let recentlySeen = false; // true when an agent recently viewed the chat
       try {
-        let hs = null;
+        // Read both legacy (SQLite) and current (Mongo) sources and consider human live if either indicates active
+        let hsSql = null;
+        let hsMongo = null;
         try {
-          hs = db.prepare(`SELECT is_human, COALESCE(human_expires_ts,0) AS exp FROM handoff WHERE contact_id = ? AND user_id = ?`).get(from, tenantUserId);
+          hsSql = db.prepare(`SELECT is_human, COALESCE(human_expires_ts,0) AS exp FROM handoff WHERE contact_id = ? AND user_id = ?`).get(from, tenantUserId);
         } catch {}
-        if (!hs) {
-          try {
-            const doc = await Handoff.findOne({ user_id: tenantUserId, contact_id: from }).select('is_human human_expires_ts last_seen_ts').lean();
-            if (doc) hs = { is_human: !!doc.is_human, exp: Number(doc.human_expires_ts || 0), lastSeen: Number(doc.last_seen_ts || 0) };
-          } catch {}
-        }
+        try {
+          const doc = await Handoff.findOne({ user_id: tenantUserId, contact_id: from }).select('is_human human_expires_ts last_seen_ts').lean();
+          if (doc) hsMongo = { is_human: !!doc.is_human, exp: Number(doc.human_expires_ts || 0), lastSeen: Number(doc.last_seen_ts || 0) };
+        } catch {}
+
         const now = Math.floor(Date.now()/1000);
         const seenWindow = Number(process.env.LIVE_SEEN_WINDOW_SEC || 180); // 3 min default
-        if (hs?.is_human && (!hs.exp || hs.exp > now)) humanActive = true;
-        // Also treat a recently viewed chat as live to suppress bot replies
-        if (!humanActive && hs?.lastSeen && (now - hs.lastSeen) <= seenWindow) humanActive = true;
+        const sqlLive = !!(hsSql?.is_human && (!hsSql.exp || hsSql.exp > now));
+        const mongoLive = !!(hsMongo?.is_human && (!hsMongo.exp || hsMongo.exp > now));
+        const lastSeenTs = Math.max(Number(hsSql?.lastSeen || 0), Number(hsMongo?.lastSeen || 0));
+
+        humanLive = mongoLive || sqlLive; // prefer live if either source says so
+        recentlySeen = !!(lastSeenTs && (now - lastSeenTs) <= seenWindow);
+        // Only suppress bot when an agent explicitly enabled live mode.
+        // Viewing the chat recently should not block AI replies after resolution.
+        humanActive = humanLive;
       } catch {}
 
-      // Check conversation mode - if Simple Escalation Mode, handle differently (but never while human is live)
-      if (cfg.conversation_mode === 'escalation' && !humanActive) {
+      // Check conversation mode - if Simple Escalation Mode, handle differently (but never while human is explicitly live)
+      // Uses in-memory session so this mode does not require the database at all
+      if (cfg.conversation_mode === 'escalation' && !humanLive) {
         if (DEBUG_LOGS) console.log("Simple Escalation Mode active");
+        // Out-of-hours check applies in escalation too: show OOH text instead of starting questions
+        try {
+          const within = await isWithinStaffWorkingHours(tenantUserId, cfg);
+          if (!within) {
+            const ok = await shouldSendOutOfHours(tenantUserId, from);
+            if (ok) {
+              const ooh = cfg.escalation_out_of_hours_message || 'We are currently outside our working hours. We will get back to you as soon as we can.';
+              await sendTextTracked(from, ooh, cfg);
+            }
+            return res.sendStatus(200);
+          }
+        } catch {}
+        // Ensure inbound gets recorded and shown even in escalation flow (which returns early)
+        try {
+          const inboundIdEsc = message.id;
+          if (inboundIdEsc) {
+            const insertedEsc = await recordInboundMessage({
+              messageId: inboundIdEsc,
+              userId: tenantUserId,
+              from,
+              businessPhone: metadata?.display_phone_number?.replace(/\D/g, ""),
+              type: normalizedType,
+              text: normalizedType === 'image' ? null : text,
+              timestamp: message.timestamp ? Number(message.timestamp) : undefined,
+              raw: message
+            });
+            if (insertedEsc) {
+              try { incrementUsage(tenantUserId, 'inbound_messages'); } catch {}
+              const messageDataEsc = {
+                id: inboundIdEsc,
+                direction: 'inbound',
+                type: normalizedType || 'text',
+                text_body: normalizedType === 'image' ? null : text,
+                timestamp: message.timestamp ? Number(message.timestamp) : Math.floor(Date.now() / 1000),
+                from_digits: normalizePhone(from),
+                to_digits: normalizePhone(metadata?.display_phone_number),
+                contact_name: null,
+                contact: from,
+                formatted_time: new Date((message.timestamp ? Number(message.timestamp) : Math.floor(Date.now() / 1000)) * 1000).toLocaleString(),
+                media_url: mediaUrl
+              };
+              broadcastNewMessage(tenantUserId, from, messageDataEsc);
+              try {
+                await Handoff.findOneAndUpdate(
+                  { user_id: tenantUserId, contact_id: from },
+                  { $set: { is_archived: false, deleted_at: null, updatedAt: new Date() }, $setOnInsert: { user_id: tenantUserId, contact_id: from } },
+                  { upsert: true }
+                );
+              } catch {}
+            }
+          }
+        } catch {}
         
-        // Load or initialize handoff state in Mongo
-        const { Handoff } = await import('../schemas/mongodb.mjs');
-        let state = await Handoff.findOne({ user_id: tenantUserId, contact_id: from }).lean();
-        
-        if (!state) {
-          // First message: greet and send additional/out-of-hours message
-          const greetText = cfg.entry_greeting || "Hello! How can I help you today?";
-          await sendWhatsAppText(from, greetText, cfg);
+        // Build questions from settings (fallback defaults)
+        let escalationQuestions = [];
+        try { escalationQuestions = JSON.parse(cfg.escalation_questions_json || '[]'); } catch {}
+        if (!Array.isArray(escalationQuestions) || escalationQuestions.length === 0) {
+          escalationQuestions = ["What's your name?"];
+        }
 
-          // Determine working hours availability (basic: if staff configured later; for now always send additional if present)
+        // Fetch/create a memory session
+        const { key, rec } = await getMemSession(tenantUserId, from);
+        if (!rec) {
+          // First message for this contact in the current process lifetime
+          const greetText = cfg.entry_greeting || "Hello! How can I help you today?";
+          const greetingOnly = isGreeting(text) && !hasSubstantiveRequest(text);
+
+          // Always greet
+          await sendTextTracked(from, greetText, cfg);
+
+          if (greetingOnly) {
+            // Wait for a substantive request before escalating
+            await setMemSession(tenantUserId, from, { step: 'greeted', qIndex: 0, answers: [], questions: escalationQuestions, buffer: '', bufferTs: Date.now() });
+            return res.sendStatus(200);
+          }
+
+          // Greeting + request in one message OR first message is a request → escalate now
           const additional = cfg.escalation_additional_message;
           const outOfHours = cfg.escalation_out_of_hours_message;
           if (additional) {
-            await sendWhatsAppText(from, additional, cfg);
+            await sendTextTracked(from, additional, cfg);
           } else if (outOfHours) {
-            // If no additional message provided, fallback to out-of-hours when configured
-            await sendWhatsAppText(from, outOfHours, cfg);
+            await sendTextTracked(from, outOfHours, cfg);
           }
-
-          // Prepare questions
-          let escalationQuestions = [];
-          try { escalationQuestions = JSON.parse(cfg.escalation_questions_json || '[]'); } catch {}
-          if (!Array.isArray(escalationQuestions) || escalationQuestions.length === 0) {
-            escalationQuestions = ["What's your name?", "What's the reason for contacting support today?"];
-          }
-
-          // Save state and ask first question
-          await Handoff.findOneAndUpdate(
-            { user_id: tenantUserId, contact_id: from },
-            { 
-              $set: {
-                escalation_step: 'ask_question',
-                escalation_questions_json: JSON.stringify(escalationQuestions),
-                escalation_question_index: 0,
-                escalation_answers_json: JSON.stringify([]),
-                is_human: false,
-                human_expires_ts: 0
-              }
-            },
-            { upsert: true }
-          );
-
-          await sendWhatsAppText(from, String(escalationQuestions[0]).slice(0,200), cfg);
+          await setMemSession(tenantUserId, from, { step: 'ask_question', qIndex: 0, answers: [], questions: escalationQuestions });
+          await sendTextTracked(from, String(escalationQuestions[0]).slice(0,200), cfg);
           return res.sendStatus(200);
         }
         
-        // Continue with dynamic escalation questions flow for subsequent messages
-        const currentState = await Handoff.findOne({ user_id: tenantUserId, contact_id: from }).lean();
-        if (currentState?.escalation_step === 'ask_question') {
-          let escalationQuestions = [];
-          try { escalationQuestions = JSON.parse(currentState.escalation_questions_json || '[]'); } catch {}
-          if (!Array.isArray(escalationQuestions) || escalationQuestions.length === 0) {
-            escalationQuestions = ["What's your name?", "What's the reason for contacting support today?"];
+        // Continue with dynamic escalation questions flow for subsequent messages (memory only)
+        if (rec.step === 'greeted') {
+          // Accumulate short fragments, escalate once message is substantive
+          const now = Date.now();
+          const within = (now - (rec.bufferTs || 0)) <= Number(process.env.ESCALATION_BUFFER_WINDOW_MS || 180_000); // default 3 min
+          const prior = within ? (rec.buffer || '') : '';
+          const joined = [prior, String(text || '')].filter(Boolean).join(' ').replace(/\s+/g,' ').trim();
+          // If buffer expired and the user sends a fresh greeting, respond with greeting again
+          if (!within && isGreeting(text) && !hasSubstantiveRequest(text)) {
+            const greetText = cfg.entry_greeting || "Hello! How can I help you today?";
+            await sendTextTracked(from, greetText, cfg);
+            await setMemSession(tenantUserId, from, { step: 'greeted', qIndex: 0, answers: [], questions: Array.isArray(rec.questions)?rec.questions:[], buffer: '', bufferTs: now });
+            return res.sendStatus(200);
           }
-
-          const currentIndex = Number(currentState.escalation_question_index || 0);
+          if (hasSubstantiveRequest(joined)) {
+            const additional = cfg.escalation_additional_message;
+            const outOfHours = cfg.escalation_out_of_hours_message;
+            if (additional) {
+            await sendTextTracked(from, additional, cfg);
+            } else if (outOfHours) {
+              await sendTextTracked(from, outOfHours, cfg);
+            }
+            await setMemSession(tenantUserId, from, { step: 'ask_question', qIndex: 0, answers: [], questions: Array.isArray(rec.questions)?rec.questions:escalationQuestions });
+            await sendTextTracked(from, String((Array.isArray(rec.questions)?rec.questions:escalationQuestions)[0]).slice(0,200), cfg);
+            return res.sendStatus(200);
+          }
+          // Not substantive yet → keep buffering, no extra messages to avoid spam
+          await setMemSession(tenantUserId, from, { step: 'greeted', qIndex: 0, answers: [], questions: rec.questions, buffer: joined.slice(0, 400), bufferTs: now });
+          return res.sendStatus(200);
+        }
+        if (rec.step === 'ask_question') {
+          const currentIndex = Number(rec.qIndex || 0);
           const nextIndex = currentIndex + 1;
-          let answers = [];
-          try { answers = JSON.parse(currentState.escalation_answers_json || '[]'); } catch { answers = []; }
-          answers[currentIndex] = String(text || '').trim().slice(0, 300);
+          const ans = String(text || '').trim().slice(0, 300);
+          const answers = Array.isArray(rec.answers) ? rec.answers.slice() : [];
+          answers[currentIndex] = ans;
+          const questions = Array.isArray(rec.questions) ? rec.questions : escalationQuestions;
 
-          await Handoff.updateOne(
-            { user_id: tenantUserId, contact_id: from },
-            { $set: { escalation_answers_json: JSON.stringify(answers), escalation_question_index: nextIndex } }
-          );
-
-          if (nextIndex < escalationQuestions.length) {
-            await sendWhatsAppText(from, String(escalationQuestions[nextIndex]).slice(0,200), cfg);
+          if (nextIndex < questions.length) {
+            await setMemSession(tenantUserId, from, { step: 'ask_question', qIndex: nextIndex, answers, questions });
+            await sendTextTracked(from, String(questions[nextIndex]).slice(0,200), cfg);
           } else {
-            await sendWhatsAppText(from, "Got it. I'm connecting you with a human now. Please wait a moment.", cfg);
-            const exp = Math.floor(Date.now()/1000) + 5*60;
-            await Handoff.updateOne(
-              { user_id: tenantUserId, contact_id: from },
-              { $set: { escalation_step: 'escalated', is_human: true, human_expires_ts: exp } }
-            );
-            // Optionally: create notification here (existing code later handles notifications)
+            await setMemSession(tenantUserId, from, { step: 'done', qIndex: nextIndex, answers, questions }, 5*60*1000);
+            await sendTextTracked(from, "Got it. I'm connecting you with a human now. Please wait a moment.", cfg);
           }
           return res.sendStatus(200);
         }
@@ -813,47 +1723,11 @@ export default function registerWebhookRoutes(app) {
       let isFirstTimeInbound = true;
       if (inboundId) {
         try {
-          const inserted = await recordInboundMessage({
-            messageId: inboundId,
-            userId: tenantUserId,
-            from,
-            businessPhone: metadata?.display_phone_number?.replace(/\D/g, ""),
-            type: normalizedType,
-            text: normalizedType === 'image' ? null : text,
-            timestamp: message.timestamp ? Number(message.timestamp) : undefined,
-            raw: message
-          });
+          const inserted = await recordAndBroadcastInbound({ message, tenantUserId, metadata, normalizedType, text, mediaUrl });
           if (DEBUG_LOGS) console.log('[Webhook] Inbound record result:', { inserted, inboundId });
           isFirstTimeInbound = !!inserted;
-
-          if (isFirstTimeInbound) {
-            incrementUsage(tenantUserId, 'inbound_messages');
-
-            const messageData = {
-              id: inboundId,
-              direction: 'inbound',
-              type: normalizedType || 'text',
-              text_body: normalizedType === 'image' ? null : text,
-              timestamp: message.timestamp ? Number(message.timestamp) : Math.floor(Date.now() / 1000),
-              from_digits: normalizePhone(from),
-              to_digits: normalizePhone(metadata?.display_phone_number),
-              contact_name: null,
-              contact: from,
-              formatted_time: new Date((message.timestamp ? Number(message.timestamp) : Math.floor(Date.now() / 1000)) * 1000).toLocaleString(),
-              media_url: mediaUrl
-            };
-            broadcastNewMessage(tenantUserId, from, messageData);
-            // If the conversation was resolved/closed, re-open to NEW on new inbound
-            try {
-              const current = await getConversationStatus(tenantUserId, from);
-              if (current === CONVERSATION_STATUSES.RESOLVED || current === CONVERSATION_STATUSES.CLOSED) {
-                await updateConversationStatus(tenantUserId, from, CONVERSATION_STATUSES.NEW, 'Customer sent a new message after resolution');
-              }
-            } catch {}
-          }
         } catch (e) {
           console.warn('[Webhook] Failed to record inbound message, continuing to process reply anyway:', e?.message || e);
-          // Continue processing to avoid dropping replies if DB write fails
           isFirstTimeInbound = true;
         }
       }
@@ -865,6 +1739,22 @@ export default function registerWebhookRoutes(app) {
           const now = Math.floor(Date.now()/1000);
           if (cust?.opted_out) return res.sendStatus(200);
           if (cust?.blocked_until_ts && cust.blocked_until_ts > now) return res.sendStatus(200);
+        }
+      } catch {}
+
+      // Working hours guard: if outside configured staff hours, send out-of-hours message and stop
+      try {
+        if (tenantUserId && cfg?.conversation_mode !== 'escalation') {
+          const handled = await handleOutOfHoursGuard(tenantUserId, from, cfg);
+          if (handled) return res.sendStatus(200);
+        }
+      } catch {}
+
+      // If conversation is In Progress, maybe send a holding message (dedup + throttle)
+      try {
+        if (!humanActive && cfg?.conversation_mode !== 'escalation' && tenantUserId) {
+          const handled = await maybeSendHoldingMessage(tenantUserId, from, cfg);
+          if (handled) return res.sendStatus(200);
         }
       } catch {}
 
@@ -925,10 +1815,10 @@ export default function registerWebhookRoutes(app) {
                 VALUES (?, ?, 'ask_reason', strftime('%s','now'))
                 ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = 'ask_reason', updated_at = excluded.updated_at`).run(from, tenantUserId);
             } catch {}
-            await sendWhatsAppText(from, "Thanks, and what’s the reason for contacting a human today?", cfg);
+            await sendTextTracked(from, "Thanks, and what’s the reason for contacting a human today?", cfg);
             return res.sendStatus(200);
           } else {
-            await sendWhatsAppText(from, "Could you please share your name so I can connect you to a human?", cfg);
+            await sendTextTracked(from, "Could you please share your name so I can connect you to a human?", cfg);
             return res.sendStatus(200);
           }
         }
@@ -973,10 +1863,10 @@ export default function registerWebhookRoutes(app) {
               console.error('[Webhook] Failed to create notification:', e.message);
             }
             
-            await sendWhatsAppText(from, "Got it. I'm connecting you with a human now. Please wait a moment.", cfg);
+            await sendTextTracked(from, "Got it. I'm connecting you with a human now. Please wait a moment.", cfg);
             return res.sendStatus(200);
           } else {
-            await sendWhatsAppText(from, "Could you share a brief reason so I can route you to the right person?", cfg);
+            await sendTextTracked(from, "Could you share a brief reason so I can route you to the right person?", cfg);
             return res.sendStatus(200);
           }
         }
@@ -985,366 +1875,78 @@ export default function registerWebhookRoutes(app) {
 
       // Handle interactive replies (buttons/lists) BEFORE filtering to text
       if (message?.type === "interactive") {
+        try { incrementCounter('whatsapp_interactive_received', 1, { kind: String(message?.interactive?.type||'unknown') }); } catch {}
         const data = message.interactive;
+        // Record the interactive inbound for visibility in the thread
+        try {
+          const inboundId = message.id;
+          let displayText = '';
+          if (data?.type === 'button_reply') {
+            displayText = data.button_reply?.title || '';
+          } else if (data?.type === 'list_reply') {
+            displayText = data.list_reply?.title || '';
+          }
+          const insertedInt = await recordInboundMessage({
+            messageId: inboundId,
+            userId: tenantUserId,
+            from,
+            businessPhone: metadata?.display_phone_number?.replace(/\D/g, ""),
+            type: 'interactive',
+            text: displayText || null,
+            timestamp: message.timestamp ? Number(message.timestamp) : undefined,
+            raw: message
+          });
+          if (insertedInt) {
+            const messageData = {
+              id: inboundId,
+              direction: 'inbound',
+              type: 'interactive',
+              text_body: displayText || null,
+              timestamp: message.timestamp ? Number(message.timestamp) : Math.floor(Date.now() / 1000),
+              from_digits: normalizePhone(from),
+              to_digits: normalizePhone(metadata?.display_phone_number),
+              contact_name: null,
+              contact: from,
+              formatted_time: new Date((message.timestamp ? Number(message.timestamp) : Math.floor(Date.now() / 1000)) * 1000).toLocaleString(),
+              media_url: null
+            };
+            try { broadcastNewMessage(tenantUserId, from, messageData); } catch {}
+          }
+        } catch {}
         if (data?.type === "button_reply") {
           const { id, title } = data.button_reply || {};
-          if (id === "BOOKING_START") {
-            // Begin booking: show date picker (today + next 6 days)
-            const staff = await (async () => {
-              try { const s = await getDB().collection('staff').find({ user_id: String(tenantUserId) }).project({ _id: 1, slot_minutes: 1 }).sort({ createdAt: 1 }).limit(1).toArray(); return s[0] || null; } catch { return null; }
-            })();
-            if (!staff) {
-              await sendWhatsAppText(from, "Bookings are enabled, but no staff is configured yet.", cfg);
-              return res.sendStatus(200);
-            }
-            const days = buildDayRows(staff._id, null);
-            await sendWhatsappList(from, "Pick a day", "Choose a date:", "Select", days, cfg);
-            return res.sendStatus(200);
-          }
-          if (id === "YES_GRAPH") {
-            await sendWhatsAppText(from, "Great — sending the report graph now.", cfg);
-          } else if (id === "NO_GRAPH") {
-            await sendWhatsAppText(from, "Okay. If you need it later, just ask.", cfg);
-          } else if (id?.startsWith("RESCHED_CONFIRM_")) {
-            try {
-              const parts = id.split("_");
-              // RESCHED_CONFIRM_<apptId>_<startISO>_<endISO>
-              const apptId = Number(parts[2] || 0);
-              const startISO = parts[3];
-              const endISO = parts[4];
-              if (apptId && startISO && endISO) {
-                const now = Math.floor(Date.now()/1000);
-                const row = db.prepare(`SELECT start_ts FROM appointments WHERE id = ? AND user_id = ?`).get(apptId, tenantUserId);
-                const minsToStart = row ? Math.floor((row.start_ts - now)/60) : 99999;
-                const minLead = Number(cfg.reschedule_min_lead_minutes || 60);
-                if (minsToStart < minLead) {
-                  await sendWhatsAppText(from, `It's too close to your start time (less than ${minLead} min). Please contact us directly.`, cfg);
-                  return res.sendStatus(200);
-                }
-                await rescheduleBooking({ userId: tenantUserId, appointmentId: apptId, startISO, endISO });
-                await sendWhatsAppText(from, `Rescheduled to ${new Date(startISO).toLocaleString()} (Ref #${apptId}).`, cfg);
-              }
-            } catch {}
-            return res.sendStatus(200);
-          } else if (id?.startsWith("RESCHED_CANCEL_")) {
-            await sendWhatsAppText(from, "Okay, I didn't change anything.", cfg);
-            return res.sendStatus(200);
-          } else if (id?.startsWith("CANCEL_CONFIRM_")) {
-            try {
-              const apptId = Number(id.split("_")[2] || 0);
-              if (apptId) {
-                const now = Math.floor(Date.now()/1000);
-                const row = db.prepare(`SELECT start_ts FROM appointments WHERE id = ? AND user_id = ?`).get(apptId, tenantUserId);
-                const minsToStart = row ? Math.floor((row.start_ts - now)/60) : 99999;
-                const minLead = Number(cfg.cancel_min_lead_minutes || 60);
-                if (minsToStart < minLead) {
-                  await sendWhatsAppText(from, `It's too close to your start time (less than ${minLead} min). Please contact us directly.`, cfg);
-                  return res.sendStatus(200);
-                }
-                await cancelBooking({ userId: tenantUserId, appointmentId: apptId });
-                await sendWhatsAppText(from, `Canceled (Ref #${apptId}).`, cfg);
-              }
-            } catch {}
-            return res.sendStatus(200);
-          } else if (id?.startsWith("CANCEL_ABORT_")) {
-            await sendWhatsAppText(from, "Okay, kept as is.", cfg);
-            return res.sendStatus(200);
-          } else if (id?.startsWith("REM_OK_")) {
-            const apptId = Number(id.split("_")[2] || 0);
-            if (apptId) {
-              const dbNative = getDB();
-              const row = await dbNative.collection('appointments').findOne({ id: apptId, user_id: String(tenantUserId) }, { projection: { status: 1, start_ts: 1 } });
-              if (row && row.status === 'confirmed') {
-                await sendWhatsAppText(from, "Great, see you then!", cfg);
-              } else {
-                await sendWhatsAppText(from, "It looks like that booking was already canceled or changed. If you need a new time, say 'book'.", cfg);
-              }
-            }
-            return res.sendStatus(200);
-          } else if (id?.startsWith("REM_CANCEL_")) {
-            const apptId = Number(id.split("_")[2] || 0);
-            if (apptId) {
-              const now = Math.floor(Date.now()/1000);
-              const dbNative = getDB();
-              const row = await dbNative.collection('appointments').findOne({ id: apptId, user_id: String(tenantUserId) }, { projection: { start_ts: 1 } });
-              const minsToStart = row ? Math.floor(((row.start_ts || 0) - now)/60) : 99999;
-              const minLead = Number(cfg.cancel_min_lead_minutes || 60);
-              if (minsToStart < minLead) {
-                await sendWhatsAppText(from, `It's too close to your start time (less than ${minLead} min). Please contact us directly.`, cfg);
-              } else {
-                try { await cancelBooking({ userId: tenantUserId, appointmentId: apptId }); await sendWhatsAppText(from, `Canceled (Ref #${apptId}).`, cfg); } catch {}
-              }
-            }
-            return res.sendStatus(200);
-          } else if (id?.startsWith("REM_RESCHED_")) {
-            const apptId = Number(id.split("_")[2] || 0);
-            if (apptId) {
-              const now = Math.floor(Date.now()/1000);
-              const dbNative = getDB();
-              const row = await dbNative.collection('appointments').findOne({ id: apptId, user_id: String(tenantUserId) }, { projection: { start_ts: 1, staff_id: 1 } });
-              const minsToStart = row ? Math.floor(((row.start_ts || 0) - now)/60) : 99999;
-              const minLead = Number(cfg.reschedule_min_lead_minutes || 60);
-              if (minsToStart < minLead) {
-                await sendWhatsAppText(from, `It's too close to your start time (less than ${minLead} min). Please contact us directly.`, cfg);
-              } else if (row?.staff_id) {
-                const days = buildDayRows(row.staff_id, apptId);
-                await sendWhatsappList(from, "Pick a new day", "Choose a date:", "Select", days, cfg);
-              }
-            }
-            return res.sendStatus(200);
-          } else if (id?.startsWith("KB_TITLE_")) {
-            const wanted = id.replace("KB_TITLE_", "");
-            await sendKbItemByTitle({ tenantUserId, to: from, title: wanted, cfg });
-          }
+          await handleButtonReply({ id, title, tenantUserId, from, cfg });
           return res.sendStatus(200);
         }
         if (data?.type === "list_reply") {
           const { id, title } = data.list_reply || {};
-          // Greeting list actions
-          if (id === 'GREET_BOOK') {
-          // CSAT: rating list selections
-          if (id && /^CSAT_[1-5]$/.test(id)) {
-            try {
-              const dbNative = getDB();
-              const score = Number(id.split('_')[1]);
-              const emojiMap = { 1: '😡', 2: '😕', 3: '🙂', 4: '😀', 5: '🤩' };
-              const emoji = emojiMap[score] || null;
-              await dbNative.collection('csat_ratings').insertOne({
-                user_id: String(tenantUserId),
-                contact_id: String(from),
-                score,
-                emoji,
-                message_text: `[List] ${title || ''}`,
-                createdAt: new Date()
-              });
-              await dbNative.collection('contact_state').updateOne(
-                { user_id: String(tenantUserId), contact_id: String(from) },
-                { $set: { await_rating: 0, updatedAt: new Date() } },
-                { upsert: true }
-              );
-            } catch {}
-            return res.sendStatus(200);
-          }
-            const staff = await (async () => { try { const s = await getDB().collection('staff').find({ user_id: String(tenantUserId) }).project({ _id: 1 }).sort({ createdAt: 1 }).limit(1).toArray(); return s[0] || null; } catch { return null; } })();
-            if (!staff) { await sendWhatsAppText(from, "Bookings are enabled, but no staff is configured yet.", cfg); return res.sendStatus(200); }
-            const days = buildDayRows(staff._id, null);
-            await sendWhatsappList(from, "Pick a day", "Choose a date:", "Select", days, cfg);
-            return res.sendStatus(200);
-          }
-          if (id?.startsWith('GREET_KB_TITLE_')) {
-            const titleDec = decodeURIComponent(id.replace('GREET_KB_TITLE_', ''));
-            await sendKbItemByTitle({ tenantUserId, to: from, title: titleDec, cfg });
-            return res.sendStatus(200);
-          }
-
-          // Reschedule day picked → times for that date
-          if (id?.startsWith("RESCHED_PICK_DAY_")) {
-            try {
-              const parts = id.split("_");
-              // Format: RESCHED_PICK_DAY_<YYYY-MM-DD>_<staffId>_<apptId>
-              const dateStr = parts.slice(3, 4)[0];
-              const staffId = Number(parts.slice(4, 5)[0] || 0);
-              const apptId = Number(parts.slice(5, 6)[0] || 0);
-              if (tenantUserId && staffId && dateStr && apptId) {
-                // Use midday UTC to avoid date shifting across timezones
-                const dateISO = new Date(`${dateStr}T12:00:00.000Z`).toISOString();
-                const rows = await buildTimeRows({ userId: tenantUserId, staffId, dateISO, limit: 10, apptId });
-                if (!rows.length) {
-                  await sendWhatsAppText(from, "No available times on that date. Please pick another day.", cfg);
-                  return res.sendStatus(200);
-                }
-                await sendWhatsappList(from, `${new Date(dateISO).toLocaleDateString()}`, "Choose a new time:", "Select", rows, cfg);
-              }
-            } catch {}
-            return res.sendStatus(200);
-          }
-          // Reschedule time picked → ask for confirmation
-          if (id?.startsWith("RESCHED_PICK_TIME_")) {
-            try {
-              const parts = id.split("_");
-              // Format: RESCHED_PICK_TIME_<apptId>_<staffId>_<startISO>_<endISO>
-              const apptId = Number(parts[3] || 0);
-              const staffId = Number(parts[4] || 0);
-              const startISO = parts[5];
-              const endISO = parts[6];
-              if (apptId && staffId && startISO && endISO) {
-                await sendWhatsappButton(from, `Reschedule to ${new Date(startISO).toLocaleString()}?`, [
-                  { id: `RESCHED_CONFIRM_${apptId}_${startISO}_${endISO}`, title: 'Yes' },
-                  { id: `RESCHED_CANCEL_${apptId}`, title: 'No' }
-                ], cfg);
-              }
-            } catch {}
-            return res.sendStatus(200);
-          }
-          if (id?.startsWith("PICK_DAY_")) {
-            try {
-              const parts = id.split("_");
-              // Format: PICK_DAY_<YYYY-MM-DD>_<staffId>
-              let dateStr = parts.slice(2, 3)[0];
-              let staffId = parts.slice(3, 4)[0];
-              if (!staffId) {
-                const staff = await (async () => { try { const s = await getDB().collection('staff').find({ user_id: String(tenantUserId) }).project({ _id: 1 }).sort({ createdAt: 1 }).limit(1).toArray(); return s[0] || null; } catch { return null; } })();
-                staffId = staff?._id || null;
-              }
-              // Fallback: if dateStr missing or malformed, try parsing title (add current year)
-              if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr || ''))) {
-                const yr = new Date().getUTCFullYear();
-                const maybe = Date.parse(`${title} ${yr}`);
-                if (!Number.isNaN(maybe)) {
-                  const d = new Date(maybe);
-                  const mm = String(d.getUTCMonth()+1).padStart(2,'0');
-                  const dd = String(d.getUTCDate()).padStart(2,'0');
-                  dateStr = `${d.getUTCFullYear()}-${mm}-${dd}`;
-                }
-              }
-              if (tenantUserId && staffId && dateStr) {
-                // Use midday UTC to avoid TZ boundary issues
-                const dateISO = new Date(`${dateStr}T12:00:00.000Z`).toISOString();
-                const rows = await buildTimeRows({ userId: tenantUserId, staffId: String(staffId), dateISO, limit: 10, apptId: null });
-                if (!rows.length) {
-                  await sendWhatsAppText(from, "No available times on that date. Please pick another day.", cfg);
-                  return res.sendStatus(200);
-                }
-                await sendWhatsappList(from, `${new Date(dateISO).toLocaleDateString()}`, "Choose a time:", "Select", rows, cfg);
-              } else {
-                await sendWhatsAppText(from, "I couldn't read that date. Please pick a day again.", cfg);
-              }
-            } catch (e) {
-              await sendWhatsAppText(from, "Something went wrong loading times. Please pick a day again.", cfg);
-            }
-            return res.sendStatus(200);
-          }
-          if (id?.startsWith("BOOK_SLOT_")) {
-            try {
-              const parts = id.split("_");
-              // Format: BOOK_SLOT_<startISO>_<endISO>_<staffId>
-              const startISO = parts.slice(2, 3)[0];
-              const endISO = parts.slice(3, 4)[0];
-              const staffId = Number(parts.slice(4, 5)[0] || 0);
-              if (tenantUserId && staffId && startISO && endISO) {
-                // Start a booking session with dynamic questions
-                const settings = tenant || {};
-                let questions = [];
-                try { questions = JSON.parse(settings.booking_questions_json || '[]'); } catch {}
-                if (!Array.isArray(questions) || !questions.length) {
-                  questions = ["What's your name?", "What's the reason for the booking?"];
-                }
-                try {
-                  db.prepare(`INSERT INTO booking_sessions (user_id, contact_id, staff_id, start_iso, end_iso, step, question_index, answers_json, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, 'pending', 0, '[]', strftime('%s','now'), strftime('%s','now'))
-                    ON CONFLICT(user_id, contact_id) DO UPDATE SET staff_id=excluded.staff_id, start_iso=excluded.start_iso, end_iso=excluded.end_iso, step='pending', question_index=0, answers_json='[]', updated_at=strftime('%s','now')
-                  `).run(tenantUserId, from, staffId, startISO, endISO);
-                } catch {}
-                // Ask first question
-                await sendWhatsAppText(from, String(questions[0]).slice(0, 200), cfg);
-              } else {
-                await sendWhatsAppText(from, "Sorry, I couldn't book that slot.", cfg);
-              }
-            } catch (e) {
-              await sendWhatsAppText(from, "Sorry, that slot is no longer available.", cfg);
-            }
-            return res.sendStatus(200);
-          }
-          if (id?.startsWith("CLINIC_")) {
-            await sendWhatsAppText(from, `You chose ${title}.`, cfg);
-            await sendWhatsappButton(
-              from,
-              "Would you like me to send the report graph so you can forward it to your doctor?",
-              [{ id: "YES_GRAPH", title: "Yes" }, { id: "NO_GRAPH", title: "No" }],
-              cfg
-            );
-          }
+          await handleListReply({ id, title, tenantUserId, from, cfg });
           return res.sendStatus(200);
         }
         return res.sendStatus(200);
       }
 
-      // Combine recent short fragments: users may type one word per bubble (e.g., "I" "want" "to" "book").
-      // Aggregate last few inbound text messages within a small time window to improve intent detection.
+      // Combine recent short fragments to improve intent detection
       try {
-        const nowSec = Number(message.timestamp || Math.floor(Date.now()/1000));
-        const digits = String(from || '').replace(/\D/g, '');
-        const windowSec = 20; // consider last 20s of fragments
-        const recent = db.prepare(`
-          SELECT text_body AS t, timestamp AS ts
-          FROM messages
-          WHERE user_id = ? AND direction = 'inbound' AND type = 'text'
-            AND (REPLACE(from_id,'+','') = ? OR from_digits = ?)
-            AND timestamp >= ?
-          ORDER BY timestamp ASC
-          LIMIT 8
-        `).all(tenantUserId, digits, digits, nowSec - windowSec);
-        const parts = (recent || []).map(r => String(r.t || '').trim()).filter(Boolean);
-        const joined = parts.join(' ').replace(/\s+/g, ' ').trim();
-        const isShort = (s) => {
-          const trimmed = String(s || '').trim();
-          const wc = trimmed ? trimmed.split(/\s+/).length : 0;
-          return trimmed.length <= 4 || wc <= 2;
-        };
-        if (joined && (isShort(text) || parts.length >= 3)) {
-          text = joined;
+        text = await maybeJoinRecentFragments({ text, from, tenantUserId, timestampSec: Number(message.timestamp || Math.floor(Date.now()/1000)) });
+      } catch {}
+
+      // Second guard: re-check status before greeting to prevent greetings while In Progress
+      try {
+        if (!humanActive && cfg?.conversation_mode !== 'escalation' && tenantUserId) {
+          const handled = await maybeSendHoldingMessage(tenantUserId, from, cfg);
+          if (handled) return res.sendStatus(200);
         }
       } catch {}
 
-      if(!humanActive && isGreeting(text)) {
-        // Throttle greetings: respond at most once per 60 seconds per contact
-        try {
-          const dbNative = getDB();
-          const now = Math.floor(Date.now()/1000);
-          const st = await dbNative.collection('contact_state').findOne({ user_id: String(tenantUserId), contact_id: String(from) }, { projection: { last_greet_ts: 1 } });
-          const last = st?.last_greet_ts || 0;
-          if ((now - last) <= 60) {
-            return res.sendStatus(200);
-          }
-          await dbNative.collection('contact_state').updateOne(
-            { user_id: String(tenantUserId), contact_id: String(from) },
-            { $set: { last_greet_ts: now, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } },
-            { upsert: true }
-          );
-        } catch {}
-
-        const greetText = cfg.entry_greeting || "Hello! How can I help you today?";
-        if (DEBUG_LOGS) console.log('[Webhook] Sending greeting to customer:', { to: from, greetText });
-        const greetResp = await sendWhatsAppText(from, greetText, cfg);
-        if (DEBUG_LOGS) console.log('[Webhook] Greeting send result:', { id: greetResp?.messages?.[0]?.id || null });
-        try {
-          const outboundId = greetResp?.messages?.[0]?.id;
-          if (outboundId) {
-            recordOutboundMessage({ messageId: outboundId, userId: tenantUserId, cfg, to: from, type: 'text', text: greetText, raw: { to: from, text: greetText } });
-          }
-        } catch {}
-        // Only include this tenant's KB items explicitly flagged to show in menu
-        const rows = [];
-        if (cfg?.bookings_enabled) rows.push({ id: 'GREET_BOOK', title: 'Bookings', description: '' });
-        try {
-          const titles = db.prepare(`
-            SELECT title FROM kb_items
-            WHERE user_id = ? AND COALESCE(show_in_menu,0) = 1 AND title IS NOT NULL AND TRIM(title) <> ''
-            ORDER BY created_at DESC, id DESC LIMIT 20
-          `).all(tenantUserId).map(r => String(r.title||'').trim()).filter(Boolean);
-          const seen = new Set();
-          for (const t of titles) {
-            if (rows.length >= 10) break; // WhatsApp list max per section
-            if (seen.has(t)) continue; seen.add(t);
-            rows.push({ id: `GREET_KB_TITLE_${encodeURIComponent(t)}`, title: t, description: '' });
-          }
-        } catch {}
-          if (rows.length) {
-          const header = 'You can tap one of these to begin:';
-          const body = 'Select an option to get started.';
-          const listResp = await sendWhatsappList(from, header, body, 'Select', rows, cfg);
-          try {
-            const outboundId = listResp?.messages?.[0]?.id;
-              if (outboundId) {
-                recordOutboundMessage({ messageId: outboundId, userId: tenantUserId, cfg, to: from, type: 'interactive', text: `${header}\n${body}`, raw: { to: from, interactive: 'list' } });
-              }
-          } catch {}
-        }
-        return res.sendStatus(200);
+      if (!humanActive) {
+        const greeted = await maybeHandleGreeting({ text, tenantUserId, from, cfg });
+        if (greeted) return res.sendStatus(200);
       }
 
       // Acknowledgements like "thanks", "ok" → react with 👍
       if (!humanActive && isAcknowledgement(text)) {
+        try { incrementCounter('acknowledgement_detected', 1, { userId: String(tenantUserId||'') }); } catch {}
         try { await sendWhatsappReaction(from, inboundId, "👍", cfg); } catch {}
         return res.sendStatus(200);
       }
@@ -1378,7 +1980,7 @@ export default function registerWebhookRoutes(app) {
         }
         if (!appt) { await sendWhatsAppText(from, "No staff is configured or booking could not be created for test.", cfg); return res.sendStatus(200); }
         const when = new Date((appt.start_ts||0)*1000).toLocaleString();
-        await sendWhatsappButton(from, `Reminder: your appointment is at ${when}. Is this still correct?`, [
+        await sendButtonTracked(from, `Reminder: your appointment is at ${when}. Is this still correct?`, [
           { id: `REM_OK_${appt.id}`, title: 'Correct' },
           { id: `REM_CANCEL_${appt.id}`, title: 'Cancel' },
           { id: `REM_RESCHED_${appt.id}`, title: 'Reschedule' }
@@ -1406,7 +2008,7 @@ export default function registerWebhookRoutes(app) {
             const meta = `Ref #${r.id}${r.staff_name ? ' · ' + r.staff_name : ''}`;
             return `- ${when} (${meta})`;
           }).join('\n');
-          await sendWhatsAppText(from, `Your upcoming ${upcoming.length>1?'bookings':'booking'}:\n${lines}`, cfg);
+          await sendTextTracked(from, `Your upcoming ${upcoming.length>1?'bookings':'booking'}:\n${lines}`, cfg);
           return res.sendStatus(200);
         }
         const lastArr = await dbNative.collection('appointments')
@@ -1422,9 +2024,9 @@ export default function registerWebhookRoutes(app) {
         if (last) {
           const when = new Date((last.start_ts||0)*1000).toLocaleString();
           const meta = `Ref #${last.id}${last.staff_name ? ' · ' + last.staff_name : ''}`;
-          await sendWhatsAppText(from, `I don't see an upcoming booking. Your last booking was ${when} (${meta}).`, cfg);
+          await sendTextTracked(from, `I don't see an upcoming booking. Your last booking was ${when} (${meta}).`, cfg);
         } else {
-          await sendWhatsAppText(from, "I couldn't find a booking for your number.", cfg);
+          await sendTextTracked(from, "I couldn't find a booking for your number.", cfg);
         }
         return res.sendStatus(200);
       }
@@ -1449,7 +2051,7 @@ export default function registerWebhookRoutes(app) {
         const nextIdx = idx + 1;
         if (nextIdx < questions.length) {
           db.prepare(`UPDATE booking_sessions SET answers_json = ?, question_index = ?, step = 'pending', updated_at = strftime('%s','now') WHERE id = ?`).run(JSON.stringify(answers), nextIdx, sess.id);
-          await sendWhatsAppText(from, String(questions[nextIdx]).slice(0,200), cfg);
+          await sendTextTracked(from, String(questions[nextIdx]).slice(0,200), cfg);
           return res.sendStatus(200);
         }
         // All answered: create booking; notes join Q/A
@@ -1459,7 +2061,7 @@ export default function registerWebhookRoutes(app) {
           const r = await createBooking({ userId: tenantUserId, staffId: sess.staff_id, startISO: sess.start_iso, endISO: sess.end_iso, contactPhone: from, notes });
           const title = tenant?.business_name ? `Appointment with ${tenant.business_name}` : 'Appointment';
           const icsUrl = `${req.protocol}://${req.get('host')}/ics?title=${encodeURIComponent(title)}&start=${encodeURIComponent(sess.start_iso)}&end=${encodeURIComponent(sess.end_iso)}&desc=${encodeURIComponent('Ref #' + r.id)}`;
-          await sendWhatsAppText(from, `Booked: ${new Date(sess.start_iso).toLocaleString()}. Ref #${r.id}\n\nAdd to your calendar: ${icsUrl}`, cfg);
+          await sendTextTracked(from, `Booked: ${new Date(sess.start_iso).toLocaleString()}. Ref #${r.id}\n\nAdd to your calendar: ${icsUrl}`, cfg);
           
           // Send email notification to account owner
           try {
@@ -1500,7 +2102,7 @@ export default function registerWebhookRoutes(app) {
             console.error('[Webhook] Failed to create booking notification:', e.message);
           }
         } catch {
-          await sendWhatsAppText(from, "Sorry, that slot could not be booked. Please try another time.", cfg);
+          await sendTextTracked(from, "Sorry, that slot could not be booked. Please try another time.", cfg);
         }
         try {
           const dbNative = getDB();
@@ -1524,17 +2126,14 @@ export default function registerWebhookRoutes(app) {
           .toArray()
           .then(arr => arr[0] || null);
         if (!appt) {
-          await sendWhatsAppText(from, "I couldn't find an upcoming booking for your number.", cfg);
+          await sendTextTracked(from, "I couldn't find an upcoming booking for your number.", cfg);
           return res.sendStatus(200);
         }
         const minsToStart = Math.floor((appt.start_ts - now) / 60);
         if (wantsCancel) {
           const minLead = Number(cfg.cancel_min_lead_minutes || 60);
-          if (minsToStart < minLead) {
-            await sendWhatsAppText(from, `It's too close to your start time (less than ${minLead} min). Please contact us directly.`, cfg);
-            return res.sendStatus(200);
-          }
-          await sendWhatsappButton(from, `Are you sure you want to cancel Ref #${appt.id}?`, [
+          if (minsToStart < minLead) { await notifyTooClose(from, minLead, cfg); return res.sendStatus(200); }
+          await sendButtonTracked(from, `Are you sure you want to cancel Ref #${appt.id}?`, [
             { id: `CANCEL_CONFIRM_${appt.id}`, title: 'Yes' },
             { id: `CANCEL_ABORT_${appt.id}`, title: 'No' }
           ], cfg);
@@ -1542,13 +2141,9 @@ export default function registerWebhookRoutes(app) {
         }
         if (wantsReschedule) {
           const minLead = Number(cfg.reschedule_min_lead_minutes || 60);
-          if (minsToStart < minLead) {
-            await sendWhatsAppText(from, `It's too close to your start time (less than ${minLead} min). Please contact us directly.`, cfg);
-            return res.sendStatus(200);
-          }
+          if (minsToStart < minLead) { await notifyTooClose(from, minLead, cfg); return res.sendStatus(200); }
           // Show date list for reschedule (re-use booking date picker)
-          const days = buildDayRows(appt.staff_id, appt.id);
-          await sendWhatsappList(from, "Pick a new day", "Choose a date:", "Select", days, cfg);
+          await sendDayPicker(from, appt.staff_id, appt.id, cfg, 'Pick a new day', 'Choose a date:');
           return res.sendStatus(200);
         }
       }
@@ -1559,7 +2154,7 @@ export default function registerWebhookRoutes(app) {
         // Pick first staff for tenant
         const staff = await (async () => { try { const s = await getDB().collection('staff').find({ user_id: String(tenantUserId) }).project({ _id: 1, timezone: 1, slot_minutes: 1, working_hours_json: 1 }).sort({ createdAt: 1 }).limit(1).toArray(); return s[0] || null; } catch { return null; } })();
         if (!staff) {
-          await sendWhatsAppText(from, "Bookings are enabled, but no staff is configured yet.", cfg);
+          await sendTextTracked(from, "Bookings are enabled, but no staff is configured yet.", cfg);
           return res.sendStatus(200);
         }
 
@@ -1613,13 +2208,13 @@ export default function registerWebhookRoutes(app) {
                 } catch {}
               }
               const when = new Date(match.start).toLocaleString();
-              await sendWhatsAppText(from, `Great — I can book ${when}.`, cfg);
+              await sendTextTracked(from, `Great — I can book ${when}.`, cfg);
               const q = questions[startIndex];
               if (q) {
-                await sendWhatsAppText(from, String(q).slice(0,200), cfg);
+                await sendTextTracked(from, String(q).slice(0,200), cfg);
               } else {
                 // No questions → finalize
-                await sendWhatsAppText(from, `Booked: ${when}. Ref #${r.id}`, cfg);
+                await sendTextTracked(from, `Booked: ${when}. Ref #${r.id}`, cfg);
               }
               return res.sendStatus(200);
             } catch {
@@ -1629,19 +2224,17 @@ export default function registerWebhookRoutes(app) {
           // If date exists but exact time unavailable → show available times for that day
           const rows = await buildTimeRows({ userId: tenantUserId, staffId: String(staff._id), dateISO: base.toISOString(), limit: 10, apptId: null });
           if (!rows.length) {
-            await sendWhatsAppText(from, "That day unfortunately is not available. Please pick another day.", cfg);
-            const days = buildDayRows(staff.id);
-            await sendWhatsappList(from, "Pick a day", "Choose a date:", "Select", days, cfg);
+            await sendTextTracked(from, "That day unfortunately is not available. Please pick another day.", cfg);
+            await sendDayPicker(from, staff._id, null, cfg, 'Pick a day', 'Choose a date:');
           } else {
-            await sendWhatsAppText(from, "That specific time isn't available. Here are available times for that day:", cfg);
-            await sendWhatsappList(from, new Date(base).toLocaleDateString(), "Choose a time:", "Select", rows, cfg);
+            await sendTextTracked(from, "That specific time isn't available. Here are available times for that day:", cfg);
+            await sendListTracked(from, new Date(base).toLocaleDateString(), "Choose a time:", "Select", rows, cfg);
           }
           return res.sendStatus(200);
         }
 
         // No parsed date/time → fallback to normal date picker
-        const days = buildDayRows(staff._id);
-        await sendWhatsappList(from, "Pick a day", "Choose a date:", "Select", days, cfg);
+        await sendDayPicker(from, staff._id, null, cfg, 'Pick a day', 'Choose a date:');
         return res.sendStatus(200);
       }
 
@@ -1663,7 +2256,7 @@ export default function registerWebhookRoutes(app) {
               VALUES (?, ?, 'ask_name', strftime('%s','now'))
               ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = 'ask_name', updated_at = excluded.updated_at`).run(from, tenantUserId);
           } catch {}
-          await sendWhatsAppText(from, "Sure — before I connect you with a human, what's your name?", cfg);
+          await sendTextTracked(from, "Sure — before I connect you with a human, what's your name?", cfg);
           return res.sendStatus(200);
         } else {
           try {
@@ -1671,13 +2264,13 @@ export default function registerWebhookRoutes(app) {
               VALUES (?, ?, 'ask_reason', strftime('%s','now'))
               ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = 'ask_reason', updated_at = excluded.updated_at`).run(from, tenantUserId);
           } catch {}
-          await sendWhatsAppText(from, "Thanks. What's the reason for escalating to our customer service team today?", cfg);
+          await sendTextTracked(from, "Thanks. What's the reason for escalating to our customer service team today?", cfg);
           return res.sendStatus(200);
         }
       }
 
       // Retrieve candidate KB matches (expand to 8 for broader context)
-      const kbMatches = retrieveKbMatches(text, 8, tenantUserId, '');
+      const kbMatches = cachedRetrieveKbMatches(text, 8, tenantUserId, '', from);
       if (DEBUG_LOGS) console.log("KB Matches:", kbMatches);
       
       const hasMatch = Array.isArray(kbMatches) && kbMatches.length > 0;
@@ -1689,18 +2282,18 @@ export default function registerWebhookRoutes(app) {
           const row = db.prepare(`SELECT file_url, file_mime, title FROM kb_items WHERE id = ?`).get(kbTop.id);
           const isPdf = row?.file_url && (/(^|\/)\S+\.pdf(\?|#|$)/i.test(String(row.file_url)) || /pdf/i.test(String(row.file_mime||'')));
           if (isPdf) {
-            await sendWhatsappDocument(from, row.file_url, ((row.title||'document') + '.pdf'), cfg);
+            await sendDocumentTracked(from, row.file_url, ((row.title||'document') + '.pdf'), cfg);
             return res.sendStatus(200);
           }
         } catch {}
       }
       // Let AI decide using the KB. If it cannot answer from KB, it must return the exact OUT OF SCOPE phrase.
       if (!humanActive && hasMatch) {
+        const aiStart = Date.now();
         const aiReply = await generateAiReply(text, kbMatches, aiOptions);
+        try { businessMetrics.trackAIRequest(true, Date.now() - aiStart); } catch {}
         const normalized = String(aiReply || '').trim();
-        const OUT_OF_SCOPE = 'That seems outside my scope. Try choosing one of these topics';
-
-        if (normalized && normalized.toLowerCase().startsWith(OUT_OF_SCOPE.toLowerCase())) {
+        if (normalized && normalized.toLowerCase().startsWith(OUT_OF_SCOPE_PHRASE.toLowerCase())) {
           // Out of scope → begin human escalation flow (collect name → reason)
           const customer = db.prepare(`SELECT display_name FROM customers WHERE user_id = ? AND contact_id = ?`).get(tenantUserId, from) || {};
           const hasName = !!customer.display_name;
@@ -1719,13 +2312,7 @@ export default function registerWebhookRoutes(app) {
         }
 
         const reply = normalized || kbMatches[0].content || "Sorry, I couldn’t find that.";
-        const sendRespData = await sendWhatsAppText(from, reply, cfg);
-        try {
-          const outboundId = sendRespData?.messages?.[0]?.id;
-          if (outboundId) {
-            recordOutboundMessage({ messageId: outboundId, userId: tenantUserId, cfg, to: from, type: 'text', text: reply, raw: { to: from, reply } });
-          }
-        } catch {}
+        await sendTextTracked(from, reply, cfg);
         return res.sendStatus(200);
       }
 
@@ -1733,7 +2320,7 @@ export default function registerWebhookRoutes(app) {
       if (hasMatch && kbMatches[0]?.content && /\b(pdf)\b/i.test(String(kbMatches[0].title||'')) ) {
         const row = db.prepare(`SELECT file_url, file_mime FROM kb_items WHERE id = ?`).get(kbMatches[0].id);
         if (row?.file_url && (/pdf$/i.test(row.file_mime || '') || /\.pdf(\?|$)/i.test(row.file_url))) {
-          try { await sendWhatsappDocument(from, row.file_url, (kbMatches[0].title || 'document') + '.pdf', cfg); return res.sendStatus(200); } catch {}
+          try { await sendDocumentTracked(from, row.file_url, (kbMatches[0].title || 'document') + '.pdf', cfg); return res.sendStatus(200); } catch {}
         }
       }
       // Low/no confidence → offer 3 smart options from KB
@@ -1748,17 +2335,19 @@ export default function registerWebhookRoutes(app) {
         ).run(from, tenantUserId, hasName ? 'ask_reason' : 'ask_name');
       } catch {}
       if (suggestions.length > 0) {
-        await sendWhatsappButton(
+        await sendButtonTracked(
           from,
           "That seems outside my scope. I can connect you with a human. First, choose one of these topics if helpful:",
           suggestions,
           cfg
         );
-      }
-      if (!hasName && humanActive) {
-        await sendWhatsAppText(from, "Before I connect you, what’s your name?", cfg);
-      } else if (humanActive) {
-        await sendWhatsAppText(from, "What’s the reason for contacting a human today?", cfg);
+      } else {
+        // No suggestions available → ensure we still move the conversation forward
+        if (!hasName) {
+          await sendTextTracked(from, "I can connect you with a human — what’s your name?", cfg);
+        } else {
+          await sendTextTracked(from, "I can connect you with a human. What’s the reason for your request?", cfg);
+        }
       }
 
       return res.sendStatus(200);

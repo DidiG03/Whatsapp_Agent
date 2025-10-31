@@ -33,7 +33,8 @@ export default function registerSettingsRoutes(app) {
     const email = await getSignedInEmail(req);
     const q = req.query || {};
     const calendars = await Calendar.find({ user_id: userId }).select('_id display_name account_email calendar_id').sort({ _id: 1 }).lean();
-    const staff = await Staff.find({ user_id: userId }).select('_id name timezone slot_minutes calendar_id').sort({ _id: -1 }).limit(50).lean();
+    const staff = await Staff.find({ user_id: userId }).select('_id name timezone slot_minutes calendar_id working_hours_json').sort({ _id: -1 }).limit(50).lean();
+    const staffToEdit = (q.edit_staff ? await Staff.findOne({ _id: String(q.edit_staff), user_id: userId }).lean().catch(() => null) : null);
     const quickReplies = await getQuickReplies(userId);
     const quickReplyCategories = await getQuickReplyCategories(userId);
     // Prevent caching to avoid showing cached authenticated pages after logout
@@ -69,10 +70,24 @@ export default function registerSettingsRoutes(app) {
           <div class="layout">
             ${renderSidebar('settings')}
             <main class="main">
-              <div class="main-content">
+            <div class="main-content">
+              <div id="settings-nav" class="card" style="position:sticky; top:0; z-index:5; background:#ffffff; padding:8px; margin-bottom:12px; border:1px solid #e5e7eb; border-radius:6px;">
+                <div style="display:flex; flex-wrap:wrap; gap:8px;">
+                  <a href="#account" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Account</a>
+                  <a href="#whatsapp" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">WhatsApp</a>
+                  <a href="#conversation" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Conversation</a>
+                  <a href="#greeting" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Greeting</a>
+                  <a href="#holidays" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Holidays</a>
+                  <a href="#bookings_section" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Bookings</a>
+                  <a href="#email" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Email</a>
+                  <a href="#staff" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Staff</a>
+                  <a href="#quick-replies" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Quick Replies</a>
+                  <a href="#data" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Data</a>
+                </div>
+              </div>
                 <div class="card chat-box-settings">
                 <form method="post" action="/settings" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;">
-                  <div class="section">
+                  <div class="section" id="account">
                     <h3>Personal Information</h3>
                     <div class="grid-2">
                       <label>Name
@@ -99,7 +114,7 @@ export default function registerSettingsRoutes(app) {
                         <input placeholder="My Business" class="settings-field" name="business_name" value="${s.business_name || ''}"/>
                       </label>
                     </div>
-                  <div class="section">
+                  <div class="section" id="whatsapp">
                     <h3>WhatsApp Setup</h3>
                     <div class="grid-2">
                       <label>Phone Number ID
@@ -130,14 +145,14 @@ export default function registerSettingsRoutes(app) {
                     </label>
                   </div>
 
-                  <div class="section">
+                  <div class="section" id="website">
                     <h3>Website</h3>
                     <label>Website URL
                       <input placeholder="https://www.example.com" class="settings-field" name="website_url" value="${s.website_url || ''}"/>
                     </label>
                   </div>
 
-                  <div class="section">
+                  <div class="section" id="templates">
                     <h3>WhatsApp Templates</h3>
                     <div class="grid-2">
                       <label>Template Name
@@ -150,7 +165,7 @@ export default function registerSettingsRoutes(app) {
                     <div class="small">Used when last user message is older than 24h.</div>
                   </div>
 
-                  <div class="section">
+                  <div class="section" id="ai">
                     <h3>AI Preferences</h3>
                     <div class="grid-2">
                       <label>AI Tone
@@ -164,7 +179,7 @@ export default function registerSettingsRoutes(app) {
                       <input placeholder="use emojis, keep answers under 2 lines" class="settings-field" name="ai_style" value="${s.ai_style || ''}"/>
                     </label>
                   </div>
-                  <div class="section">
+                  <div class="section" id="conversation">
                     <h3>Conversation Mode</h3>
                     <div class="small" style="margin-bottom:12px;">Choose how the chatbot should respond to customer messages:</div>
                     <label style="display:block; margin-bottom:12px; padding:12px; border:1px solid #e5e7eb; border-radius:6px; cursor:pointer; ${(s.conversation_mode || 'full') === 'full' ? 'background:#f0f9ff; border-color:#3b82f6;' : ''}">
@@ -211,11 +226,61 @@ export default function registerSettingsRoutes(app) {
             </label>
           </div>
                   </div>
-                  <div class="section">
+                  <div class="section" id="greeting">
                     <h3>Greeting</h3>
                     <label>Entry Greeting
                       <input placeholder="Hello! How can I help you today?" class="settings-field" name="entry_greeting" value="${s.entry_greeting || 'Hello! How can I help you today?'}"/>
                     </label>
+                  </div>
+                  <div class="section" id="holidays">
+                    <h3>Holidays & Closures</h3>
+                    <div class="small" style="margin-bottom:8px;">Add holiday name, date and business closed time window.</div>
+                    <div id="holiday-rows" style="display:grid; grid-template-columns: 1.2fr 0.8fr 0.5fr 0.5fr auto; gap:8px; align-items:center;">
+                      <div style="font-size:12px; color:#6b7280;">Name</div>
+                      <div style="font-size:12px; color:#6b7280;">Date (YYYY-MM-DD)</div>
+                      <div style="font-size:12px; color:#6b7280;">Start (HH:MM)</div>
+                      <div style="font-size:12px; color:#6b7280;">End (HH:MM)</div>
+                      <div></div>
+                      ${(() => { 
+                        let rules=[]; 
+                        try{ rules = JSON.parse(s.holidays_rules_json||'[]'); }catch{}
+                        if(!Array.isArray(rules) || !rules.length){ rules = [{ name:'', date:'', start:'', end:'' }]; }
+                        return rules.map((r,i)=>`
+                          <input class=\"settings-field\" name=\"holiday_name\" value=\"${(r.name||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;')}\" placeholder=\"Christmas\" />
+                          <input class=\"settings-field\" name=\"holiday_date\" value=\"${r.date||''}\" placeholder=\"2025-12-25\" />
+                          <input class=\"settings-field\" name=\"holiday_start\" value=\"${r.start||''}\" placeholder=\"00:00\" />
+                          <input class=\"settings-field\" name=\"holiday_end\" value=\"${r.end||''}\" placeholder=\"23:59\" />
+                          <button type=\"button\" class=\"btn-ghost\" onclick=\"removeHolidayRow(this)\" style=\"border:none;\">Remove</button>
+                        `).join('');
+                      })()}
+                    </div>
+                    <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
+                      <button type="button" onclick="addHolidayRow()">Add Holiday</button>
+                      <div class="small">On matching dates and times the bot will send your Out of Hours Message.</div>
+                    </div>
+                    <script>
+                      function addHolidayRow(){
+                        const c = document.getElementById('holiday-rows');
+                        const tpl = '<input class="settings-field" name="holiday_name" placeholder="Christmas" />'
+                          + '<input class="settings-field" name="holiday_date" placeholder="2025-12-25" />'
+                          + '<input class="settings-field" name="holiday_start" placeholder="00:00" />'
+                          + '<input class="settings-field" name="holiday_end" placeholder="23:59" />'
+                          + '<button type="button" class="btn-ghost" onclick="removeHolidayRow(this)" style="border:none;">Remove</button>';
+                        c.insertAdjacentHTML('beforeend', tpl);
+                      }
+                      function removeHolidayRow(btn){
+                        const c = document.getElementById('holiday-rows');
+                        const cells = Array.from(c.children);
+                        const idx = cells.indexOf(btn);
+                        if(idx >= 0){
+                          // Each row is 5 elements
+                          const rowStart = idx - 4;
+                          for(let i=0;i<5;i++){
+                            if(c.children[rowStart]) c.removeChild(c.children[rowStart]);
+                          }
+                        }
+                      }
+                    </script>
                   </div>
                   <div class="section" id="bookings_section" style="${s.conversation_mode === 'escalation' ? 'display:none;' : ''}">
                     <h3>Bookings</h3>
@@ -247,7 +312,7 @@ export default function registerSettingsRoutes(app) {
                       </div>
                     </div>
                   </div>
-                  <div class="section">
+                  <div class="section" id="email">
                     <h3>Email Notifications</h3>
                     <label>
                       <input type="hidden" name="escalation_email_enabled" value="0"/>
@@ -297,7 +362,7 @@ export default function registerSettingsRoutes(app) {
                 </form>
                 <!-- Separate email form (not nested) to avoid interfering with settings submission -->
                 <form id="email-start-form" method="post" action="/settings/email/start" style="display:none;"></form>
-                <div class="section" style="display:flex; gap:10px; align-items:center;">
+                <div class="section" id="data" style="display:flex; gap:10px; align-items:center;">
                   <form method="post" action="/kb/clear" style="margin:0;display:inline;">
                     <button type="submit" style="background:#fee2e2;color:#b91c1c;border:1px solid #fecaca">Clear Knowledge Base</button>
                   </form>
@@ -305,15 +370,15 @@ export default function registerSettingsRoutes(app) {
                     <button type="submit" style="background:#fee2e2;color:#991b1b;border:1px solid #fecaca">Delete my account data</button>
                   </form>
                 </div>
-                <div class="section">
+                <div class="section" id="staff">
                   <h3>Staff</h3>
                   <div class="card" style="margin-bottom:12px;">
-                    <form method="post" action="/settings/staff" onsubmit="return checkAuthThenSubmit(this)" style="display:grid; grid-template-columns: repeat(2, 1fr); gap:8px;">
+                    <form method="post" action="/settings/staff" onsubmit="event.preventDefault(); return checkAuthThenSubmit(this);" style="display:grid; grid-template-columns: repeat(2, 1fr); gap:8px;">
                       <label>Name
-                        <input class="settings-field" name="name" placeholder="Dr. Jane Doe" required />
+                        <input class="settings-field" name="name" placeholder="Jane Doe" required />
                       </label>
                       <label>Timezone
-                        <input class="settings-field" name="timezone" placeholder="America/New_York" value="${s.timezone || ''}" />
+                        <input class="settings-field" name="timezone" placeholder="Europe/London" value="${s.timezone || ''}" />
                       </label>
                       <label>Slot Minutes
                         <input class="settings-field" type="number" min="5" max="240" step="5" name="slot_minutes" value="30" />
@@ -324,133 +389,71 @@ export default function registerSettingsRoutes(app) {
                           ${(calendars||[]).map(c => `<option value="${String(c._id)}">${(c.display_name||c.account_email||c.calendar_id||('Calendar'))}</option>`).join('')}
                         </select>
                       </label>
-                      <div style="grid-column: 1 / -1;">
-                        <div class="small" style="margin:0 0 6px 0;">Working Hours</div>
-                        <input type="hidden" name="working_hours_json" id="wh_json" />
-                        <div id="wh_builder" class="card" style="padding:10px; display:grid; gap:10px;">
-                          <div class="wh-row" data-day="mon" style="display:flex; gap:8px; align-items:center;">
-                            <div style="width:72px; text-transform:uppercase; font-size:12px; color:#6b7280;">MON</div>
-                            <div class="wh-slots" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
-                            <button type="button" class="btn-ghost wh-add" style="border:none;">Add</button>
+                      <div style="grid-column: 1 / -1; display:grid; gap:6px;">
+                        <div class="small" style="margin:0 0 6px 0;">Working Hours (use HH:MM-HH:MM, comma-separated)</div>
+                        ${['mon','tue','wed','thu','fri','sat','sun'].map((d,i)=>`
+                          <div style=\"display:grid; grid-template-columns: 72px 1fr; gap:8px; align-items:center;\">
+                            <div style=\"text-transform:uppercase; font-size:12px; color:#6b7280;\">${['MON','TUE','WED','THU','FRI','SAT','SUN'][i]}</div>
+                            <input class=\"settings-field\" name=\"hours_${d}\" placeholder=\"09:00-17:00, 18:00-20:00\" />
                           </div>
-                          <div class="wh-row" data-day="tue" style="display:flex; gap:8px; align-items:center;">
-                            <div style="width:72px; text-transform:uppercase; font-size:12px; color:#6b7280;">TUE</div>
-                            <div class="wh-slots" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
-                            <button type="button" class="btn-ghost wh-add" style="border:none;">Add</button>
-                          </div>
-                          <div class="wh-row" data-day="wed" style="display:flex; gap:8px; align-items:center;">
-                            <div style="width:72px; text-transform:uppercase; font-size:12px; color:#6b7280;">WED</div>
-                            <div class="wh-slots" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
-                            <button type="button" class="btn-ghost wh-add" style="border:none;">Add</button>
-                          </div>
-                          <div class="wh-row" data-day="thu" style="display:flex; gap:8px; align-items:center;">
-                            <div style="width:72px; text-transform:uppercase; font-size:12px; color:#6b7280;">THU</div>
-                            <div class="wh-slots" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
-                            <button type="button" class="btn-ghost wh-add" style="border:none;">Add</button>
-                          </div>
-                          <div class="wh-row" data-day="fri" style="display:flex; gap:8px; align-items:center;">
-                            <div style="width:72px; text-transform:uppercase; font-size:12px; color:#6b7280;">FRI</div>
-                            <div class="wh-slots" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
-                            <button type="button" class="btn-ghost wh-add" style="border:none;">Add</button>
-                          </div>
-                          <div class="wh-row" data-day="sat" style="display:flex; gap:8px; align-items:center;">
-                            <div style="width:72px; text-transform:uppercase; font-size:12px; color:#6b7280;">SAT</div>
-                            <div class="wh-slots" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
-                            <button type="button" class="btn-ghost wh-add" style="border:none;">Add</button>
-                          </div>
-                          <div class="wh-row" data-day="sun" style="display:flex; gap:8px; align-items:center;">
-                            <div style="width:72px; text-transform:uppercase; font-size:12px; color:#6b7280;">SUN</div>
-                            <div class="wh-slots" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
-                            <button type="button" class="btn-ghost wh-add" style="border:none;">Add</button>
-                          </div>
-                        </div>
-                        <div class="small" style="margin-top:6px; color:#6b7280;">Example: 09:00-17:00. Add multiple ranges per day if needed.</div>
+                        `).join('')}
+                        <div class="small" style="margin-top:6px; color:#6b7280;">Examples: 09:00-14:00 or 09:00-12:00, 13:00-17:00</div>
                       </div>
-                      <div style="grid-column: 1 / -1; display:flex; gap:8px;">
+                      <div style="grid-column: 1 / -1;">
                         <button type="submit">Add Staff</button>
                       </div>
                     </form>
                   </div>
-                  <script>
-                    (function(){
-                      var builder = document.getElementById('wh_builder');
-                      var hidden = document.getElementById('wh_json');
-                      if(!builder || !hidden) return;
-                      var form = builder.closest('form');
-                      if(!form) return;
-
-                      function makeSlotEl(){
-                        var wrap = document.createElement('div');
-                        wrap.style.display = 'flex';
-                        wrap.style.gap = '6px';
-                        wrap.style.alignItems = 'center';
-                        var input = document.createElement('input');
-                        input.className = 'settings-field';
-                        input.type = 'text';
-                        input.placeholder = '09:00-17:00';
-                        input.style.width = '140px';
-                        var del = document.createElement('button');
-                        del.type = 'button';
-                        del.className = 'btn-ghost';
-                        del.style.border = 'none';
-                        del.innerHTML = '<img src="/delete-icon.svg" alt="Delete"/>';
-                        del.addEventListener('click', function(){
-                          var parent = wrap.parentElement; if(parent) parent.removeChild(wrap);
-                        });
-                        wrap.appendChild(input);
-                        wrap.appendChild(del);
-                        return wrap;
-                      }
-
-                      builder.querySelectorAll('.wh-row').forEach(function(row){
-                        var add = row.querySelector('.wh-add');
-                        var slots = row.querySelector('.wh-slots');
-                        if(add){
-                          add.addEventListener('click', function(){
-                            if(slots.querySelectorAll('input.settings-field').length >= 6) return;
-                            slots.appendChild(makeSlotEl());
-                          });
-                        }
-                        // Ensure at least one input is present so the user can type directly
-                        if (slots && slots.querySelectorAll('input.settings-field').length === 0) {
-                          slots.appendChild(makeSlotEl());
-                        }
-                      });
-
-                      form.addEventListener('submit', function(){
-                        var out = {};
-                        builder.querySelectorAll('.wh-row').forEach(function(row){
-                          var day = row.getAttribute('data-day');
-                          var vals = [];
-                          row.querySelectorAll('input.settings-field').forEach(function(i){
-                            var v = String(i.value||'').trim();
-                            // Accept hyphen or en dash and 1–2 digit hours
-                            var m = /^(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})$/.exec(v);
-                            if(m){
-                              var norm = (m[1].padStart(2,'0') + ':' + m[2] + '-' + m[3].padStart(2,'0') + ':' + m[4]);
-                              vals.push(norm);
-                            }
-                          });
-                          if(vals.length) out[day] = vals;
-                        });
-                        hidden.value = JSON.stringify(out);
-                      });
-                    })();
-                    
-                    // Toggle escalation info, escalation messages, and bookings section based on mode selection
-                    var radios = document.querySelectorAll('input[name="conversation_mode"]');
-                    var infoBox = document.getElementById('escalation_info');
-                    var escalationMessages = document.getElementById('escalation_messages');
-                    var bookingsSection = document.getElementById('bookings_section');
-                    radios.forEach(function(r){
-                      r.addEventListener('change', function(){
-                        if(infoBox) infoBox.style.display = r.value === 'escalation' ? '' : 'none';
-                        if(escalationMessages) escalationMessages.style.display = r.value === 'escalation' ? '' : 'none';
-                        if(bookingsSection) bookingsSection.style.display = r.value === 'escalation' ? 'none' : '';
-                      });
-                    });
-                  </script>
-                  
+                  <div class="card">
+                    <div class="small" style="margin-bottom:8px;">Existing staff</div>
+                    ${staff.length ? `<ul class="list">${staff.map(r => `
+                      <li class="inbox-item">
+                        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+                          <div>
+                            <div class="wa-top"><div class="wa-name">${r.name}</div></div>
+                            <div class="item-preview small">${r.timezone || 'UTC'} · ${r.slot_minutes||30}m ${r.calendar_id ? '(Calendar linked)' : ''}</div>
+                          </div>
+                          <div style="display:flex; gap:8px;">
+                            <a href="/settings?edit_staff=${String(r._id)}" class="btn" style="padding:4px 8px; background:#007bff; color:white; border-radius:4px; text-decoration:none;">Edit</a>
+                            <form method="post" action="/settings/staff/${String(r._id)}/delete" onsubmit="return checkAuthThenSubmit(this)" style="margin:0;">
+                              <button type="submit" class="btn-ghost" style="border:none;"><img src="/delete-icon.svg" alt="Delete"/></button>
+                            </form>
+                          </div>
+                        </div>
+                      </li>
+                    `).join('')}</ul>` : '<div class="small">No staff yet</div>'}
+                  </div>
+                  ${staffToEdit ? `
+                  <div class="card" style="margin-top:12px;">
+                    <h3 style="margin-top:0;">Edit Staff</h3>
+                    <form method="post" action="/settings/staff/${String(staffToEdit._id)}" onsubmit="event.preventDefault(); return checkAuthThenSubmit(this);" style="display:grid; grid-template-columns: repeat(2, 1fr); gap:8px;">
+                      <label>Name
+                        <input class="settings-field" name="name" value="${(staffToEdit.name||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}" required />
+                      </label>
+                      <label>Timezone
+                        <input class="settings-field" name="timezone" value="${staffToEdit.timezone||''}" />
+                      </label>
+                      <label>Slot Minutes
+                        <input class="settings-field" type="number" min="5" max="240" step="5" name="slot_minutes" value="${Number(staffToEdit.slot_minutes||30)}" />
+                      </label>
+                      <label>Calendar
+                        <select class="settings-field" name="calendar_id">
+                          <option value="">— None (local only) —</option>
+                          ${(calendars||[]).map(c => `<option value="${String(c._id)}" ${String(staffToEdit.calendar_id||'')===String(c._id)?'selected':''}>${(c.display_name||c.account_email||c.calendar_id||('Calendar'))}</option>`).join('')}
+                        </select>
+                      </label>
+                      <div style="grid-column: 1 / -1; display:grid; gap:6px;">
+                        <div class="small" style="margin:0 0 6px 0;">Working Hours (use HH:MM-HH:MM, comma-separated)</div>
+                        ${(()=>{ let wh={}; try{wh=JSON.parse(staffToEdit.working_hours_json||'{}')}catch{}; const days=['mon','tue','wed','thu','fri','sat','sun']; const labels=['MON','TUE','WED','THU','FRI','SAT','SUN']; return days.map((d,i)=>{ const v=Array.isArray(wh[d])?wh[d].join(', '):''; return `<div style=\"display:grid; grid-template-columns: 72px 1fr; gap:8px; align-items:center;\"><div style=\"text-transform:uppercase; font-size:12px; color:#6b7280;\">${labels[i]}</div><input class=\"settings-field\" name=\"hours_${d}\" value=\"${v}\" placeholder=\"09:00-17:00, 18:00-20:00\" /></div>`}).join(''); })()}
+                        <div class="small" style="margin-top:6px; color:#6b7280;">Examples: 09:00-14:00 or 09:00-12:00, 13:00-17:00</div>
+                      </div>
+                      <div style="grid-column: 1 / -1; display:flex; gap:8px; justify-content:flex-end;">
+                        <a href="/settings" class="btn" style="padding:8px 16px; border:1px solid #d1d5db; background:white; border-radius:4px; text-decoration:none;">Cancel</a>
+                        <button type="submit" class="btn-primary" style="padding:8px 16px;">Update Staff</button>
+                      </div>
+                    </form>
+                  </div>
+                  ` : ''}
                   <!-- Quick Replies JavaScript -->
                   <script>
                     let editingReplyId = null;
@@ -649,27 +652,11 @@ export default function registerSettingsRoutes(app) {
                     });
                   </script>
                   
-                  <div class="card">
-                    <div class="small" style="margin-bottom:8px;">Existing staff</div>
-                    ${staff.length ? `<ul class="list">${staff.map(r => `
-                      <li class="inbox-item">
-                        <div style="display: flex; align-items: space-between; gap: 12px;">
-                          <div class="wa-col">
-                            <div class="wa-top"><div class="wa-name">${r.name}</div></div>
-                            <div class="item-preview small">${r.timezone || 'UTC'} · ${r.slot_minutes||30}m ${r.calendar_id ? '(Calendar linked)' : ''}</div>
-                          </div>
-                          <form method="post" action="/settings/staff/${String(r._id)}/delete" onsubmit="return checkAuthThenSubmit(this)" style="margin-left:auto;">
-                            <button type="submit" style="border:none;" class="btn-ghost" style="color:#991b1b;"><img src="/delete-icon.svg" alt="Delete"/></button>
-                          </form>
-                        </div>
-                      </li>
-                    `).join('')}</ul>` : '<div class="small">No staff yet</div>'}
-                  </div>
                 </div>
               </div>
               
               <!-- Quick Replies Section -->
-              <div class="section">
+              <div class="section" id="quick-replies">
                 <h3>Quick Replies</h3>
                 <div class="card" style="margin-bottom:12px;">
                   <form id="quick-reply-form" onsubmit="return addQuickReply(event)" style="display:grid; grid-template-columns: 1fr auto auto; gap:8px; align-items:end;">
@@ -771,6 +758,77 @@ export default function registerSettingsRoutes(app) {
     return res.redirect('/settings');
   });
 
+  // Staff: fresh implementation
+  function normalizeTimezoneLabel(tz) {
+    if (!tz) return null;
+    if (/\//.test(tz)) return tz;
+    const map = { london: 'Europe/London', utc: 'UTC', ny: 'America/New_York', new_york: 'America/New_York' };
+    const key = String(tz).toLowerCase().replace(/\s+/g, '_');
+    return map[key] || tz;
+  }
+
+  function parseWorkingHoursFromFields(body) {
+    const days = ['mon','tue','wed','thu','fri','sat','sun'];
+    const out = {};
+    for (const d of days) {
+      const raw = String(body['hours_' + d] || '').replace(/–/g, '-');
+      const matches = [...raw.matchAll(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/g)];
+      const ranges = [];
+      for (const m of matches) {
+        const sh = Number(m[1]); const sm = Number(m[2]);
+        const eh = Number(m[3]); const em = Number(m[4]);
+        const valid = sh>=0 && sh<24 && eh>=0 && eh<24 && sm>=0 && sm<60 && em>=0 && em<60 && (eh*60+em)>(sh*60+sm);
+        if (valid) ranges.push(`${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}-${String(eh).padStart(2,'0')}:${String(em).padStart(2,'0')}`);
+      }
+      if (ranges.length) out[d] = ranges;
+    }
+    return JSON.stringify(out);
+  }
+
+  app.post("/settings/staff", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.redirect('/settings');
+    let timezone = normalizeTimezoneLabel(String(req.body?.timezone || '').trim() || null);
+    const slotMinutes = Number(req.body?.slot_minutes || 30) || 30;
+    const calIdRaw = (req.body?.calendar_id || '').toString().trim();
+    const calendarId = calIdRaw ? String(calIdRaw) : null;
+    const workingJson = parseWorkingHoursFromFields(req.body);
+    try {
+      // Dedupe guard: if an identical staff document already exists, skip creating another
+      const exists = await Staff.findOne({ user_id: userId, name, timezone, slot_minutes: slotMinutes, calendar_id: calendarId, working_hours_json: workingJson || '{}' }).lean();
+      if (!exists) {
+        await Staff.create({ user_id: userId, name, calendar_id: calendarId, timezone, slot_minutes: slotMinutes, working_hours_json: workingJson || '{}' });
+      }
+    } catch {}
+    return res.redirect('/settings');
+  });
+
+  app.post("/settings/staff/:id", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
+    const id = String(req.params.id || '');
+    if (!id) return res.redirect('/settings');
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.redirect('/settings');
+    let timezone = normalizeTimezoneLabel(String(req.body?.timezone || '').trim() || null);
+    const slotMinutes = Number(req.body?.slot_minutes || 30) || 30;
+    const calIdRaw = (req.body?.calendar_id || '').toString().trim();
+    const calendarId = calIdRaw ? String(calIdRaw) : null;
+    const workingJson = parseWorkingHoursFromFields(req.body);
+    try {
+      await Staff.findOneAndUpdate({ _id: id, user_id: userId }, { name, calendar_id: calendarId, timezone, slot_minutes: slotMinutes, working_hours_json: workingJson || '{}' }, { new: true });
+    } catch {}
+    return res.redirect('/settings?edit_staff=');
+  });
+
+  app.post("/settings/staff/:id/delete", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
+    const id = String(req.params.id || '');
+    if (!id) return res.redirect('/settings');
+    try { await Staff.findOneAndDelete({ _id: id, user_id: userId }); } catch {}
+    return res.redirect('/settings');
+  });
+
   app.post("/danger/wipe", ensureAuthed, adminWhitelist, async (req, res) => {
     const userId = getCurrentUserId(req);
     try {
@@ -861,6 +919,25 @@ export default function registerSettingsRoutes(app) {
         if (!questions) return null;
         const questionArray = questions.split('\n').map(q => q.trim()).filter(q => q.length > 0);
         return questionArray.length > 0 ? JSON.stringify(questionArray) : null;
+      })(),
+      holidays_json_url: req.body?.holidays_json_url || null,
+      // Structured holiday rules from arrays
+      holidays_rules_json: (() => {
+        const names = ([]).concat(req.body?.holiday_name || []);
+        const dates = ([]).concat(req.body?.holiday_date || []);
+        const starts = ([]).concat(req.body?.holiday_start || []);
+        const ends = ([]).concat(req.body?.holiday_end || []);
+        const out = [];
+        const isTime = (t) => /^\d{2}:\d{2}$/.test(String(t||''));
+        for(let i=0;i<Math.max(names.length, dates.length, starts.length, ends.length);i++){
+          const date = String(dates[i]||'').trim();
+          const start = String(starts[i]||'').trim();
+          const end = String(ends[i]||'').trim();
+          if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+          if(!isTime(start) || !isTime(end)) continue;
+          out.push({ name: String(names[i]||'').trim(), date, start, end });
+        }
+        return out.length ? JSON.stringify(out) : null;
       })(),
     };
     try {
@@ -972,40 +1049,7 @@ export default function registerSettingsRoutes(app) {
     }
   });
 
-  // Create staff
-  app.post("/settings/staff", ensureAuthed, async (req, res) => {
-    const userId = getCurrentUserId(req);
-    const name = (req.body?.name || '').toString().trim();
-    if (!name) return res.redirect('/settings');
-    let timezone = (req.body?.timezone || '').toString().trim() || null;
-    const slotMinutes = Number(req.body?.slot_minutes || 30) || 30;
-    let workingJson = (req.body?.working_hours_json || '').toString().trim() || null;
-    const calIdRaw = (req.body?.calendar_id || '').toString().trim();
-    const calendarId = calIdRaw ? String(calIdRaw) : null;
-    try {
-      // Normalize timezone (basic mapping for common labels)
-      if (timezone && !/\//.test(timezone)) {
-        const map = { london: 'Europe/London', utc: 'UTC', ny: 'America/New_York', new_york: 'America/New_York' };
-        const key = timezone.toLowerCase().replace(/\s+/g,'_');
-        timezone = map[key] || timezone;
-      }
-      // Default working hours if none provided or empty object
-      if (!workingJson || workingJson === '{}' || workingJson === 'null') {
-        workingJson = '{"mon":["09:00-17:00"],"tue":["09:00-17:00"],"wed":["09:00-17:00"],"thu":["09:00-17:00"],"fri":["09:00-17:00"]}';
-      }
-      await Staff.create({ user_id: userId, name, calendar_id: calendarId, timezone, slot_minutes: slotMinutes, working_hours_json: workingJson });
-    } catch {}
-    return res.redirect('/settings');
-  });
-
-  // Delete staff
-  app.post("/settings/staff/:id/delete", ensureAuthed, async (req, res) => {
-    const userId = getCurrentUserId(req);
-    const id = String(req.params.id || '');
-    if (!id) return res.redirect('/settings');
-    try { await Staff.findOneAndDelete({ _id: id, user_id: userId }); } catch {}
-    return res.redirect('/settings');
-  });
+  // Staff management temporarily disabled (endpoints removed)
 
   // Quick Replies API endpoints
   app.post("/api/quick-replies", ensureAuthed, (req, res) => {

@@ -3769,6 +3769,188 @@ button:hover { filter: brightness(0.95); }
   width: 100%;
 }
 
+/* New creative auth layout */
+.auth-aurora {
+  min-height: 100svh;
+  display: grid;
+  place-items: center;
+  padding: var(--space-6);
+  background: radial-gradient(1200px 600px at 10% -10%, rgba(59,130,246,.28), transparent 60%),
+              radial-gradient(1000px 600px at 110% 110%, rgba(59,130,246,.22), transparent 60%),
+              linear-gradient(180deg, #f8fbff 0%, #f3f7fc 100%);
+  position: relative;
+  overflow: hidden;
+}
+
+.auth-aurora::before,
+.auth-aurora::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: conic-gradient(from 200deg at 50% 40%, rgba(59,130,246,.22), transparent 40%, rgba(59,130,246,.18));
+  filter: blur(60px);
+  animation: aurora-move 18s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+
+.auth-aurora::after { animation-duration: 26s; opacity: .9; }
+
+@keyframes aurora-move {
+  0% { transform: translate3d(-2%, -2%, 0) scale(1.02); }
+  100% { transform: translate3d(2%, 3%, 0) scale(1.05); }
+}
+
+.auth-shell {
+  width: 100%;
+  max-width: 1120px;
+  display: grid;
+  grid-template-columns: 1.1fr 1fr;
+  gap: var(--space-8);
+  position: relative;
+  z-index: 1;
+}
+
+.brand-pane {
+  position: relative;
+  background: linear-gradient(180deg, rgba(255,255,255,.75), rgba(255,255,255,.65));
+  border: 1px solid rgba(59,130,246,.15);
+  border-radius: var(--radius-2xl);
+  backdrop-filter: blur(22px);
+  overflow: hidden;
+}
+
+.brand-pane::before {
+  content: '';
+  position: absolute;
+  inset: -20% -20% auto auto;
+  background: radial-gradient( circle at 30% 30%, rgba(59,130,246,.25), transparent 60%),
+              radial-gradient( circle at 70% 70%, rgba(59,130,246,.18), transparent 60%);
+  width: 420px; height: 420px;
+  filter: blur(40px);
+  opacity: .6;
+}
+
+.brand-inner { padding: clamp(24px, 4vw, 48px); }
+.brand-logo { width: 64px; height: 64px; border-radius: 14px; box-shadow: 0 10px 30px rgba(59,130,246,.25); }
+.brand-title { margin: 16px 0 8px 0; font-size: clamp(28px, 3.2vw, 40px); font-weight: 900; letter-spacing: -.025em; }
+.brand-title span { 
+  background: linear-gradient(135deg, var(--neutral-900) 0%, var(--primary-700) 100%);
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+.brand-tagline { color: var(--neutral-600); max-width: 44ch; line-height: 1.6; }
+.brand-list { margin: var(--space-6) 0 0 0; padding: 0; list-style: none; display: grid; gap: var(--space-3); }
+.brand-list li { position: relative; padding-left: 1.5rem; color: var(--neutral-700); }
+.brand-list li::before { content: '✓'; position: absolute; left: 0; top: 0; color: var(--primary-600); font-weight: 800; }
+
+.form-pane { display: grid; place-items: center; }
+.form-card {
+  width: 100%;
+  background: rgba(255,255,255,.92);
+  border: 1px solid rgba(59,130,246,.12);
+  border-radius: var(--radius-2xl);
+  padding: clamp(24px, 4vw, 48px);
+  box-shadow: 0 25px 60px -20px rgba(59,130,246,.25), 0 8px 18px rgba(0,0,0,.06);
+  backdrop-filter: blur(20px);
+}
+
+/* Button sheen */
+.btn-primary { position: relative; overflow: hidden; }
+.btn-primary::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 -60%;
+  width: 60%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.35), transparent);
+  transform: skewX(-20deg);
+  transition: transform var(--transition-fast);
+}
+.btn-primary:hover::before { transform: translateX(220%) skewX(-20deg); }
+
+/* Mobile */
+@media (max-width: 900px) {
+  .auth-shell { grid-template-columns: 1fr; }
+  .brand-pane { order: 2; }
+  .form-pane { order: 1; }
+}
+
+/* Simplify to single centered card by default (brand pane optional) */
+.auth-shell { max-width: 520px; grid-template-columns: 1fr; }
+.brand-pane { display: none; }
+.form-pane { display: block; }
+
+/* Defensive clamp if brand pane is re-enabled */
+.brand-logo { width: 56px !important; height: 56px !important; object-fit: contain; display: block; }
+
+/* Modern base form and button styles for Clerk mappings */
+.form-label {
+  display: block;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--neutral-700);
+  margin-bottom: var(--space-2);
+}
+
+.form-input {
+  width: 100%;
+  padding: var(--space-4) var(--space-5);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-lg);
+  font-size: var(--font-size-base);
+  background: #fff;
+  transition: all var(--transition-fast);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.form-input:focus {
+  border-color: var(--primary-500);
+  box-shadow: 0 0 0 3px var(--primary-100), 0 4px 12px rgba(59, 130, 246, 0.15);
+  outline: none;
+}
+
+.form-text {
+  font-size: var(--font-size-sm);
+  color: var(--neutral-500);
+}
+
+.form-error {
+  color: var(--error-600);
+  font-size: var(--font-size-sm);
+  margin-top: var(--space-2);
+}
+
+.form-success {
+  color: var(--success-700);
+  font-size: var(--font-size-sm);
+  margin-top: var(--space-2);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border: none;
+  border-radius: var(--radius-lg);
+  padding: var(--space-4) var(--space-6);
+  font-weight: 600;
+  font-size: var(--font-size-base);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--primary-600) 0%, var(--primary-700) 100%);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+}
+
+.btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px rgba(59, 130, 246, 0.4);
+}
+
+.btn-full { width: 100%; }
+
 /* Enhanced Clerk Component Styling */
 .clerk-signin-root,
 .clerk-signup-root {

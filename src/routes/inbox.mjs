@@ -64,6 +64,34 @@ function cleanContactId(contactId) {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Format a unix timestamp (seconds) for display:
+// - today: show time only (HH:MM)
+// - yesterday: show 'yesterday'
+// - within last 7 days: show weekday name (e.g., Wednesday)
+// - 7+ days ago: show date only
+function formatTimestampForDisplay(unixTs){
+  const ts = Number(unixTs || 0);
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  const now = new Date();
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startYesterday = new Date(startToday);
+  startYesterday.setDate(startToday.getDate() - 1);
+  const startWeekAgo = new Date(startToday);
+  startWeekAgo.setDate(startToday.getDate() - 7);
+
+  if (d >= startToday) {
+    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+  if (d >= startYesterday) {
+    return 'yesterday';
+  }
+  if (d >= startWeekAgo) {
+    return d.toLocaleDateString([], { weekday: 'long' });
+  }
+  return d.toLocaleDateString();
+}
+
 // Configure multer for file uploads - serverless compatible
 const storage = process.env.VERCEL 
   ? multer.memoryStorage() // Use memory storage in serverless
@@ -269,7 +297,7 @@ async function performMessageSearch(userId, filters) {
     contact_name: msg.contact_name,
     contact: msg.direction === 'inbound' ? msg.from_digits : msg.to_digits,
     raw: msg.raw ? JSON.parse(msg.raw) : null,
-    formatted_time: new Date(msg.timestamp * 1000).toLocaleString()
+    formatted_time: formatTimestampForDisplay(msg.timestamp)
   }));
   
   return {
@@ -277,6 +305,41 @@ async function performMessageSearch(userId, filters) {
     total: total,
     hasMore: (offset + limit) < total
   };
+}
+
+// List archived conversations for a user (paginated)
+async function listArchivedContacts(userId, { page = 1, pageSize = 20 } = {}) {
+  try {
+    // Get archived contact ids for this user
+    const rows = await Handoff.find({ user_id: userId, is_archived: true, $or: [ { deleted_at: { $exists: false } }, { deleted_at: null } ] }).select('contact_id');
+    const archivedIds = rows.map(r => String(r.contact_id)).filter(Boolean);
+    if (!archivedIds.length) return [];
+
+    // Aggregate last message per archived contact
+    const contacts = await Message.aggregate([
+      {
+        $match: {
+          user_id: userId,
+          $or: [
+            { direction: 'inbound', from_id: { $exists: true, $ne: null, $ne: '' } },
+            { direction: 'outbound', to_id: { $exists: true, $ne: null, $ne: '' } }
+          ]
+        }
+      },
+      { $addFields: { contact: { $cond: [ { $eq: ['$direction', 'inbound'] }, '$from_id', '$to_id' ] } } },
+      { $match: { contact: { $in: archivedIds } } },
+      { $sort: { timestamp: -1 } },
+      { $group: { _id: '$contact', last_ts: { $max: '$timestamp' }, last_text: { $first: '$text_body' } } },
+      { $sort: { last_ts: -1 } },
+      { $skip: (Math.max(1, parseInt(page,10))-1) * Math.max(10, Math.min(50, parseInt(pageSize,10))) },
+      { $limit: Math.max(10, Math.min(50, parseInt(pageSize,10))) },
+      { $project: { _id: 0, contact: '$_id', last_ts: 1, last_text: 1 } }
+    ]);
+    return contacts.map(c => ({ ...c, contact: cleanContactId(c.contact) }));
+  } catch (e) {
+    console.error('Archived list error:', e);
+    return [];
+  }
 }
 
 export default function registerInboxRoutes(app) {
@@ -287,23 +350,36 @@ export default function registerInboxRoutes(app) {
     const direction = (req.query.direction || "").toString().trim();
     const dateFrom = (req.query.date_from || "").toString().trim();
     const dateTo = (req.query.date_to || "").toString().trim();
+    const showArchived = ['1','true','yes'].includes(String(req.query.archived||'').toLowerCase());
     
     // Enhanced search logic
     let contacts;
-    if (q || messageType || direction || dateFrom || dateTo) {
+    if (!showArchived && (q || messageType || direction || dateFrom || dateTo)) {
       // Advanced search with message content filtering
       contacts = await performAdvancedSearch(userId, { q, messageType, direction, dateFrom, dateTo });
     } else {
       // Regular contact list
       const page = Math.max(1, parseInt(req.query.page||'1', 10) || 1);
       const pageSize = Math.min(50, Math.max(10, parseInt(req.query.page_size||'20', 10) || 20));
-      contacts = await listContactsForUser(userId, { page, pageSize });
+      contacts = showArchived
+        ? await listArchivedContacts(userId, { page, pageSize })
+        : await listContactsForUser(userId, { page, pageSize });
     }
     const email = await getSignedInEmail(req);
 
-    // ETag for inbox list: derive from userId + top contact timestamps
+    // Ensure archived conversations are excluded from the default inbox list
+    if (!showArchived) {
+      try {
+        const archivedRows = await Handoff.find({ user_id: userId, is_archived: true }).select('contact_id');
+        const archivedSet = new Set(archivedRows.map(r => String(r.contact_id)));
+        contacts = (contacts||[]).filter(c => !archivedSet.has(String(c.contact)));
+      } catch(_) { }
+    }
+
+    // ETag for inbox list: derive from userId + view + top contact timestamps
     try {
-      const etagBase = contacts.slice(0, 50).map(c => `${c.contact}:${c.last_ts||0}`).join('|');
+      const viewKey = ['1','true','yes'].includes(String(req.query.archived||'').toLowerCase()) ? 'archived' : 'inbox';
+      const etagBase = `${viewKey}:${contacts.length}:${contacts.slice(0, 50).map(c => `${c.contact}:${c.last_ts||0}`).join('|')}`;
       const etag = 'W/"'+Buffer.from(etagBase).toString('base64').slice(0, 32)+'"';
       if (req.headers['if-none-match'] === etag) return res.status(304).end();
       res.setHeader('ETag', etag);
@@ -312,6 +388,28 @@ export default function registerInboxRoutes(app) {
     const customerNameByContact = new Map(customers.map(r => [String(r.contact_id), r.display_name]));
     const lastSeenRows = await Handoff.find({ user_id: userId }).select('contact_id last_seen_ts');
     const lastSeenByContact = new Map(lastSeenRows.map(r => [String(r.contact_id), Number(r.last_seen_ts || 0)]));
+    // Compute unread inbound counts per contact (since last seen)
+    const unreadCounts = new Map();
+    try {
+      await Promise.all((contacts||[]).slice(0, 50).map(async (c) => {
+        try {
+          const contactId = String(c.contact||'');
+          if (!contactId) return;
+          const seenTs = lastSeenByContact.get(contactId) || 0;
+          const digits = normalizePhone(contactId);
+          const cnt = await Message.countDocuments({
+            user_id: userId,
+            direction: 'inbound',
+            timestamp: { $gt: seenTs },
+            $or: [
+              { from_id: contactId },
+              { from_digits: digits }
+            ]
+          });
+          unreadCounts.set(contactId, Number(cnt||0));
+        } catch(_){ }
+      }));
+    } catch(_){ }
     
     // Get conversation statuses
     const statusRows = await Handoff.find({ user_id: userId }).select('contact_id conversation_status');
@@ -342,7 +440,7 @@ export default function registerInboxRoutes(app) {
     });
     const list = contacts.map(c => {
       const lastTs = Number(c.last_ts||0);
-      const ts = new Date(lastTs*1000).toLocaleString();
+      const ts = formatTimestampForDisplay(lastTs);
       const preview = (c.last_text || "").slice(0, 60).replace(/</g,'&lt;');
       const initials = String(c.contact||'').slice(-2);
       const displayDefault = c.contact ? `+${String(c.contact).replace(/^\+/, '')}` : '';
@@ -350,6 +448,7 @@ export default function registerInboxRoutes(app) {
       const seenTs = lastSeenByContact.get(String(c.contact)) || 0;
       const hasNew = lastTs > seenTs;
       const hasEscalation = escalationByContact.has(String(c.contact));
+      const unreadCount = unreadCounts.get(String(c.contact)) || 0;
       const conversationStatus = statusByContact.get(String(c.contact)) || CONVERSATION_STATUSES.NEW;
       const statusDisplay = STATUS_DISPLAY_NAMES[conversationStatus];
       const statusColor = STATUS_COLORS[conversationStatus];
@@ -360,11 +459,17 @@ export default function registerInboxRoutes(app) {
             <img src="/menu-icon.svg" alt="Menu" style="width:20px;height:20px;vertical-align:middle;border:none;"/>
           </button>
           <div id="${dropdownId}" class="dropdown-menu" style="position:absolute; right:0; top:36px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:6px; min-width:180px; display:none; box-shadow:0 10px 30px rgba(0,0,0,0.18); z-index:10001;" onclick="event.stopPropagation()">
+            ${showArchived ? `
+            <form method=\"post\" action=\"/inbox/${encodeURIComponent(c.contact)}/unarchive\" onsubmit=\"event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;\" style=\"margin:0;\">
+              <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;">
+                <img src="/archive-icon.svg" alt="Unarchive"/> Unarchive
+              </button>
+            </form>` : `
             <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/archive" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
               <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;">
                 <img src="/archive-icon.svg" alt="Archive"/> Archive
               </button>
-            </form>
+            </form>`}
             <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/clear" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
               <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;">
                 <img src="/clear-icon.svg" alt="Clear"/> Clear
@@ -406,7 +511,7 @@ export default function registerInboxRoutes(app) {
               <div class="wa-col">
                 <div class="wa-name">
                   ${displayName}
-                  ${hasNew ? '<span class="badge-dot"></span>' : ''}
+                  ${unreadCount > 0 ? `<span class="badge-count" style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;background:#22c55e;color:#fff;border-radius:999px;font-size:10px;font-weight:600;vertical-align:middle;">${unreadCount>99?'99+':unreadCount}</span>` : (hasNew ? '<span class="badge-dot"></span>' : '')}
                   ${hasEscalation ? '<span class="live-chip">live</span>' : ''}
                   ${hasEscalation ? '<span class="escalation-chip">Agent Escalation</span>' : ''}
                   <span class="status-chip" style="background-color: ${statusColor}; color: white; font-size: 10px; padding: 2px 6px; border-radius: 10px; margin-left: 6px;">${statusDisplay}</span>
@@ -609,6 +714,15 @@ export default function registerInboxRoutes(app) {
                     <a href="/search" class="btn-primary">
                       <img src="/advanced-search-icon.svg" alt="Advanced Search" width="20" height="20" style="margin-right: 6px;">
                     </a>
+                    ${showArchived ? `
+                      <a href="/inbox" class="btn-ghost" title="Back to Inbox" style="display:inline-flex;align-items:center;gap:6px;">
+                        <img src="/inbox-icon.svg" alt="Inbox" width="18" height="18"> Inbox
+                      </a>
+                    ` : `
+                      <a href="/inbox?archived=1" class="btn-ghost" title="View Archived" style="display:inline-flex;align-items:center;gap:6px;">
+                        <img src="/archive-icon.svg" alt="Archived" width="18" height="18"> Archived
+                      </a>
+                    `}
                   </div>
               </form>
               </div>
@@ -623,6 +737,8 @@ export default function registerInboxRoutes(app) {
                       <button type="submit">Save</button>
                     </div>
                   </form>
+                  
+                  
                 </div>
                 <!-- WhatsApp Token Modal -->
                 <div id="waTokenModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.35); z-index:1100; align-items:center; justify-content:center;">
@@ -1133,7 +1249,7 @@ export default function registerInboxRoutes(app) {
     const statusColor = STATUS_COLORS[statusKey] || STATUS_COLORS['new'];
     
     const email = await getSignedInEmail(req);
-    const quickReplies = getQuickReplies(userId);
+    const quickReplies = await getQuickReplies(userId);
     // ETag for thread: hash of last message id + count
     try {
       const etagBase = `${userId}:${phone}:${msgs.length}:${msgs[msgs.length-1]?.id||''}`;
@@ -1224,7 +1340,7 @@ export default function registerInboxRoutes(app) {
       }
       // Only escape HTML if the display doesn't contain HTML tags (like images)
       const safe = display.includes('<img') || display.includes('<div') ? display : escapeHtml(display).replace(/\n/g, '<br/>');
-      const ts = new Date((m.ts||0)*1000).toLocaleString();
+      const ts = formatTimestampForDisplay(m.ts||0);
       
       // Generate WhatsApp-style status ticks for outbound messages
       let statusTicks = '';
@@ -1516,6 +1632,11 @@ export default function registerInboxRoutes(app) {
                     this.form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
                   }
                 }
+                // Open Quick Replies on '/' shortcut
+                if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                  e.preventDefault();
+                  showQuickReplies();
+                }
               });
               
               // Auto-resize textarea and update send button state
@@ -1608,6 +1729,16 @@ export default function registerInboxRoutes(app) {
                   container.classList.add('collapsed');
                 }
               }
+            }
+            function showQuickReplies() {
+              const container = document.getElementById('quickRepliesContainer');
+              const grid = document.getElementById('quickRepliesGrid');
+              const toggle = document.getElementById('quickRepliesToggle');
+              if (!container || !grid) return;
+              grid.style.display = 'grid';
+              if (toggle) toggle.style.transform = 'rotate(0deg)';
+              container.classList.remove('collapsed');
+              try { container.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch {}
             }
             
             function selectQuickReply(text) {
@@ -2388,26 +2519,6 @@ export default function registerInboxRoutes(app) {
                   })()}
                   <div class="chat-thread" style="overflow-y:auto; height:70vh; max-height:70vh;">
                     ${items || '<div class="small" style="text-align:center;padding:16px;">No messages</div>'}
-                    ${quickReplies.length > 0 ? `
-                    <div class="quick-replies-container" id="quickRepliesContainer">
-                      <div class="quick-replies-header">
-                        <span class="quick-replies-title">Quick Replies</span>
-                        <button type="button" class="quick-replies-toggle" onclick="toggleQuickReplies()" id="quickRepliesToggle">
-                          <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
-                            <path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/>
-                          </svg>
-                        </button>
-                      </div>
-                      <div class="quick-replies-grid" id="quickRepliesGrid">
-                        ${quickReplies.map(reply => `
-                          <button type="button" class="quick-reply-btn" onclick="selectQuickReply('${reply.text.replace(/'/g, "\\'").replace(/"/g, '&quot;')}')" data-text="${reply.text.replace(/"/g, '&quot;')}">
-                            <span class="quick-reply-text">${escapeHtml(reply.text)}</span>
-                            <span class="quick-reply-category">${reply.category || 'General'}</span>
-                          </button>
-                        `).join('')}
-                      </div>
-                    </div>
-                    ` : ''}
                     <div>
                       <div id="imagePreview" style="display:none; margin-bottom:8px; padding:8px; background:#f0f0f0; border-radius:8px;">
                         <div style="display:flex; gap:8px; align-items:center;">
@@ -2494,7 +2605,7 @@ export default function registerInboxRoutes(app) {
                           <polyline points="10,9 9,9 8,9"></polyline>
                         </svg>
                         <span>Document</span>
-                      /button>
+                      </button>
                       <button type="button" class="wa-attach-option" id="attachImageBtn" title="Send photo">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                           <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
@@ -2528,6 +2639,26 @@ export default function registerInboxRoutes(app) {
                       </button>
                     </div>
                   </form>
+                  ${quickReplies.length > 0 ? `
+                  <div class="quick-replies-container" id="quickRepliesContainer" style="margin-top:8px;">
+                    <div class="quick-replies-header">
+                      <span class="quick-replies-title">Quick Replies</span>
+                      <button type="button" class="quick-replies-toggle" onclick="toggleQuickReplies()" id="quickRepliesToggle">
+                        <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+                          <path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/>
+                        </svg>
+                      </button>
+                    </div>
+                    <div class="quick-replies-grid" id="quickRepliesGrid">
+                      ${quickReplies.map(reply => `
+                        <button type="button" class="quick-reply-btn" onclick="selectQuickReply('${reply.text.replace(/'/g, "\\'").replace(/\"/g, '&quot;')}')" data-text="${reply.text.replace(/\"/g, '&quot;')}">
+                          <span class="quick-reply-text">${escapeHtml(reply.text)}</span>
+                          <span class="quick-reply-category">${reply.category || 'General'}</span>
+                        </button>
+                      `).join('')}
+                    </div>
+                  </div>
+                  ` : ''}
                 </div>
               </main>
             </div>  
@@ -2610,11 +2741,56 @@ export default function registerInboxRoutes(app) {
             ];
             try {
               const resp = await sendWhatsappList(phone, header, body, 'Select', rows, cfg);
-              if (window?.ENV?.DEBUG_LOGS === '1') console.log('[CSAT] List prompt sent:', { hasId: !!resp?.messages?.[0]?.id });
+              const outboundId = resp?.messages?.[0]?.id;
+              if (outboundId) {
+                try { await recordOutboundMessage({ messageId: outboundId, userId, cfg, to: phone, type: 'interactive', text: `${header}\n${body}`, raw: { to: phone, interactive: 'csat_list' } }); } catch {}
+                try {
+                  const { broadcastNewMessage } = await import('../routes/realtime.mjs');
+                  const messageData = {
+                    id: outboundId,
+                    direction: 'outbound',
+                    type: 'interactive',
+                    text_body: `${header}\n${body}`,
+                    timestamp: Math.floor(Date.now() / 1000),
+                    from_digits: (cfg.business_phone || '').replace(/\D/g, '') || null,
+                    to_digits: String(phone),
+                    contact_name: null,
+                    contact: String(phone),
+                    formatted_time: formatTimestampForDisplay(Math.floor(Date.now() / 1000)),
+                    delivery_status: 'sent',
+                    read_status: 'unread'
+                  };
+                  broadcastNewMessage(userId, String(phone), messageData);
+                } catch {}
+              }
             } catch (e) {
               console.warn('[CSAT] Failed to send list prompt, falling back to text:', e?.message || e);
               const prompt = "Thanks for chatting with us! Please rate by replying with one emoji: 😡 😕 🙂 😀 🤩";
-              try { await sendWhatsAppText(phone, prompt, cfg); } catch {}
+              try { 
+                const resp2 = await sendWhatsAppText(phone, prompt, cfg);
+                const outboundId2 = resp2?.messages?.[0]?.id;
+                if (outboundId2) {
+                  try { await recordOutboundMessage({ messageId: outboundId2, userId, cfg, to: phone, type: 'text', text: prompt, raw: { to: phone, text: prompt, context: 'csat_fallback' } }); } catch {}
+                  try {
+                    const { broadcastNewMessage } = await import('../routes/realtime.mjs');
+                    const messageData = {
+                      id: outboundId2,
+                      direction: 'outbound',
+                      type: 'text',
+                      text_body: prompt,
+                      timestamp: Math.floor(Date.now() / 1000),
+                      from_digits: (cfg.business_phone || '').replace(/\D/g, '') || null,
+                      to_digits: String(phone),
+                      contact_name: null,
+                      contact: String(phone),
+                    formatted_time: formatTimestampForDisplay(Math.floor(Date.now() / 1000)),
+                      delivery_status: 'sent',
+                      read_status: 'unread'
+                    };
+                    broadcastNewMessage(userId, String(phone), messageData);
+                  } catch {}
+                }
+              } catch {}
             }
           } else {
             console.warn('[CSAT] Skipped prompt: missing WhatsApp config');
@@ -2660,6 +2836,15 @@ export default function registerInboxRoutes(app) {
     const userId = getCurrentUserId(req);
     try { await Handoff.findOneAndUpdate({ contact_id: phone, user_id: userId }, { $set: { is_archived: true, updatedAt: new Date() } }, { upsert: true }); } catch {}
     res.redirect(`/inbox`);
+  });
+
+  // Unarchive a conversation (return to inbox list)
+  app.post("/inbox/:phone/unarchive", ensureAuthed, async (req, res) => {
+    const phone = req.params.phone;
+    const userId = getCurrentUserId(req);
+    try { await Handoff.findOneAndUpdate({ contact_id: phone, user_id: userId }, { $set: { is_archived: false, updatedAt: new Date() } }, { upsert: true }); } catch {}
+    // Stay on archived view
+    res.redirect(`/inbox?archived=1`);
   });
 
   // Opt-out a contact
@@ -2789,7 +2974,7 @@ export default function registerInboxRoutes(app) {
             to_digits: String(to),
             contact_name: null,
             contact: String(to),
-            formatted_time: new Date().toLocaleString(),
+            formatted_time: formatTimestampForDisplay(Math.floor(Date.now() / 1000)),
             delivery_status: 'sent',
             read_status: 'unread'
           };
@@ -2927,7 +3112,7 @@ export default function registerInboxRoutes(app) {
             to_digits: String(message.to),
             contact_name: null,
             contact: String(message.to),
-            formatted_time: new Date().toLocaleString(),
+            formatted_time: formatTimestampForDisplay(Math.floor(Date.now() / 1000)),
             delivery_status: 'sent',
             read_status: 'unread'
           };
@@ -3174,7 +3359,7 @@ export default function registerInboxRoutes(app) {
             to_digits: String(to),
             contact_name: null,
             contact: String(to),
-            formatted_time: new Date().toLocaleString(),
+            formatted_time: formatTimestampForDisplay(Math.floor(Date.now() / 1000)),
             delivery_status: 'sent',
             read_status: 'unread'
           };

@@ -143,6 +143,14 @@ const settingsMultiSchema = new mongoose.Schema({
   wa_template_language: String,
   escalation_email_enabled: { type: Boolean, default: false },
   escalation_email: String,
+  // Escalation mode messages and questions
+  escalation_additional_message: String,
+  escalation_out_of_hours_message: String,
+  escalation_questions_json: String,
+  // Holidays and closures
+  holidays_json_url: String,
+  closed_dates_json: String,
+  holidays_rules_json: String,
   smtp_host: String,
   smtp_port: { type: Number, default: 587 },
   smtp_secure: { type: Boolean, default: false },
@@ -373,6 +381,8 @@ const createIndexes = async () => {
     await Message.collection.createIndex({ from_digits: 1 });
     await Message.collection.createIndex({ to_digits: 1 });
     await Message.collection.createIndex({ direction: 1 });
+    // Hot-path: fetch recent messages for a contact within a tenant
+    await Message.collection.createIndex({ user_id: 1, from_digits: 1 }, { name: 'user_from_digits' });
 
     // Message statuses indexes + TTL
     await MessageStatus.collection.createIndex({ message_id: 1, status: 1, timestamp: 1, user_id: 1 }, { unique: true, name: 'uniq_message_status_event' });
@@ -395,6 +405,8 @@ const createIndexes = async () => {
     // Handoff indexes
     await Handoff.collection.createIndex({ contact_id: 1, user_id: 1 }, { unique: true });
     await Handoff.collection.createIndex({ user_id: 1, conversation_status: 1 });
+    // Hot-path: lookups by tenant + contact
+    await Handoff.collection.createIndex({ user_id: 1, contact_id: 1 }, { name: 'user_contact' });
 
     // AI requests indexes
     await AIRequest.collection.createIndex({ user_id: 1 });
@@ -419,6 +431,9 @@ const createIndexes = async () => {
         await BookingSession.collection.createIndex({ updatedAt: 1 }, { expireAfterSeconds: sessionTtlHours * 3600, name: 'ttl_booking_sessions_updatedAt' });
       }
     } catch {}
+
+    // Appointments hot-path index: by tenant, phone, and time
+    await Appointment.collection.createIndex({ user_id: 1, contact_phone: 1, start_ts: 1 }, { name: 'user_phone_startTs' });
 
     console.log('MongoDB indexes created successfully');
   } catch (error) {

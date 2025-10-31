@@ -44,9 +44,10 @@ export default function registerMetricsRoutes(app) {
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
     
-    // Convert timestamps to milliseconds for MongoDB
-    const todayTs = today.getTime();
-    const yesterdayTs = yesterday.getTime();
+    // NOTE: messages.timestamp is stored in SECONDS. Use seconds for comparisons.
+    const nowSec = Math.floor(now.getTime() / 1000);
+    const todaySec = Math.floor(today.getTime() / 1000);
+    const yesterdaySec = Math.floor(yesterday.getTime() / 1000);
     
     try {
       // Get message counts for today and yesterday using MongoDB aggregation
@@ -54,7 +55,7 @@ export default function registerMetricsRoutes(app) {
         {
           $match: {
             user_id: userId,
-            timestamp: { $gte: todayTs }
+            timestamp: { $gte: todaySec }
           }
         },
         {
@@ -74,7 +75,7 @@ export default function registerMetricsRoutes(app) {
         {
           $match: {
             user_id: userId,
-            timestamp: { $gte: yesterdayTs, $lt: todayTs }
+            timestamp: { $gte: yesterdaySec, $lt: todaySec }
           }
         },
         {
@@ -95,7 +96,7 @@ export default function registerMetricsRoutes(app) {
         {
           $match: {
             user_id: userId,
-            timestamp: { $gte: now.getTime() - 24 * 60 * 60 * 1000 }
+            timestamp: { $gte: nowSec - 24 * 60 * 60 }
           }
         },
         {
@@ -108,52 +109,38 @@ export default function registerMetricsRoutes(app) {
         }
       ]);
       
-      // Get response time data using aggregation
+      // Get response time data using window functions (MongoDB 5.0+)
       const responseTimeData = await Message.aggregate([
         {
           $match: {
             user_id: userId,
-            timestamp: { $gte: now.getTime() - 7 * 24 * 60 * 60 * 1000 }
+            timestamp: { $gte: nowSec - 7 * 24 * 60 * 60 }
           }
         },
+        { $sort: { from_digits: 1, timestamp: 1 } },
         {
-          $sort: { from_digits: 1, timestamp: 1 }
-        },
-        {
-          $group: {
-            _id: '$from_digits',
-            messages: { $push: { timestamp: '$timestamp', direction: '$direction' } }
-          }
-        },
-        {
-          $unwind: {
-            path: '$messages',
-            includeArrayIndex: 'index'
-          }
-        },
-        {
-          $addFields: {
-            prevMessage: {
-              $arrayElemAt: ['$messages', { $subtract: ['$index', 1] }]
+          $setWindowFields: {
+            partitionBy: '$from_digits',
+            sortBy: { timestamp: 1 },
+            output: {
+              prevDirection: { $shift: { output: '$direction', by: 1 } },
+              prevTimestamp: { $shift: { output: '$timestamp', by: 1 } }
             }
           }
         },
         {
           $match: {
-            'messages.direction': 'outbound',
-            'prevMessage.direction': 'inbound'
+            direction: 'outbound',
+            prevDirection: 'inbound'
           }
         },
         {
-          $addFields: {
-            responseTime: { $subtract: ['$messages.timestamp', '$prevMessage.timestamp'] }
+          $project: {
+            responseTime: { $subtract: ['$timestamp', '$prevTimestamp'] }
           }
         },
         {
-          $group: {
-            _id: null,
-            avg_response_time: { $avg: '$responseTime' }
-          }
+          $group: { _id: null, avg_response_time: { $avg: '$responseTime' } }
         }
       ]);
       
@@ -194,17 +181,17 @@ export default function registerMetricsRoutes(app) {
             $match: {
               user_id: userId,
               type: 'template',
-              timestamp: { $gte: yesterdayTs }
+              timestamp: { $gte: yesterdaySec }
             }
           },
           {
             $group: {
               _id: null,
               template_messages_today: {
-                $sum: { $cond: [{ $gte: ['$timestamp', todayTs] }, 1, 0] }
+                $sum: { $cond: [{ $gte: ['$timestamp', todaySec] }, 1, 0] }
               },
               template_messages_yesterday: {
-                $sum: { $cond: [{ $lt: ['$timestamp', todayTs] }, 1, 0] }
+                $sum: { $cond: [{ $lt: ['$timestamp', todaySec] }, 1, 0] }
               }
             }
           }
@@ -379,20 +366,20 @@ export default function registerMetricsRoutes(app) {
       // Add hourly chart data
       const now = new Date();
       const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      const todayTs = today.getTime();
+      const todaySec = Math.floor(today.getTime() / 1000);
       
       const hourlyData = await Message.aggregate([
         {
           $match: {
             user_id: userId,
-            timestamp: { $gte: todayTs }
+            timestamp: { $gte: todaySec }
           }
         },
         {
           $addFields: {
             hour: {
               $substr: [
-                { $dateToString: { date: { $toDate: '$timestamp' }, format: '%H' } },
+                { $dateToString: { date: { $toDate: { $multiply: ['$timestamp', 1000] } }, format: '%H' } },
                 0,
                 2
               ]
@@ -523,7 +510,7 @@ export default function registerMetricsRoutes(app) {
     try {
       const startDate = new Date();
       startDate.setDate(startDate.getDate() - days);
-      const startTs = Math.floor(startDate.getTime() / 1000);
+      const startSec = Math.floor(startDate.getTime() / 1000);
       
       const exportData = {
         user_id: userId,
@@ -531,7 +518,7 @@ export default function registerMetricsRoutes(app) {
         period_days: days,
         messages: await Message.find({
           user_id: userId,
-          timestamp: { $gte: startDate.getTime() }
+          timestamp: { $gte: startSec }
         }).select('timestamp direction type text_body from_digits delivery_status').sort({ timestamp: -1 }),
         ai_requests: await AIRequest.find({
           user_id: userId,
@@ -541,7 +528,7 @@ export default function registerMetricsRoutes(app) {
           {
             $match: {
               user_id: userId,
-              timestamp: { $gte: startDate.getTime() }
+              timestamp: { $gte: startSec }
             }
           },
           {
@@ -612,7 +599,7 @@ function convertToCSV(data) {
   // Add messages
   data.messages.forEach(msg => {
     rows.push([
-      new Date(msg.timestamp).toISOString(),
+      new Date((msg.timestamp || 0) * 1000).toISOString(),
       'message',
       msg.direction,
       `"${(msg.text_body || '').replace(/"/g, '""')}"`,

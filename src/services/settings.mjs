@@ -55,6 +55,9 @@ export async function upsertSettingsForUser(userId, values) {
     escalation_additional_message: values.escalation_additional_message ?? current.escalation_additional_message ?? null,
     escalation_out_of_hours_message: values.escalation_out_of_hours_message ?? current.escalation_out_of_hours_message ?? null,
     escalation_questions_json: values.escalation_questions_json ?? current.escalation_questions_json ?? null,
+    holidays_json_url: values.holidays_json_url ?? current.holidays_json_url ?? null,
+    closed_dates_json: values.closed_dates_json ?? current.closed_dates_json ?? null,
+    holidays_rules_json: values.holidays_rules_json ?? current.holidays_rules_json ?? null,
   };
   try {
     const res = await SettingsMulti.findOneAndUpdate(

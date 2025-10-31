@@ -28,8 +28,8 @@ export async function addReaction(messageId, userId, emoji) {
     const db = getDB();
     const coll = db.collection('message_reactions');
     await coll.updateOne(
-      { message_id: messageId, user_id, emoji },
-      { $setOnInsert: { message_id: messageId, user_id, emoji, createdAt: new Date() } },
+      { message_id: messageId, user_id: userId, emoji },
+      { $setOnInsert: { message_id: messageId, user_id: userId, emoji, createdAt: new Date() } },
       { upsert: true }
     );
     return { success: true };
@@ -104,7 +104,7 @@ export async function getUserReactionsForMessages(messageIds, userId) {
   if (!Array.isArray(messageIds) || messageIds.length === 0 || !userId) return {};
   const db = getDB();
   const coll = db.collection('message_reactions');
-  const cursor = await coll.find({ message_id: { $in: messageIds }, user_id: userId, user_id: { $not: /^customer_/ } }, { projection: { message_id: 1, emoji: 1 } });
+  const cursor = await coll.find({ message_id: { $in: messageIds }, user_id: userId }, { projection: { message_id: 1, emoji: 1 } });
   const list = await cursor.toArray();
   const grouped = {};
   for (const r of list) {

@@ -22,24 +22,36 @@ export default function registerAuthRoutes(app) {
         <link rel="icon" href="/logo-icon.png" type="image/png">
         <script src="https://unpkg.com/@clerk/clerk-js@latest/dist/clerk.browser.js" data-clerk-publishable-key="${CLERK_PUBLISHABLE}"></script>
       </head>
-      <body class="auth-body">
-        <div class="auth-container">
-          <div class="auth-card">
-            <div class="auth-header">
-              <img src="/logo-icon.png" alt="WhatsApp Agent" class="auth-logo">
-              <h1 class="auth-title">Create Account</h1>
-              <p class="auth-subtitle">Join WhatsApp Agent and start automating your conversations</p>
+      <body class="auth-aurora">
+        <div class="auth-shell">
+          <aside class="brand-pane">
+            <div class="brand-inner">
+              <img src="/logo-icon.png" alt="WhatsApp Agent" class="brand-logo">
+              <h2 class="brand-title"><span>WhatsApp Agent</span></h2>
+              <p class="brand-tagline">Automate chats, bookings and your inbox — effortlessly.</p>
+              <ul class="brand-list">
+                <li>AI replies and smart triage</li>
+                <li>One‑tap booking links</li>
+                <li>Secure and privacy‑first</li>
+              </ul>
             </div>
-            
-            <div style="margin-left: -30px;"  id="signup-component"></div>
-            
-            <div class="auth-footer">
-              <p class="auth-switch">
-                Already have an account? 
-                <a href="/auth/signin" class="auth-link">Sign in</a>
-              </p>
+          </aside>
+          <main class="form-pane">
+            <div class="form-card">
+              <div class="auth-header">
+                <img src="/logo-icon.png" alt="WhatsApp Agent" class="auth-logo">
+                <h1 class="auth-title">Create Account</h1>
+                <p class="auth-subtitle">Join WhatsApp Agent and start automating your conversations</p>
+              </div>
+              <div id="signup-component"></div>
+              <div class="auth-footer">
+                <p class="auth-switch">
+                  Already have an account? 
+                  <a href="/auth/signin" class="auth-link">Sign in</a>
+                </p>
+              </div>
             </div>
-          </div>
+          </main>
         </div>
         
         <script>
@@ -127,24 +139,36 @@ export default function registerAuthRoutes(app) {
         <link rel="icon" href="/logo-icon.png" type="image/png">
         <script src="https://unpkg.com/@clerk/clerk-js@latest/dist/clerk.browser.js" data-clerk-publishable-key="${CLERK_PUBLISHABLE}"></script>
       </head>
-      <body class="auth-body">
-        <div class="auth-container">
-          <div class="auth-card">
-            <div class="auth-header">
-              <img src="/logo-icon.png" alt="WhatsApp Agent" class="auth-logo">
-              <h1 class="auth-title">Welcome Back</h1>
-              <p class="auth-subtitle">Sign in to your WhatsApp Agent account</p>
+      <body class="auth-aurora">
+        <div class="auth-shell">
+          <aside class="brand-pane">
+            <div class="brand-inner">
+              <img src="/logo-icon.png" alt="WhatsApp Agent" class="brand-logo">
+              <h2 class="brand-title"><span>WhatsApp Agent</span></h2>
+              <p class="brand-tagline">Operate faster with an AI‑assisted, unified WhatsApp inbox.</p>
+              <ul class="brand-list">
+                <li>Unified threads and analytics</li>
+                <li>Faster responses with AI assist</li>
+                <li>Notifications that matter</li>
+              </ul>
             </div>
-            
-            <div style="margin-left: -30px;"  id="signin-component"></div>
-            
-            <div class="auth-footer">
-              <p class="auth-switch">
-                Don't have an account? 
-                <a href="/auth/signup" class="auth-link">Sign up</a>
-              </p>
+          </aside>
+          <main class="form-pane">
+            <div class="form-card">
+              <div class="auth-header">
+                <img src="/logo-icon.png" alt="WhatsApp Agent" class="auth-logo">
+                <h1 class="auth-title">Welcome Back</h1>
+                <p class="auth-subtitle">Sign in to your WhatsApp Agent account</p>
+              </div>
+              <div id="signin-component"></div>
+              <div class="auth-footer">
+                <p class="auth-switch">
+                  Don't have an account? 
+                  <a href="/auth/signup" class="auth-link">Sign up</a>
+                </p>
+              </div>
             </div>
-          </div>
+          </main>
         </div>
         
         <script>

@@ -11,7 +11,7 @@ export async function listContactsForUser(userId, opts = {}) {
     const page = Math.max(1, parseInt(opts.page||1,10));
     const pageSize = Math.min(50, Math.max(10, parseInt(opts.pageSize||20,10)));
     // Get all unique contacts from messages
-    const contacts = await Message.aggregate([
+    let contacts = await Message.aggregate([
       {
         $match: {
           user_id: userId,
@@ -91,11 +91,31 @@ export async function listContactsForUser(userId, opts = {}) {
       }
     ]);
 
-    // Clean contact IDs by removing URL parameters and query strings
-    return contacts.map(row => ({
-      ...row,
-      contact: cleanContactId(row.contact)
-    }));
+    contacts = contacts.map(row => ({ ...row, contact: cleanContactId(row.contact) }));
+
+    // Fallback: if aggregation produced nothing, derive from recent messages using digits
+    if (!contacts.length) {
+      const recent = await Message.find({ user_id: userId })
+        .select('direction from_id to_id from_digits to_digits text_body timestamp')
+        .sort({ timestamp: -1 })
+        .limit(100)
+        .lean();
+      const seen = new Set();
+      const out = [];
+      for (const m of recent) {
+        const contact = m.direction === 'inbound'
+          ? (m.from_digits || (m.from_id || '').replace(/[^0-9+]/g, ''))
+          : (m.to_digits || (m.to_id || '').replace(/[^0-9+]/g, ''));
+        const key = String(contact || '').trim();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        out.push({ contact: key, last_ts: m.timestamp || 0, last_text: m.text_body || '' });
+        if (out.length >= pageSize) break;
+      }
+      contacts = out;
+    }
+
+    return contacts;
   } catch (error) {
     console.error('Error listing contacts for user:', error);
     return [];
