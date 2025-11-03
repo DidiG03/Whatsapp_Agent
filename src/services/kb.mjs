@@ -4,27 +4,58 @@
  * - Retrieve naive keyword matches for a query
  */
 import { db } from "../db-mongodb.mjs";
+import { KBItem } from "../schemas/mongodb.mjs";
+import { getUserPlan, getPlanPricing } from "../services/usage.mjs";
 import { cache } from "../scalability/redis.mjs";
 
 const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
 const shouldLogVerbose = LOG_LEVEL === "debug" || LOG_LEVEL === "trace";
 
 /** Create or update a KB item by title for a specific user. */
-export function upsertKbItem(userId, title, content, file = null) {
-  const existing = db.prepare(`SELECT id FROM kb_items WHERE user_id = ? AND title = ?`).get(userId, title);
-  if (existing?.id) {
-    db.prepare(`UPDATE kb_items SET content = ?, file_url = COALESCE(?, file_url), file_mime = COALESCE(?, file_mime), created_at = created_at WHERE id = ?`).run(content, file?.url || null, file?.mime || null, existing.id);
-    return existing.id;
+export async function upsertKbItem(userId, title, content, file = null) {
+  // Update if the title exists for this user
+  const existing = await KBItem.findOne({ user_id: userId, title }).select('_id').lean();
+  if (existing?._id) {
+    await KBItem.updateOne(
+      { _id: existing._id },
+      { $set: {
+        content,
+        ...(file?.url !== undefined ? { file_url: file?.url || null } : {}),
+        ...(file?.mime !== undefined ? { file_mime: file?.mime || null } : {})
+      } }
+    );
+    return String(existing._id);
   }
-  const info = db.prepare(`INSERT INTO kb_items (title, content, file_url, file_mime, user_id) VALUES (?, ?, ?, ?, ?)`).run(title, content, file?.url || null, file?.mime || null, userId);
-  return info.lastInsertRowid;
+  // Enforce plan limits for new items
+  try {
+    const plan = await getUserPlan(userId);
+    const pricing = getPlanPricing();
+    const cfg = pricing[plan?.plan_name || 'free'] || pricing.free;
+    const stats = await KBItem.aggregate([
+      { $match: { user_id: userId } },
+      { $group: { _id: null, c: { $sum: 1 }, t: { $sum: { $strLenCP: { $ifNull: [ '$content', '' ] } } } } }
+    ]);
+    const c = stats?.[0]?.c || 0;
+    const t = stats?.[0]?.t || 0;
+    if ((cfg.kb_docs_limit && c >= cfg.kb_docs_limit) || (cfg.kb_chars_limit && (t + String(content||'').length) > cfg.kb_chars_limit)) {
+      return null;
+    }
+  } catch {}
+  const doc = await KBItem.create({
+    title,
+    content,
+    file_url: file?.url || null,
+    file_mime: file?.mime || null,
+    user_id: userId
+  });
+  return String(doc._id);
 }
 
 /**
  * Naive keyword retrieval for KB items. Scores documents by term presence
  * in title+content merged text and returns the top N.
  */
-export function retrieveKbMatches(query, limit = 3, userId = null, onboardingTranscript = '') {
+export async function retrieveKbMatches(query, limit = 3, userId = null, onboardingTranscript = '') {
   if (shouldLogVerbose) console.log("Retrieving KB matches for user:", userId);
   // Normalize inputs: strip diacritics, collapse repeated letters, standardize slang
   const stripDiacritics = (s) => {
@@ -72,13 +103,25 @@ export function retrieveKbMatches(query, limit = 3, userId = null, onboardingTra
   const matchQuery = booleanQuery || `"${expanded.replace(/"/g, '""').trim()}"`;
   let rows = [];
   try {
-    // Prefer a direct Mongo-friendly path: query kb_items via adapter using MATCH emulation
-    rows = db.prepare(`
-          FROM kb_items_fts
-          JOIN kb_items k ON k.id = kb_items_fts.rowid
-          WHERE ${userId ? 'k.user_id = ? AND ' : ''}kb_items_fts MATCH ?
+    // Prefer FTS when available
+    const uidStr = userId != null ? String(userId) : null;
+    const uidNum = userId != null && !Number.isNaN(Number(userId)) ? Number(userId) : null;
+    const hasBoth = uidStr != null && uidNum != null && String(uidNum) !== uidStr;
+    const whereUser = userId
+      ? (hasBoth ? '(k.user_id = ? OR k.user_id = ?)' : 'k.user_id = ?')
+      : '1=1';
+    const params = [];
+    if (userId) {
+      if (hasBoth) { params.push(uidStr, uidNum); } else { params.push(uidStr); }
+    }
+    params.push(matchQuery, limit);
+    rows = await db.prepare(`
+          SELECT k.id AS id, k.title AS title, k.content AS content, 0 AS rank
+          FROM kb_items_fts fts
+          JOIN kb_items k ON k.id = fts.rowid
+          WHERE ${whereUser} AND fts MATCH ?
           LIMIT ?
-        `).all(...(userId ? [userId, matchQuery, limit] : [matchQuery, limit]));
+        `).all(...params);
   } catch (e) {
     if (shouldLogVerbose) console.warn("FTS MATCH failed; falling back to LIKE", e?.message || e);
     try {
@@ -87,9 +130,17 @@ export function retrieveKbMatches(query, limit = 3, userId = null, onboardingTra
       const likes = likeTokens.map(t => `%${t.replace(/[%_]/g, '')}%`);
       const whereLike = likes.map(() => '(title LIKE ? OR content LIKE ?)').join(' OR ');
       const params = likes.flatMap(l => [l, l]);
-      rows = userId
-        ? db.prepare(`SELECT id, title, content, 0 AS rank FROM kb_items WHERE user_id = ? AND (${whereLike}) LIMIT ?`).all(userId, ...params, limit)
-        : db.prepare(`SELECT id, title, content, 0 AS rank FROM kb_items WHERE ${whereLike} LIMIT ?`).all(...params, limit);
+      if (userId) {
+        const uidStr = String(userId);
+        const uidNum = !Number.isNaN(Number(userId)) ? Number(userId) : null;
+        if (uidNum != null && String(uidNum) !== uidStr) {
+          rows = await db.prepare(`SELECT id, title, content, 0 AS rank FROM kb_items WHERE (user_id = ? OR user_id = ?) AND (${whereLike}) LIMIT ?`).all(uidStr, uidNum, ...params, limit);
+        } else {
+          rows = await db.prepare(`SELECT id, title, content, 0 AS rank FROM kb_items WHERE user_id = ? AND (${whereLike}) LIMIT ?`).all(uidStr, ...params, limit);
+        }
+      } else {
+        rows = await db.prepare(`SELECT id, title, content, 0 AS rank FROM kb_items WHERE ${whereLike} LIMIT ?`).all(...params, limit);
+      }
     } catch (e2) {
       console.warn("KB LIKE fallback failed", e2?.message || e2);
     }

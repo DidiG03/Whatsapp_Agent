@@ -4,6 +4,7 @@
  * - Create, cancel, and reschedule appointments (mirrors in Google Calendar)
  */
 import { getDB } from "../db-mongodb.mjs";
+import { getSettingsForUser } from "./../services/settings.mjs";
 import mongoose from 'mongoose';
 import { Staff, Calendar, Appointment } from "../schemas/mongodb.mjs";
 import { freeBusy, createEvent, updateEvent, deleteEvent } from "./google.mjs";
@@ -24,14 +25,21 @@ function computeDaySlots(dayDate, slotMinutes, tz, workingHours, busyBlocks) {
   // workingHours example: { mon:["09:00-17:00"], ... } with keys sun..sat
   const dow = getDowKeyInTz(dayDate, tz);
   const spans = Array.isArray(workingHours?.[dow]) ? workingHours[dow] : [];
+  if (process.env.DEBUG_BOOKINGS === '1') try { console.log('[availability] spans', { date: dayDate.toISOString().slice(0,10), dow, spans }); } catch {}
   const slots = [];
+  // Resolve Y-M-D in the staff timezone to avoid DST offset errors
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: tz || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(dayDate);
+  const y = Number(parts.find(p=>p.type==='year')?.value || '1970');
+  const m = Number(parts.find(p=>p.type==='month')?.value || '01');
+  const d = Number(parts.find(p=>p.type==='day')?.value || '01');
   for (const span of spans) {
     const [startStr, endStr] = String(span||"").split("-");
     if (!startStr || !endStr) continue;
     const [sh, sm] = startStr.split(":").map(n => Number(n||0));
     const [eh, em] = endStr.split(":").map(n => Number(n||0));
-    const start = new Date(dayDate); start.setHours(sh, sm||0, 0, 0);
-    const end = new Date(dayDate); end.setHours(eh, em||0, 0, 0);
+    // Build UTC instants corresponding to local wall-clock times in tz
+    const start = new Date(Date.UTC(y, m-1, d, sh, sm||0, 0, 0));
+    const end = new Date(Date.UTC(y, m-1, d, eh, em||0, 0, 0));
     for (let t = new Date(start); t < end; t = new Date(t.getTime() + slotMinutes*60000)) {
       const next = new Date(t.getTime() + slotMinutes*60000);
       if (next > end) break;
@@ -70,25 +78,84 @@ export async function listAvailability({ userId, staffId, dateISO, days = 1, slo
   if (!staff) return [];
   const calendar = staff.calendar_id ? await getCalendarById(staff.calendar_id, userId) : null;
   const tz = staff.timezone || calendar?.timezone || "UTC";
-  const minutes = Number(slotMinutes || staff.slot_minutes || 30);
-  const working = (() => { try { return JSON.parse(staff.working_hours_json || '{}'); } catch { return {}; } })();
+  const settings = await (async () => { try { return await getSettingsForUser(userId); } catch { return {}; } })();
+  const minutes = Number(slotMinutes || settings?.booking_display_interval_minutes || staff.slot_minutes || 30);
+  let working = (() => { try { return JSON.parse(staff.working_hours_json || '{}'); } catch { return {}; } })();
+  // Fallback working hours if none configured: Mon–Fri 09:00–17:00
+  try {
+    const hasAny = working && Object.values(working).some(v => Array.isArray(v) && v.length > 0);
+    if (!hasAny) {
+      working = { mon:["09:00-17:00"], tue:["09:00-17:00"], wed:["09:00-17:00"], thu:["09:00-17:00"], fri:["09:00-17:00"] };
+    }
+  } catch {}
+  const maxPerDay = Number(settings?.booking_max_per_day || 0);
+  const daysAhead = Number(settings?.booking_days_ahead || 0);
+  const capWindowMin = Number(settings?.booking_capacity_window_minutes || minutes || 60);
+  const capLimit = Number(settings?.booking_capacity_limit || 0);
+  const DBG = process.env.DEBUG_BOOKINGS === '1';
+  if (DBG) console.log('[availability] input', { userId, staffId: String(staffId), tz, minutes, days, startDate: dateISO, maxPerDay, daysAhead, capWindowMin, capLimit });
 
   const startDay = new Date(dateISO);
   startDay.setHours(0,0,0,0);
   const results = [];
   for (let d = 0; d < Number(days||1); d++) {
     const day = new Date(startDay.getTime() + d*86400000);
+    // Enforce days ahead limit, if configured
+    if (daysAhead > 0) {
+      const diffDays = Math.floor((day.getTime() - Date.now()) / 86400000);
+      if (diffDays > daysAhead) { results.push({ date: day.toISOString().slice(0,10), slots: [] }); continue; }
+    }
     const tMin = new Date(day); tMin.setHours(0,0,0,0);
     const tMax = new Date(day); tMax.setHours(23,59,59,999);
     const busy = calendar ? await freeBusy(calendar, tMin.toISOString(), tMax.toISOString()) : [];
+    // Load today's appointments once for capacity filtering
+    let dayAppts = [];
+    try {
+      const db = getDB();
+      const dayStartSec = Math.floor(tMin.getTime()/1000);
+      const dayEndSec = Math.floor(tMax.getTime()/1000);
+      dayAppts = await db.collection('appointments')
+        .find({ user_id: String(userId), status: 'confirmed', start_ts: { $gte: dayStartSec, $lte: dayEndSec } })
+        .project({ start_ts: 1, end_ts: 1 })
+        .toArray();
+    } catch {}
     const slots = computeDaySlots(day, minutes, tz, working, busy);
     try { if (!slots.length) console.log('availability-debug', { userId, staffId, tz, date: day.toISOString().slice(0,10), minutes, spans: (working && working[getDowKeyInTz(day, tz)] || []).length, busy: busy.length }); } catch {}
-    results.push({ date: day.toISOString().slice(0,10), slots: slots.map(s => ({ start: s.start.toISOString(), end: s.end.toISOString() })) });
+    let mapped = slots.map(s => ({ start: s.start.toISOString(), end: s.end.toISOString() }));
+    if (DBG) console.log('[availability] pre-filter', { date: day.toISOString().slice(0,10), slotCount: mapped.length, busyCount: (busy||[]).length, apptCount: (dayAppts||[]).length });
+    // Enforce max bookings per day by emptying day when limit reached
+    if (maxPerDay > 0) {
+      try {
+        const db = getDB();
+        const ymd = day.toISOString().slice(0,10);
+        const dayStart = Math.floor(new Date(`${ymd}T00:00:00.000Z`).getTime()/1000);
+        const dayEnd = Math.floor(new Date(`${ymd}T23:59:59.999Z`).getTime()/1000);
+        const count = await db.collection('appointments').countDocuments({ user_id: String(userId), status: 'confirmed', start_ts: { $gte: dayStart, $lte: dayEnd } });
+        if (count >= maxPerDay) mapped = [];
+      } catch {}
+    }
+    // Enforce capacity per window (e.g., per hour or 30 min) when configured
+    if (capLimit > 0 && capWindowMin > 0) {
+      const filtered = [];
+      const winMs = capWindowMin * 60000;
+      for (const s of mapped) {
+        const ss = new Date(s.start).getTime();
+        const se = ss + winMs;
+        const count = (dayAppts||[]).filter(a => {
+          const as = (a.start_ts||0)*1000; const ae = (a.end_ts||0)*1000;
+          return ss < ae && se > as; // overlaps capacity window
+        }).length;
+        if (count < capLimit) filtered.push(s);
+      }
+      mapped = filtered;
+    }
+    if (DBG) console.log('[availability] post-filter', { date: day.toISOString().slice(0,10), slotCount: mapped.length });
+    results.push({ date: day.toISOString().slice(0,10), slots: mapped });
   }
   return results;
 }
 
-export async function createBooking({ userId, staffId, startISO, endISO, contactPhone, notes }) {
+export async function createBooking({ userId, staffId, startISO, endISO, contactPhone, notes, replaceExistingForContact = true }) {
   const staff = await getStaffById(staffId, userId);
   if (!staff) throw new Error("staff not found");
   const calendar = staff.calendar_id ? await getCalendarById(staff.calendar_id, userId) : null;
@@ -113,6 +180,36 @@ export async function createBooking({ userId, staffId, startISO, endISO, contact
     const r = await createEvent(calendar, evt);
     gcalId = r?.id || null;
   }
+  // Optionally cancel existing upcoming appointments for this contact (avoid duplicates when user "reschedules" by booking anew)
+  try {
+    if (replaceExistingForContact && contactPhone) {
+      const db = getDB();
+      const digits = String(contactPhone || '').replace(/\D/g, '');
+      const nowSec = Math.floor(Date.now() / 1000);
+      const existing = await db.collection('appointments')
+        .find({
+          user_id: String(userId),
+          status: 'confirmed',
+          start_ts: { $gte: nowSec },
+          $or: [ { contact_phone: digits }, { contact_phone: '+' + digits } ]
+        })
+        .project({ _id: 1, gcal_event_id: 1, staff_id: 1 })
+        .toArray();
+      for (const ex of (existing || [])) {
+        try {
+          if (ex.gcal_event_id && ex.staff_id) {
+            const calOwner = await Staff.findOne({ _id: ex.staff_id }).lean();
+            if (calOwner?.calendar_id) {
+              const cal = await getCalendarById(calOwner.calendar_id, userId);
+              if (cal) { try { await deleteEvent(cal, ex.gcal_event_id); } catch {} }
+            }
+          }
+          await Appointment.updateOne({ _id: ex._id }, { $set: { status: 'canceled', updatedAt: new Date() } });
+        } catch {}
+      }
+    }
+  } catch {}
+
   // Create appointment in Mongo; include a legacy-compatible 'id' field (numeric seconds) to reference in flows
   const startTs = Math.floor(new Date(startISO).getTime() / 1000);
   const endTs = Math.floor(new Date(endISO).getTime() / 1000);
@@ -183,6 +280,34 @@ export async function rescheduleBooking({ userId, appointmentId, startISO, endIS
   const startTs = Math.floor(new Date(startISO).getTime() / 1000);
   const endTs = Math.floor(new Date(endISO).getTime() / 1000);
   await Appointment.updateOne({ _id: appt._id }, { $set: { start_ts: startTs, end_ts: endTs, status: 'confirmed', updatedAt: new Date() } });
+
+  // Safety: cancel any other future appointments for this contact to avoid duplicates
+  try {
+    const digits = String(appt.contact_phone || '').replace(/\D/g, '');
+    const nowSec = Math.floor(Date.now() / 1000);
+    const others = await db.collection('appointments')
+      .find({
+        user_id: String(userId),
+        status: 'confirmed',
+        id: { $ne: Number(appointmentId) },
+        start_ts: { $gte: nowSec },
+        $or: [ { contact_phone: digits }, { contact_phone: '+' + digits } ]
+      })
+      .project({ _id: 1, gcal_event_id: 1, staff_id: 1 })
+      .toArray();
+    for (const ex of (others || [])) {
+      try {
+        if (ex.gcal_event_id && ex.staff_id) {
+          const owner = await Staff.findOne({ _id: ex.staff_id }).lean();
+          if (owner?.calendar_id) {
+            const c = await getCalendarById(owner.calendar_id, userId);
+            if (c) { try { await deleteEvent(c, ex.gcal_event_id); } catch {} }
+          }
+        }
+        await Appointment.updateOne({ _id: ex._id }, { $set: { status: 'canceled', updatedAt: new Date() } });
+      } catch {}
+    }
+  } catch {}
   return true;
 }
 

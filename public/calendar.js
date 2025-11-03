@@ -30,10 +30,27 @@
   }
 
   function extractName(apt){
-    var raw = (apt.notes||'').split('|')[0] || (apt.contact_phone||'');
-    var idx = raw.indexOf(':');
-    var name = idx >= 0 ? raw.slice(idx+1) : raw;
-    return String(name||'').trim() || 'Booking';
+    var notes = String(apt.notes||'');
+    if(notes){
+      var parts = notes.split('|');
+      for(var i=0;i<parts.length;i++){
+        var p = parts[i].trim();
+        var colon = p.indexOf(':');
+        if(colon > -1){
+          var key = p.slice(0, colon).trim().toLowerCase();
+          var val = p.slice(colon+1).trim();
+          if(/name/.test(key) && val) return val;
+        }
+      }
+      // fallback: take first pair's value if present
+      var first = parts[0]||''; var idx = first.indexOf(':');
+      if(idx > -1){
+        var v = first.slice(idx+1).trim();
+        if(v) return v;
+      }
+    }
+    // as a safer fallback, show phone or a generic label instead of echoing the message text
+    return String(apt.contact_phone||'Booking');
   }
 
   function render(){

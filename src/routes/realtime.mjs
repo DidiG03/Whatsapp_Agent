@@ -8,6 +8,8 @@ import { db, getDB } from '../db-mongodb.mjs';
 import { Server } from 'socket.io';
 import { createServer } from 'http';
 import { sendWhatsAppText } from '../services/whatsapp.mjs';
+import { createReply } from '../services/replies.mjs';
+import { getUserPlan } from '../services/usage.mjs';
 import { enqueueOutboundMessage, isQueueEnabled, initOutboundQueue } from '../jobs/outboundQueue.mjs';
 import { recordOutboundMessage } from '../services/messages.mjs';
 import { getSettingsForUser } from '../services/settings.mjs';
@@ -273,7 +275,7 @@ export function initializeSocketIO(server) {
             return;
           }
           
-          const { phone, message, type = 'text' } = data;
+          const { phone, message, type = 'text', replyTo } = data;
           if (typeof message !== 'string' || message.length === 0) {
             socket.emit('message_error', { error: 'Message must be a non-empty string' });
             return;
@@ -339,7 +341,7 @@ export function initializeSocketIO(server) {
           if (!cfg.user_id) cfg.user_id = userId;
             try {
               console.log('📨 Sending WA text…', { to_tail: String(cleanPhone).slice(-6), cfg_meta: { hasPhoneId: !!cfg?.phone_number_id, hasToken: !!cfg?.whatsapp_token, phoneId_tail: String(cfg?.phone_number_id||'').slice(-6) } });
-              lastSendResponse = await sendWhatsAppText(cleanPhone, message, cfg);
+              lastSendResponse = await sendWhatsAppText(cleanPhone, message, cfg, replyTo || null);
               console.log('📨 WhatsApp API response:', {
                 hasMessages: !!lastSendResponse?.messages?.[0]?.id,
                 keys: lastSendResponse ? Object.keys(lastSendResponse).slice(0, 12) : null
@@ -394,6 +396,18 @@ export function initializeSocketIO(server) {
             });
             
             console.log('📡 Message broadcasted to chat room:', cleanPhone);
+
+            // Create reply relationship if provided and plan allows
+            try {
+              if (replyTo && outboundId) {
+                const plan = await getUserPlan(userId);
+                if ((plan?.plan_name || 'free') !== 'free') {
+                  await createReply(String(replyTo), String(outboundId));
+                }
+              }
+            } catch (e) {
+              console.warn('Reply link create failed (non-fatal):', e?.message || e);
+            }
           } else {
             const detail = lastSendResponse ? JSON.stringify(lastSendResponse).slice(0, 1200) : 'no response';
             console.error('❌ Failed to send WhatsApp message (no outbound id). Detail:', detail);

@@ -107,7 +107,7 @@ export function renderTranscriptAsBubbles(transcript) {
 /**
  * Render the left-hand sidebar with navigation links.
  * Adds an "active" class on the current section.
- * @param {"dashboard"|"inbox"|"contacts"|"onboarding"|"settings"|"kb"} activeKey
+ * @param {"dashboard"|"inbox"|"contacts"|"onboarding"|"settings"|"kb"|"bookings"} activeKey
  * @returns {string} sidebar HTML
  */
 export function renderSidebar(activeKey) {
@@ -172,6 +172,21 @@ export function renderSidebar(activeKey) {
         <li>
           <a ${activeKey === key ? 'class="active"' : ''} href="${href}">
             <img src="/JSON-icon.svg" alt="KB" style="width:20px;height:20px;vertical-align:middle;margin-right:6px;"/>
+            <span style="color: grey;">${label}</span>
+          </a>
+        </li>
+      `;
+    }
+    if (key === 'bookings') {
+      return `
+        <li>
+          <a ${activeKey === key ? 'class="active"' : ''} href="${href}">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:6px;">
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+              <line x1="16" y1="2" x2="16" y2="6"/>
+              <line x1="8" y1="2" x2="8" y2="6"/>
+              <line x1="3" y1="10" x2="21" y2="10"/>
+            </svg>
             <span style="color: grey;">${label}</span>
           </a>
         </li>
@@ -254,6 +269,7 @@ export function renderSidebar(activeKey) {
     <ul class="nav">
       ${link('/dashboard', 'Dashboard', 'dashboard')}
       ${link('/inbox', 'Inbox', 'inbox')}
+      ${link('/bookings', 'Bookings', 'bookings')}
       ${link('/kb/ui', 'Knowledge Base', 'kb')}
       ${link('/plan', 'Plan', 'plan')}
       ${link('/settings', 'Settings', 'settings')}

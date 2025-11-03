@@ -1,57 +1,111 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
 import { KBItem } from "../schemas/mongodb.mjs";
+import { getUserPlan, getPlanPricing } from "../services/usage.mjs";
+import { getSettingsForUser } from "../services/settings.mjs";
 import { renderSidebar, escapeHtml, renderTopbar } from "../utils.mjs";
 
 export default function registerKbRoutes(app) {
-  app.post("/kb", ensureAuthed, (req, res) => {
+  app.post("/kb", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const { title, content, file_url, file_mime } = req.body || {};
     const show_in_menu = req.body?.show_in_menu ? 1 : 0;
     if (!content || typeof content !== "string") return res.status(400).json({ error: "content required" });
-    const stmt = db.prepare(`INSERT INTO kb_items (title, content, file_url, file_mime, show_in_menu, user_id) VALUES (?, ?, ?, ?, ?, ?)`);
-    const info = stmt.run(title || null, content, file_url || null, file_mime || null, show_in_menu, userId);
-    return res.json({ id: info.lastInsertRowid, title, content, file_url, file_mime, show_in_menu, user_id: userId });
+
+    try {
+      // Guard: booking-related KB items require bookings to be enabled
+      try {
+        const settings = await getSettingsForUser(userId);
+        const mentionsBooking = /\bbooking(s)?\b/i.test(String(title || "") + " " + String(content || ""));
+        if (mentionsBooking && !settings?.bookings_enabled) {
+          return res.status(403).json({ error: 'bookings_required', message: 'Enable Bookings in Settings to add booking-related KB items.' });
+        }
+      } catch {}
+
+      const plan = await getUserPlan(userId);
+      const pricing = getPlanPricing();
+      const planCfg = pricing[plan?.plan_name || 'free'] || pricing.free;
+      const docsLimit = planCfg.kb_docs_limit || Infinity;
+      const charsLimit = planCfg.kb_chars_limit || Infinity;
+      const existingDocs = await KBItem.find({ user_id: userId }).select('content').lean();
+      const itemsCount = existingDocs.length;
+      const charsCount = existingDocs.reduce((n, r) => n + String(r.content || '').length, 0);
+      const nextDocs = itemsCount + 1;
+      const nextChars = charsCount + String(content || '').length;
+      if (nextDocs > docsLimit || nextChars > charsLimit) {
+        return res.status(403).json({ error: 'kb_limit_reached', message: 'KB plan limit reached. Please upgrade your plan to add more.' });
+      }
+    } catch {}
+
+    const doc = await KBItem.create({
+      title: title || null,
+      content,
+      file_url: file_url || null,
+      file_mime: file_mime || null,
+      show_in_menu: !!show_in_menu,
+      user_id: userId
+    });
+    return res.json({ id: String(doc._id), title: doc.title, content: doc.content, file_url: doc.file_url, file_mime: doc.file_mime, show_in_menu: doc.show_in_menu, user_id: doc.user_id });
   });
 
   // Update an existing KB item (title and/or content)
-  app.put("/kb/:id", ensureAuthed, (req, res) => {
+  app.put("/kb/:id", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
-    const id = Number(req.params.id);
+    const id = String(req.params.id || '').trim();
     if (!id) return res.status(400).json({ error: "invalid id" });
     const { title, content, file_url, file_mime } = req.body || {};
     const show_in_menu = req.body?.show_in_menu;
     if (title == null && content == null && file_url == null && file_mime == null && show_in_menu == null) return res.status(400).json({ error: "nothing to update" });
-    const existing = db.prepare(`SELECT id, title, content, file_url, file_mime, show_in_menu FROM kb_items WHERE id = ? AND user_id = ?`).get(id, userId);
-    if (!existing) return res.status(404).json({ error: "not found" });
-    const newTitle = title !== undefined ? (title || null) : existing.title;
-    const newContent = content !== undefined ? content : existing.content;
-    const newFileUrl = file_url !== undefined ? (file_url || null) : existing.file_url;
-    const newFileMime = file_mime !== undefined ? (file_mime || null) : existing.file_mime;
-    const newShow = show_in_menu !== undefined ? (show_in_menu ? 1 : 0) : existing.show_in_menu;
+    const update = {};
+    if (title !== undefined) update.title = title || null;
+    if (content !== undefined) update.content = content;
+    if (file_url !== undefined) update.file_url = file_url || null;
+    if (file_mime !== undefined) update.file_mime = file_mime || null;
+    if (show_in_menu !== undefined) update.show_in_menu = !!show_in_menu;
     try {
-      db.prepare(`UPDATE kb_items SET title = ?, content = ?, file_url = ?, file_mime = ?, show_in_menu = ?, created_at = created_at WHERE id = ? AND user_id = ?`).run(newTitle, newContent, newFileUrl, newFileMime, newShow, id, userId);
-      const row = db.prepare(`SELECT id, title, content, file_url, file_mime, show_in_menu, created_at FROM kb_items WHERE id = ?`).get(id);
-      return res.json(row);
+      const doc = await KBItem.findOneAndUpdate({ _id: id, user_id: userId }, { $set: update }, { new: true }).lean();
+      if (!doc) return res.status(404).json({ error: "not found" });
+      return res.json({ id: String(doc._id), title: doc.title, content: doc.content, file_url: doc.file_url, file_mime: doc.file_mime, show_in_menu: doc.show_in_menu, created_at: Math.floor(new Date(doc.createdAt || Date.now()).getTime()/1000) });
     } catch (e) {
-      // Likely uniqueness violation on (user_id, title)
       return res.status(409).json({ error: "conflict", message: String(e && e.message || e) });
     }
   });
 
   // Delete a KB item
-  app.delete("/kb/:id", ensureAuthed, (req, res) => {
+  app.delete("/kb/:id", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
-    const id = Number(req.params.id);
+    const id = String(req.params.id || '').trim();
     if (!id) return res.status(400).json({ error: "invalid id" });
-    const info = db.prepare(`DELETE FROM kb_items WHERE id = ? AND user_id = ?`).run(id, userId);
-    if (info.changes > 0) return res.json({ ok: true });
+    const result = await KBItem.deleteOne({ _id: id, user_id: userId });
+    if (result.deletedCount > 0) return res.json({ ok: true });
     return res.status(404).json({ error: "not found" });
   });
 
   app.get("/kb/ui", ensureAuthed, async (req,res) =>{
     const userId = getCurrentUserId(req);
     const email = await getSignedInEmail(req);
-    const rows = await KBItem.find({ user_id: userId }).sort({ _id: -1 }).limit(200).lean();
+    const settings = await getSettingsForUser(userId);
+    let rows = await KBItem.find({ user_id: userId }).sort({ _id: -1 }).limit(200).lean();
+    let devFallbackNotice = '';
+    if (!rows.length && process.env.NODE_ENV !== 'production') {
+      try {
+        const showAll = String(req.query?.all || '') === '1';
+        const q = showAll ? {} : { user_id: { $regex: /^test_user_/ } };
+        const alt = await KBItem.find(q).sort({ _id: -1 }).limit(200).lean();
+        if (alt && alt.length) {
+          rows = alt;
+          devFallbackNotice = 'Showing dev KB items (fallback)';
+        }
+      } catch {}
+    }
+    const itemsCount = rows.length;
+    const charsCount = rows.reduce((n, r) => n + (String(r.content||'').length), 0);
+    const plan = await getUserPlan(userId);
+    const pricing = getPlanPricing();
+    const planCfg = pricing[plan?.plan_name || 'free'] || pricing.free;
+    const docsLimit = planCfg.kb_docs_limit || Infinity;
+    const charsLimit = planCfg.kb_chars_limit || Infinity;
+    const docsPct = Math.min(100, Math.round((itemsCount / (docsLimit || 1)) * 100));
+    const atLimit = itemsCount >= docsLimit || charsCount >= charsLimit;
     const html = rows.map(r => {
       const when = new Date(r.createdAt || Date.now()).toLocaleDateString();
       const title = (r.title || 'Untitled');
@@ -73,7 +127,7 @@ export default function registerKbRoutes(app) {
             </div>
             <div style="display:flex; align-items:center; gap:8px; margin-left:16px;">
               <label class="small" style="display:flex; align-items:center; gap:6px; background:#f9fafb; padding:6px 10px; border-radius:6px; border:1px solid #e5e7eb;">
-                <input type="checkbox" class="kb-menu-toggle" data-id="${r.id}" ${r.show_in_menu ? 'checked' : ''} style="margin:0;"/>
+                <input type="checkbox" class="kb-menu-toggle" data-id="${String(r._id)}" ${r.show_in_menu ? 'checked' : ''} style="margin:0;"/>
                 Show in menu
               </label>
               ${fileUrl ? `<a class="btn-ghost" href="${escapeHtml(fileUrl)}" target="_blank" rel="noopener" style="background:#e0f2fe; color:#0369a1; border:1px solid #bae6fd; padding:6px 12px; border-radius:6px; font-size:12px;">📄 Preview</a>` : ''}
@@ -95,6 +149,29 @@ export default function registerKbRoutes(app) {
         </div>
       `;
     }).join("");
+
+    // Synthetic, non-deletable informational card for Bookings feature visibility in KB
+    const bookingsCard = (() => {
+      const enabled = !!(settings?.bookings_enabled);
+      const badge = enabled
+        ? '<span style="background:#ecfeff; color:#0e7490; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:500; border:1px solid #a5f3fc;">System</span>'
+        : '<span style="background:#fff7ed; color:#9a3412; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:500; border:1px solid #fed7aa;">Disabled</span>';
+      const desc = enabled
+        ? 'Bookings are enabled. Customers can pick dates/times. You can add specialized KB items like “Table Bookings” or “Call Bookings” to appear in menus and AI answers.'
+        : 'Bookings are currently disabled. Enable Bookings in Settings to let customers book and to add booking-related KB items.';
+      return `
+        <div class="kb-item" data-id="__system_bookings" style="background:#fff; border:1px dashed #cbd5e1; border-radius:12px; padding:20px; margin-bottom:16px;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px;">
+            <div style="flex:1;">
+              <h3 style="margin:0 0 8px 0; font-size:16px; font-weight:700; color:#0f172a; display:flex; align-items:center; gap:8px;">Bookings ${badge}</h3>
+              <div style="background:#f8fafc; border-radius:8px; padding:12px; margin-bottom:12px; border-left:4px solid ${enabled ? '#22c55e' : '#f59e0b'};">
+                <p style="margin:0; font-size:14px; line-height:1.5; color:#334155;">${escapeHtml(desc)}</p>
+              </div>
+              ${enabled ? '<div class="small" style="color:#64748b;">Tip: Use \'Show in menu\' for quick access items.</div>' : '<div class="small" style="color:#64748b;">Go to Settings → Bookings to enable.</div>'}
+            </div>
+          </div>
+        </div>`;
+    })();
 
     // Prevent caching to avoid showing cached authenticated pages after logout
     res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -130,19 +207,21 @@ export default function registerKbRoutes(app) {
           })();
         </script>
         <script>
+          window.kbLimitReached = ${JSON.stringify(atLimit)};
           function isPdfLink(u){ try{ const href=String(u||'').toLowerCase(); return href.endsWith('.pdf') || href.includes('.pdf?') || href.includes('.pdf#'); }catch(e){ return false; } }
           function attachKbFilter(){
             const input = document.getElementById('kb-search');
             if(!input) return;
             input.addEventListener('input', function(){
               const q = this.value.toLowerCase();
-              document.querySelectorAll('.kb-row').forEach(row => {
+              document.querySelectorAll('.kb-item').forEach(row => {
                 const t = (row.getAttribute('data-text')||'').toLowerCase();
                 row.style.display = q && !t.includes(q) ? 'none' : '';
               });
             });
           }
           function addKbItem(){
+            if (window.kbLimitReached) { alert('KB limit reached for your plan. Please upgrade to add more.'); return; }
             const title = prompt("Enter a title for the KB item (e.g., Menu (PDF))");
             if (title === null) return;
             const content = prompt("Enter the content/summary (optional)") || '';
@@ -155,7 +234,7 @@ export default function registerKbRoutes(app) {
             }).then(() => window.location.reload());
           }
           function editKbItem(id){
-            const row = document.querySelector('.kb-row[data-id="' + id + '"]');
+            const row = document.querySelector('.kb-item[data-id="' + id + '"]');
             const oldTitle = (row && row.getAttribute('data-title')) || '';
             const oldContent = (row && row.getAttribute('data-content')) || '';
             const oldFileUrl = (row && row.getAttribute('data-file-url')) || '';
@@ -204,11 +283,19 @@ export default function registerKbRoutes(app) {
             ${renderSidebar('kb')}
             <main class="main">
               <div class="main-content">
-                <div class="card kb-toolbar" style="margin-bottom:12px; display:flex; gap:8px;">
+                <div class="card kb-toolbar" style="margin-bottom:12px; display:flex; gap:8px; align-items:center;">
                   <input id="kb-search" class="settings-field" placeholder="Search knowledge items..."/>
-                  <button class="btn-ghost" onclick="addKbItem()">Add</button>
+                  <button class="btn-ghost" onclick="addKbItem()" ${atLimit ? 'disabled' : ''} title="${atLimit ? 'KB limit reached' : '+Add'}">${atLimit ? 'Add (Limit Reached)' : 'Add'}</button>
+                  ${devFallbackNotice ? `<span class="small" style="color:#6b7280;">${devFallbackNotice}</span>` : ''}
                 </div>
-                <div class="card kb-list">${html || `
+                <div class="card" style="margin-bottom:12px;">
+                  <div class="small" style="margin-bottom:6px;">Knowledge Base usage</div>
+                  <div class="usage-progress" style="width:100%; height:8px; background:#e5e7eb; border-radius:4px; overflow:hidden;">
+                    <div class="usage-progress-bar" style="width:${docsPct}%; height:100%; background:${docsPct>90?'#ef4444':docsPct>75?'#f59e0b':'#10b981'};"></div>
+                  </div>
+                  <div class="small" style="margin-top:6px; color:#6b7280;">${itemsCount} / ${docsLimit} items • ${(charsCount/1024/1024).toFixed(2)} MB / ${(charsLimit/1024/1024).toFixed(0)} MB</div>
+                </div>
+                <div class="kb-list">${bookingsCard + (html || `
                   <div class="empty-state" style="text-align:center; padding:60px 20px; color:#666;">
                     <div style="font-size:48px; margin-bottom:20px; opacity:0.3;">📚</div>
                     <h3 style="margin:0 0 12px 0; color:#333; font-size:20px; font-weight:500;">No knowledge items yet</h3>
@@ -225,7 +312,7 @@ export default function registerKbRoutes(app) {
                       </ul>
                     </div>
                   </div>
-                `}</div>
+                `)}</div>
               </div>
             </main>
           </div>

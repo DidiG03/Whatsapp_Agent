@@ -266,6 +266,7 @@ export async function generateAiReply(userMessage, contextSnippets, options = {}
   const tone = (options.tone || "friendly").trim();
   const style = (options.style || "clear and concise").trim();
   const blockedTopics = String(options.blockedTopics || "").trim();
+  const historyMessages = Array.isArray(options.historyMessages) ? options.historyMessages : [];
 
   const blockedLine = blockedTopics
     ? `Refuse questions about these topics: ${blockedTopics}. If asked, briefly refuse and suggest contacting support.`
@@ -273,33 +274,40 @@ export async function generateAiReply(userMessage, contextSnippets, options = {}
 
   const OUT_OF_SCOPE_PHRASE = "That seems outside my scope. Try choosing one of these topics";
 
-  const prompt = `You are a WhatsApp assistant for a business.
-Use ONLY the provided docs (KB context). Prefer concise, direct answers derived from the docs, including yes/no (or short) answers when the docs imply them.
-If the required information is not supported by the docs, reply with EXACTLY: ${OUT_OF_SCOPE_PHRASE}
-Handle varied user styles robustly:
-- Direct questions: answer precisely from KB.
-- Casual/conversational: keep tone friendly; extract intent.
-- Short/vague: infer likely intent from KB; if insufficient, use ${OUT_OF_SCOPE_PHRASE}.
-- Misspellings/slang: interpret common typos and slang.
-- Multi-part: answer what the KB supports; if some parts are unsupported, answer the supported parts and omit the rest.
-- Edge cases: avoid speculation; only state what KB supports.
-Interpret paraphrases and synonymous wording; do not require exact title/phrase matches.
-Tone: ${tone}. Style: ${style}. ${blockedLine}
-Keep replies short (1–4 sentences). Never invent facts.
+  // Base system policy and tasking
+  const policy = [
+    "You are a WhatsApp assistant for a business.",
+    "Use ONLY the provided Docs (KB context). If the KB does not support an answer, reply with EXACTLY: " + OUT_OF_SCOPE_PHRASE + ".",
+    "Exception: For generic pleasantries (e.g., 'how are you', greetings, thanks, apologies, simple emojis), respond briefly and warmly WITHOUT using the out-of-scope phrase.",
+    "Be concise (1–4 sentences). Never invent facts.",
+    "Interpret typos, slang, and paraphrases.",
+    blockedLine ? blockedLine : "",
+    "Tone: " + tone + ". Style: " + style + ".",
+    "Booking guidance (no pickers): If intent to book without BOTH date and time, ask for a preferred date/time in one short sentence (e.g., 'Nov 3 at 3pm').",
+    "Availability: if asked without a date range, ask for a range (e.g., 'tomorrow', 'Nov 3–5').",
+  ].filter(Boolean).join("\n");
 
-Docs:
-${context}
+  // Build chat messages with optional conversation history
+  const messages = [
+    { role: "system", content: policy },
+    { role: "system", content: "Docs:\n" + context },
+  ];
 
-User: ${userMessage}
-Assistant:`;
+  // Append prior turns if provided: each item should be { role: 'user'|'assistant', content: string }
+  for (const m of historyMessages.slice(-10)) {
+    try {
+      const role = (m && (m.role === 'assistant' || m.role === 'user')) ? m.role : 'user';
+      const content = String(m?.content || '').slice(0, 1000);
+      if (content) messages.push({ role, content });
+    } catch {}
+  }
+
+  messages.push({ role: "user", content: String(userMessage || "").slice(0, 2000) });
 
   try {
     const resp = await openai.chat.completions.create({
       model: MODEL,
-      messages: [
-        { role: "system", content: "Answer briefly and directly based on the KB docs. Infer simple yes/no when supported; if insufficient evidence, say you don't have that info and suggest next step. Never invent facts." },
-        { role: "user", content: prompt },
-      ],
+      messages,
       temperature: 0.6,
       max_tokens: 256,
       top_p: 1,
@@ -311,6 +319,200 @@ Assistant:`;
   } catch (e) {
     logOpenAiError(e, "AI reply error");
     return null;
+  }
+}
+
+/**
+ * Generate a short, natural WhatsApp message for common assistant nudges
+ * (asking for a date/time, range, warnings, suggestions, etc.).
+ * Falls back to a sensible default if the model call fails.
+ * @param {string} kind - e.g., 'ask_datetime', 'ask_range', 'closest_times', 'no_times', 'past_time_warning', 'confirm_booking'
+ * @param {object} data - variables for the nudge (e.g., { examples: [...], suggestions: [...], dateLabel: 'Nov 3' })
+ * @param {{ tone?: string, style?: string }} options
+ * @returns {Promise<string>}
+ */
+export async function generateAssistantNudge(kind, data = {}, options = {}) {
+  const tone = (options.tone || 'friendly').trim();
+  const style = (options.style || 'clear and concise').trim();
+  const policy = [
+    'You generate a SINGLE short WhatsApp message as the assistant.',
+    'Keep it warm, human, and concise (<= 2 sentences).',
+    'No markdown, no bullets, no code fences.',
+    'Tone: ' + tone + '. Style: ' + style + '.',
+  ].join('\n');
+
+  const guidance = {
+    greeting: 'Send a short, warm first greeting for WhatsApp. One sentence.',
+    out_of_hours: 'Explain you are currently outside working hours and will reply later. One sentence.',
+    holding: 'Acknowledge the user and say an agent will be with them shortly. One sentence.',
+    no_staff: 'Explain bookings are enabled but staff isn’t configured yet. One sentence.',
+    too_close: 'Explain it is too close to the start time (use provided minutes) and suggest contacting directly. One sentence.',
+    reminder_ok: 'Acknowledge that the reminder time is fine. One sentence.',
+    reminder_missing: 'Explain the referenced booking was canceled or changed; offer to start a new booking. One sentence.',
+    reminder_prompt: 'Prompt the user to confirm or change an appointment time briefly.',
+    cancel_confirm_instructions: 'Tell user how to confirm cancellation or keep the booking, referencing a ref number.',
+    handoff_ask_name: 'Ask for the user’s name before connecting to a human. One sentence.',
+    handoff_ask_reason: 'Ask for a short reason for escalation to a human. One sentence.',
+    handoff_connecting: 'Acknowledge and say you are connecting the user to a human. One sentence.',
+    generic_ack: 'A generic short acknowledgement such as “okay” adjusted to context. One sentence.',
+    ask_datetime: 'Ask the user to share a preferred date and time. Include one or two compact examples. Avoid commands; be polite.',
+    ask_range: 'Ask the user for a date range to check availability. Mention examples like “tomorrow”, “Nov 3”, or “Nov 3–5”.',
+    closest_times: 'Explain the requested time is unavailable and present the provided list of closest options inline, inviting the user to pick one.',
+    no_times: 'Say there are no open times for the selected date/range and invite the user to try another date/time or daypart.',
+    past_time_warning: 'Explain the time has already passed and ask for a future date/time with a compact example.',
+    confirm_booking: 'Acknowledge the booking time succinctly and indicate you will proceed to the next question.',
+    reschedule_request: 'Ask for a new preferred date and time to reschedule, with a compact example.',
+    no_booking_found: 'Explain you cannot find any upcoming booking for this phone and offer to start a new booking.',
+    cancel_aborted: "Acknowledge you won't cancel and invite the user to say 'cancel' later if needed.",
+    slot_book_failed: 'Apologize briefly and ask the user to pick another time.',
+    reset_done: 'Acknowledge the booking flow has been reset and invite the user to share a new date/time.',
+  }[kind] || 'Write a short, helpful message for this assistant action.';
+
+  const payload = {
+    kind,
+    data,
+  };
+
+  try {
+    const resp = await openai.chat.completions.create({
+      model: MODEL,
+      temperature: 0.4,
+      max_tokens: 120,
+      messages: [
+        { role: 'system', content: policy },
+        { role: 'user', content: `Guidance: ${guidance}\n\nVariables (JSON):\n${JSON.stringify(payload, null, 2)}\n\nWrite the single assistant message now:` },
+      ],
+    });
+    return resp.choices?.[0]?.message?.content?.trim() || '';
+  } catch (e) {
+    logOpenAiError(e, 'AI nudge error');
+    // Fallbacks
+    if (kind === 'ask_datetime') return "Please share a preferred date and time (e.g., 'Nov 3 at 3pm', 'tomorrow 14:30').";
+    if (kind === 'ask_range') return "Which dates should I check? You can say 'tomorrow', 'Nov 3', or 'Nov 3–5'.";
+    if (kind === 'closest_times') return `That exact time isn't available. Here are some nearby options: ${(data?.suggestions||[]).join(', ')}.`;
+    if (kind === 'no_times') return 'I didn’t find open times in that range. Try another date or time of day.';
+    if (kind === 'past_time_warning') return "That time has already passed. Please share a future date/time.";
+    if (kind === 'reschedule_request') return 'Please share a new preferred date and time to reschedule.';
+    if (kind === 'confirm_booking') return 'Great — I can book that.';
+    if (kind === 'no_booking_found') return "I couldn’t find an upcoming booking for your number. Would you like to start a new one?";
+    if (kind === 'cancel_aborted') return "Okay, I won’t cancel. If you change your mind later, just say ‘cancel’.";
+    if (kind === 'slot_book_failed') return "Sorry — that slot couldn’t be booked. Could you pick another time?";
+    if (kind === 'reset_done') return "All set — I’ve reset the booking flow. Share a new date and time when ready.";
+    return 'Okay.';
+  }
+}
+
+// ----------------------------- generateAgentDecision -------------------------
+
+/**
+ * Plan a smart assistant reply and an optional intent for the server to execute.
+ * The model returns a JSON object with shape:
+ * {
+ *   text: string, // WhatsApp-ready reply to send
+ *   intent?: {
+ *     type: 'availability'|'book'|'reschedule'|'cancel'|'handoff'|'none',
+ *     data?: object // free-form; server will interpret safely
+ *   }
+ * }
+ *
+ * Notes:
+ * - The model is encouraged to sell/upsell politely and ask for missing info.
+ * - The server executes the intent opportunistically (when enough info is present).
+ * - If parsing fails, falls back to generateAiReply.
+ */
+export async function generateAgentDecision(userMessage, contextSnippets, options = {}) {
+  const context =
+    (contextSnippets || [])
+      .map((s, i) => `# Doc ${i + 1}: ${s.title || "Untitled"}\n${s.content}`)
+      .join("\n\n") || "(no docs)";
+
+  const tone = String(options.tone || 'friendly').trim();
+  const style = String(options.style || 'clear and concise').trim();
+  const blockedTopics = String(options.blockedTopics || '').trim();
+  const historyMessages = Array.isArray(options.historyMessages) ? options.historyMessages : [];
+  const features = options.features || {};
+
+  const blockedLine = blockedTopics
+    ? `Refuse questions about these topics: ${blockedTopics}. If asked, briefly refuse and suggest contacting support.`
+    : "";
+
+  const system = [
+    "You are a sales-savvy WhatsApp assistant for a business.",
+    "Primary goal: satisfy the user's request with helpful, persuasive, concise replies.",
+    "Use ONLY the provided Docs (KB context) for factual answers; never invent facts.",
+    blockedLine ? blockedLine : "",
+    `Tone: ${tone}. Style: ${style}.`,
+    "If user intent is booking-related, be proactive and helpful: keep it short, ask for any missing date/time efficiently.",
+    "You may plan ONE optional intent for the server to execute. Choose wisely and only if enough info is present.",
+    "INTENT TYPES: availability, book, reschedule, cancel, handoff, none.",
+    "For availability/book intents, you can include natural date/time phrases; the server will parse.",
+    "For complex or missing info, ask in your text what is needed (e.g., preferred date/time).",
+    "OUTPUT STRICTLY AS A SINGLE JSON OBJECT with keys: text, intent (optional). No markdown.",
+  ].filter(Boolean).join("\n");
+
+  const capabilityHint = `Capabilities:\n- bookings_enabled: ${features.bookings_enabled ? 'true' : 'false'}\n- reminders_enabled: ${features.reminders_enabled ? 'true' : 'false'}`;
+
+  const messages = [
+    { role: 'system', content: system },
+    { role: 'system', content: 'Docs:\n' + context },
+    { role: 'system', content: capabilityHint },
+  ];
+  for (const m of historyMessages.slice(-10)) {
+    try {
+      const role = (m && (m.role === 'assistant' || m.role === 'user')) ? m.role : 'user';
+      const content = String(m?.content || '').slice(0, 1000);
+      if (content) messages.push({ role, content });
+    } catch {}
+  }
+  messages.push({ role: 'user', content: String(userMessage || '').slice(0, 2000) });
+
+  function tryExtractJson(s) {
+    if (!s) return null;
+    let str = String(s).trim();
+    // Common case: raw JSON
+    try { return JSON.parse(str); } catch {}
+    // Extract first fenced code block with json
+    const fence = /```json\s*([\s\S]*?)\s*```/i.exec(str);
+    if (fence) {
+      try { return JSON.parse(fence[1]); } catch {}
+    }
+    // Extract first { ... } object
+    const start = str.indexOf('{');
+    if (start >= 0) {
+      // naive scan to matching brace count
+      let depth = 0;
+      for (let i = start; i < str.length; i++) {
+        const ch = str[i];
+        if (ch === '{') depth++;
+        else if (ch === '}') { depth--; if (depth === 0) { const slice = str.slice(start, i+1); try { return JSON.parse(slice); } catch {} } }
+      }
+    }
+    return null;
+  }
+
+  try {
+    const resp = await openai.chat.completions.create({
+      model: MODEL,
+      messages,
+      temperature: 0.5,
+      max_tokens: 300,
+    });
+    const content = resp.choices?.[0]?.message?.content || '';
+    const obj = tryExtractJson(content);
+    if (obj && typeof obj === 'object' && obj.text) {
+      return obj;
+    }
+    // Fallback: simple KB answer
+    const fallback = await generateAiReply(userMessage, contextSnippets, options);
+    return fallback ? { text: fallback, intent: { type: 'none' } } : null;
+  } catch (e) {
+    logOpenAiError(e, 'AI decision error');
+    try {
+      const fallback = await generateAiReply(userMessage, contextSnippets, options);
+      return fallback ? { text: fallback, intent: { type: 'none' } } : null;
+    } catch (_) {
+      return null;
+    }
   }
 }
 

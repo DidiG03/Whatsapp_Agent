@@ -189,11 +189,11 @@ export async function sendWhatsappList(to, headerText, bodyText, buttonLabel, ro
         button: buttonLabel,
         sections: [
           {
-            title: "Choose an option",
-            rows: rows.map(r => ({
+            title: 'Options',
+            rows: (Array.isArray(rows) ? rows : []).slice(0, 10).map(r => ({
               id: r.id,
-              title: r.title.slice(0, 24),
-              description: r.description.slice(0, 72) || null
+              title: String(r.title || '').slice(0, 24),
+              description: r.description ? String(r.description).slice(0, 72) : null
             }))
           }
         ]
@@ -215,7 +215,7 @@ export async function sendWhatsappReaction(to, messageId, emoji, cfg) {
     throw new Error("WhatsApp is not configured");
   }
   if (!messageId || !emoji) {
-    return;
+    return { ok: false, status: 400, body: 'Missing messageId or emoji' };
   }
   
   const url = `https://graph.facebook.com/v20.0/${cfg.phone_number_id}/messages`;
@@ -235,10 +235,13 @@ export async function sendWhatsappReaction(to, messageId, emoji, cfg) {
     body: JSON.stringify(payload)
   });
   
+  const text = await resp.text().catch(() => '');
   if (!resp.ok) {
-    // swallow errors for reactions, they are non-critical
-    return;
+    try { console.warn('[WA Reaction] Non-OK response', { status: resp.status, body: text.slice(0, 500) }); } catch {}
+    return { ok: false, status: resp.status, body: text };
   }
+  let json; try { json = JSON.parse(text); } catch { json = text; }
+  return { ok: true, status: resp.status, body: json };
 }
 
 

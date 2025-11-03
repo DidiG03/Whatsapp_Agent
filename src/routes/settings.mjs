@@ -24,11 +24,15 @@ import {
   QuickReply
 } from "../schemas/mongodb.mjs";
 import { getQuickReplies, getQuickReplyCategories, createQuickReply, updateQuickReply, deleteQuickReply, reorderQuickReplies } from "../services/quickReplies.mjs";
+import { getUserPlan } from "../services/usage.mjs";
 
 export default function registerSettingsRoutes(app) {
   app.get("/settings", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const s = await getSettingsForUser(userId);
+    const plan = await getUserPlan(userId);
+    const isUpgraded = (plan?.plan_name || 'free') !== 'free';
+    const effectiveConversationMode = isUpgraded ? (s.conversation_mode || 'full') : 'escalation';
     const ob = await getOnboarding(userId);
     const email = await getSignedInEmail(req);
     const q = req.query || {};
@@ -96,15 +100,15 @@ export default function registerSettingsRoutes(app) {
                       <label>Email
                         <div style="display: flex; align-items: center; gap: 8px;">
                           <input type="email" name="new_email" value="${email}" class="settings-field" form="email-start-form" required />
-                          <button type="submit" form="email-start-form">Update</button>
+                          <button type="submit" form="email-start-form" class="btn-primary">Update</button>
                         </div>
                       </label>
                         ${q.email_update === 'sent' ? `
                         <form method="post" action="/settings/email/verify" style="display:flex; gap:8px; align-items:center; margin-top:6px;">
                           <input type="hidden" name="email_id" value="${q.email_id || ''}"/>
                           <input type="text" name="code" placeholder="6-digit code" class="settings-field" required />
-                          <button type="submit">Verify & set as primary</button>
-                          <button type="submit" formaction="/settings/email/resend">Resend code</button>
+                          <button type="submit" class="btn-primary">Verify & set as primary</button>
+                          <button type="submit" class="btn-ghost" formaction="/settings/email/resend">Resend code</button>
                         </form>
                         ` : ''}
                         ${q.email_update === 'done' ? `<div class="small" style="color:#065f46; margin-top:6px;">Email updated successfully.</div>` : ''}
@@ -128,15 +132,15 @@ export default function registerSettingsRoutes(app) {
                       <label>WhatsApp Token
                         <div class="input-row">
                           <input id="wa_token" type="password" placeholder="E***************" class="settings-field" name="whatsapp_token" value="${s.whatsapp_token || ''}"/>
-                          <button type="button" style="border:none;" class="btn-ghost" onclick="toggleReveal('wa_token')"><img src="/show-password.svg" alt="Reveal"/></button>
-                          <button type="button" class="btn-ghost" style="border:none;" onclick="copyValue('wa_token')"><img src="/copy-icon.svg" alt="Copy"/></button>
+                          <button type="button" class="btn-ghost" onclick="toggleReveal('wa_token')"><img src="/show-password.svg" alt="Reveal"/></button>
+                          <button type="button" class="btn-ghost" onclick="copyValue('wa_token')"><img src="/copy-icon.svg" alt="Copy"/></button>
                         </div>
                       </label>
                       <label>App Secret
                         <div class="input-row">
                           <input id="app_secret" type="password" placeholder="c***************" class="settings-field" name="app_secret" value="${s.app_secret || ''}"/>
-                          <button type="button" style="border:none;" class="btn-ghost" onclick="toggleReveal('app_secret')"><img src="/show-password.svg" alt="Reveal"/></button>
-                          <button type="button" class="btn-ghost" style="border:none;" onclick="copyValue('app_secret')"><img src="/copy-icon.svg" alt="Copy"/></button>
+                          <button type="button" class="btn-ghost" onclick="toggleReveal('app_secret')"><img src="/show-password.svg" alt="Reveal"/></button>
+                          <button type="button" class="btn-ghost" onclick="copyValue('app_secret')"><img src="/copy-icon.svg" alt="Copy"/></button>
                         </div>
                       </label>
                     </div>
@@ -182,22 +186,30 @@ export default function registerSettingsRoutes(app) {
                   <div class="section" id="conversation">
                     <h3>Conversation Mode</h3>
                     <div class="small" style="margin-bottom:12px;">Choose how the chatbot should respond to customer messages:</div>
-                    <label style="display:block; margin-bottom:12px; padding:12px; border:1px solid #e5e7eb; border-radius:6px; cursor:pointer; ${(s.conversation_mode || 'full') === 'full' ? 'background:#f0f9ff; border-color:#3b82f6;' : ''}">
-                      <input type="radio" name="conversation_mode" value="full" ${(s.conversation_mode || 'full') === 'full' ? 'checked' : ''} style="margin-right:8px;"/>
+                    <label style="display:block; margin-bottom:12px; padding:12px; border:1px solid #e5e7eb; border-radius:6px; ${!isUpgraded ? 'opacity:0.6; cursor:not-allowed; position:relative;' : 'cursor:pointer;'} ${effectiveConversationMode === 'full' ? 'background:#f0f9ff; border-color:#3b82f6;' : ''}">
+                      <input type="radio" name="conversation_mode" value="full" ${effectiveConversationMode === 'full' ? 'checked' : ''} ${!isUpgraded ? 'disabled' : ''} style="margin-right:8px;"/>
                       <strong>Full AI Assistant (Knowledge Base + Bookings)</strong>
+                      ${!isUpgraded ? `<span class="small" style="margin-left:8px; color:#f59e0b; display:inline-flex; align-items:center; gap:4px;">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                          <circle cx="12" cy="16" r="1"/>
+                          <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                        </svg>
+                        Upgrade to enable
+                      </span>` : ''}
                       <div class="small" style="margin-top:4px; margin-left:24px;">The chatbot uses your knowledge base to answer questions and handles reservations, bookings, and complex interactions automatically.</div>
                     </label>
-                    <label style="display:block; margin-bottom:12px; padding:12px; border:1px solid #e5e7eb; border-radius:6px; cursor:pointer; ${s.conversation_mode === 'escalation' ? 'background:#f0f9ff; border-color:#3b82f6;' : ''}">
-                      <input type="radio" name="conversation_mode" value="escalation" ${s.conversation_mode === 'escalation' ? 'checked' : ''} style="margin-right:8px;"/>
+                    <label style="display:block; margin-bottom:12px; padding:12px; border:1px solid #e5e7eb; border-radius:6px; cursor:pointer; ${effectiveConversationMode === 'escalation' ? 'background:#f0f9ff; border-color:#3b82f6;' : ''}">
+                      <input type="radio" name="conversation_mode" value="escalation" ${effectiveConversationMode === 'escalation' ? 'checked' : ''} style="margin-right:8px;"/>
                       <strong>Simple Escalation Mode</strong>
                       <div class="small" style="margin-top:4px; margin-left:24px;">The chatbot immediately escalates customers to human support. If support is available (within working hours), it escalates right away. If not, it informs the customer when support will be available next.</div>
                     </label>
-          <div class="small" style="margin-top:12px; padding:12px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; ${s.conversation_mode === 'escalation' ? '' : 'display:none;'}" id="escalation_info">
+          <div class="small" style="margin-top:12px; padding:12px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; ${effectiveConversationMode === 'escalation' ? '' : 'display:none;'}" id="escalation_info">
             <strong>Note:</strong> In Simple Escalation Mode, the bot will use your <strong>Staff working hours</strong> (configured below) to determine when customer support is available. Make sure you have at least one staff member configured with working hours.
           </div>
           
           <!-- Escalation Mode Messages -->
-          <div style="margin-top:16px; padding:12px; background:#f0f9ff; border:1px solid #bfdbfe; border-radius:6px; ${s.conversation_mode === 'escalation' ? '' : 'display:none;'}" id="escalation_messages">
+          <div style="margin-top:16px; padding:12px; background:#f0f9ff; border:1px solid #bfdbfe; border-radius:6px; ${effectiveConversationMode === 'escalation' ? '' : 'display:none;'}" id="escalation_messages">
             <h4 style="margin:0 0 12px 0;">Escalation Messages</h4>
             
             <label style="display:block; margin-bottom:8px;">
@@ -255,7 +267,7 @@ export default function registerSettingsRoutes(app) {
                       })()}
                     </div>
                     <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
-                      <button type="button" onclick="addHolidayRow()">Add Holiday</button>
+                      <button type="button" onclick="addHolidayRow()" class="btn-primary">Add Holiday</button>
                       <div class="small">On matching dates and times the bot will send your Out of Hours Message.</div>
                     </div>
                     <script>
@@ -265,7 +277,7 @@ export default function registerSettingsRoutes(app) {
                           + '<input class="settings-field" name="holiday_date" placeholder="2025-12-25" />'
                           + '<input class="settings-field" name="holiday_start" placeholder="00:00" />'
                           + '<input class="settings-field" name="holiday_end" placeholder="23:59" />'
-                          + '<button type="button" class="btn-ghost" onclick="removeHolidayRow(this)" style="border:none;">Remove</button>';
+                          + '<button type="button" class="btn-ghost" onclick="removeHolidayRow(this)">Remove</button>';
                         c.insertAdjacentHTML('beforeend', tpl);
                       }
                       function removeHolidayRow(btn){
@@ -350,7 +362,7 @@ export default function registerSettingsRoutes(app) {
                       <label style="margin-top:12px;">SMTP Password
                         <div style="position:relative;">
                           <input type="password" id="smtp_pass" placeholder="App Password or SMTP password" class="settings-field" name="smtp_pass" value="${s.smtp_pass || ''}" style="padding-right:80px;"/>
-                          <button type="button" onclick="toggleReveal('smtp_pass')" style="position:absolute; right:8px; top:50%; transform:translateY(-50%); background:transparent; border:none; padding:4px 8px; cursor:pointer; color:#6b7280; font-size:12px;">Show</button>
+                          <button type="button" onclick="toggleReveal('smtp_pass')" class="btn-ghost" style="position:absolute; right:8px; top:50%; transform:translateY(-50%); padding:4px 8px; font-size:12px;">Show</button>
                         </div>
                       </label>
                       <div class="small">
@@ -358,16 +370,19 @@ export default function registerSettingsRoutes(app) {
                       </div>
                     </div>
                   </div>
-                  <button type="submit" style="width:100%;">Save</button>
+                  <button type="submit" class="btn-primary btn-full">Save</button>
                 </form>
                 <!-- Separate email form (not nested) to avoid interfering with settings submission -->
                 <form id="email-start-form" method="post" action="/settings/email/start" style="display:none;"></form>
                 <div class="section" id="data" style="display:flex; gap:10px; align-items:center;">
                   <form method="post" action="/kb/clear" style="margin:0;display:inline;">
-                    <button type="submit" style="background:#fee2e2;color:#b91c1c;border:1px solid #fecaca">Clear Knowledge Base</button>
+                    <button type="submit" class="btn-danger">Clear Knowledge Base</button>
                   </form>
                   <form method="post" action="/danger/wipe" style="margin:0;display:inline;" onsubmit="return confirm('Delete all data for this account? This cannot be undone.');">
-                    <button type="submit" style="background:#fee2e2;color:#991b1b;border:1px solid #fecaca">Delete my account data</button>
+                    <button type="submit" class="btn-danger">
+                    <img src="/delete-icon.svg" alt="Delete" style="width:16px;height:16px;margin-right:8px;"/>
+                      Delete my account data
+                    </button>
                   </form>
                 </div>
                 <div class="section" id="staff">
@@ -400,7 +415,7 @@ export default function registerSettingsRoutes(app) {
                         <div class="small" style="margin-top:6px; color:#6b7280;">Examples: 09:00-14:00 or 09:00-12:00, 13:00-17:00</div>
                       </div>
                       <div style="grid-column: 1 / -1;">
-                        <button type="submit">Add Staff</button>
+                        <button type="submit" class="btn-primary">Add Staff</button>
                       </div>
                     </form>
                   </div>
@@ -414,9 +429,11 @@ export default function registerSettingsRoutes(app) {
                             <div class="item-preview small">${r.timezone || 'UTC'} · ${r.slot_minutes||30}m ${r.calendar_id ? '(Calendar linked)' : ''}</div>
                           </div>
                           <div style="display:flex; gap:8px;">
-                            <a href="/settings?edit_staff=${String(r._id)}" class="btn" style="padding:4px 8px; background:#007bff; color:white; border-radius:4px; text-decoration:none;">Edit</a>
+                            <a href="/settings?edit_staff=${String(r._id)}" class="btn-ghost" style="background:#f3f4f6; padding:8px; border-radius:6px; cursor:pointer;">
+                              <img src="/pencil-icon.svg" alt="Edit" style="width:16px;height:16px;"/>
+                            </a>
                             <form method="post" action="/settings/staff/${String(r._id)}/delete" onsubmit="return checkAuthThenSubmit(this)" style="margin:0;">
-                              <button type="submit" class="btn-ghost" style="border:none;"><img src="/delete-icon.svg" alt="Delete"/></button>
+                              <button type="submit" class="btn-ghost"><img src="/delete-icon.svg" alt="Delete"/></button>
                             </form>
                           </div>
                         </div>
@@ -448,8 +465,8 @@ export default function registerSettingsRoutes(app) {
                         <div class="small" style="margin-top:6px; color:#6b7280;">Examples: 09:00-14:00 or 09:00-12:00, 13:00-17:00</div>
                       </div>
                       <div style="grid-column: 1 / -1; display:flex; gap:8px; justify-content:flex-end;">
-                        <a href="/settings" class="btn" style="padding:8px 16px; border:1px solid #d1d5db; background:white; border-radius:4px; text-decoration:none;">Cancel</a>
-                        <button type="submit" class="btn-primary" style="padding:8px 16px;">Update Staff</button>
+                        <a href="/settings" class="btn-ghost" style="text-decoration:none;">Cancel</a>
+                        <button type="submit" class="btn-primary">Update Staff</button>
                       </div>
                     </form>
                   </div>
@@ -515,7 +532,7 @@ export default function registerSettingsRoutes(app) {
                       const categoryField = form.querySelector('select[name="category"]');
                       const submitButton = form.querySelector('button[type="submit"]');
                       
-                      textField.value = text;
+                      try { textField.value = decodeURIComponent(text); } catch(_) { textField.value = text; }
                       categoryField.value = category;
                       submitButton.textContent = 'Update Reply';
                       submitButton.onclick = function(e) { e.preventDefault(); updateQuickReply(); };
@@ -686,11 +703,11 @@ export default function registerSettingsRoutes(app) {
                     <div class="quick-replies-list">
                       ${quickReplyCategories.length > 0 ? `
                         <div class="quick-replies-categories" style="margin-bottom: 12px;">
-                          <button type="button" class="quick-reply-category active" onclick="filterQuickRepliesSettings('All')" style="background: #007bff; color: white; border: none; padding: 4px 8px; margin-right: 4px; border-radius: 4px; font-size: 0.8em; cursor: pointer;">
+                          <button type="button" class="btn-ghost active" onclick="filterQuickRepliesSettings('All')" style="background: #007bff; color: white; border: none; padding: 4px 8px; margin-right: 4px; border-radius: 4px; font-size: 0.8em; cursor: pointer;">
                             All (${quickReplies.length})
                           </button>
                           ${quickReplyCategories.map(cat => `
-                            <button type="button" class="quick-reply-category" onclick="filterQuickRepliesSettings('${cat.category}')" style="background: #e9ecef; color: #495057; border: none; padding: 4px 8px; margin-right: 4px; border-radius: 4px; font-size: 0.8em; cursor: pointer;">
+                            <button type="button" class="btn-ghost" onclick="filterQuickRepliesSettings('${cat.category}')" style="background: #e9ecef; color: #495057; border: none; padding: 4px 8px; margin-right: 4px; border-radius: 4px; font-size: 0.8em; cursor: pointer;">
                               ${cat.category} (${cat.count})
                             </button>
                           `).join('')}
@@ -706,8 +723,12 @@ export default function registerSettingsRoutes(app) {
                                 ${reply.usage_count > 0 ? `<div style="font-size: 0.8em; color: #6c757d; margin-top: 4px;">Used ${reply.usage_count} times</div>` : ''}
                               </div>
                               <div style="display: flex; gap: 4px;">
-                                <button type="button" onclick="editQuickReply(${reply.id}, '${reply.text.replace(/'/g, '\\\'').replace(/"/g, '&quot;')}', '${reply.category || 'General'}')" style="background: #007bff; color: white; border: none; padding: 4px 8px; border-radius: 4px; font-size: 0.8em; cursor: pointer;">Edit</button>
-                                <button type="button" onclick="deleteQuickReply(${reply.id})" style="background: #dc3545; color: white; border: none; padding: 4px 8px; border-radius: 4px; font-size: 0.8em; cursor: pointer;">Delete</button>
+                                <button type="button" onclick="editQuickReply(${reply.id}, '${encodeURIComponent(reply.text)}', '${reply.category || 'General'}')" style="background:#f0f9ff; padding:8px; border-radius:6px; cursor:pointer;" class="btn-ghost">
+                                  <img src="/pencil-icon.svg" alt="Edit" style="width:16px;height:16px;"/>
+                                </button>
+                                <button type="button" onclick="deleteQuickReply(${reply.id})" style="background:#fef2f2; padding:8px; border-radius:6px; cursor:pointer;" class="btn-ghost">
+                                  <img src="/delete-icon.svg" alt="Delete" style="width:16px;height:16px;margin-right:8px;"/>
+                                </button>
                               </div>
                             </div>
                           </div>
@@ -940,6 +961,16 @@ export default function registerSettingsRoutes(app) {
         return out.length ? JSON.stringify(out) : null;
       })(),
     };
+    // Enforce plan gating: Full AI is for upgraded plans only
+    try {
+      const plan = await getUserPlan(userId);
+      const isUpgraded = (plan?.plan_name || 'free') !== 'free';
+      if (!isUpgraded) {
+        values.conversation_mode = 'escalation';
+        values.bookings_enabled = 0;
+        values.reminders_enabled = 0;
+      }
+    } catch {}
     try {
       await upsertSettingsForUser(userId, values);
     } catch (e) {

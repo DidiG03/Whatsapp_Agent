@@ -58,6 +58,12 @@ export async function upsertSettingsForUser(userId, values) {
     holidays_json_url: values.holidays_json_url ?? current.holidays_json_url ?? null,
     closed_dates_json: values.closed_dates_json ?? current.closed_dates_json ?? null,
     holidays_rules_json: values.holidays_rules_json ?? current.holidays_rules_json ?? null,
+    // Booking advanced controls
+    booking_max_per_day: values.booking_max_per_day ?? current.booking_max_per_day ?? 0,
+    booking_days_ahead: values.booking_days_ahead ?? current.booking_days_ahead ?? 60,
+    booking_display_interval_minutes: values.booking_display_interval_minutes ?? current.booking_display_interval_minutes ?? 30,
+    booking_capacity_window_minutes: values.booking_capacity_window_minutes ?? current.booking_capacity_window_minutes ?? 60,
+    booking_capacity_limit: values.booking_capacity_limit ?? current.booking_capacity_limit ?? 0,
   };
   try {
     const res = await SettingsMulti.findOneAndUpdate(

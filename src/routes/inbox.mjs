@@ -1,13 +1,14 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
 import { renderSidebar, normalizePhone, escapeHtml, renderTopbar, getProfessionalHead } from "../utils.mjs";
 import { listContactsForUser, listMessagesForThread } from "../services/conversations.mjs";
-import { db } from "../db-mongodb.mjs";
+import { db, getDB } from "../db-mongodb.mjs";
 import { Customer, Handoff, Message, MessageStatus } from '../schemas/mongodb.mjs';
 import { getSettingsForUser } from "../services/settings.mjs";
 import { sendWhatsAppText, sendWhatsAppTemplate, sendWhatsappImage, sendWhatsappReaction, sendWhatsappList } from "../services/whatsapp.mjs";
 import { getQuickReplies } from "../services/quickReplies.mjs";
 import { getMessageReactions, toggleReaction, removeReaction, getMessagesReactions, getUserReactionsForMessages } from "../services/reactions.mjs";
 import { createReply, getMessagesReplies, getReplyOriginals } from "../services/replies.mjs";
+import { getUserPlan } from "../services/usage.mjs";
 import { updateContactActivity, upsertContactProfile } from "../services/contacts.mjs";
 import { 
   getConversationStatus, 
@@ -307,6 +308,19 @@ async function performMessageSearch(userId, filters) {
   };
 }
 
+// When agent is in live (human) mode and sends the first message,
+// automatically set conversation status to In Progress
+async function ensureInProgressIfHuman(userId, phone) {
+  try {
+    const handoff = await Handoff.findOne({ user_id: userId, contact_id: phone }).select('is_human');
+    if (!handoff?.is_human) return;
+    const current = await getConversationStatus(userId, phone);
+    if (current !== CONVERSATION_STATUSES.IN_PROGRESS && current !== CONVERSATION_STATUSES.RESOLVED) {
+      await updateConversationStatus(userId, phone, CONVERSATION_STATUSES.IN_PROGRESS, 'agent_first_message');
+    }
+  } catch {}
+}
+
 // List archived conversations for a user (paginated)
 async function listArchivedContacts(userId, { page = 1, pageSize = 20 } = {}) {
   try {
@@ -366,6 +380,9 @@ export default function registerInboxRoutes(app) {
         : await listContactsForUser(userId, { page, pageSize });
     }
     const email = await getSignedInEmail(req);
+    // Plan gating: only upgraded users can reply/react
+    const plan = await getUserPlan(userId);
+    const isUpgraded = (plan?.plan_name || 'free') !== 'free';
 
     // Ensure archived conversations are excluded from the default inbox list
     if (!showArchived) {
@@ -455,49 +472,34 @@ export default function registerInboxRoutes(app) {
           const dropdownId = `menu_${c.contact}`;
           const menu = `
         <div class="dropdown" style="position:relative; overflow:visible;">
-          <button type="button" class="btn-ghost" style="border:none; position:relative; z-index:10000;" onclick="return toggleMenu('${dropdownId}', event)">
+          <button type="button" class="btn-ghost" style="position:relative; z-index:10000;" onclick="return toggleMenu('${dropdownId}', event)">
             <img src="/menu-icon.svg" alt="Menu" style="width:20px;height:20px;vertical-align:middle;border:none;"/>
           </button>
           <div id="${dropdownId}" class="dropdown-menu" style="position:absolute; right:0; top:36px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:6px; min-width:180px; display:none; box-shadow:0 10px 30px rgba(0,0,0,0.18); z-index:10001;" onclick="event.stopPropagation()">
             ${showArchived ? `
             <form method=\"post\" action=\"/inbox/${encodeURIComponent(c.contact)}/unarchive\" onsubmit=\"event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;\" style=\"margin:0;\">
-              <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;">
+              <button type="submit" class="btn-ghost btn-full" style="display:flex; align-items:center; gap:8px; justify-content:flex-start;">
                 <img src="/archive-icon.svg" alt="Unarchive"/> Unarchive
               </button>
             </form>` : `
-            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/archive" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
-              <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;">
+            <form method=\"post\" action=\"/inbox/${encodeURIComponent(c.contact)}/archive\" onsubmit=\"event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;\" style=\"margin:0;\">
+              <button type="submit" class="btn-ghost btn-full" style="display:flex; align-items:center; gap:8px; justify-content:flex-start;">
                 <img src="/archive-icon.svg" alt="Archive"/> Archive
               </button>
             </form>`}
-            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/clear" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
-              <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;">
+            <form method=\"post\" action=\"/inbox/${encodeURIComponent(c.contact)}/clear\" onsubmit=\"event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;\" style=\"margin:0;\">
+              <button type="submit" class="btn-ghost btn-full" style="display:flex; align-items:center; gap:8px; justify-content:flex-start;">
                 <img src="/clear-icon.svg" alt="Clear"/> Clear
               </button>
             </form>
-            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/delete" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
-              <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; color:#c00; border:none;">
+            <form method=\"post\" action=\"/inbox/${encodeURIComponent(c.contact)}/delete\" onsubmit=\"event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;\" style=\"margin:0;\">
+              <button type="submit" class="btn-ghost btn-full" style="display:flex; align-items:center; gap:8px; justify-content:flex-start; color:#c00;">
                 <img src="/delete-icon.svg" alt="Delete"/> Delete
               </button>
             </form>
-            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/nameCustomer" style="margin:0;">
-              <button type="button" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;" data-cid="${String(c.contact).replace(/&/g,'&amp;').replace(/\"/g,'&quot;').replace(/'/g,'&#39;')}" onclick="openNameModal(this.dataset.cid); return false;">
-                <img src="/name-person-icon.svg" alt="Name Person"/> Name Customer
-              </button>
-            </form>
-            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/optout" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
-              <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;">
-                🚫 Opt-out
-              </button>
-            </form>
-            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/unoptout" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
-              <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;">
-                ✅ Remove opt-out
-              </button>
-            </form>
-            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/block24h" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin:0;">
-              <button type="submit" class="btn-ghost" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none;">
-                ⛔ Block 24h
+            <form method=\"post\" action=\"/inbox/${encodeURIComponent(c.contact)}/block24h\" onsubmit=\"event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;\" style=\"margin:0;\">
+              <button type="submit" class="btn-ghost btn-full" style="display:flex; align-items:center; gap:8px; justify-content:flex-start;">
+                ⛔ Block
               </button>
             </form>
           </div>
@@ -560,6 +562,7 @@ export default function registerInboxRoutes(app) {
         </div>
         
         <script src="/toast.js"></script>
+        <script src="/auth-utils.js"></script>
         <script>
           // WhatsApp token check and modal
           async function checkWaTokenAndPrompt(){
@@ -711,16 +714,14 @@ export default function registerInboxRoutes(app) {
                     <button type="button" onclick="toggleSearchFilters()" class="filter-toggle-btn">
                       <img src="/filter-icon.svg" alt="Filter" width="20" height="20">
                     </button>
-                    <a href="/search" class="btn-primary">
-                      <img src="/advanced-search-icon.svg" alt="Advanced Search" width="20" height="20" style="margin-right: 6px;">
-                    </a>
+
                     ${showArchived ? `
                       <a href="/inbox" class="btn-ghost" title="Back to Inbox" style="display:inline-flex;align-items:center;gap:6px;">
                         <img src="/inbox-icon.svg" alt="Inbox" width="18" height="18"> Inbox
                       </a>
                     ` : `
                       <a href="/inbox?archived=1" class="btn-ghost" title="View Archived" style="display:inline-flex;align-items:center;gap:6px;">
-                        <img src="/archive-icon.svg" alt="Archived" width="18" height="18"> Archived
+                        <img src="/archive-icon.svg" alt="Archived" width="18" height="18"> 
                       </a>
                     `}
                   </div>
@@ -734,7 +735,7 @@ export default function registerInboxRoutes(app) {
                     <textarea class="settings-field" name="notes" rows="3" placeholder="Notes (optional)"></textarea>
                     <div style="display:flex; gap:8px; justify-content:flex-end;">
                       <button type="button" class="btn-ghost" onclick="closeNameModal()">Cancel</button>
-                      <button type="submit">Save</button>
+                      <button type="submit" class="btn-primary">Save</button>
                     </div>
                   </form>
                   
@@ -750,7 +751,7 @@ export default function registerInboxRoutes(app) {
                     </label>
                     <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:8px;">
                       <button type="button" class="btn-ghost" onclick="closeWaTokenModal()">Cancel</button>
-                      <button type="button" id="waTokenSave" onclick="saveWaToken()">Save Token</button>
+                      <button type="button" id="waTokenSave" class="btn-primary" onclick="saveWaToken()">Save Token</button>
                     </div>
                   </div>
                 </div>
@@ -1184,7 +1185,7 @@ export default function registerInboxRoutes(app) {
     const cust = await Customer.findOne({ user_id: userId, contact_id: phone }).select('display_name');
     const headerName = cust?.display_name || ('+' + String(phone).replace(/^\+/, ''));
     // Fetch richer message data using Mongo aggregation
-    const msgs = await Message.aggregate([
+    let msgs = await Message.aggregate([
       {
         $match: {
           user_id: userId,
@@ -1224,6 +1225,8 @@ export default function registerInboxRoutes(app) {
         }
       }
     ]);
+    // Hide system clear markers from the chat view
+    try { msgs = msgs.filter(m => m?.type !== 'system_clear'); } catch {}
     
     // Load reactions and replies for all messages
     const messageIds = msgs.map(m => m.id);
@@ -1256,6 +1259,13 @@ export default function registerInboxRoutes(app) {
       const etag = 'W/"'+Buffer.from(etagBase).toString('base64').slice(0, 32)+'"';
       if (req.headers['if-none-match'] === etag) return res.status(304).end();
       res.setHeader('ETag', etag);
+    } catch {}
+
+    // Plan gating: only upgraded users can reply/react
+    let isUpgraded = false;
+    try {
+      const plan = await getUserPlan(userId);
+      isUpgraded = (plan?.plan_name || 'free') !== 'free';
     } catch {}
 
     const items = msgs.map(m => {
@@ -1414,8 +1424,9 @@ export default function registerInboxRoutes(app) {
         messageReactions.forEach(reaction => {
           const isUserReaction = userReactions.includes(reaction.emoji);
           const reactionClass = isUserReaction ? 'user-reaction' : 'customer-reaction';
-          const clickHandler = isUserReaction ? `onclick="toggleReaction('${m.id}', '${reaction.emoji}')"` : '';
-          const cursorStyle = isUserReaction ? 'cursor: pointer;' : 'cursor: default;';
+          const allowClick = isUserReaction && isUpgraded;
+          const clickHandler = allowClick ? `onclick="toggleReaction('${m.id}', '${reaction.emoji}')"` : '';
+          const cursorStyle = allowClick ? 'cursor: pointer;' : 'cursor: default;';
           const title = isUserReaction ? 'Click to remove your reaction' : 'Customer reaction';
           reactionsHtml += `<span class="reaction ${reactionClass}" data-message-id="${m.id}" data-emoji="${reaction.emoji}" ${clickHandler} style="${cursorStyle}" title="${title}">${reaction.emoji}<span class="reaction-count">${reaction.count}</span></span>`;
         });
@@ -1423,12 +1434,12 @@ export default function registerInboxRoutes(app) {
       }
       
       // Add action buttons inside the bubble
-      const actionButtons = `
+      const actionButtons = isUpgraded ? `
         <div class="message-actions">
           <button class="action-btn reply-btn" onclick="replyToMessage('${m.id}')" title="Reply to this message">↩️</button>
           <button class="action-btn reaction-btn" onclick="showReactionPicker('${m.id}')" title="Add reaction">+</button>
         </div>
-      `;
+      ` : '';
       
       return `<div class="${cls} message-container" id="message-${m.id}" data-message-id="${m.id}">${originalMessageHtml}<div class="bubble">${safe}<div class="meta">${ts}${statusTicks}</div>${reactionsHtml}${actionButtons}</div></div>`;
     }).join("");
@@ -1848,11 +1859,18 @@ export default function registerInboxRoutes(app) {
               fetch('/api/reactions/' + currentMessageId, {
                 method: 'POST',
                 headers: {
-                  'Content-Type': 'application/json'
+                  'Content-Type': 'application/json',
+                  'Accept': 'application/json',
+                  'X-Requested-With': 'XMLHttpRequest'
                 },
+                credentials: 'include',
                 body: JSON.stringify({ emoji: emoji, phone: phone })
-              }).then(response => response.json())
-                .then(data => {
+              }).then(async response => {
+                  let data;
+                  try { data = await response.json(); }
+                  catch { const text = await response.text(); throw new Error(text || 'Non-JSON response'); }
+                  return data;
+                }).then(data => {
                   if (data.success) {
                     // Reload the page to show updated reactions
                     window.location.reload();
@@ -1872,11 +1890,18 @@ export default function registerInboxRoutes(app) {
               fetch('/api/reactions/' + messageId, {
                 method: 'POST',
                 headers: {
-                  'Content-Type': 'application/json'
+                  'Content-Type': 'application/json',
+                  'Accept': 'application/json',
+                  'X-Requested-With': 'XMLHttpRequest'
                 },
+                credentials: 'include',
                 body: JSON.stringify({ emoji: emoji, phone: phone })
-              }).then(response => response.json())
-                .then(data => {
+              }).then(async response => {
+                  let data;
+                  try { data = await response.json(); }
+                  catch { const text = await response.text(); throw new Error(text || 'Non-JSON response'); }
+                  return data;
+                }).then(data => {
                   if (data.success) {
                     // Reload the page to show updated reactions
                     window.location.reload();
@@ -2284,7 +2309,7 @@ export default function registerInboxRoutes(app) {
                     return;
                   }
                   if (window?.ENV?.DEBUG_LOGS === '1') console.log('📤 Sending message via real-time:', message);
-                  const success = realtimeManager.sendMessage(phoneDigits, message, 'text');
+                  const success = realtimeManager.sendMessage(phoneDigits, message, 'text', currentReplyToMessageId);
                   if (success) {
                     textarea.value = '';
                     clearReply();
@@ -2449,7 +2474,7 @@ export default function registerInboxRoutes(app) {
               <main class="main">
                 <div class="main-content">
                   <div class="wa-chat-header">
-                    <a href="/inbox" style="border:none; margin-right:20px;">
+                    <a href="/inbox" style="margin-right:20px;">
                       <img src="/left-arrow-icon.svg" alt="Back" style="width:10px;height:10px;vertical-align:middle;"/>
                     </a>
                     <div class="wa-avatar">${String(phone).slice(-2)}</div>
@@ -2483,7 +2508,7 @@ export default function registerInboxRoutes(app) {
                     </form>
                     <!-- Conversation Status Management -->
                     <div class="status-dropdown" style="position:relative; margin-left:8px; margin-bottom:8px;">
-                      <button type="button" class="btn-ghost" onclick="toggleStatusDropdown()" style="border:none; background:transparent; padding:4px 8px; border-radius:6px; display:flex; align-items:center; gap:4px;">
+                      <button type="button" class="btn-ghost" onclick="toggleStatusDropdown()" style="padding:4px 8px; border-radius:6px; display:flex; align-items:center; gap:4px;">
                         <span class="status-chip" style="background-color: ${statusColor}; color: white; font-size: 11px; padding: 3px 8px; border-radius: 12px;">${statusDisplay}</span>
                         <span style="font-size:12px; color:#666;">▼</span>
                       </button>
@@ -2525,7 +2550,7 @@ export default function registerInboxRoutes(app) {
                           <img id="previewImg" style="width:60px; height:60px; object-fit:cover; border-radius:8px;" />
                           <div style="font-size:12px; color:#666;">Selected image</div>
                           <div style="flex:1;"></div>
-                          <button type="button" onclick="clearImagePreview()" style="background:#ff4444; color:white; border:none; border-radius:4px; padding:4px 8px; cursor:pointer; font-size:12px;">Remove</button>
+                          <button type="button" onclick="clearImagePreview()" class="btn-danger" style="border-radius:4px; padding:4px 8px; font-size:12px;">Remove</button>
                         </div>
                       </div>
                       <form id="imageUploadForm" method="post" action="/upload-image/${phone}" enctype="multipart/form-data" data-auth-enhanced style="display:none;">
@@ -2891,6 +2916,24 @@ export default function registerInboxRoutes(app) {
           { to_id: { $in: [digits, '+' + digits] } }
         ]
       });
+      // Insert a lightweight system marker so the conversation remains in the inbox list
+      try {
+        const now = Math.floor(Date.now()/1000);
+        await Message.create({
+          id: `clear_${userId}_${digits}_${now}`,
+          direction: 'outbound',
+          from_id: null,
+          to_id: phone,
+          from_digits: null,
+          to_digits: digits,
+          type: 'system_clear',
+          text_body: '',
+          timestamp: now,
+          user_id: String(userId),
+          raw: { system: 'clear_marker' },
+          delivery_status: 'sent'
+        });
+      } catch {}
     } catch (e) {
       console.error('Clear conversation failed:', e?.message || e);
     }
@@ -2980,6 +3023,8 @@ export default function registerInboxRoutes(app) {
           };
           broadcastNewMessage(userId, String(to), messageData);
         } catch {}
+        // If agent is live, move status to in_progress on first message
+        try { await ensureInProgressIfHuman(userId, String(to)); } catch {}
         
         // Update contact activity
         try {
@@ -2992,9 +3037,12 @@ export default function registerInboxRoutes(app) {
         const replyTo = req.body?.replyTo;
         if (replyTo && outboundId) {
           try {
-            const replyResult = createReply(replyTo, outboundId);
-            if (!replyResult.success) {
-              console.error('Failed to create reply relationship:', replyResult.error);
+            const plan = await getUserPlan(userId);
+            if ((plan?.plan_name || 'free') !== 'free') {
+              const replyResult = createReply(replyTo, outboundId);
+              if (!replyResult.success) {
+                console.error('Failed to create reply relationship:', replyResult.error);
+              }
             }
           } catch (error) {
             console.error('Error creating reply relationship:', error);
@@ -3029,7 +3077,7 @@ export default function registerInboxRoutes(app) {
           e?.message || 'Unknown error'
         );
         
-        if (window?.ENV?.DEBUG_LOGS === '1') console.log(`❌ Created failed message record: ${tempMessageId}`);
+        if (process.env.DEBUG_LOGS === '1') console.log(`❌ Created failed message record: ${tempMessageId}`);
       } catch (dbError) {
         console.error("Error creating failed message record:", dbError);
       }
@@ -3075,7 +3123,7 @@ export default function registerInboxRoutes(app) {
       }
       
       // Attempt to resend the message (with diagnostics)
-      try { if (window?.ENV?.DEBUG_LOGS === '1') console.log('[Retry] Resending WA text', { to_tail: String(message.to||'').slice(-6), hasPhoneId: !!cfg.phone_number_id, hasToken: !!cfg.whatsapp_token }); } catch {}
+      try { if (process.env.DEBUG_LOGS === '1') console.log('[Retry] Resending WA text', { to_tail: String(message.to||'').slice(-6), hasPhoneId: !!cfg.phone_number_id, hasToken: !!cfg.whatsapp_token }); } catch {}
       const data = await sendWhatsAppText(message.to, message.text, cfg);
       const outboundId = data?.messages?.[0]?.id;
       
@@ -3097,7 +3145,7 @@ export default function registerInboxRoutes(app) {
           console.error('Error updating contact activity:', error);
         }
         
-        if (window?.ENV?.DEBUG_LOGS === '1') console.log(`✅ Successfully retried message ${messageId} -> ${outboundId}`);
+        if (process.env.DEBUG_LOGS === '1') console.log(`✅ Successfully retried message ${messageId} -> ${outboundId}`);
         
         // Broadcast the newly sent message to the chat in real-time
         try {
@@ -3180,13 +3228,13 @@ export default function registerInboxRoutes(app) {
       // For WhatsApp API: use ngrok URL if available
       const ngrokUrl = process.env.NGROK_URL || 'https://85d9d75e0287.ngrok-free.app';
       whatsappImageUrl = `${ngrokUrl}/uploads/${req.file.filename}`;
-      if (window?.ENV?.DEBUG_LOGS === '1') console.log('⚠️ WARNING: Using localhost for display, ngrok for WhatsApp API');
+      if (process.env.DEBUG_LOGS === '1') console.log('⚠️ WARNING: Using localhost for display, ngrok for WhatsApp API');
     }
     
-    if (window?.ENV?.DEBUG_LOGS === '1') console.log('Image upload - Generated URL:', imageUrl);
-    if (window?.ENV?.DEBUG_LOGS === '1') console.log('Image upload - File:', req.file.filename);
-    if (window?.ENV?.DEBUG_LOGS === '1') console.log('Image upload - Using ngrok:', isNgrok);
-    if (window?.ENV?.DEBUG_LOGS === '1') console.log('Image upload - Note: WhatsApp needs this URL to be publicly accessible');
+    if (process.env.DEBUG_LOGS === '1') console.log('Image upload - Generated URL:', imageUrl);
+    if (process.env.DEBUG_LOGS === '1') console.log('Image upload - File:', req.file.filename);
+    if (process.env.DEBUG_LOGS === '1') console.log('Image upload - Using ngrok:', isNgrok);
+    if (process.env.DEBUG_LOGS === '1') console.log('Image upload - Note: WhatsApp needs this URL to be publicly accessible');
 
     // Enforce 24h window: if last inbound >24h ago, attempt a template instead
     try {
@@ -3214,7 +3262,7 @@ export default function registerInboxRoutes(app) {
         originalMessageId = originalMessage?.id;
       }
       
-      if (window?.ENV?.DEBUG_LOGS === '1') console.log('Sending image via WhatsApp API:', { to, whatsappImageUrl, caption });
+      if (process.env.DEBUG_LOGS === '1') console.log('Sending image via WhatsApp API:', { to, whatsappImageUrl, caption });
       
       let data;
       if (isNgrok) {
@@ -3235,7 +3283,7 @@ export default function registerInboxRoutes(app) {
         data = await sendWhatsappImageBase64(to, req.file.path, caption, cfg);
       }
       
-      if (window?.ENV?.DEBUG_LOGS === '1') console.log('WhatsApp API response:', data);
+      if (process.env.DEBUG_LOGS === '1') console.log('WhatsApp API response:', data);
       const outboundId = data?.messages?.[0]?.id;
       const fromBiz = (cfg.business_phone || "").replace(/\D/g, "") || null;
       
@@ -3249,14 +3297,19 @@ export default function registerInboxRoutes(app) {
         const replyTo = req.body?.replyTo;
         if (replyTo && outboundId) {
           try {
-            const replyResult = createReply(replyTo, outboundId);
-            if (!replyResult.success) {
-              console.error('Failed to create reply relationship:', replyResult.error);
+            const plan = await getUserPlan(userId);
+            if ((plan?.plan_name || 'free') !== 'free') {
+              const replyResult = createReply(replyTo, outboundId);
+              if (!replyResult.success) {
+                console.error('Failed to create reply relationship:', replyResult.error);
+              }
             }
           } catch (error) {
             console.error('Error creating reply relationship:', error);
           }
         }
+        // If agent is live, move status to in_progress on first message
+        try { await ensureInProgressIfHuman(userId, String(to)); } catch {}
       }
     } catch (e) {
       console.error("Image upload send error:", e);
@@ -3291,11 +3344,11 @@ export default function registerInboxRoutes(app) {
       documentUrl = `${req.protocol}://${host}/uploads/${req.file.filename}`;
       const ngrokUrl = process.env.NGROK_URL || 'https://85d9d75e0287.ngrok-free.app';
       whatsappDocumentUrl = `${ngrokUrl}/uploads/${req.file.filename}`;
-      if (window?.ENV?.DEBUG_LOGS === '1') console.log('⚠️ WARNING: Using localhost for display, ngrok for WhatsApp API');
+      if (process.env.DEBUG_LOGS === '1') console.log('⚠️ WARNING: Using localhost for display, ngrok for WhatsApp API');
     }
     
-    if (window?.ENV?.DEBUG_LOGS === '1') console.log('Document upload - Generated URL:', documentUrl);
-    if (window?.ENV?.DEBUG_LOGS === '1') console.log('Document upload - File:', req.file.filename);
+    if (process.env.DEBUG_LOGS === '1') console.log('Document upload - Generated URL:', documentUrl);
+    if (process.env.DEBUG_LOGS === '1') console.log('Document upload - File:', req.file.filename);
 
     // Enforce 24h window: if last inbound >24h ago, attempt a template instead
     try {
@@ -3322,8 +3375,8 @@ export default function registerInboxRoutes(app) {
         originalMessageId = originalMessage?.id;
       }
       
-      if (window?.ENV?.DEBUG_LOGS === '1') console.log('Sending document via WhatsApp API:', { to, whatsappDocumentUrl, caption });
-      if (window?.ENV?.DEBUG_LOGS === '1') console.log('WhatsApp config check:', { 
+      if (process.env.DEBUG_LOGS === '1') console.log('Sending document via WhatsApp API:', { to, whatsappDocumentUrl, caption });
+      if (process.env.DEBUG_LOGS === '1') console.log('WhatsApp config check:', { 
         hasToken: !!cfg.whatsapp_token, 
         hasPhoneId: !!cfg.phone_number_id,
         tokenLength: cfg.whatsapp_token?.length,
@@ -3338,7 +3391,7 @@ export default function registerInboxRoutes(app) {
         data = await sendWhatsappDocumentBase64(to, req.file.path, req.file.filename, caption, cfg);
       }
       
-      if (window?.ENV?.DEBUG_LOGS === '1') console.log('WhatsApp API response:', data);
+      if (process.env.DEBUG_LOGS === '1') console.log('WhatsApp API response:', data);
       const outboundId = data?.messages?.[0]?.id;
       const fromBiz = (cfg.business_phone || "").replace(/\D/g, "") || null;
       
@@ -3365,13 +3418,18 @@ export default function registerInboxRoutes(app) {
           };
           broadcastNewMessage(userId, String(to), messageData);
         } catch {}
+        // If agent is live, move status to in_progress on first message
+        try { await ensureInProgressIfHuman(userId, String(to)); } catch {}
         
         // Handle reply relationship if this is a reply to another message
         if (replyTo && outboundId) {
           try {
-            const replyResult = createReply(replyTo, outboundId);
-            if (!replyResult.success) {
-              console.error('Failed to create reply relationship:', replyResult.error);
+            const plan = await getUserPlan(userId);
+            if ((plan?.plan_name || 'free') !== 'free') {
+              const replyResult = createReply(replyTo, outboundId);
+              if (!replyResult.success) {
+                console.error('Failed to create reply relationship:', replyResult.error);
+              }
             }
           } catch (error) {
             console.error('Error creating reply relationship:', error);
@@ -3431,12 +3489,18 @@ export default function registerInboxRoutes(app) {
     const { messageId } = req.params;
     const { emoji, phone } = req.body;
     const userId = getCurrentUserId(req);
+    try {
+      const plan = await getUserPlan(userId);
+      if ((plan?.plan_name || 'free') === 'free') {
+        return res.status(403).json({ success: false, error: 'upgrade_required' });
+      }
+    } catch {}
     
     if (!emoji) {
       return res.status(400).json({ error: 'Emoji is required' });
     }
     
-    const result = toggleReaction(messageId, userId, emoji);
+    const result = await toggleReaction(messageId, userId, emoji);
     if (result.success) {
       // Broadcast the reaction change in real-time
       if (phone) {
@@ -3456,12 +3520,23 @@ export default function registerInboxRoutes(app) {
       // Send reaction changes to WhatsApp
       if (phone) {
         try {
-          // Get the original message to find the WhatsApp message ID
-          const originalMessage = db.prepare(`SELECT raw FROM messages WHERE id = ? AND user_id = ?`).get(messageId, userId);
-          
-          if (originalMessage && originalMessage.raw) {
-            const rawData = JSON.parse(originalMessage.raw);
-            const whatsappMessageId = rawData.id || rawData.message_id;
+          // Get the original message to find the WhatsApp message ID (MongoDB)
+          const dbNative = getDB();
+          const originalMessage = await dbNative.collection('messages').findOne(
+            { id: String(messageId), user_id: String(userId) },
+            { projection: { id: 1, raw: 1 } }
+          );
+          if (originalMessage) {
+            let whatsappMessageId = null;
+            try {
+              // Prefer the stored message id (it should be the WA message id)
+              whatsappMessageId = originalMessage.id || null;
+              // Fallback to raw payload if needed
+              if (!whatsappMessageId && originalMessage.raw) {
+                const rawData = typeof originalMessage.raw === 'string' ? JSON.parse(originalMessage.raw) : (originalMessage.raw || {});
+                whatsappMessageId = rawData.id || rawData.message_id || null;
+              }
+            } catch {}
             
             if (whatsappMessageId) {
               // Get user settings for WhatsApp configuration
@@ -3470,12 +3545,12 @@ export default function registerInboxRoutes(app) {
               if (settings.whatsapp_token && settings.phone_number_id) {
                 if (result.added) {
                   // Send reaction addition to WhatsApp
-                  await sendWhatsappReaction(phone, whatsappMessageId, emoji, settings);
-                  if (window?.ENV?.DEBUG_LOGS === '1') console.log('Sent WhatsApp reaction addition');
+                  const r = await sendWhatsappReaction(phone, whatsappMessageId, emoji, settings);
+                  if (process.env.DEBUG_LOGS === '1') console.log('WA reaction add resp:', r);
                 } else if (result.removed) {
                   // Send reaction removal to WhatsApp (empty emoji)
-                  await sendWhatsappReaction(phone, whatsappMessageId, '', settings);
-                  if (window?.ENV?.DEBUG_LOGS === '1') console.log('Sent WhatsApp reaction removal');
+                  const r = await sendWhatsappReaction(phone, whatsappMessageId, '', settings);
+                  if (process.env.DEBUG_LOGS === '1') console.log('WA reaction remove resp:', r);
                 }
               }
             }
@@ -3498,16 +3573,22 @@ export default function registerInboxRoutes(app) {
     res.json({ reactions });
   });
   
-  app.delete("/api/reactions/:messageId", ensureAuthed, (req, res) => {
+  app.delete("/api/reactions/:messageId", ensureAuthed, async (req, res) => {
     const { messageId } = req.params;
     const { emoji } = req.body;
     const userId = getCurrentUserId(req);
+    try {
+      const plan = await getUserPlan(userId);
+      if ((plan?.plan_name || 'free') === 'free') {
+        return res.status(403).json({ success: false, error: 'upgrade_required' });
+      }
+    } catch {}
     
     if (!emoji) {
       return res.status(400).json({ error: 'Emoji is required' });
     }
     
-    const result = removeReaction(messageId, userId, emoji);
+    const result = await removeReaction(messageId, userId, emoji);
     if (result.success) {
       res.json({ success: true, message: 'Reaction removed successfully' });
     } else {

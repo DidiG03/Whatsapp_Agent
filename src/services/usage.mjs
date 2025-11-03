@@ -136,6 +136,8 @@ export function getPlanPricing() {
       price: 0,
       monthly_limit: 100,
       whatsapp_numbers: 1,
+      kb_docs_limit: 20,
+      kb_chars_limit: 5 * 1024 * 1024, // ~5 MB of text
       features: [
         'Basic AI responses',
         'Email notifications',
@@ -148,6 +150,8 @@ export function getPlanPricing() {
       price: 29,
       monthly_limit: 1000,
       whatsapp_numbers: 1,
+      kb_docs_limit: 500,
+      kb_chars_limit: 200 * 1024 * 1024, // ~200 MB of text
       features: [
         'Advanced AI customization',
         'Email + web notifications',

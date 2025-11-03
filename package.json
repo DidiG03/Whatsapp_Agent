@@ -28,6 +28,9 @@
   "description": "",
   "dependencies": {
     "@clerk/express": "^1.7.31",
+    "@opentelemetry/auto-instrumentations-node": "^0.66.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.207.0",
+    "@opentelemetry/sdk-node": "^0.207.0",
     "@sentry/integrations": "^7.114.0",
     "@sentry/node": "^10.20.0",
     "@sentry/profiling-node": "^10.20.0",

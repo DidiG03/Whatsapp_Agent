@@ -36,7 +36,8 @@
       buttons.forEach(button => {
         if (!button.hasAttribute('data-loading')) {
           button.addEventListener('click', (e) => {
-            if (button.type === 'submit' || button.classList.contains('submit-btn')) {
+            // Only show loading state when explicitly opted-in
+            if (button.hasAttribute('data-loading') || button.classList.contains('submit-btn')) {
               this.showLoading(button);
             }
           });

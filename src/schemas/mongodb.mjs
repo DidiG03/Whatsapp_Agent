@@ -151,6 +151,12 @@ const settingsMultiSchema = new mongoose.Schema({
   holidays_json_url: String,
   closed_dates_json: String,
   holidays_rules_json: String,
+  // Advanced booking controls
+  booking_max_per_day: { type: Number, default: 0 },
+  booking_days_ahead: { type: Number, default: 60 },
+  booking_display_interval_minutes: { type: Number, default: 30 },
+  booking_capacity_window_minutes: { type: Number, default: 60 },
+  booking_capacity_limit: { type: Number, default: 0 },
   smtp_host: String,
   smtp_port: { type: Number, default: 587 },
   smtp_secure: { type: Boolean, default: false },

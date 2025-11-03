@@ -4,7 +4,7 @@ import { renderTranscriptAsBubbles } from "../utils.mjs";
 import { upsertKbItem } from "../services/kb.mjs";
 import { upsertSettingsForUser, getSettingsForUser } from "../services/settings.mjs";
 import { onboardingCoachReply } from "../services/ai.mjs";
-import { db } from "../db-mongodb.mjs";
+import { KBItem } from "../schemas/mongodb.mjs";
 
 export default function registerAssistantRoutes(app) {
   app.get("/assistant", (req, res) => {
@@ -218,7 +218,7 @@ export default function registerAssistantRoutes(app) {
     const state = getOnboarding(userId) || { step: 0, transcript: '' };
     if (!userMsg) return res.redirect("/assistant");
     try {
-      const titles = db.prepare(`SELECT title FROM kb_items WHERE user_id = ? AND title IS NOT NULL`).all(userId).map(r => r.title);
+      const titles = (await KBItem.find({ user_id: userId, title: { $ne: null } }).select('title').lean()).map(r => r.title);
       const history = state.transcript || "";
       let coach = await onboardingCoachReply(userMsg, titles, history);
       coach = coach || "Got it.";
@@ -241,7 +241,7 @@ export default function registerAssistantRoutes(app) {
         const title = (m[1] || '').trim().slice(0, 120) || 'Untitled';
         const content = (m[2] || '').trim();
         if (content) {
-          upsertKbItem(userId, title, content);
+          await upsertKbItem(userId, title, content);
           savedSummaries.push(`Saved “${title}” to KB.`);
         }
       }
@@ -263,9 +263,9 @@ export default function registerAssistantRoutes(app) {
         if (Object.keys(updates).length) {
           upsertSettingsForUser(userId, { ...current, ...updates });
           try {
-            if (updates.business_name) { upsertKbItem(userId, 'Business Name', updates.business_name); savedSummaries.push('Saved “Business Name” to KB.'); }
-            if (updates.website_url) { upsertKbItem(userId, 'Website', updates.website_url); savedSummaries.push('Saved “Website” to KB.'); }
-            if (updates.business_phone) { upsertKbItem(userId, 'Contact', updates.business_phone); savedSummaries.push('Saved “Contact” to KB.'); }
+            if (updates.business_name) { await upsertKbItem(userId, 'Business Name', updates.business_name); savedSummaries.push('Saved “Business Name” to KB.'); }
+            if (updates.website_url) { await upsertKbItem(userId, 'Website', updates.website_url); savedSummaries.push('Saved “Website” to KB.'); }
+            if (updates.business_phone) { await upsertKbItem(userId, 'Contact', updates.business_phone); savedSummaries.push('Saved “Contact” to KB.'); }
           } catch {}
           if (!visible) {
             if (entryGreetingVal) visible = entryGreetingVal; else if (updates.business_name) visible = `Saved business name: ${updates.business_name}`; else visible = 'Saved your settings.';
@@ -281,15 +281,15 @@ export default function registerAssistantRoutes(app) {
         const toUpdate = {};
         const pushSetting = (k,v) => { if (v) toUpdate[k] = v; };
         const bn = /\b(business|company)\s*name\s*(is|:)\s*([\p{L}\p{N} _'"&().-]{2,})/iu.exec(userMsg);
-        if (bn && bn[3]) { const raw = bn[3].trim().replace(/^[\'"\s]+|[\'"\s]+$/g, ""); pushSetting('business_name', raw); upsertKbItem(userId, 'Business Name', raw); savedSummaries.push('Saved “Business Name” to KB.'); }
+        if (bn && bn[3]) { const raw = bn[3].trim().replace(/^[\'"\s]+|[\'"\s]+$/g, ""); pushSetting('business_name', raw); await upsertKbItem(userId, 'Business Name', raw); savedSummaries.push('Saved “Business Name” to KB.'); }
         const ws = /\b(website|site|url)\s*(is|:)\s*(\S+)/i.exec(userMsg); if (ws && ws[3]) pushSetting('website_url', ws[3].trim());
         const ph = /\b(phone|number|contact)\s*(is|:)\s*([+\d][+\d\s().-]{6,})/i.exec(userMsg); if (ph && ph[3]) pushSetting('business_phone', ph[3].trim());
         if (Object.keys(toUpdate).length) { upsertSettingsForUser(userId, { ...currentSettings, ...toUpdate }); if (!visible) visible = 'Saved your settings.'; }
-        if (/\bwe\s+are\b|\bwe\s+do\b|\bour\s+business\b|\bwe\s+sell\b|\brestaurant|cafe|salon|clinic|store|shop\b/i.test(userMsg)) { const sentence = extractSentence(userMsg,'we') || userMsg; upsertKbItem(userId,'What We Do', sentence); savedSummaries.push('Saved “What We Do” to KB.'); }
+        if (/\bwe\s+are\b|\bwe\s+do\b|\bour\s+business\b|\bwe\s+sell\b|\brestaurant|cafe|salon|clinic|store|shop\b/i.test(userMsg)) { const sentence = extractSentence(userMsg,'we') || userMsg; await upsertKbItem(userId,'What We Do', sentence); savedSummaries.push('Saved “What We Do” to KB.'); }
         const hasDay = /(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i.test(userMsg);
         const hasTime = /\b(\d{1,2})([:.][0-5]\d)?\s*(am|pm)?\b.*?-.*?\b(\d{1,2})([:.][0-5]\d)?\s*(am|pm)?\b/i.test(userMsg);
-        if (hasDay || hasTime) { const sentence = extractSentence(userMsg,'mon') || extractSentence(userMsg,'sun') || userMsg; upsertKbItem(userId,'Hours', sentence); savedSummaries.push('Saved “Hours” to KB.'); }
-        if (/(street|st\.|ave\.|avenue|blvd\.|boulevard|road|rd\.|drive|dr\.|plaza|center|centre|city|town|village|address|located|location|near)/i.test(userMsg)) { const sentence = extractSentence(userMsg,'location') || extractSentence(userMsg,'address') || userMsg; upsertKbItem(userId,'Locations', sentence); savedSummaries.push('Saved “Locations” to KB.'); }
+        if (hasDay || hasTime) { const sentence = extractSentence(userMsg,'mon') || extractSentence(userMsg,'sun') || userMsg; await upsertKbItem(userId,'Hours', sentence); savedSummaries.push('Saved “Hours” to KB.'); }
+        if (/(street|st\.|ave\.|avenue|blvd\.|boulevard|road|rd\.|drive|dr\.|plaza|center|centre|city|town|village|address|located|location|near)/i.test(userMsg)) { const sentence = extractSentence(userMsg,'location') || extractSentence(userMsg,'address') || userMsg; await upsertKbItem(userId,'Locations', sentence); savedSummaries.push('Saved “Locations” to KB.'); }
       } catch {}
 
       const askFollow = askLine ? (askLine.split('|')[1] || '').trim() : '';

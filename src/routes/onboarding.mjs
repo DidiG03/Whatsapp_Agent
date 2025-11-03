@@ -4,7 +4,7 @@ import { renderSidebar, renderTranscriptAsBubbles, renderTopbar } from "../utils
 import { upsertKbItem } from "../services/kb.mjs";
 import { upsertSettingsForUser, getSettingsForUser } from "../services/settings.mjs";
 import { onboardingCoachReply } from "../services/ai.mjs";
-import { db } from "../db-mongodb.mjs";
+import { KBItem } from "../schemas/mongodb.mjs";
 
 export default function registerOnboardingRoutes(app) {
   app.get("/onboarding", ensureAuthed, async (req, res) => {
@@ -80,7 +80,7 @@ export default function registerOnboardingRoutes(app) {
     // AI-driven onboarding/KB coach (single path)
     if (!userMsg) return res.redirect("/onboarding");
     try {
-      const titles = db.prepare(`SELECT title FROM kb_items WHERE user_id = ? AND title IS NOT NULL`).all(userId).map(r => r.title);
+      const titles = (await KBItem.find({ user_id: userId, title: { $ne: null } }).select('title').lean()).map(r => r.title);
       const history = state.transcript || "";
       // Use onboarding coach so it can both ask for missing info and save KB entries
       let coach = await onboardingCoachReply(userMsg, titles, history);
@@ -109,7 +109,7 @@ export default function registerOnboardingRoutes(app) {
         const title = (m[1] || '').trim().slice(0, 120) || 'Untitled';
         const content = (m[2] || '').trim();
         if (content) {
-          upsertKbItem(userId, title, content);
+          await upsertKbItem(userId, title, content);
           savedSummaries.push(`Saved “${title}” to KB.`);
         }
       }
@@ -136,15 +136,15 @@ export default function registerOnboardingRoutes(app) {
           // Mirror key settings into KB so they show up in KB UI even when AI returns only SET lines
           try {
             if (updates.business_name) {
-              upsertKbItem(userId, 'Business Name', updates.business_name);
+              await upsertKbItem(userId, 'Business Name', updates.business_name);
               savedSummaries.push('Saved “Business Name” to KB.');
             }
             if (updates.website_url) {
-              upsertKbItem(userId, 'Website', updates.website_url);
+              await upsertKbItem(userId, 'Website', updates.website_url);
               savedSummaries.push('Saved “Website” to KB.');
             }
             if (updates.business_phone) {
-              upsertKbItem(userId, 'Contact', updates.business_phone);
+              await upsertKbItem(userId, 'Contact', updates.business_phone);
               savedSummaries.push('Saved “Contact” to KB.');
             }
           } catch {}
@@ -181,7 +181,7 @@ export default function registerOnboardingRoutes(app) {
         if (bn && bn[3]) {
           const raw = bn[3].trim().replace(/^[\'"\s]+|[\'"\s]+$/g, "");
           pushSetting('business_name', raw);
-          upsertKbItem(userId, 'Business Name', raw);
+          await upsertKbItem(userId, 'Business Name', raw);
           savedSummaries.push('Saved “Business Name” to KB.');
         }
         const ws = /\b(website|site|url)\s*(is|:)\s*(\S+)/i.exec(userMsg);
@@ -195,7 +195,7 @@ export default function registerOnboardingRoutes(app) {
         // What We Do
         if (/\bwe\s+are\b|\bwe\s+do\b|\bour\s+business\b|\bwe\s+sell\b|\brestaurant|cafe|salon|clinic|store|shop\b/i.test(userMsg)) {
           const sentence = extractSentence(userMsg, 'we') || userMsg;
-          upsertKbItem(userId, 'What We Do', sentence);
+          await upsertKbItem(userId, 'What We Do', sentence);
           savedSummaries.push('Saved “What We Do” to KB.');
         }
         // Hours detection: days or time patterns
@@ -203,18 +203,18 @@ export default function registerOnboardingRoutes(app) {
         const hasTime = /\b(\d{1,2})([:.][0-5]\d)?\s*(am|pm)?\b.*?-.*?\b(\d{1,2})([:.][0-5]\d)?\s*(am|pm)?\b/i.test(userMsg);
         if (hasDay || hasTime) {
           const sentence = extractSentence(userMsg, 'mon') || extractSentence(userMsg, 'sun') || userMsg;
-          upsertKbItem(userId, 'Hours', sentence);
+          await upsertKbItem(userId, 'Hours', sentence);
           savedSummaries.push('Saved “Hours” to KB.');
         }
         // Locations detection: common address/location cues
         if (/(street|st\.|ave\.|avenue|blvd\.|boulevard|road|rd\.|drive|dr\.|plaza|center|centre|city|town|village|address|located|location|near)/i.test(userMsg)) {
           const sentence = extractSentence(userMsg, 'location') || extractSentence(userMsg, 'address') || userMsg;
-          upsertKbItem(userId, 'Locations', sentence);
+          await upsertKbItem(userId, 'Locations', sentence);
           savedSummaries.push('Saved “Locations” to KB.');
         }
         if (/\bcuisine\b/i.test(userMsg)) {
           const sentence = extractSentence(userMsg, 'cuisine') || userMsg;
-          upsertKbItem(userId, 'Cuisine', sentence);
+          await upsertKbItem(userId, 'Cuisine', sentence);
           savedSummaries.push('Saved “Cuisine” to KB.');
         }
         let resText = '';
@@ -226,7 +226,7 @@ export default function registerOnboardingRoutes(app) {
           resText = `We accept ${hasRes ? 'reservations' : ''}${hasRes && hasWalk ? ' and ' : ''}${hasWalk ? 'walk-ins' : ''}.`;
         }
         if (resText) {
-          upsertKbItem(userId, 'Reservations', resText);
+          await upsertKbItem(userId, 'Reservations', resText);
           savedSummaries.push('Saved “Reservations” to KB.');
         }
       } catch {}
@@ -265,13 +265,12 @@ export default function registerOnboardingRoutes(app) {
     return res.redirect("/onboarding");
   });
 
-  app.post("/onboarding/reset", ensureAuthed, (req, res) => {
+  app.post("/onboarding/reset", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     try {
       console.log("[ONBOARD][RESET] requested by", { userId });
       const titles = ONBOARD_STEPS.map(s => s.title);
-      const placeholders = titles.map(() => '?').join(',');
-      db.prepare(`DELETE FROM kb_items WHERE user_id = ? AND title IN (${placeholders})`).run(userId, ...titles);
+      await KBItem.deleteMany({ user_id: userId, title: { $in: titles } });
       setOnboarding(userId, { step: 0, transcript: '' });
     } catch {}
     return res.redirect("/onboarding");

@@ -27,6 +27,7 @@ import registerDashboardRoutes from "./routes/dashboard.mjs";
 import registerInboxRoutes from "./routes/inbox.mjs";
 import registerSettingsRoutes from "./routes/settings.mjs";
 import registerKbRoutes from "./routes/kb.mjs";
+import registerBookingsTab from "./routes/bookings.mjs";
 import registerWebhookRoutes from "./routes/webhook.mjs";
 import registerMiscRoutes from "./routes/misc.mjs";
 import registerBookingRoutes from "./routes/booking.mjs";
@@ -244,6 +245,7 @@ export async function createApp() {
   registerSettingsRoutes(app);
   registerGuideRoutes(app);
   registerKbRoutes(app);
+  registerBookingsTab(app);
   registerBookingRoutes(app);
   registerAssistantRoutes(app);
   registerOnboardingRoutes(app);

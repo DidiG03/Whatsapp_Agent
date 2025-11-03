@@ -230,14 +230,14 @@ class RealtimeManager {
     console.log(`👤 Left chat: ${phone}`);
   }
   
-  // Send a message
-  sendMessage(phone, message, type = 'text') {
+  // Send a message (optionally as a reply)
+  sendMessage(phone, message, type = 'text', replyToMessageId = null) {
     if (!this.socket || !this.isConnected) {
       console.warn('Socket not connected, cannot send message');
       return false;
     }
     
-    this.socket.emit('send_message', { phone, message, type });
+    this.socket.emit('send_message', { phone, message, type, replyTo: replyToMessageId });
     return true;
   }
   
