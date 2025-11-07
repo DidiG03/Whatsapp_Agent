@@ -96,6 +96,10 @@ export const sanitizeInput = (req, res, next) => {
         .replace(/<object\b[^<]*(?:(?!<\/object>)<[^<]*)*<\/object>/gi, '')
         .replace(/<embed\b[^<]*(?:(?!<\/embed>)<[^<]*)*<\/embed>/gi, '');
     }
+    if (Array.isArray(obj)) {
+      // Preserve arrays and sanitize each element
+      return obj.map((v) => sanitize(v));
+    }
     if (typeof obj === 'object' && obj !== null) {
       const sanitized = {};
       for (const [key, value] of Object.entries(obj)) {

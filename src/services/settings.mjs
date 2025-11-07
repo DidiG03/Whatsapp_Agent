@@ -26,6 +26,7 @@ export async function upsertSettingsForUser(userId, values) {
     user_id: userId,
     name: values.name ?? current.name ?? null,
     phone_number_id: values.phone_number_id ?? current.phone_number_id ?? null,
+    waba_id: values.waba_id ?? current.waba_id ?? null,
     whatsapp_token: values.whatsapp_token ?? current.whatsapp_token ?? null,
     verify_token: values.verify_token ?? current.verify_token ?? null,
     app_secret: values.app_secret ?? current.app_secret ?? null,

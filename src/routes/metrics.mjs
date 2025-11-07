@@ -15,7 +15,7 @@ import {
   STATUS_DISPLAY_NAMES,
   STATUS_COLORS
 } from '../services/conversationStatus.mjs';
-import { Message, AIRequest, Handoff, UserSettings } from '../schemas/mongodb.mjs';
+import { Message, AIRequest, Handoff, SettingsMulti } from '../schemas/mongodb.mjs';
 
 export default function registerMetricsRoutes(app) {
   
@@ -430,7 +430,7 @@ export default function registerMetricsRoutes(app) {
     const userId = getCurrentUserId(req);
     
     try {
-      const preferences = await UserSettings.findOne({ user_id: userId });
+      const preferences = await SettingsMulti.findOne({ user_id: userId });
       
       const defaultPreferences = {
         visibleMetrics: [
@@ -479,17 +479,19 @@ export default function registerMetricsRoutes(app) {
         preferences.visibleMetrics = preferences.visibleMetrics.filter(m => validMetrics.includes(m));
       }
       
-      if (preferences.refreshInterval) {
-        preferences.refreshInterval = Math.max(10, Math.min(300, preferences.refreshInterval));
+      if (preferences.refreshInterval !== undefined && preferences.refreshInterval !== null) {
+        // Allow 0 to mean "Off"
+        const n = Number(preferences.refreshInterval);
+        preferences.refreshInterval = Math.max(0, Math.min(300, isNaN(n) ? 30 : n));
+        if (preferences.refreshInterval > 0 && preferences.refreshInterval < 10) {
+          preferences.refreshInterval = 10;
+        }
       }
       
       // Save to database
-      await UserSettings.findOneAndUpdate(
+      await SettingsMulti.findOneAndUpdate(
         { user_id: userId },
-        { 
-          user_id: userId, 
-          dashboard_preferences: JSON.stringify(preferences) 
-        },
+        { $set: { user_id: userId, dashboard_preferences: JSON.stringify(preferences) } },
         { upsert: true, new: true }
       );
       

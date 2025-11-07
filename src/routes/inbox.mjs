@@ -10,6 +10,7 @@ import { getMessageReactions, toggleReaction, removeReaction, getMessagesReactio
 import { createReply, getMessagesReplies, getReplyOriginals } from "../services/replies.mjs";
 import { getUserPlan } from "../services/usage.mjs";
 import { updateContactActivity, upsertContactProfile } from "../services/contacts.mjs";
+import { recordOutboundMessage } from "../services/messages.mjs";
 import { 
   getConversationStatus, 
   updateConversationStatus, 
@@ -32,7 +33,6 @@ import { initializeSocketIO, getIO, broadcastReaction } from "./realtime.mjs";
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import { fileURLToPath } from 'url';
 
 /** Clean contact ID by removing URL parameters and query strings */
 function cleanContactId(contactId) {
@@ -62,8 +62,8 @@ function cleanContactId(contactId) {
   return cleaned;
 }
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Avoid ESM import.meta.url to keep Jest transform simpler; use CWD-based path
+const UPLOADS_BASE_DIR = path.resolve(process.cwd(), 'uploads');
 
 // Format a unix timestamp (seconds) for display:
 // - today: show time only (HH:MM)
@@ -98,7 +98,7 @@ const storage = process.env.VERCEL
   ? multer.memoryStorage() // Use memory storage in serverless
   : multer.diskStorage({
       destination: (req, file, cb) => {
-        const uploadDir = path.join(__dirname, '../../uploads');
+        const uploadDir = UPLOADS_BASE_DIR;
         if (!fs.existsSync(uploadDir)) {
           fs.mkdirSync(uploadDir, { recursive: true });
         }
@@ -1285,10 +1285,25 @@ export default function registerInboxRoutes(app) {
           const br = raw?.interactive?.button_reply;
           const lr = raw?.interactive?.list_reply;
           const bodyText = raw?.interactive?.body?.text;
+          // Primary known shapes
           if (br?.title) display = br.title;
           else if (lr?.title) display = lr.title;
           else if (bodyText) display = bodyText;
-          else display = '[interactive]';
+          else {
+            // Fallback: handle variants where interactive is nested under value/messages
+            try {
+              const v = raw?.value || raw;
+              const arr = Array.isArray(v?.messages) ? v.messages : (Array.isArray(raw?.messages) ? raw.messages : []);
+              const first = arr[0] || {};
+              const lr2 = first?.interactive?.list_reply?.title;
+              const br2 = first?.interactive?.button_reply?.title;
+              const body2 = first?.interactive?.body?.text;
+              if (lr2) display = lr2;
+              else if (br2) display = br2;
+              else if (body2) display = body2;
+              else display = '[interactive]';
+            } catch { display = '[interactive]'; }
+          }
         } else if (m.type === 'document') {
           // Handle both inbound (raw.document.link) and outbound (raw.documentUrl) document formats
           let documentUrl = raw?.document?.link || raw?.documentUrl;
@@ -1408,10 +1423,12 @@ export default function registerInboxRoutes(app) {
         const truncatedText = originalText.length > 40 ? originalText.substring(0, 40) + '...' : originalText;
         const authorName = originalMessage.direction === 'inbound' ? 'Customer' : 'You';
         originalMessageHtml = `
-          <div class="reply-preview" onclick="scrollToMessage('${originalMessage.original_message_id}')">
-            <div class="reply-preview-content">
-              <div class="reply-preview-author">${authorName}</div>
-              <div class="reply-preview-text">${escapeHtml(truncatedText)}</div>
+          <div class="reply-preview" onclick="scrollToMessage('${originalMessage.original_message_id}')" style="cursor:pointer; margin:4px 0 2px 0;">
+            <div class="reply-preview-content" style="display:flex; gap:8px; align-items:flex-start; background:#f5f7f9; border-left:3px solid ${m.direction==='inbound' ? '#3b82f6' : '#10b981'}; padding:6px 8px; border-radius:6px;">
+              <div style="flex:1; min-width:0;">
+                <div class="reply-preview-author" style="font-size:11px; color:#64748b; font-weight:600;">${authorName}</div>
+                <div class="reply-preview-text" style="font-size:12px; color:#111b21; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(truncatedText)}</div>
+              </div>
             </div>
           </div>
         `;
@@ -2699,8 +2716,52 @@ export default function registerInboxRoutes(app) {
     const isHuman = req.body?.is_human ? 1 : 0;
     const now = Math.floor(Date.now()/1000);
     const exp = isHuman ? (now + 5*60) : 0;
-    try { await Handoff.findOneAndUpdate({ contact_id: phone, user_id: userId }, { $set: { is_human: !!isHuman, human_expires_ts: exp, updatedAt: new Date() } }, { upsert: true }); } catch {}
-    res.redirect(`/inbox/${phone}`);
+    try {
+      // If enabling live mode, require an agent name in Settings
+      if (isHuman) {
+        const cfg = await getSettingsForUser(userId);
+        const agentName = String(cfg?.name || '').trim();
+        if (!agentName) {
+          const msg = encodeURIComponent('Please set your Name in Settings before enabling Live mode.');
+          return res.redirect(`/inbox/${encodeURIComponent(phone)}?toast=${msg}&type=error`);
+        }
+        // Persist live mode first
+        try { await Handoff.findOneAndUpdate({ contact_id: phone, user_id: userId }, { $set: { is_human: true, human_expires_ts: exp, updatedAt: new Date() } }, { upsert: true }); } catch {}
+        // Send premade connection message to the customer
+        try {
+          if (cfg?.whatsapp_token && cfg?.phone_number_id) {
+            const text = `You are connected with ${agentName}.`;
+            const resp = await sendWhatsAppText(phone, text, cfg);
+            const outboundId = resp?.messages?.[0]?.id;
+            if (outboundId) {
+              try { await recordOutboundMessage({ messageId: outboundId, userId, cfg, to: phone, type: 'text', text, raw: { to: phone, text, context: 'live_mode_connect' } }); } catch {}
+              try {
+                const { broadcastNewMessage } = await import('../routes/realtime.mjs');
+                const messageData = {
+                  id: outboundId,
+                  direction: 'outbound',
+                  type: 'text',
+                  text_body: text,
+                  timestamp: Math.floor(Date.now() / 1000),
+                  from_digits: (cfg.business_phone || '').replace(/\D/g, '') || null,
+                  to_digits: String(phone),
+                  contact_name: null,
+                  contact: String(phone),
+                  formatted_time: formatTimestampForDisplay(Math.floor(Date.now() / 1000)),
+                  delivery_status: 'sent',
+                  read_status: 'unread'
+                };
+                broadcastNewMessage(userId, String(phone), messageData);
+              } catch {}
+            }
+          }
+        } catch (_) {}
+      } else {
+        // Disabling live mode
+        try { await Handoff.findOneAndUpdate({ contact_id: phone, user_id: userId }, { $set: { is_human: false, human_expires_ts: 0, updatedAt: new Date() } }, { upsert: true }); } catch {}
+      }
+    } catch {}
+    return res.redirect(`/inbox/${encodeURIComponent(phone)}`);
   });
 
   // Simulate message status updates (for demo purposes)
@@ -2754,68 +2815,97 @@ export default function registerInboxRoutes(app) {
         try {
           const cfg = await getSettingsForUser(userId);
           if (cfg?.whatsapp_token && cfg?.phone_number_id) {
-            // Send WhatsApp list for emoji selection
-            const header = 'Rate your experience';
-            const body = 'Tap one of the options below:';
-            const rows = [
-              { id: 'CSAT_1', title: '😡 Very bad', description: '' },
-              { id: 'CSAT_2', title: '😕 Bad', description: '' },
-              { id: 'CSAT_3', title: '🙂 Okay', description: '' },
-              { id: 'CSAT_4', title: '😀 Good', description: '' },
-              { id: 'CSAT_5', title: '🤩 Excellent', description: '' }
-            ];
+            // Respect 24h window: if session expired, send a template instead of interactive/text
+            let over24h = false;
             try {
-              const resp = await sendWhatsappList(phone, header, body, 'Select', rows, cfg);
-              const outboundId = resp?.messages?.[0]?.id;
-              if (outboundId) {
-                try { await recordOutboundMessage({ messageId: outboundId, userId, cfg, to: phone, type: 'interactive', text: `${header}\n${body}`, raw: { to: phone, interactive: 'csat_list' } }); } catch {}
-                try {
-                  const { broadcastNewMessage } = await import('../routes/realtime.mjs');
-                  const messageData = {
-                    id: outboundId,
-                    direction: 'outbound',
-                    type: 'interactive',
-                    text_body: `${header}\n${body}`,
-                    timestamp: Math.floor(Date.now() / 1000),
-                    from_digits: (cfg.business_phone || '').replace(/\D/g, '') || null,
-                    to_digits: String(phone),
-                    contact_name: null,
-                    contact: String(phone),
-                    formatted_time: formatTimestampForDisplay(Math.floor(Date.now() / 1000)),
-                    delivery_status: 'sent',
-                    read_status: 'unread'
-                  };
-                  broadcastNewMessage(userId, String(phone), messageData);
-                } catch {}
+              const lastInbound = db.prepare(`SELECT MAX(timestamp) AS ts FROM messages WHERE user_id = ? AND from_id = ? AND direction = 'inbound'`).get(userId, phone)?.ts || 0;
+              const now = Math.floor(Date.now()/1000);
+              over24h = lastInbound && (now - Number(lastInbound)) > 24*3600;
+            } catch {}
+
+            if (over24h) {
+              try {
+                const tname = cfg.wa_template_name || 'hello_world';
+                const tlang = cfg.wa_template_language || 'en_US';
+                await sendWhatsAppTemplate(phone, tname, tlang, [], cfg);
+              } catch (e) {
+                console.warn('[CSAT] Session expired and template send failed:', e?.message || e);
               }
-            } catch (e) {
-              console.warn('[CSAT] Failed to send list prompt, falling back to text:', e?.message || e);
-              const prompt = "Thanks for chatting with us! Please rate by replying with one emoji: 😡 😕 🙂 😀 🤩";
-              try { 
-                const resp2 = await sendWhatsAppText(phone, prompt, cfg);
-                const outboundId2 = resp2?.messages?.[0]?.id;
-                if (outboundId2) {
-                  try { await recordOutboundMessage({ messageId: outboundId2, userId, cfg, to: phone, type: 'text', text: prompt, raw: { to: phone, text: prompt, context: 'csat_fallback' } }); } catch {}
+            } else {
+              // Send WhatsApp list for emoji selection
+              const agentName = String(cfg?.name || '').trim();
+              const header = `Rate your experience with ${agentName || 'our team'}`;
+              const body = 'Tap one of the options below:';
+              const rows = [
+                { id: 'CSAT_1', title: '😡 Very bad', description: '' },
+                { id: 'CSAT_2', title: '😕 Bad', description: '' },
+                { id: 'CSAT_3', title: '🙂 Okay', description: '' },
+                { id: 'CSAT_4', title: '😀 Good', description: '' },
+                { id: 'CSAT_5', title: '🤩 Excellent', description: '' }
+              ];
+              try {
+                const resp = await sendWhatsappList(phone, header, body, 'Select', rows, cfg);
+                const outboundId = resp?.messages?.[0]?.id;
+                if (outboundId) {
+                  try {
+                    await recordOutboundMessage({
+                      messageId: outboundId,
+                      userId,
+                      cfg,
+                      to: phone,
+                      type: 'interactive',
+                      text: `${header}\n${body}`,
+                      raw: { to: phone, interactive: { body: { text: header }, type: 'csat_list' } }
+                    });
+                  } catch {}
                   try {
                     const { broadcastNewMessage } = await import('../routes/realtime.mjs');
                     const messageData = {
-                      id: outboundId2,
+                      id: outboundId,
                       direction: 'outbound',
-                      type: 'text',
-                      text_body: prompt,
+                      type: 'interactive',
+                      text_body: `${header}\n${body}`,
                       timestamp: Math.floor(Date.now() / 1000),
                       from_digits: (cfg.business_phone || '').replace(/\D/g, '') || null,
                       to_digits: String(phone),
                       contact_name: null,
                       contact: String(phone),
-                    formatted_time: formatTimestampForDisplay(Math.floor(Date.now() / 1000)),
+                      formatted_time: formatTimestampForDisplay(Math.floor(Date.now() / 1000)),
                       delivery_status: 'sent',
                       read_status: 'unread'
                     };
                     broadcastNewMessage(userId, String(phone), messageData);
                   } catch {}
                 }
-              } catch {}
+              } catch (e) {
+                console.warn('[CSAT] Failed to send list prompt, falling back to text:', e?.message || e);
+                const prompt = "Thanks for chatting with us! Please rate by replying with one emoji: 😡 😕 🙂 😀 🤩";
+                try { 
+                  const resp2 = await sendWhatsAppText(phone, prompt, cfg);
+                  const outboundId2 = resp2?.messages?.[0]?.id;
+                  if (outboundId2) {
+                    try { await recordOutboundMessage({ messageId: outboundId2, userId, cfg, to: phone, type: 'text', text: prompt, raw: { to: phone, text: prompt, context: 'csat_fallback' } }); } catch {}
+                    try {
+                      const { broadcastNewMessage } = await import('../routes/realtime.mjs');
+                      const messageData = {
+                        id: outboundId2,
+                        direction: 'outbound',
+                        type: 'text',
+                        text_body: prompt,
+                        timestamp: Math.floor(Date.now() / 1000),
+                        from_digits: (cfg.business_phone || '').replace(/\D/g, '') || null,
+                        to_digits: String(phone),
+                        contact_name: null,
+                        contact: String(phone),
+                        formatted_time: formatTimestampForDisplay(Math.floor(Date.now() / 1000)),
+                        delivery_status: 'sent',
+                        read_status: 'unread'
+                      };
+                      broadcastNewMessage(userId, String(phone), messageData);
+                    } catch {}
+                  }
+                } catch {}
+              }
             }
           } else {
             console.warn('[CSAT] Skipped prompt: missing WhatsApp config');
@@ -3023,7 +3113,9 @@ export default function registerInboxRoutes(app) {
           };
           broadcastNewMessage(userId, String(to), messageData);
         } catch {}
-        // If agent is live, move status to in_progress on first message
+        // Always move conversation to In Progress when agent replies
+        try { await updateConversationStatus(userId, String(to), CONVERSATION_STATUSES.IN_PROGRESS, 'agent_reply'); } catch {}
+        // Backwards compat: if agent is live, also ensure first-message transition logic
         try { await ensureInProgressIfHuman(userId, String(to)); } catch {}
         
         // Update contact activity
@@ -3266,19 +3358,11 @@ export default function registerInboxRoutes(app) {
       
       let data;
       if (isNgrok) {
-        // Use direct URL method for ngrok
-        // Check if the image URL is accessible (for debugging)
-        try {
-          const response = await fetch(whatsappImageUrl, { method: 'HEAD' });
-          if (window?.ENV?.DEBUG_LOGS === '1') console.log('Image URL accessibility check:', response.status, response.statusText);
-        } catch (urlError) {
-          if (window?.ENV?.DEBUG_LOGS === '1') console.log('Image URL not accessible:', urlError.message);
-        }
-        
+        // Direct URL method for ngrok (no preflight HEAD request)
         data = await sendWhatsappImage(to, whatsappImageUrl, caption, cfg, originalMessageId);
       } else {
         // Use cloud upload method for localhost
-        if (window?.ENV?.DEBUG_LOGS === '1') console.log('Using cloud upload for localhost compatibility');
+        if (process.env.DEBUG_LOGS === '1') console.log('Using cloud upload for localhost compatibility');
         const { sendWhatsappImageBase64 } = await import('../services/whatsapp.mjs');
         data = await sendWhatsappImageBase64(to, req.file.path, caption, cfg);
       }

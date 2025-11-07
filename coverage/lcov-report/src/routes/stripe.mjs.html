@@ -25,14 +25,14 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">0% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>0/75</span>
+                <span class='fraction'>0/82</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
                 <span class="strong">0% </span>
                 <span class="quiet">Branches</span>
-                <span class='fraction'>0/30</span>
+                <span class='fraction'>0/38</span>
             </div>
         
             
@@ -46,7 +46,7 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">0% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>0/75</span>
+                <span class='fraction'>0/82</span>
             </div>
         
             
@@ -229,7 +229,22 @@
 <a name='L164'></a><a href='#L164'>164</a>
 <a name='L165'></a><a href='#L165'>165</a>
 <a name='L166'></a><a href='#L166'>166</a>
-<a name='L167'></a><a href='#L167'>167</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
+<a name='L167'></a><a href='#L167'>167</a>
+<a name='L168'></a><a href='#L168'>168</a>
+<a name='L169'></a><a href='#L169'>169</a>
+<a name='L170'></a><a href='#L170'>170</a>
+<a name='L171'></a><a href='#L171'>171</a>
+<a name='L172'></a><a href='#L172'>172</a>
+<a name='L173'></a><a href='#L173'>173</a>
+<a name='L174'></a><a href='#L174'>174</a>
+<a name='L175'></a><a href='#L175'>175</a>
+<a name='L176'></a><a href='#L176'>176</a>
+<a name='L177'></a><a href='#L177'>177</a>
+<a name='L178'></a><a href='#L178'>178</a>
+<a name='L179'></a><a href='#L179'>179</a>
+<a name='L180'></a><a href='#L180'>180</a>
+<a name='L181'></a><a href='#L181'>181</a>
+<a name='L182'></a><a href='#L182'>182</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -278,7 +293,6 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
@@ -342,19 +356,35 @@
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -408,7 +438,7 @@ export default function <span class="fstat-no" title="function not covered" >reg
   // Create checkout session for plan upgrade
 <span class="cstat-no" title="statement not covered" >  app.post("/stripe/create-checkout", ensureAuthed, <span class="fstat-no" title="function not covered" >as</span>ync (req, res) =&gt; {</span>
     const userId = <span class="cstat-no" title="statement not covered" >getCurrentUserId(req);</span>
-    const { plan_name } = <span class="cstat-no" title="statement not covered" >req.body;</span>
+    const { plan_name, price_id } = <span class="cstat-no" title="statement not covered" >req.body;</span>
     const email = <span class="cstat-no" title="statement not covered" >await getSignedInEmail(req);</span>
     
 <span class="cstat-no" title="statement not covered" >    if (!plan_name || !['free', 'starter'].includes(plan_name)) {</span>
@@ -416,7 +446,7 @@ export default function <span class="fstat-no" title="function not covered" >reg
     }
     
 <span class="cstat-no" title="statement not covered" >    try {</span>
-      const result = <span class="cstat-no" title="statement not covered" >await createCheckoutSession(userId, plan_name, email);</span>
+      const result = <span class="cstat-no" title="statement not covered" >await createCheckoutSession(userId, plan_name, email, price_id);</span>
       
 <span class="cstat-no" title="statement not covered" >      if (plan_name === 'free') {</span>
         // Handle free plan upgrade immediately
@@ -444,7 +474,6 @@ export default function <span class="fstat-no" title="function not covered" >reg
   // Handle successful checkout
 <span class="cstat-no" title="statement not covered" >  app.get("/stripe/success", ensureAuthed, <span class="fstat-no" title="function not covered" >as</span>ync (req, res) =&gt; {</span>
     const { session_id } = <span class="cstat-no" title="statement not covered" >req.query;</span>
-    const email = <span class="cstat-no" title="statement not covered" >await getSignedInEmail(req);</span>
     
 <span class="cstat-no" title="statement not covered" >    if (!session_id) {</span>
 <span class="cstat-no" title="statement not covered" >      return res.redirect('/plan?error=no_session_id');</span>
@@ -504,23 +533,39 @@ export default function <span class="fstat-no" title="function not covered" >reg
 <span class="cstat-no" title="statement not covered" >        break;</span>
         
       case 'customer.subscription.updated':
-        const subscriptionUpdated = <span class="cstat-no" title="statement not covered" >event.data.object;</span>
-<span class="cstat-no" title="statement not covered" >        console.log('Subscription updated:', subscriptionUpdated.id);</span>
+<span class="cstat-no" title="statement not covered" >        try {</span>
+          const { handleSubscriptionUpdated } = <span class="cstat-no" title="statement not covered" >await import('../services/stripe.mjs');</span>
+<span class="cstat-no" title="statement not covered" >          await handleSubscriptionUpdated(event.data.object);</span>
+        } catch (e) {
+<span class="cstat-no" title="statement not covered" >          console.error('Failed to handle subscription.updated:', e?.message || e);</span>
+        }
 <span class="cstat-no" title="statement not covered" >        break;</span>
         
       case 'customer.subscription.deleted':
-        const subscriptionDeleted = <span class="cstat-no" title="statement not covered" >event.data.object;</span>
-<span class="cstat-no" title="statement not covered" >        await handleSubscriptionCanceled(subscriptionDeleted);</span>
+<span class="cstat-no" title="statement not covered" >        try {</span>
+          const subscriptionDeleted = <span class="cstat-no" title="statement not covered" >event.data.object;</span>
+<span class="cstat-no" title="statement not covered" >          await handleSubscriptionCanceled(subscriptionDeleted);</span>
+        } catch (e) {
+<span class="cstat-no" title="statement not covered" >          console.error('Failed to handle subscription.deleted:', e?.message || e);</span>
+        }
 <span class="cstat-no" title="statement not covered" >        break;</span>
         
       case 'invoice.payment_succeeded':
-        const invoice = <span class="cstat-no" title="statement not covered" >event.data.object;</span>
-<span class="cstat-no" title="statement not covered" >        console.log('Invoice payment succeeded:', invoice.id);</span>
+<span class="cstat-no" title="statement not covered" >        try {</span>
+          const { handleInvoicePaymentState } = <span class="cstat-no" title="statement not covered" >await import('../services/stripe.mjs');</span>
+<span class="cstat-no" title="statement not covered" >          await handleInvoicePaymentState(event.data.object, true);</span>
+        } catch (e) {
+<span class="cstat-no" title="statement not covered" >          console.error('Failed to handle invoice.payment_succeeded:', e?.message || e);</span>
+        }
 <span class="cstat-no" title="statement not covered" >        break;</span>
         
       case 'invoice.payment_failed':
-        const failedInvoice = <span class="cstat-no" title="statement not covered" >event.data.object;</span>
-<span class="cstat-no" title="statement not covered" >        console.log('Invoice payment failed:', failedInvoice.id);</span>
+<span class="cstat-no" title="statement not covered" >        try {</span>
+          const { handleInvoicePaymentState } = <span class="cstat-no" title="statement not covered" >await import('../services/stripe.mjs');</span>
+<span class="cstat-no" title="statement not covered" >          await handleInvoicePaymentState(event.data.object, false);</span>
+        } catch (e) {
+<span class="cstat-no" title="statement not covered" >          console.error('Failed to handle invoice.payment_failed:', e?.message || e);</span>
+        }
 <span class="cstat-no" title="statement not covered" >        break;</span>
         
       default:
@@ -568,7 +613,7 @@ export default function <span class="fstat-no" title="function not covered" >reg
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2025-10-21T20:36:54.510Z
+                at 2025-11-04T15:18:03.329Z
             </div>
         <script src="../../prettify.js"></script>
         <script>

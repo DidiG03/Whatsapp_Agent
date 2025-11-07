@@ -25,7 +25,7 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">0% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>0/53</span>
+                <span class='fraction'>0/54</span>
             </div>
         
             
@@ -46,7 +46,7 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">0% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>0/43</span>
+                <span class='fraction'>0/44</span>
             </div>
         
             
@@ -144,7 +144,8 @@
 <a name='L79'></a><a href='#L79'>79</a>
 <a name='L80'></a><a href='#L80'>80</a>
 <a name='L81'></a><a href='#L81'>81</a>
-<a name='L82'></a><a href='#L82'>82</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
+<a name='L82'></a><a href='#L82'>82</a>
+<a name='L83'></a><a href='#L83'>83</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -169,6 +170,7 @@
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
@@ -230,7 +232,7 @@
  * - Looks for T-24h and T-1h windows.
  * - Uses sendWhatsAppText; records status via existing webhook/status table.
  */
-import { db } from "../db.mjs";
+import { getDB } from "../db-mongodb.mjs";
 import { getSettingsForUser } from "../services/settings.mjs";
 import { sendWhatsappButton } from "../services/whatsapp.mjs";
 &nbsp;
@@ -249,10 +251,11 @@ export function <span class="fstat-no" title="function not covered" >startNotifi
       const t1Min = <span class="cstat-no" title="statement not covered" >now + 1*3600 - 120;</span>
       const t1Max = <span class="cstat-no" title="statement not covered" >now + 1*3600 + 120;</span>
 &nbsp;
-      // Per-tenant windows
-      const rows = <span class="cstat-no" title="statement not covered" >db.prepare(`SELECT DISTINCT user_id FROM appointments WHERE status = 'confirmed' AND start_ts &gt;= strftime('%s','now')-86400`).all();</span>
-<span class="cstat-no" title="statement not covered" >      for (const r of rows) {</span>
-        const cfg = <span class="cstat-no" title="statement not covered" >getSettingsForUser(r.user_id);</span>
+      // Per-tenant windows (Mongo)
+      const db = <span class="cstat-no" title="statement not covered" >getDB();</span>
+      const distinctUserIds = <span class="cstat-no" title="statement not covered" >await db.collection('appointments').distinct('user_id', { status: 'confirmed', start_ts: { $gte: now - 86400 } });</span>
+<span class="cstat-no" title="statement not covered" >      for (const uid of distinctUserIds) {</span>
+        const cfg = <span class="cstat-no" title="statement not covered" >await getSettingsForUser(uid);</span>
 <span class="cstat-no" title="statement not covered" >        if (!cfg?.bookings_enabled || !cfg?.reminders_enabled) <span class="cstat-no" title="statement not covered" >continue;</span></span>
         let wins = <span class="cstat-no" title="statement not covered" >[];</span>
 <span class="cstat-no" title="statement not covered" >        try { <span class="cstat-no" title="statement not covered" >wins = JSON.parse(cfg.reminder_windows || '[]'); </span>} catch {}</span>
@@ -261,28 +264,28 @@ export function <span class="fstat-no" title="function not covered" >startNotifi
         const want2 = <span class="cstat-no" title="statement not covered" >wins.includes('2h');</span>
 &nbsp;
 <span class="cstat-no" title="statement not covered" >        if (want24) {</span>
-          const list = <span class="cstat-no" title="statement not covered" >db.prepare(`SELECT * FROM appointments WHERE user_id = ? AND status='confirmed' AND notify_24h_sent = 0 AND start_ts BETWEEN ? AND ?`).all(r.user_id, t24Min, t24Max);</span>
+          const list = <span class="cstat-no" title="statement not covered" >await db.collection('appointments').find({ user_id: String(uid), status: 'confirmed', notify_24h_sent: { $ne: true }, start_ts: { $gte: t24Min, $lte: t24Max } }).toArray();</span>
 <span class="cstat-no" title="statement not covered" >          for (const a of list) {</span>
             // Skip 1D if appointment is within the same calendar day as now
             const nowDay = <span class="cstat-no" title="statement not covered" >new Date().getUTCDate();</span>
             const apptDay = <span class="cstat-no" title="statement not covered" >new Date(a.start_ts * 1000).getUTCDate();</span>
 <span class="cstat-no" title="statement not covered" >            if (nowDay === apptDay) <span class="cstat-no" title="statement not covered" >continue;</span></span>
 <span class="cstat-no" title="statement not covered" >            await sendReminderWithButtons(a, cfg);</span>
-<span class="cstat-no" title="statement not covered" >            try { <span class="cstat-no" title="statement not covered" >db.prepare(`UPDATE appointments SET notify_24h_sent = 1 WHERE id = ?`).run(a.id); </span>} catch {}</span>
+<span class="cstat-no" title="statement not covered" >            try { <span class="cstat-no" title="statement not covered" >await db.collection('appointments').updateOne({ _id: a._id }, { $set: { notify_24h_sent: true, updatedAt: new Date() } }); </span>} catch {}</span>
           }
         }
 <span class="cstat-no" title="statement not covered" >        if (want4) {</span>
-          const list = <span class="cstat-no" title="statement not covered" >db.prepare(`SELECT * FROM appointments WHERE user_id = ? AND status='confirmed' AND notify_4h_sent = 0 AND start_ts BETWEEN ? AND ?`).all(r.user_id, now + 4*3600 - 120, now + 4*3600 + 120);</span>
+          const list = <span class="cstat-no" title="statement not covered" >await db.collection('appointments').find({ user_id: String(uid), status: 'confirmed', notify_4h_sent: { $ne: true }, start_ts: { $gte: now + 4*3600 - 120, $lte: now + 4*3600 + 120 } }).toArray();</span>
 <span class="cstat-no" title="statement not covered" >          for (const a of list) {</span>
             const sent = <span class="cstat-no" title="statement not covered" >await sendReminderWithButtons(a, cfg);</span>
-<span class="cstat-no" title="statement not covered" >            if (sent) { <span class="cstat-no" title="statement not covered" >try { <span class="cstat-no" title="statement not covered" >db.prepare(`UPDATE appointments SET notify_4h_sent = 1, updated_at = strftime('%s','now') WHERE id = ?`).run(a.id); </span>} catch {} </span>}</span>
+<span class="cstat-no" title="statement not covered" >            if (sent) { <span class="cstat-no" title="statement not covered" >try { <span class="cstat-no" title="statement not covered" >await db.collection('appointments').updateOne({ _id: a._id }, { $set: { notify_4h_sent: true, updatedAt: new Date() } }); </span>} catch {} </span>}</span>
           }
         }
 <span class="cstat-no" title="statement not covered" >        if (want2) {</span>
-          const list = <span class="cstat-no" title="statement not covered" >db.prepare(`SELECT * FROM appointments WHERE user_id = ? AND status='confirmed' AND notify_2h_sent = 0 AND start_ts BETWEEN ? AND ?`).all(r.user_id, now + 2*3600 - 120, now + 2*3600 + 120);</span>
+          const list = <span class="cstat-no" title="statement not covered" >await db.collection('appointments').find({ user_id: String(uid), status: 'confirmed', notify_2h_sent: { $ne: true }, start_ts: { $gte: now + 2*3600 - 120, $lte: now + 2*3600 + 120 } }).toArray();</span>
 <span class="cstat-no" title="statement not covered" >          for (const a of list) {</span>
             const sent = <span class="cstat-no" title="statement not covered" >await sendReminderWithButtons(a, cfg);</span>
-<span class="cstat-no" title="statement not covered" >            if (sent) { <span class="cstat-no" title="statement not covered" >try { <span class="cstat-no" title="statement not covered" >db.prepare(`UPDATE appointments SET notify_2h_sent = 1, updated_at = strftime('%s','now') WHERE id = ?`).run(a.id); </span>} catch {} </span>}</span>
+<span class="cstat-no" title="statement not covered" >            if (sent) { <span class="cstat-no" title="statement not covered" >try { <span class="cstat-no" title="statement not covered" >await db.collection('appointments').updateOne({ _id: a._id }, { $set: { notify_2h_sent: true, updatedAt: new Date() } }); </span>} catch {} </span>}</span>
           }
         }
       }
@@ -313,7 +316,7 @@ async function <span class="fstat-no" title="function not covered" >sendReminder
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2025-10-21T20:36:54.510Z
+                at 2025-11-04T15:18:03.329Z
             </div>
         <script src="../../prettify.js"></script>
         <script>

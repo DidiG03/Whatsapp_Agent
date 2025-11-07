@@ -10,8 +10,9 @@ import { findSettingsByVerifyToken, findSettingsByPhoneNumberId, findSettingsByB
 import { retrieveKbMatches, buildKbSuggestions } from "../services/kb.mjs";
 import { Customer, Handoff, KBItem, Staff } from "../schemas/mongodb.mjs";
 import { sendWhatsappButton, sendWhatsAppText, sendWhatsappList, sendWhatsappReaction, sendWhatsappDocument } from "../services/whatsapp.mjs";
-import { normalizePhone } from "../utils.mjs";
+import { normalizePhone, buildUtcFromLocalWallTime } from "../utils.mjs";
 import { generateAiReply, generateAssistantNudge, generateAgentDecision } from "../services/ai.mjs";
+import { buildCustomerProfileSnippet, rememberService, rememberAgent, rememberAppointment, rememberName, updateContactMemory, getContactMemory } from "../services/memory.mjs";
 import { listMessagesForThread } from "../services/conversations.mjs";
 import { listAvailability, createBooking, rescheduleBooking, cancelBooking, buildDayRows, buildTimeRows } from "../services/booking.mjs";
 import { recordOutboundMessage, recordInboundMessage } from "../services/messages.mjs";
@@ -244,16 +245,7 @@ function parseRequestedDateTime(raw) {
 
 // Build a UTC Date that represents a wall-clock time (hour:minute) on dateISO in a given IANA time zone
 function buildUtcFromLocalTz(dateISO, hour, minute, tz) {
-  try {
-    const baseUtc = new Date(`${dateISO}T00:00:00.000Z`);
-    const parts = new Intl.DateTimeFormat('en-CA', { timeZone: tz || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(baseUtc);
-    const y = Number(parts.find(p=>p.type==='year')?.value || '1970');
-    const m = Number(parts.find(p=>p.type==='month')?.value || '01');
-    const d = Number(parts.find(p=>p.type==='day')?.value || '01');
-    const dt = new Date(Date.UTC(y, m-1, d, Number(hour||0), Number(minute||0), 0, 0));
-    // dt now represents the intended local wall time in tz expressed in UTC
-    return dt;
-  } catch { return new Date(`${dateISO}T${String(hour).padStart(2,'0')}:${String(minute||0).padStart(2,'0')}:00.000Z`); }
+  return buildUtcFromLocalWallTime(dateISO, hour, minute, tz);
 }
 
 // Parse date-only or simple ranges from free text
@@ -386,6 +378,8 @@ const memEscalation = new Map();
 const memTenant = new Map();
 // Status idempotency fallback (when Redis not connected)
 const memStatus = new Map();
+  // Lightweight spam suppression memory (per tenant+contact)
+  const memSpam = new Map(); // key -> { hits: number[] (timestamps ms) }
 function memKey(userId, contact) {
   return `${String(userId || '')}:${String(contact || '')}`;
 }
@@ -587,6 +581,59 @@ export default function registerWebhookRoutes(app) {
     } catch {}
   }
 
+  // Service tiers helpers
+  function getServicesFromSettings(cfg) {
+    try {
+      const arr = JSON.parse(cfg?.services_json || '[]');
+      if (!Array.isArray(arr)) return [];
+      return arr.filter(s => s && s.name && s.minutes).slice(0, 20);
+    } catch { return []; }
+  }
+
+  async function sendServicePicker(to, cfg) {
+    const services = getServicesFromSettings(cfg);
+    if (!services.length) return false;
+    const rows = services.slice(0,10).map((s, i) => ({
+      id: `SERV_PICK_${i}`,
+      title: s.name,
+      description: (s.minutes ? `${s.minutes} min` : '') + (s.price ? ` · ${s.price}` : '')
+    }));
+    await sendListTracked(to, 'Choose a service', 'Select a service type:', 'Select', rows, cfg);
+    return true;
+  }
+
+  // Waitlist helpers
+  function formatYmdFromTs(ts) {
+    const d = new Date((Number(ts)||0)*1000);
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth()+1).padStart(2,'0');
+    const dd = String(d.getUTCDate()).padStart(2,'0');
+    return `${y}-${m}-${dd}`;
+  }
+
+  async function notifyWaitlistForNewAvailability({ tenantUserId, staffId, startTs, cfg }) {
+    try {
+      if (!cfg?.waitlist_enabled) return;
+      const dateKey = formatYmdFromTs(startTs);
+      const dbNative = getDB();
+      const watchers = await dbNative.collection('waitlist')
+        .find({ user_id: String(tenantUserId), staff_id: staffId, date: dateKey })
+        .limit(50)
+        .toArray();
+      if (!watchers || !watchers.length) return;
+      for (const w of watchers) {
+        try {
+          const dateISO = `${dateKey}T00:00:00.000Z`;
+          const rows = await buildTimeRows({ userId: tenantUserId, staffId: String(staffId), dateISO, limit: 10, apptId: null });
+          if (rows.length) {
+            await sendListTracked(w.contact_id, new Date(dateISO).toLocaleDateString(), 'An earlier slot is available. Choose a time:', 'Select', rows, cfg);
+          }
+        } catch {}
+      }
+      try { await dbNative.collection('waitlist').deleteMany({ user_id: String(tenantUserId), staff_id: staffId, date: dateKey }); } catch {}
+    } catch {}
+  }
+
   // Unified outbound send helpers that also record outbound messages
   async function sendTextTracked(to, text, cfg) {
     if (isQueueEnabled()) {
@@ -614,7 +661,16 @@ export default function registerWebhookRoutes(app) {
       const outboundId = resp?.messages?.[0]?.id;
       if (outboundId) {
         const combinedText = `${header}\n${body}`;
-        recordOutboundMessage({ messageId: outboundId, userId: cfg?.user_id || null, cfg, to, type: 'interactive', text: combinedText, raw: { to, interactive: 'list' } });
+        recordOutboundMessage({
+          messageId: outboundId,
+          userId: cfg?.user_id || null,
+          cfg,
+          to,
+          type: 'interactive',
+          text: combinedText,
+          // Provide interactive body so UI can render header instead of [interactive]
+          raw: { to, interactive: { body: { text: header }, type: 'list' } }
+        });
         businessMetrics.trackWhatsAppMessage('sent', 'interactive', true);
       }
     } catch {}
@@ -686,7 +742,27 @@ export default function registerWebhookRoutes(app) {
         try {
           const current = await getConversationStatus(tenantUserId, message.from);
           if (current === CONVERSATION_STATUSES.RESOLVED || current === CONVERSATION_STATUSES.CLOSED) {
-            await updateConversationStatus(tenantUserId, message.from, CONVERSATION_STATUSES.NEW, 'Customer sent a new message after resolution');
+            // Only reopen when the message is substantive (not just 'thanks', emoji, or pure greeting)
+            let shouldReopen = false;
+            try {
+              if (normalizedType === 'text') {
+                const s = String(text || '').trim();
+                if (s) {
+                  const ack = isAcknowledgement(s) || isGreeting(s);
+                  const substantive = hasSubstantiveRequest(s) || wantsHuman(s) || s.includes('?');
+                  shouldReopen = substantive && !ack;
+                }
+              } else if (normalizedType === 'interactive') {
+                // Interactive replies typically mean intent; but CSAT is handled elsewhere and returns early
+                shouldReopen = true;
+              } else {
+                // Media without caption should not reopen by itself
+                shouldReopen = false;
+              }
+            } catch { shouldReopen = false; }
+            if (shouldReopen) {
+              await updateConversationStatus(tenantUserId, message.from, CONVERSATION_STATUSES.NEW, 'Customer sent a substantive message after resolution');
+            }
           }
         } catch {}
       }
@@ -722,6 +798,27 @@ export default function registerWebhookRoutes(app) {
     } catch {
       return false;
     }
+  }
+
+  // Suppress non-substantive spam (e.g., repeated greetings/short messages)
+  function maybeSuppressNonSubstantiveSpam(tenantUserId, from, text) {
+    try {
+      const key = memKey(tenantUserId, from);
+      const nowMs = Date.now();
+      const windowMs = Number(process.env.SPAM_WINDOW_MS || 20000);
+      const threshold = Number(process.env.SPAM_THRESHOLD || 3);
+      const rec = memSpam.get(key) || { hits: [] };
+      // Drop old hits
+      rec.hits = (rec.hits || []).filter(ts => (nowMs - ts) <= windowMs);
+      // Always record this hit
+      rec.hits.push(nowMs);
+      memSpam.set(key, rec);
+      // If message is substantive, do not suppress
+      if (hasSubstantiveRequest(text)) return false;
+      // For non-substantive messages (greetings, acknowledgements, very short), suppress when above threshold
+      if (rec.hits.length >= threshold) return true;
+    } catch {}
+    return false;
   }
 
   async function handleOutOfHoursGuard(tenantUserId, from, cfg) {
@@ -797,26 +894,29 @@ export default function registerWebhookRoutes(app) {
     const greetResp = await sendTextTracked(from, greetText, cfg);
     await sendBrandingIfFree({ tenantUserId, to: from, cfg });
     if (DEBUG_LOGS) console.log('[Webhook] Greeting send result:', { id: greetResp?.messages?.[0]?.id || null });
-    const rows = [];
-    if (cfg?.bookings_enabled) rows.push({ id: 'GREET_BOOK', title: 'Bookings', description: '' });
-    try {
-      const docs = await KBItem.find({
-        user_id: tenantUserId,
-        title: { $exists: true, $ne: '' },
-        $or: [ { show_in_menu: 1 }, { show_in_menu: true } ]
-      }).select('title').sort({ createdAt: -1, _id: -1 }).limit(20).lean();
-      const titles = docs.map(r => String(r.title||'').trim()).filter(Boolean);
-      const seen = new Set();
-      for (const t of titles) {
-        if (rows.length >= 10) break;
-        if (seen.has(t)) continue; seen.add(t);
-        rows.push({ id: `GREET_KB_TITLE_${encodeURIComponent(t)}`, title: t, description: '' });
+    // In Simple Escalation Mode, do not show KB menu on greeting
+    if (cfg?.conversation_mode !== 'escalation') {
+      const rows = [];
+      if (cfg?.bookings_enabled) rows.push({ id: 'GREET_BOOK', title: 'Bookings', description: '' });
+      try {
+        const docs = await KBItem.find({
+          user_id: tenantUserId,
+          title: { $exists: true, $ne: '' },
+          $or: [ { show_in_menu: 1 }, { show_in_menu: true } ]
+        }).select('title').sort({ createdAt: -1, _id: -1 }).limit(20).lean();
+        const titles = docs.map(r => String(r.title||'').trim()).filter(Boolean);
+        const seen = new Set();
+        for (const t of titles) {
+          if (rows.length >= 10) break;
+          if (seen.has(t)) continue; seen.add(t);
+          rows.push({ id: `GREET_KB_TITLE_${encodeURIComponent(t)}`, title: t, description: '' });
+        }
+      } catch {}
+      if (rows.length) {
+        const header = 'You can tap one of these to begin:';
+        const body = 'Select an option to get started.';
+        await sendListTracked(from, header, body, 'Select', rows, cfg);
       }
-    } catch {}
-    if (rows.length) {
-      const header = 'You can tap one of these to begin:';
-      const body = 'Select an option to get started.';
-      await sendListTracked(from, header, body, 'Select', rows, cfg);
     }
     return true;
   }
@@ -1018,11 +1118,19 @@ export default function registerWebhookRoutes(app) {
         if (apptId) {
           const now = Math.floor(Date.now()/1000);
           const row = db.prepare(`SELECT start_ts FROM appointments WHERE id = ? AND user_id = ?`).get(apptId, tenantUserId);
+          let rowDetail = null;
+          try {
+            const dbNative = getDB();
+            rowDetail = await dbNative.collection('appointments').findOne({ id: apptId, user_id: String(tenantUserId) }, { projection: { start_ts: 1, staff_id: 1 } });
+          } catch {}
           const minsToStart = row ? Math.floor((row.start_ts - now)/60) : 99999;
           const minLead = Number(cfg.cancel_min_lead_minutes || 60);
           if (minsToStart < minLead) { await notifyTooClose(from, minLead, cfg); return; }
           await cancelBooking({ userId: tenantUserId, appointmentId: apptId });
           await sendTextTracked(from, `Canceled (Ref #${apptId}).`, cfg);
+          if (rowDetail?.staff_id && rowDetail?.start_ts) {
+            await notifyWaitlistForNewAvailability({ tenantUserId, staffId: rowDetail.staff_id, startTs: rowDetail.start_ts, cfg });
+          }
         }
       } catch {}
       return;
@@ -1098,14 +1206,18 @@ export default function registerWebhookRoutes(app) {
         const score = Number(id.split('_')[1]);
         const emojiMap = { 1: '😡', 2: '😕', 3: '🙂', 4: '😀', 5: '🤩' };
         const emoji = emojiMap[score] || null;
-        await dbNative.collection('csat_ratings').insertOne({
-          user_id: String(tenantUserId),
-          contact_id: String(from),
-          score,
-          emoji,
-          message_text: `[List] ${title || ''}`,
-          createdAt: new Date()
-        });
+        // Upsert per-resolution cycle (only keep the last review until a new ticket starts)
+        let cycleTs = null;
+        try {
+          const st = await dbNative.collection('contact_state')
+            .findOne({ user_id: String(tenantUserId), contact_id: String(from) }, { projection: { await_rating_ts: 1 } });
+          cycleTs = Number(st?.await_rating_ts || 0) || null;
+        } catch {}
+        await dbNative.collection('csat_ratings').updateOne(
+          { user_id: String(tenantUserId), contact_id: String(from), cycle_ts: cycleTs },
+          { $set: { score, emoji, message_text: `[List] ${title || ''}`, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date(), cycle_ts: cycleTs } },
+          { upsert: true }
+        );
         await dbNative.collection('contact_state').updateOne(
           { user_id: String(tenantUserId), contact_id: String(from) },
           { $set: { await_rating: 0, updatedAt: new Date() } },
@@ -1117,15 +1229,48 @@ export default function registerWebhookRoutes(app) {
     if (id === 'GREET_BOOK') {
       const staff = await getFirstStaffOrNotifyNoStaff(tenantUserId, from, cfg);
       if (!staff) return;
+      const services = getServicesFromSettings(cfg);
+      if (services.length) {
+        try {
+          const dbNative = getDB();
+          await dbNative.collection('booking_sessions').updateOne(
+            { user_id: String(tenantUserId), contact_id: String(from) },
+            { $set: { step: 'awaiting_service', staff_id: staff._id }, $setOnInsert: { createdAt: new Date() }, $currentDate: { updatedAt: true } },
+            { upsert: true }
+          );
+        } catch {}
+        await sendServicePicker(from, cfg);
+      } else {
+        try {
+          const dbNative = getDB();
+          await dbNative.collection('booking_sessions').updateOne(
+            { user_id: String(tenantUserId), contact_id: String(from) },
+            { $set: { step: 'awaiting_datetime', staff_id: staff._id }, $setOnInsert: { createdAt: new Date() }, $currentDate: { updatedAt: true } },
+            { upsert: true }
+          );
+        } catch {}
+        { const n = await generateAssistantNudge('ask_datetime', { examples: ["Nov 3 at 3pm", "tomorrow 14:30"] }, { tone: tenant?.ai_tone, style: tenant?.ai_style }); await sendTextTracked(from, n, cfg); }
+      }
+      return;
+    }
+    if (id.startsWith('SERV_PICK_')) {
       try {
-        const dbNative = getDB();
-        await dbNative.collection('booking_sessions').updateOne(
-          { user_id: String(tenantUserId), contact_id: String(from) },
-          { $set: { step: 'awaiting_datetime', staff_id: staff._id }, $setOnInsert: { createdAt: new Date() }, $currentDate: { updatedAt: true } },
-          { upsert: true }
-        );
+        const idx = Number(id.split('_')[2] || -1);
+        const services = getServicesFromSettings(cfg);
+        const svc = services[idx] || null;
+        if (svc) {
+          const dbNative = getDB();
+          await dbNative.collection('booking_sessions').updateOne(
+            { user_id: String(tenantUserId), contact_id: String(from) },
+            { $set: { step: 'awaiting_datetime', service_name: svc.name, service_minutes: Number(svc.minutes||0) }, $currentDate: { updatedAt: true } },
+            { upsert: true }
+          );
+          // Remember last chosen service for future “same as last time” intents
+          try { await rememberService(tenantUserId, from, { name: svc.name, minutes: Number(svc.minutes||0) }); } catch {}
+          const n = await generateAssistantNudge('ask_datetime', { examples: ["Nov 3 at 3pm", "tomorrow 14:30"] }, { tone: tenant?.ai_tone, style: tenant?.ai_style });
+          await sendTextTracked(from, n, cfg);
+        }
       } catch {}
-      { const n = await generateAssistantNudge('ask_datetime', { examples: ["Nov 3 at 3pm", "tomorrow 14:30"] }, { tone: tenant?.ai_tone, style: tenant?.ai_style }); await sendTextTracked(from, n, cfg); }
       return;
     }
     if (id.startsWith('GREET_KB_TITLE_')) {
@@ -1185,7 +1330,14 @@ export default function registerWebhookRoutes(app) {
         }
         if (tenantUserId && staffId && dateStr) {
           const dateISO = new Date(`${dateStr}T12:00:00.000Z`).toISOString();
-          const rows = await buildTimeRows({ userId: tenantUserId, staffId: String(staffId), dateISO, limit: 10, apptId: null });
+          // Try to honor selected service duration from session
+          let slotOverride = undefined;
+          try {
+            const dbNative = getDB();
+            const sess = await dbNative.collection('booking_sessions').findOne({ user_id: String(tenantUserId), contact_id: String(from) }, { projection: { service_minutes: 1 } });
+            if (sess?.service_minutes) slotOverride = Number(sess.service_minutes);
+          } catch {}
+          const rows = await buildTimeRows({ userId: tenantUserId, staffId: String(staffId), dateISO, limit: 10, apptId: null, slotMinutes: slotOverride });
           if (!rows.length) { const n = await generateAssistantNudge('no_times', {}, { tone: tenant?.ai_tone, style: tenant?.ai_style }); await sendTextTracked(from, n, cfg); return; }
           await sendListTracked(from, `${new Date(dateISO).toLocaleDateString()}`, 'Choose a time:', 'Select', rows, cfg);
         } else {
@@ -1354,7 +1506,9 @@ export default function registerWebhookRoutes(app) {
       // In full AI mode, do not short-circuit greetings; let the AI handle tone and replies
 
       // Test KB response
-      const kbMatches = await cachedRetrieveKbMatches(text, 8, tenantUserId, '', from);
+      const kbMatchesBase = await cachedRetrieveKbMatches(text, 8, tenantUserId, '', from);
+      const prof = await buildCustomerProfileSnippet(tenantUserId, from);
+      const kbMatches = prof ? [prof, ...(Array.isArray(kbMatchesBase) ? kbMatchesBase : [])] : kbMatchesBase;
       if (DEBUG_LOGS) console.log("KB Matches:", Array.isArray(kbMatches) ? kbMatches : []);
       
       const aiStart = Date.now();
@@ -1846,7 +2000,7 @@ export default function registerWebhookRoutes(app) {
           await sendBrandingIfFree({ tenantUserId, to: from, cfg });
 
           if (greetingOnly) {
-            // Wait for a substantive request before escalating
+            // Wait for a substantive request before escalating (no KB menu in escalation mode)
             await setMemSession(tenantUserId, from, { step: 'greeted', qIndex: 0, answers: [], questions: escalationQuestions, buffer: '', bufferTs: Date.now() });
             return res.sendStatus(200);
           }
@@ -1980,14 +2134,18 @@ export default function registerWebhookRoutes(app) {
           const scoreMap = { '😡':1, '😕':2, '🙂':3, '😀':4, '🤩':5 };
           const score = scoreMap[emoji] || null;
           try {
-            await dbNative.collection('csat_ratings').insertOne({
-              user_id: String(tenantUserId),
-              contact_id: String(from),
-              score,
-              emoji,
-              message_text: String(text||''),
-              createdAt: new Date()
-            });
+            // Use cycle timestamp to upsert one rating per resolution
+            let cycleTs = null;
+            try {
+              const st = await dbNative.collection('contact_state')
+                .findOne({ user_id: String(tenantUserId), contact_id: String(from) }, { projection: { await_rating_ts: 1 } });
+              cycleTs = Number(st?.await_rating_ts || 0) || null;
+            } catch {}
+            await dbNative.collection('csat_ratings').updateOne(
+              { user_id: String(tenantUserId), contact_id: String(from), cycle_ts: cycleTs },
+              { $set: { score, emoji, message_text: String(text||''), updatedAt: new Date() }, $setOnInsert: { createdAt: new Date(), cycle_ts: cycleTs } },
+              { upsert: true }
+            );
             await dbNative.collection('contact_state').updateOne(
               { user_id: String(tenantUserId), contact_id: String(from) },
               { $set: { await_rating: 0, updatedAt: new Date() } }
@@ -2149,8 +2307,17 @@ export default function registerWebhookRoutes(app) {
         }
       } catch {}
 
-      // In full AI mode, do not auto-greet; allow the AI to craft the opening tone
-      if (!humanActive && cfg?.conversation_mode === 'escalation') {
+      // Before greetings/AI: suppress non-substantive spam bursts (no replies)
+      if (!humanActive) {
+        try {
+          if (maybeSuppressNonSubstantiveSpam(tenantUserId, from, text)) {
+            return res.sendStatus(200);
+          }
+        } catch {}
+      }
+
+      // Show greeting + KB menu on pure greetings regardless of conversation mode
+      if (!humanActive) {
         const greeted = await maybeHandleGreeting({ text, tenantUserId, from, cfg });
         if (greeted) return res.sendStatus(200);
       }
@@ -2243,6 +2410,34 @@ export default function registerWebhookRoutes(app) {
         return res.sendStatus(200);
       }
 
+      // "Who was my previous agent?" → look up last appointment's staff
+      const prevAgentLookup = /\b(previous|last)\s+(agent|staff|person|rep|representative)\b/i.test(text || "");
+      if (cfg?.bookings_enabled && prevAgentLookup) {
+        try {
+          const digits = String(from || '').replace(/\D/g, '');
+          const dbNative = getDB();
+          const lastArr = await dbNative.collection('appointments')
+            .aggregate([
+              { $match: { user_id: String(tenantUserId), $or: [ { contact_phone: digits }, { contact_phone: '+' + digits } ], start_ts: { $lt: Math.floor(Date.now()/1000) } } },
+              { $lookup: { from: 'staff', localField: 'staff_id', foreignField: '_id', as: 'staff_docs' } },
+              { $addFields: { staff_name: { $arrayElemAt: ['$staff_docs.name', 0] } } },
+              { $sort: { start_ts: -1 } },
+              { $limit: 1 },
+              { $project: { staff_name: 1 } }
+            ]).toArray();
+          const last = lastArr[0] || null;
+          if (last?.staff_name) {
+            try { await rememberAgent(tenantUserId, from, last.staff_name); } catch {}
+            await sendTextTracked(from, `Your previous agent was ${last.staff_name}.`, cfg);
+          } else {
+            await sendTextTracked(from, "I couldn't find a previous agent on record.", cfg);
+          }
+        } catch {
+          await sendTextTracked(from, "I couldn't access your previous agent info right now.", cfg);
+        }
+        return res.sendStatus(200);
+      }
+
       // If awaiting booking date/time, parse the user's free-text and move to Q&A (no pickers)
       if (tenantUserId && message.type === 'text') {
         try {
@@ -2326,11 +2521,14 @@ export default function registerWebhookRoutes(app) {
               }
               try {
                 const minLead = Number(cfg.cancel_min_lead_minutes || 60);
-                const row = await dbNative.collection('appointments').findOne({ id: Number(sessAwait.appt_id), user_id: String(tenantUserId) }, { projection: { start_ts: 1 } });
+                const row = await dbNative.collection('appointments').findOne({ id: Number(sessAwait.appt_id), user_id: String(tenantUserId) }, { projection: { start_ts: 1, staff_id: 1 } });
                 const minsToStart = row ? Math.floor(((row.start_ts||0) - Math.floor(Date.now()/1000))/60) : 99999;
                 if (minsToStart < minLead) { await notifyTooClose(from, minLead, cfg); return res.sendStatus(200); }
                 await cancelBooking({ userId: tenantUserId, appointmentId: Number(sessAwait.appt_id) });
                 await sendTextTracked(from, `Canceled (Ref #${sessAwait.appt_id}).`, cfg);
+                if (row?.staff_id && row?.start_ts) {
+                  await notifyWaitlistForNewAvailability({ tenantUserId, staffId: row.staff_id, startTs: row.start_ts, cfg });
+                }
               } catch {}
               try { await dbNative.collection('booking_sessions').deleteOne({ _id: sessAwait._id }); } catch {}
               return res.sendStatus(200);
@@ -2343,7 +2541,8 @@ export default function registerWebhookRoutes(app) {
             if (!staff) { return res.sendStatus(200); }
             const base = new Date(`${parsedReq.dateISO}T00:00:00.000Z`);
             const start = buildUtcFromLocalTz(parsedReq.dateISO, parsedReq.hour, parsedReq.minute || 0, staff.timezone || 'UTC');
-            const end = new Date(start.getTime() + (Number(staff.slot_minutes||30) * 60000));
+            const durationMin = Number((sessAwait?.service_minutes)||0) > 0 ? Number(sessAwait.service_minutes) : Number(staff.slot_minutes||30);
+            const end = new Date(start.getTime() + (durationMin * 60000));
             // Guard: prevent past bookings (small lead time allowed)
             const minLeadMs = Math.max(1, Number(process.env.BOOKING_MIN_LEAD_MINUTES || 5)) * 60000;
             if (start.getTime() < Date.now() + minLeadMs) {
@@ -2354,11 +2553,11 @@ export default function registerWebhookRoutes(app) {
               return res.sendStatus(200);
             }
             if (process.env.DEBUG_BOOKINGS === '1') console.log('[bot-awaiting] parsed request', { from, parsedReq, staff_tz: staff.timezone, match_window: { start: start.toISOString(), end: end.toISOString() } });
-            const avail = await listAvailability({ userId: tenantUserId, staffId: String(staff._id), dateISO: base.toISOString(), days: 1 });
+            const avail = await listAvailability({ userId: tenantUserId, staffId: String(staff._id), dateISO: base.toISOString(), days: 1, slotMinutes: durationMin });
             const nowCutoff = Date.now() + minLeadMs;
             const slots = (Array.isArray(avail) ? (avail[0]?.slots || []) : []).filter(s => new Date(s.start).getTime() >= nowCutoff);
             // Find exact/near match (allow small drift and round to nearest slot). If not found, propose nearest options.
-            const toleranceMs = Math.max(120000, Math.floor(Number(staff.slot_minutes||30) * 60000 / 2));
+            const toleranceMs = Math.max(120000, Math.floor(durationMin * 60000 / 2));
             const scored = slots.map(s => ({ slot: s, diff: Math.abs(new Date(s.start).getTime() - start.getTime()) }));
             scored.sort((a,b) => a.diff - b.diff);
             const match = scored.find(x => x.diff <= toleranceMs)?.slot || null;
@@ -2427,6 +2626,12 @@ export default function registerWebhookRoutes(app) {
         let answers = [];
         try { answers = JSON.parse(sess.answers_json || '[]'); } catch { answers = []; }
         const idx = Number(sess.question_index || 0);
+        // If user says "continue", resend the current question without recording as an answer
+        const wantsContinue = /\b(continue|resume|carry\s*on|pick\s*up|where\s+we\s+left\s+off)\b/i.test(content);
+        if (wantsContinue) {
+          await sendTextTracked(from, String(questions[idx] || questions[0] || "Let's continue.").slice(0,200), cfg);
+          return res.sendStatus(200);
+        }
         answers[idx] = content;
         const nextIdx = idx + 1;
         if (nextIdx < questions.length) {
@@ -2487,6 +2692,23 @@ export default function registerWebhookRoutes(app) {
           } catch (e) {
             console.error('[Webhook] Failed to create booking notification:', e.message);
           }
+
+          // Persist memory: name, service, agent, appointment time, last answers
+          try { if (answers[0]) await rememberName(tenantUserId, from, answers[0]); } catch {}
+          try {
+            if (sess.service_minutes || sess.service_name) {
+              await rememberService(tenantUserId, from, { name: sess.service_name, minutes: Number(sess.service_minutes || 0) });
+            }
+          } catch {}
+          try {
+            const staff = await (async () => { try { return await getDB().collection('staff').findOne({ _id: sess.staff_id }, { projection: { name: 1 } }); } catch { return null; } })();
+            if (staff?.name) await rememberAgent(tenantUserId, from, staff.name);
+          } catch {}
+          try { await rememberAppointment(tenantUserId, from, { startISO: sess.start_iso }); } catch {}
+          try {
+            const structured = questions.map((q, i) => ({ q: String(q).slice(0, 120), a: String(answers[i] || '').slice(0, 240) })).slice(0, 10);
+            await updateContactMemory(tenantUserId, from, { last_answers: structured });
+          } catch {}
         } catch {
           await sendTextTracked(from, "Sorry, that slot could not be booked. Please try another time.", cfg);
         }
@@ -2523,6 +2745,32 @@ export default function registerWebhookRoutes(app) {
         const n = await generateAssistantNudge('reset_done', {}, { tone: tenant?.ai_tone, style: tenant?.ai_style });
         await sendTextTracked(from, n, cfg);
         return res.sendStatus(200);
+      }
+
+      // Waitlist opt-in: "waitlist", "notify earlier", "earlier slot"
+      const wantsWaitlist = /\b(waitlist|notify\s+(me\s+)?(if\s+)?(earlier|sooner)|earlier\s+slot|sooner\s+(time|slot))\b/i.test(text || "");
+      if (cfg?.bookings_enabled && cfg?.waitlist_enabled && wantsWaitlist) {
+        try {
+          const digits = String(from || '').replace(/\D/g, '');
+          const dbNative = getDB();
+          const appt = await dbNative.collection('appointments')
+            .find({ user_id: String(tenantUserId), status: 'confirmed', $or: [ { contact_phone: digits }, { contact_phone: '+' + digits } ], start_ts: { $gte: Math.floor(Date.now()/1000) } })
+            .project({ start_ts: 1, staff_id: 1 })
+            .sort({ start_ts: 1 })
+            .limit(1)
+            .toArray()
+            .then(arr => arr[0] || null);
+          if (appt?.staff_id && appt?.start_ts) {
+            const dateKey = formatYmdFromTs(appt.start_ts);
+            await dbNative.collection('waitlist').updateOne(
+              { user_id: String(tenantUserId), contact_id: String(from), staff_id: appt.staff_id, date: dateKey },
+              { $set: { user_id: String(tenantUserId), contact_id: String(from), staff_id: appt.staff_id, date: dateKey, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } },
+              { upsert: true }
+            );
+            await sendTextTracked(from, "Got it — I’ll message you if an earlier slot opens up.", cfg);
+            return res.sendStatus(200);
+          }
+        } catch {}
       }
 
       if (cfg?.bookings_enabled && (wantsReschedule || wantsCancel)) {
@@ -2576,12 +2824,56 @@ export default function registerWebhookRoutes(app) {
         if (!staff) return res.sendStatus(200);
 
         const parsed = parseRequestedDateTime(text);
+        // If services are configured and no service chosen in session, prompt for service first
+        try {
+          const services = getServicesFromSettings(cfg);
+          // Shortcut: "same service as last time"
+          const wantsSameService = /\b(same\s+(service|as\s+last\s+time)|what\s+i\s+had\s+last\s+time|repeat\s+last\s+service)\b/i.test(text || "");
+          if (services.length && wantsSameService) {
+            try {
+              const mem = await getContactMemory(tenantUserId, from);
+              const minutes = Number(mem?.last_service_minutes || 0);
+              const name = mem?.last_service_name || null;
+              if (minutes > 0) {
+                const dbNative = getDB();
+                await dbNative.collection('booking_sessions').updateOne(
+                  { user_id: String(tenantUserId), contact_id: String(from) },
+                  { $set: { step: 'awaiting_datetime', staff_id: staff._id, service_name: name || undefined, service_minutes: minutes }, $setOnInsert: { createdAt: new Date() }, $currentDate: { updatedAt: true } },
+                  { upsert: true }
+                );
+                const n = await generateAssistantNudge('ask_datetime', { examples: ["Nov 3 at 3pm", "tomorrow 14:30"] }, { tone: tenant?.ai_tone, style: tenant?.ai_style });
+                await sendTextTracked(from, n, cfg);
+                return res.sendStatus(200);
+              }
+            } catch {}
+          }
+          if (services.length) {
+            const dbNative = getDB();
+            const sessSvc = await dbNative.collection('booking_sessions').findOne({ user_id: String(tenantUserId), contact_id: String(from) }, { projection: { service_minutes: 1 } });
+            if (!sessSvc?.service_minutes) {
+              await dbNative.collection('booking_sessions').updateOne(
+                { user_id: String(tenantUserId), contact_id: String(from) },
+                { $set: { step: 'awaiting_service', staff_id: staff._id }, $setOnInsert: { createdAt: new Date() }, $currentDate: { updatedAt: true } },
+                { upsert: true }
+              );
+              await sendServicePicker(from, cfg);
+              return res.sendStatus(200);
+            }
+          }
+        } catch {}
         const providedName = parseNameFromMessage(text);
         if (parsed) {
           // Build requested slot in staff timezone (approximate using provided hour/minute)
           const base = new Date(`${parsed.dateISO}T00:00:00.000Z`);
           const start = buildUtcFromLocalTz(parsed.dateISO, parsed.hour, parsed.minute || 0, staff.timezone || 'UTC');
-          const end = new Date(start.getTime() + (Number(staff.slot_minutes||30) * 60000));
+          // Use service-specific duration if chosen in session
+          let durationMin = Number(staff.slot_minutes||30);
+          try {
+            const dbNative = getDB();
+            const sessSvc = await dbNative.collection('booking_sessions').findOne({ user_id: String(tenantUserId), contact_id: String(from) }, { projection: { service_minutes: 1 } });
+            if (sessSvc?.service_minutes) durationMin = Number(sessSvc.service_minutes);
+          } catch {}
+          const end = new Date(start.getTime() + (durationMin * 60000));
           // Guard: prevent past bookings (small lead time allowed)
           const minLeadMs = Math.max(1, Number(process.env.BOOKING_MIN_LEAD_MINUTES || 5)) * 60000;
           if (start.getTime() < Date.now() + minLeadMs) {
@@ -2591,11 +2883,11 @@ export default function registerWebhookRoutes(app) {
           }
           // Check availability for that date
           if (process.env.DEBUG_BOOKINGS === '1') console.log('[bot-book] parsed request', { from, parsed, staff_tz: staff.timezone, match_window: { start: start.toISOString(), end: end.toISOString() } });
-          const avail = await listAvailability({ userId: tenantUserId, staffId: String(staff._id), dateISO: base.toISOString(), days: 1 });
+          const avail = await listAvailability({ userId: tenantUserId, staffId: String(staff._id), dateISO: base.toISOString(), days: 1, slotMinutes: durationMin });
           const nowCutoff = Date.now() + minLeadMs;
           const slots = (Array.isArray(avail) ? (avail[0]?.slots || []) : []).filter(s => new Date(s.start).getTime() >= nowCutoff);
           // Allow small drift; pick nearest slot if within tolerance, else propose suggestions later
-          const toleranceMs = Math.max(120000, Math.floor(Number(staff.slot_minutes||30) * 60000 / 2));
+          const toleranceMs = Math.max(120000, Math.floor(durationMin * 60000 / 2));
           const scored = slots.map(s => ({ slot: s, diff: Math.abs(new Date(s.start).getTime() - start.getTime()) }));
           scored.sort((a,b) => a.diff - b.diff);
           const match = scored.find(x => x.diff <= toleranceMs)?.slot || null;
@@ -2744,16 +3036,23 @@ export default function registerWebhookRoutes(app) {
       }
 
       // AI-first decision mode: let the model craft replies and propose one optional intent to execute
-      const preferFullAI = (process.env.AI_FULL_SERVICE === '1') || (cfg?.ai_full_service === 1) || (cfg?.ai_full_service === true);
+      // Honor conversation mode explicitly: 'full' → use decision planner; 'escalation' handled earlier
+      const preferFullAI = (cfg?.conversation_mode !== 'escalation');
       if (!humanActive && preferFullAI) {
         try {
-          const kbMatchesAI = await cachedRetrieveKbMatches(text, 8, tenantUserId, '', from);
+          const kbMatchesAIBase = await cachedRetrieveKbMatches(text, 8, tenantUserId, '', from);
+          const profileSnippet = await buildCustomerProfileSnippet(tenantUserId, from);
+          const kbMatchesAI = profileSnippet ? [profileSnippet, ...(Array.isArray(kbMatchesAIBase) ? kbMatchesAIBase : [])] : kbMatchesAIBase;
           const decision = await generateAgentDecision(text, kbMatchesAI, {
             tone: tenant?.ai_tone,
             style: tenant?.ai_style,
             blockedTopics: tenant?.ai_blocked_topics,
             historyMessages,
-            features: { bookings_enabled: !!cfg?.bookings_enabled, reminders_enabled: !!cfg?.reminders_enabled }
+            features: {
+              bookings_enabled: !!cfg?.bookings_enabled,
+              reminders_enabled: !!cfg?.reminders_enabled,
+              services: (() => { try { const s = JSON.parse(cfg?.services_json || '[]'); return Array.isArray(s) ? s : []; } catch { return []; } })()
+            }
           });
           if (decision?.text) {
             await sendTextTracked(from, String(decision.text).slice(0, 1000), cfg);
@@ -2846,7 +3145,7 @@ export default function registerWebhookRoutes(app) {
                 const dbNative = getDB();
                 const appt = await dbNative.collection('appointments')
                   .find({ user_id: String(tenantUserId), status: 'confirmed', $or: [ { contact_phone: digits }, { contact_phone: '+' + digits } ], start_ts: { $gte: Math.floor(Date.now()/1000) } })
-                  .project({ id: 1, start_ts: 1 })
+                  .project({ id: 1, start_ts: 1, staff_id: 1 })
                   .sort({ start_ts: 1 })
                   .limit(1)
                   .toArray()
@@ -2857,6 +3156,9 @@ export default function registerWebhookRoutes(app) {
                   if (minsToStart >= minLead) {
                     await cancelBooking({ userId: tenantUserId, appointmentId: appt.id });
                     await sendTextTracked(from, `Canceled (Ref #${appt.id}).`, cfg);
+                    if (appt.staff_id && appt.start_ts) {
+                      await notifyWaitlistForNewAvailability({ tenantUserId, staffId: appt.staff_id, startTs: appt.start_ts, cfg });
+                    }
                   }
                 }
               } catch {}

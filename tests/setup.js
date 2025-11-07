@@ -40,22 +40,24 @@ jest.mock('@clerk/express', () => ({
   }
 }));
 
-// Mock OpenAI
-jest.mock('openai', () => ({
-  OpenAI: jest.fn().mockImplementation(() => ({
+// Mock OpenAI (both default and named export)
+jest.mock('openai', () => {
+  const mockClient = {
     chat: {
       completions: {
         create: jest.fn(() => Promise.resolve({
-          choices: [{
-            message: {
-              content: 'Mocked AI response'
-            }
-          }]
+          choices: [{ message: { content: 'Mocked AI response' } }]
         }))
       }
     }
-  }))
-}));
+  };
+  const MockOpenAI = jest.fn().mockImplementation(() => mockClient);
+  return {
+    __esModule: true,
+    default: MockOpenAI,
+    OpenAI: MockOpenAI
+  };
+});
 
 // Mock Stripe
 jest.mock('stripe', () => {

@@ -27,6 +27,7 @@ import registerDashboardRoutes from "./routes/dashboard.mjs";
 import registerInboxRoutes from "./routes/inbox.mjs";
 import registerSettingsRoutes from "./routes/settings.mjs";
 import registerKbRoutes from "./routes/kb.mjs";
+import registerCampaignRoutes from "./routes/campaigns.mjs";
 import registerBookingsTab from "./routes/bookings.mjs";
 import registerWebhookRoutes from "./routes/webhook.mjs";
 import registerMiscRoutes from "./routes/misc.mjs";
@@ -41,6 +42,8 @@ import registerRealtimeRoutes, { initializeSocketIO } from "./routes/realtime.mj
 import registerMonitoringRoutes from "./routes/monitoring.mjs";
 import { signMediaPath } from "./utils.mjs";
 import registerMetricsRoutes from "./routes/metrics.mjs";
+import registerGoogleRoutes from "./routes/google.mjs";
+import { isQueueEnabled, initOutboundQueue } from "./jobs/outboundQueue.mjs";
 /**
  * Create and configure an Express app instance.
  * @returns {import('express').Express}
@@ -67,6 +70,10 @@ export async function createApp() {
   // Monitoring middleware (before other middleware)
   app.use(loggingMiddleware());
   app.use(metricsMiddleware());
+  // Warm up outbound queue once at boot (if enabled)
+  if (isQueueEnabled()) {
+    try { await initOutboundQueue(); } catch {}
+  }
   
   // Rate limiting
   const { generalLimiter, strictLimiter, webhookLimiter } = createRateLimiters();
@@ -245,6 +252,7 @@ export async function createApp() {
   registerSettingsRoutes(app);
   registerGuideRoutes(app);
   registerKbRoutes(app);
+  registerCampaignRoutes(app);
   registerBookingsTab(app);
   registerBookingRoutes(app);
   registerAssistantRoutes(app);
@@ -255,6 +263,7 @@ export async function createApp() {
   registerRealtimeRoutes(app);
   registerMonitoringRoutes(app);
   registerMetricsRoutes(app);
+  registerGoogleRoutes(app);
   registerWebhookRoutes(app);
   registerMiscRoutes(app);
   

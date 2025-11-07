@@ -7,6 +7,8 @@
     "start": "node --expose-gc index.mjs",
     "dev": "node --expose-gc index.mjs",
     "setup:mongodb": "node src/setup-mongodb.mjs",
+    "db:migrate": "node scripts/migrate-mongodb.mjs",
+    "db:migrate:drop-old": "DROP_OLD_COLLECTIONS=1 node scripts/migrate-mongodb.mjs --drop-old",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",

@@ -23,16 +23,16 @@
         <div class='clearfix'>
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">1.55% </span>
+                <span class="strong">1.53% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>2/129</span>
+                <span class='fraction'>2/130</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
                 <span class="strong">0% </span>
                 <span class="quiet">Branches</span>
-                <span class='fraction'>0/67</span>
+                <span class='fraction'>0/63</span>
             </div>
         
             
@@ -441,13 +441,7 @@
 <a name='L376'></a><a href='#L376'>376</a>
 <a name='L377'></a><a href='#L377'>377</a>
 <a name='L378'></a><a href='#L378'>378</a>
-<a name='L379'></a><a href='#L379'>379</a>
-<a name='L380'></a><a href='#L380'>380</a>
-<a name='L381'></a><a href='#L381'>381</a>
-<a name='L382'></a><a href='#L382'>382</a>
-<a name='L383'></a><a href='#L383'>383</a>
-<a name='L384'></a><a href='#L384'>384</a>
-<a name='L385'></a><a href='#L385'>385</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
+<a name='L379'></a><a href='#L379'>379</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -470,6 +464,25 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
@@ -477,36 +490,11 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
@@ -836,7 +824,7 @@
  * Provides comprehensive system health monitoring and status reporting
  */
 &nbsp;
-import { db } from '../db.mjs';
+import { getDB, isMongoConnected } from '../db-mongodb.mjs';
 import { logHelpers } from './logger.mjs';
 import { sentryHelpers } from './sentry.mjs';
 import fs from 'fs';
@@ -854,46 +842,40 @@ const healthChecks = {
 async function <span class="fstat-no" title="function not covered" >checkDatabase(</span>) {
 <span class="cstat-no" title="statement not covered" >  try {</span>
     const startTime = <span class="cstat-no" title="statement not covered" >Date.now();</span>
-    
-    // Test basic query
-    const result = <span class="cstat-no" title="statement not covered" >db.prepare('SELECT 1 as test').get();</span>
+<span class="cstat-no" title="statement not covered" >    if (!isMongoConnected()) <span class="cstat-no" title="statement not covered" >throw new Error('MongoDB not connected');</span></span>
+&nbsp;
+    const mongoDb = <span class="cstat-no" title="statement not covered" >getDB();</span>
+<span class="cstat-no" title="statement not covered" >    await mongoDb.command({ ping: 1 });</span>
     const duration = <span class="cstat-no" title="statement not covered" >Date.now() - startTime;</span>
-    
-<span class="cstat-no" title="statement not covered" >    if (result &amp;&amp; result.test === 1) {</span>
-      // Check table counts
-      const tableCounts = <span class="cstat-no" title="statement not covered" >{};</span>
-      const tables = <span class="cstat-no" title="statement not covered" >['messages', 'customers', 'kb_items', 'settings_multi'];</span>
-      let tableErrors = <span class="cstat-no" title="statement not covered" >0;</span>
-      
-<span class="cstat-no" title="statement not covered" >      for (const table of tables) {</span>
-<span class="cstat-no" title="statement not covered" >        try {</span>
-          const count = <span class="cstat-no" title="statement not covered" >db.prepare(`SELECT COUNT(*) as count FROM ${table}`).get()?.count || 0;</span>
-<span class="cstat-no" title="statement not covered" >          tableCounts[table] = count;</span>
-        } catch (error) {
-<span class="cstat-no" title="statement not covered" >          tableCounts[table] = 'error';</span>
-<span class="cstat-no" title="statement not covered" >          tableErrors++;</span>
-          // Log table errors but don't fail the entire health check
-<span class="cstat-no" title="statement not covered" >          logHelpers.logError(error, { component: 'health_check', check: 'database_table', table });</span>
-        }
+&nbsp;
+    // Collection counts (best-effort)
+    const tableCounts = <span class="cstat-no" title="statement not covered" >{};</span>
+    const tables = <span class="cstat-no" title="statement not covered" >['messages', 'customers', 'kb_items', 'settings_multi'];</span>
+    let tableErrors = <span class="cstat-no" title="statement not covered" >0;</span>
+<span class="cstat-no" title="statement not covered" >    for (const name of tables) {</span>
+<span class="cstat-no" title="statement not covered" >      try {</span>
+        const count = <span class="cstat-no" title="statement not covered" >await mongoDb.collection(name).estimatedDocumentCount();</span>
+<span class="cstat-no" title="statement not covered" >        tableCounts[name] = count;</span>
+      } catch (error) {
+<span class="cstat-no" title="statement not covered" >        tableCounts[name] = 'error';</span>
+<span class="cstat-no" title="statement not covered" >        tableErrors++;</span>
+<span class="cstat-no" title="statement not covered" >        logHelpers.logError(error, { component: 'health_check', check: 'database_collection', collection: name });</span>
       }
-      
-      // Only fail database health if critical tables are missing
-      const criticalTables = <span class="cstat-no" title="statement not covered" >['messages', 'customers'];</span>
-      const criticalTableErrors = <span class="cstat-no" title="statement not covered" >criticalTables.filter(<span class="fstat-no" title="function not covered" >ta</span>ble =&gt; <span class="cstat-no" title="statement not covered" >tableCounts[table] === 'error')</span>.length;</span>
-      
-<span class="cstat-no" title="statement not covered" >      healthChecks.database = {</span>
-        status: criticalTableErrors === 0 ? 'healthy' : 'unhealthy',
-        response_time: duration,
-        table_counts: tableCounts,
-        table_errors: tableErrors,
-        critical_table_errors: criticalTableErrors,
-        last_check: new Date().toISOString()
-      };
-      
-<span class="cstat-no" title="statement not covered" >      return criticalTableErrors === 0;</span>
     }
-    
-<span class="cstat-no" title="statement not covered" >    throw new Error('Database query failed');</span>
+&nbsp;
+    const criticalTables = <span class="cstat-no" title="statement not covered" >['messages', 'customers'];</span>
+    const criticalTableErrors = <span class="cstat-no" title="statement not covered" >criticalTables.filter(<span class="fstat-no" title="function not covered" >t </span>=&gt; <span class="cstat-no" title="statement not covered" >tableCounts[t] === 'error')</span>.length;</span>
+&nbsp;
+<span class="cstat-no" title="statement not covered" >    healthChecks.database = {</span>
+      status: criticalTableErrors === 0 ? 'healthy' : 'degraded',
+      response_time: duration,
+      table_counts: tableCounts,
+      table_errors: tableErrors,
+      critical_table_errors: criticalTableErrors,
+      last_check: new Date().toISOString()
+    };
+&nbsp;
+<span class="cstat-no" title="statement not covered" >    return true;</span>
   } catch (error) {
 <span class="cstat-no" title="statement not covered" >    healthChecks.database = {</span>
       status: 'unhealthy',
@@ -1009,18 +991,18 @@ function <span class="fstat-no" title="function not covered" >checkMemory(</span
     const rssMem = <span class="cstat-no" title="statement not covered" >memUsage.rss;</span>
     
     const usagePercentage = <span class="cstat-no" title="statement not covered" >(usedMem / totalMem) * 100;</span>
-    const isHealthy = <span class="cstat-no" title="statement not covered" >usagePercentage &lt; 90;</span> // Increased threshold from 85% to 90%
-    const isWarning = <span class="cstat-no" title="statement not covered" >usagePercentage &gt;= 90 &amp;&amp; usagePercentage &lt; 95;</span> // Warning between 90-95%
+    const isHealthy = <span class="cstat-no" title="statement not covered" >usagePercentage &lt; 95;</span> // Relax threshold
+    const isWarning = <span class="cstat-no" title="statement not covered" >usagePercentage &gt;= 95 &amp;&amp; usagePercentage &lt; 98;</span> // Warning between 95-98%
     
     // Force garbage collection if memory usage is very high (only above 95%)
-<span class="cstat-no" title="statement not covered" >    if (usagePercentage &gt; 95 &amp;&amp; global.gc) {</span>
+<span class="cstat-no" title="statement not covered" >    if (usagePercentage &gt; 98 &amp;&amp; global.gc) {</span>
 <span class="cstat-no" title="statement not covered" >      global.gc();</span>
       // Re-check memory after GC
       const newMemUsage = <span class="cstat-no" title="statement not covered" >process.memoryUsage();</span>
       const newUsagePercentage = <span class="cstat-no" title="statement not covered" >(newMemUsage.heapUsed / newMemUsage.heapTotal) * 100;</span>
       
 <span class="cstat-no" title="statement not covered" >      healthChecks.memory = {</span>
-        status: newUsagePercentage &lt; 90 ? 'healthy' : (newUsagePercentage &lt; 95 ? 'warning' : 'unhealthy'),
+        status: newUsagePercentage &lt; 95 ? 'healthy' : (newUsagePercentage &lt; 98 ? 'warning' : 'unhealthy'),
         heap_total: Math.round(newMemUsage.heapTotal / 1024 / 1024), // MB
         heap_used: Math.round(newMemUsage.heapUsed / 1024 / 1024), // MB
         heap_external: Math.round(newMemUsage.external / 1024 / 1024), // MB
@@ -1030,7 +1012,7 @@ function <span class="fstat-no" title="function not covered" >checkMemory(</span
         last_check: new Date().toISOString()
       };
       
-<span class="cstat-no" title="statement not covered" >      if (newUsagePercentage &gt; 90) {</span>
+<span class="cstat-no" title="statement not covered" >      if (newUsagePercentage &gt; 95) {</span>
 <span class="cstat-no" title="statement not covered" >        logHelpers.logError(new Error('High memory usage after GC'), {</span>
           component: 'health_check',
           check: 'memory',
@@ -1222,7 +1204,7 @@ export default {
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2025-10-21T20:36:54.577Z
+                at 2025-11-04T15:18:03.416Z
             </div>
         <script src="../../prettify.js"></script>
         <script>

@@ -61,6 +61,18 @@ export function initRedis() {
   }
 }
 
+export async function closeRedis() {
+  try {
+    if (redisClient) {
+      await redisClient.quit();
+      redisClient = null;
+      isConnected = false;
+    }
+  } catch (error) {
+    logHelpers.logError(error, { component: 'redis', operation: 'close' });
+  }
+}
+
 // Get Redis client
 export function getRedisClient() {
   if (!redisClient) {
@@ -456,5 +468,6 @@ export default {
   rateLimiter,
   cacheMiddleware,
   isRedisConnected,
-  getRedisClient
+  getRedisClient,
+  closeRedis
 };

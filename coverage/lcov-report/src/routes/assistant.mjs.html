@@ -711,7 +711,7 @@ import { renderTranscriptAsBubbles } from "../utils.mjs";
 import { upsertKbItem } from "../services/kb.mjs";
 import { upsertSettingsForUser, getSettingsForUser } from "../services/settings.mjs";
 import { onboardingCoachReply } from "../services/ai.mjs";
-import { db } from "../db.mjs";
+import { KBItem } from "../schemas/mongodb.mjs";
 &nbsp;
 export default function <span class="fstat-no" title="function not covered" >registerAssistantRoutes(</span>app) {
 <span class="cstat-no" title="statement not covered" >  app.get("/assistant", <span class="fstat-no" title="function not covered" >(r</span>eq, res) =&gt; {</span>
@@ -925,7 +925,7 @@ export default function <span class="fstat-no" title="function not covered" >reg
     const state = <span class="cstat-no" title="statement not covered" >getOnboarding(userId) || { step: 0, transcript: '' };</span>
 <span class="cstat-no" title="statement not covered" >    if (!userMsg) <span class="cstat-no" title="statement not covered" >return res.redirect("/assistant");</span></span>
 <span class="cstat-no" title="statement not covered" >    try {</span>
-      const titles = <span class="cstat-no" title="statement not covered" >db.prepare(`SELECT title FROM kb_items WHERE user_id = ? AND title IS NOT NULL`).all(userId).map(<span class="fstat-no" title="function not covered" >r </span>=&gt; <span class="cstat-no" title="statement not covered" >r.title)</span>;</span>
+      const titles = <span class="cstat-no" title="statement not covered" >(await KBItem.find({ user_id: userId, title: { $ne: null } }).select('title').lean()).map(<span class="fstat-no" title="function not covered" >r </span>=&gt; <span class="cstat-no" title="statement not covered" >r.title)</span>;</span>
       const history = <span class="cstat-no" title="statement not covered" >state.transcript || "";</span>
       let coach = <span class="cstat-no" title="statement not covered" >await onboardingCoachReply(userMsg, titles, history);</span>
 <span class="cstat-no" title="statement not covered" >      coach = coach || "Got it.";</span>
@@ -948,7 +948,7 @@ export default function <span class="fstat-no" title="function not covered" >reg
         const title = <span class="cstat-no" title="statement not covered" >(m[1] || '').trim().slice(0, 120) || 'Untitled';</span>
         const content = <span class="cstat-no" title="statement not covered" >(m[2] || '').trim();</span>
 <span class="cstat-no" title="statement not covered" >        if (content) {</span>
-<span class="cstat-no" title="statement not covered" >          upsertKbItem(userId, title, content);</span>
+<span class="cstat-no" title="statement not covered" >          await upsertKbItem(userId, title, content);</span>
 <span class="cstat-no" title="statement not covered" >          savedSummaries.push(`Saved “${title}” to KB.`);</span>
         }
       }
@@ -970,9 +970,9 @@ export default function <span class="fstat-no" title="function not covered" >reg
 <span class="cstat-no" title="statement not covered" >        if (Object.keys(updates).length) {</span>
 <span class="cstat-no" title="statement not covered" >          upsertSettingsForUser(userId, { ...current, ...updates });</span>
 <span class="cstat-no" title="statement not covered" >          try {</span>
-<span class="cstat-no" title="statement not covered" >            if (updates.business_name) { <span class="cstat-no" title="statement not covered" >upsertKbItem(userId, 'Business Name', updates.business_name); <span class="cstat-no" title="statement not covered" ></span>savedSummaries.push('Saved “Business Name” to KB.'); </span>}</span>
-<span class="cstat-no" title="statement not covered" >            if (updates.website_url) { <span class="cstat-no" title="statement not covered" >upsertKbItem(userId, 'Website', updates.website_url); <span class="cstat-no" title="statement not covered" ></span>savedSummaries.push('Saved “Website” to KB.'); </span>}</span>
-<span class="cstat-no" title="statement not covered" >            if (updates.business_phone) { <span class="cstat-no" title="statement not covered" >upsertKbItem(userId, 'Contact', updates.business_phone); <span class="cstat-no" title="statement not covered" ></span>savedSummaries.push('Saved “Contact” to KB.'); </span>}</span>
+<span class="cstat-no" title="statement not covered" >            if (updates.business_name) { <span class="cstat-no" title="statement not covered" >await upsertKbItem(userId, 'Business Name', updates.business_name); <span class="cstat-no" title="statement not covered" ></span>savedSummaries.push('Saved “Business Name” to KB.'); </span>}</span>
+<span class="cstat-no" title="statement not covered" >            if (updates.website_url) { <span class="cstat-no" title="statement not covered" >await upsertKbItem(userId, 'Website', updates.website_url); <span class="cstat-no" title="statement not covered" ></span>savedSummaries.push('Saved “Website” to KB.'); </span>}</span>
+<span class="cstat-no" title="statement not covered" >            if (updates.business_phone) { <span class="cstat-no" title="statement not covered" >await upsertKbItem(userId, 'Contact', updates.business_phone); <span class="cstat-no" title="statement not covered" ></span>savedSummaries.push('Saved “Contact” to KB.'); </span>}</span>
           } catch {}
 <span class="cstat-no" title="statement not covered" >          if (!visible) {</span>
 <span class="cstat-no" title="statement not covered" >            if (entryGreetingVal) <span class="cstat-no" title="statement not covered" >visible = entryGreetingVal; </span>else <span class="cstat-no" title="statement not covered" >if (updates.business_name) <span class="cstat-no" title="statement not covered" >visible = `Saved business name: ${updates.business_name}`; </span>else <span class="cstat-no" title="statement not covered" >visible = 'Saved your settings.';</span></span></span>
@@ -988,15 +988,15 @@ export default function <span class="fstat-no" title="function not covered" >reg
         const toUpdate = <span class="cstat-no" title="statement not covered" >{};</span>
         const pushSetting = <span class="cstat-no" title="statement not covered" ><span class="fstat-no" title="function not covered" >(k</span>,v) =&gt; { <span class="cstat-no" title="statement not covered" >if (v) <span class="cstat-no" title="statement not covered" >toUpdate[k] = v; </span></span>};</span>
         const bn = <span class="cstat-no" title="statement not covered" >/\b(business|company)\s*name\s*(is|:)\s*([\p{L}\p{N} _'"&amp;().-]{2,})/iu.exec(userMsg);</span>
-<span class="cstat-no" title="statement not covered" >        if (bn &amp;&amp; bn[3]) { const raw = <span class="cstat-no" title="statement not covered" >bn[3].trim().replace(/^[\'"\s]+|[\'"\s]+$/g, "");</span> <span class="cstat-no" title="statement not covered" >pushSetting('business_name', raw); <span class="cstat-no" title="statement not covered" ></span>upsertKbItem(userId, 'Business Name', raw); <span class="cstat-no" title="statement not covered" ></span>savedSummaries.push('Saved “Business Name” to KB.'); </span>}</span>
+<span class="cstat-no" title="statement not covered" >        if (bn &amp;&amp; bn[3]) { const raw = <span class="cstat-no" title="statement not covered" >bn[3].trim().replace(/^[\'"\s]+|[\'"\s]+$/g, "");</span> <span class="cstat-no" title="statement not covered" >pushSetting('business_name', raw); <span class="cstat-no" title="statement not covered" ></span>await upsertKbItem(userId, 'Business Name', raw); <span class="cstat-no" title="statement not covered" ></span>savedSummaries.push('Saved “Business Name” to KB.'); </span>}</span>
         const ws = <span class="cstat-no" title="statement not covered" >/\b(website|site|url)\s*(is|:)\s*(\S+)/i.exec(userMsg);</span> <span class="cstat-no" title="statement not covered" >if (ws &amp;&amp; ws[3]) <span class="cstat-no" title="statement not covered" >pushSetting('website_url', ws[3].trim());</span></span>
         const ph = <span class="cstat-no" title="statement not covered" >/\b(phone|number|contact)\s*(is|:)\s*([+\d][+\d\s().-]{6,})/i.exec(userMsg);</span> <span class="cstat-no" title="statement not covered" >if (ph &amp;&amp; ph[3]) <span class="cstat-no" title="statement not covered" >pushSetting('business_phone', ph[3].trim());</span></span>
 <span class="cstat-no" title="statement not covered" >        if (Object.keys(toUpdate).length) { <span class="cstat-no" title="statement not covered" >upsertSettingsForUser(userId, { ...currentSettings, ...toUpdate }); <span class="cstat-no" title="statement not covered" ></span>if (!visible) <span class="cstat-no" title="statement not covered" >visible = 'Saved your settings.'; </span></span>}</span>
-<span class="cstat-no" title="statement not covered" >        if (/\bwe\s+are\b|\bwe\s+do\b|\bour\s+business\b|\bwe\s+sell\b|\brestaurant|cafe|salon|clinic|store|shop\b/i.test(userMsg)) { const sentence = <span class="cstat-no" title="statement not covered" >extractSentence(userMsg,'we') || userMsg;</span> <span class="cstat-no" title="statement not covered" >upsertKbItem(userId,'What We Do', sentence); <span class="cstat-no" title="statement not covered" ></span>savedSummaries.push('Saved “What We Do” to KB.'); </span>}</span>
+<span class="cstat-no" title="statement not covered" >        if (/\bwe\s+are\b|\bwe\s+do\b|\bour\s+business\b|\bwe\s+sell\b|\brestaurant|cafe|salon|clinic|store|shop\b/i.test(userMsg)) { const sentence = <span class="cstat-no" title="statement not covered" >extractSentence(userMsg,'we') || userMsg;</span> <span class="cstat-no" title="statement not covered" >await upsertKbItem(userId,'What We Do', sentence); <span class="cstat-no" title="statement not covered" ></span>savedSummaries.push('Saved “What We Do” to KB.'); </span>}</span>
         const hasDay = <span class="cstat-no" title="statement not covered" >/(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i.test(userMsg);</span>
         const hasTime = <span class="cstat-no" title="statement not covered" >/\b(\d{1,2})([:.][0-5]\d)?\s*(am|pm)?\b.*?-.*?\b(\d{1,2})([:.][0-5]\d)?\s*(am|pm)?\b/i.test(userMsg);</span>
-<span class="cstat-no" title="statement not covered" >        if (hasDay || hasTime) { const sentence = <span class="cstat-no" title="statement not covered" >extractSentence(userMsg,'mon') || extractSentence(userMsg,'sun') || userMsg;</span> <span class="cstat-no" title="statement not covered" >upsertKbItem(userId,'Hours', sentence); <span class="cstat-no" title="statement not covered" ></span>savedSummaries.push('Saved “Hours” to KB.'); </span>}</span>
-<span class="cstat-no" title="statement not covered" >        if (/(street|st\.|ave\.|avenue|blvd\.|boulevard|road|rd\.|drive|dr\.|plaza|center|centre|city|town|village|address|located|location|near)/i.test(userMsg)) { const sentence = <span class="cstat-no" title="statement not covered" >extractSentence(userMsg,'location') || extractSentence(userMsg,'address') || userMsg;</span> <span class="cstat-no" title="statement not covered" >upsertKbItem(userId,'Locations', sentence); <span class="cstat-no" title="statement not covered" ></span>savedSummaries.push('Saved “Locations” to KB.'); </span>}</span>
+<span class="cstat-no" title="statement not covered" >        if (hasDay || hasTime) { const sentence = <span class="cstat-no" title="statement not covered" >extractSentence(userMsg,'mon') || extractSentence(userMsg,'sun') || userMsg;</span> <span class="cstat-no" title="statement not covered" >await upsertKbItem(userId,'Hours', sentence); <span class="cstat-no" title="statement not covered" ></span>savedSummaries.push('Saved “Hours” to KB.'); </span>}</span>
+<span class="cstat-no" title="statement not covered" >        if (/(street|st\.|ave\.|avenue|blvd\.|boulevard|road|rd\.|drive|dr\.|plaza|center|centre|city|town|village|address|located|location|near)/i.test(userMsg)) { const sentence = <span class="cstat-no" title="statement not covered" >extractSentence(userMsg,'location') || extractSentence(userMsg,'address') || userMsg;</span> <span class="cstat-no" title="statement not covered" >await upsertKbItem(userId,'Locations', sentence); <span class="cstat-no" title="statement not covered" ></span>savedSummaries.push('Saved “Locations” to KB.'); </span>}</span>
       } catch {}
 &nbsp;
       const askFollow = <span class="cstat-no" title="statement not covered" >askLine ? (askLine.split('|')[1] || '').trim() : '';</span>
@@ -1033,7 +1033,7 @@ export default function <span class="fstat-no" title="function not covered" >reg
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2025-10-21T20:36:54.510Z
+                at 2025-11-04T15:18:03.329Z
             </div>
         <script src="../../prettify.js"></script>
         <script>

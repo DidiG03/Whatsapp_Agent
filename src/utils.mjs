@@ -177,6 +177,16 @@ export function renderSidebar(activeKey) {
         </li>
       `;
     }
+    if (key === 'campaigns') {
+      return `
+        <li>
+          <a ${activeKey === key ? 'class="active"' : ''} href="${href}">
+            <img src="/send-whatsapp-icon.svg" alt="Campaigns" style="width:20px;height:20px;vertical-align:middle;margin-right:6px;"/>
+            <span style="color: grey;">${label}</span>
+          </a>
+        </li>
+      `;
+    }
     if (key === 'bookings') {
       return `
         <li>
@@ -271,12 +281,10 @@ export function renderSidebar(activeKey) {
       ${link('/inbox', 'Inbox', 'inbox')}
       ${link('/bookings', 'Bookings', 'bookings')}
       ${link('/kb/ui', 'Knowledge Base', 'kb')}
+      ${link('/campaigns', 'Campaigns', 'campaigns')}
       ${link('/plan', 'Plan', 'plan')}
       ${link('/settings', 'Settings', 'settings')}
       ${link('/guide', 'Guide', 'guide')}
-      ${link('/webhooks', 'Webhooks', 'webhooks')}
-      ${link('/api-management', 'API Management', 'api-management')}
-      ${link('/contacts', 'Contacts', 'contacts')}
     </ul>
   `;
   const logout = CLERK_ENABLED ? '<a class="logout" href="/logout"><img src="/sign-out.svg" alt="Sign out" style="width:20px;height:20px;vertical-align:middle;margin-right:6px;"/>Sign out</a>' : '';
@@ -336,3 +344,36 @@ export function signMediaPath(path, ttlSeconds = 300) {
   }
 }
 
+
+// --- Timezone-safe date helpers ---------------------------------------------
+/**
+ * Get year/month/day components for a Date as experienced in a given IANA time zone.
+ * Returns numeric parts suitable for constructing UTC instants that represent
+ * local wall-clock times.
+ */
+export function getYmdPartsInTimeZone(dateObj, timeZone = 'UTC') {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timeZone || 'UTC',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(dateObj);
+  const year = Number(parts.find(p => p.type === 'year')?.value || '1970');
+  const month = Number(parts.find(p => p.type === 'month')?.value || '01');
+  const day = Number(parts.find(p => p.type === 'day')?.value || '01');
+  return { year, month, day };
+}
+
+/**
+ * Build a UTC Date that represents a wall-clock time (hour:minute) on dateISO
+ * in a given IANA time zone.
+ */
+export function buildUtcFromLocalWallTime(dateISO, hour, minute = 0, timeZone = 'UTC') {
+  try {
+    const baseUtc = new Date(`${dateISO}T00:00:00.000Z`);
+    const { year, month, day } = getYmdPartsInTimeZone(baseUtc, timeZone || 'UTC');
+    return new Date(Date.UTC(year, month - 1, day, Number(hour || 0), Number(minute || 0), 0, 0));
+  } catch {
+    return new Date(`${dateISO}T${String(hour).padStart(2,'0')}:${String(minute || 0).padStart(2,'0')}:00.000Z`);
+  }
+}

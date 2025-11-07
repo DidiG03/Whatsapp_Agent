@@ -40,6 +40,24 @@ export async function initMongoDB() {
     });
 
     console.log('MongoDB connected successfully');
+    // Ensure critical indexes for common query patterns (best-effort)
+    try {
+      await Promise.all([
+        mongoDb.collection('messages').createIndexes([
+          { key: { user_id: 1, from_id: 1, to_id: 1, timestamp: -1 }, name: 'messages_user_from_to_ts' },
+          { key: { user_id: 1, from_digits: 1, timestamp: -1 }, name: 'messages_user_fromdigits_ts' }
+        ]),
+        mongoDb.collection('handoff').createIndexes([
+          { key: { user_id: 1, contact_id: 1 }, name: 'handoff_user_contact', unique: true }
+        ]),
+        mongoDb.collection('kb_items').createIndexes([
+          { key: { user_id: 1, title: 1, created_at: -1 }, name: 'kb_user_title_created' }
+        ]),
+        mongoDb.collection('appointments').createIndexes([
+          { key: { user_id: 1, start_ts: 1 }, name: 'appts_user_start' }
+        ])
+      ]);
+    } catch {}
     return { client, db: mongoDb };
   } catch (error) {
     isConnected = false;
@@ -333,9 +351,11 @@ const mongoAdapter = new MongoDBAdapter();
 // Export the adapter as 'db' for compatibility with existing code
 export const db = mongoAdapter;
 
-// Initialize MongoDB on module load
-initMongoDB().catch(error => {
-  console.error('Failed to initialize MongoDB:', error);
-});
+// Initialize MongoDB on module load (skip during tests to avoid leaks)
+if (process.env.NODE_ENV !== 'test') {
+  initMongoDB().catch(error => {
+    console.error('Failed to initialize MongoDB:', error);
+  });
+}
 
 export default mongoAdapter;

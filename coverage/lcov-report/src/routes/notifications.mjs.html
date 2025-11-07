@@ -25,14 +25,14 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">0% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>0/39</span>
+                <span class='fraction'>0/36</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
                 <span class="strong">0% </span>
                 <span class="quiet">Branches</span>
-                <span class='fraction'>0/6</span>
+                <span class='fraction'>0/4</span>
             </div>
         
             
@@ -46,7 +46,7 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">0% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>0/39</span>
+                <span class='fraction'>0/35</span>
             </div>
         
             
@@ -138,17 +138,7 @@
 <a name='L73'></a><a href='#L73'>73</a>
 <a name='L74'></a><a href='#L74'>74</a>
 <a name='L75'></a><a href='#L75'>75</a>
-<a name='L76'></a><a href='#L76'>76</a>
-<a name='L77'></a><a href='#L77'>77</a>
-<a name='L78'></a><a href='#L78'>78</a>
-<a name='L79'></a><a href='#L79'>79</a>
-<a name='L80'></a><a href='#L80'>80</a>
-<a name='L81'></a><a href='#L81'>81</a>
-<a name='L82'></a><a href='#L82'>82</a>
-<a name='L83'></a><a href='#L83'>83</a>
-<a name='L84'></a><a href='#L84'>84</a>
-<a name='L85'></a><a href='#L85'>85</a>
-<a name='L86'></a><a href='#L86'>86</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
+<a name='L76'></a><a href='#L76'>76</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -167,17 +157,7 @@
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
@@ -240,30 +220,20 @@
  * - POST /api/notifications/read-all: mark all as read
  */
 import { ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
-import { db } from "../db.mjs";
+import { Notification } from "../schemas/mongodb.mjs";
 &nbsp;
 export default function <span class="fstat-no" title="function not covered" >registerNotificationRoutes(</span>app) {
   // Get notifications for current user
-<span class="cstat-no" title="statement not covered" >  app.get("/api/notifications", ensureAuthed, <span class="fstat-no" title="function not covered" >(r</span>eq, res) =&gt; {</span>
+<span class="cstat-no" title="statement not covered" >  app.get("/api/notifications", ensureAuthed, <span class="fstat-no" title="function not covered" >as</span>ync (req, res) =&gt; {</span>
     const userId = <span class="cstat-no" title="statement not covered" >getCurrentUserId(req);</span>
     const limit = <span class="cstat-no" title="statement not covered" >parseInt(req.query.limit || '20', 10);</span>
     const unreadOnly = <span class="cstat-no" title="statement not covered" >req.query.unread_only === 'true';</span>
     
 <span class="cstat-no" title="statement not covered" >    try {</span>
-      let query = <span class="cstat-no" title="statement not covered" >`SELECT * FROM notifications WHERE user_id = ?`;</span>
-      let params = <span class="cstat-no" title="statement not covered" >[userId];</span>
-      
-<span class="cstat-no" title="statement not covered" >      if (unreadOnly) {</span>
-<span class="cstat-no" title="statement not covered" >        query += ` AND is_read = 0`;</span>
-      }
-      
-<span class="cstat-no" title="statement not covered" >      query += ` ORDER BY created_at DESC LIMIT ?`;</span>
-<span class="cstat-no" title="statement not covered" >      params.push(limit);</span>
-      
-      const notifications = <span class="cstat-no" title="statement not covered" >db.prepare(query).all(...params);</span>
-      
-      // Get unread count
-      const unreadCount = <span class="cstat-no" title="statement not covered" >db.prepare(`SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = 0`).get(userId)?.count || 0;</span>
+      const findQuery = <span class="cstat-no" title="statement not covered" >{ user_id: userId };</span>
+<span class="cstat-no" title="statement not covered" >      if (unreadOnly) <span class="cstat-no" title="statement not covered" >findQuery.is_read = false;</span></span>
+      const notifications = <span class="cstat-no" title="statement not covered" >await Notification.find(findQuery).sort({ createdAt: -1 }).limit(limit).lean();</span>
+      const unreadCount = <span class="cstat-no" title="statement not covered" >await Notification.countDocuments({ user_id: userId, is_read: false });</span>
       
 <span class="cstat-no" title="statement not covered" >      res.json({</span>
         success: true,
@@ -277,12 +247,12 @@ export default function <span class="fstat-no" title="function not covered" >reg
   });
   
   // Mark notification as read
-<span class="cstat-no" title="statement not covered" >  app.post("/api/notifications/:id/read", ensureAuthed, <span class="fstat-no" title="function not covered" >(r</span>eq, res) =&gt; {</span>
+<span class="cstat-no" title="statement not covered" >  app.post("/api/notifications/:id/read", ensureAuthed, <span class="fstat-no" title="function not covered" >as</span>ync (req, res) =&gt; {</span>
     const userId = <span class="cstat-no" title="statement not covered" >getCurrentUserId(req);</span>
     const notificationId = <span class="cstat-no" title="statement not covered" >parseInt(req.params.id, 10);</span>
     
 <span class="cstat-no" title="statement not covered" >    try {</span>
-<span class="cstat-no" title="statement not covered" >      db.prepare(`UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?`).run(notificationId, userId);</span>
+<span class="cstat-no" title="statement not covered" >      await Notification.findOneAndUpdate({ _id: String(notificationId), user_id: userId }, { $set: { is_read: true } });</span>
 <span class="cstat-no" title="statement not covered" >      res.json({ success: true });</span>
     } catch (e) {
 <span class="cstat-no" title="statement not covered" >      console.error('[Notifications API] Error marking notification as read:', e.message);</span>
@@ -291,11 +261,11 @@ export default function <span class="fstat-no" title="function not covered" >reg
   });
   
   // Mark all notifications as read
-<span class="cstat-no" title="statement not covered" >  app.post("/api/notifications/read-all", ensureAuthed, <span class="fstat-no" title="function not covered" >(r</span>eq, res) =&gt; {</span>
+<span class="cstat-no" title="statement not covered" >  app.post("/api/notifications/read-all", ensureAuthed, <span class="fstat-no" title="function not covered" >as</span>ync (req, res) =&gt; {</span>
     const userId = <span class="cstat-no" title="statement not covered" >getCurrentUserId(req);</span>
     
 <span class="cstat-no" title="statement not covered" >    try {</span>
-<span class="cstat-no" title="statement not covered" >      db.prepare(`UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0`).run(userId);</span>
+<span class="cstat-no" title="statement not covered" >      await Notification.updateMany({ user_id: userId, is_read: false }, { $set: { is_read: true } });</span>
 <span class="cstat-no" title="statement not covered" >      res.json({ success: true });</span>
     } catch (e) {
 <span class="cstat-no" title="statement not covered" >      console.error('[Notifications API] Error marking all as read:', e.message);</span>
@@ -304,12 +274,12 @@ export default function <span class="fstat-no" title="function not covered" >reg
   });
   
   // Delete notification
-<span class="cstat-no" title="statement not covered" >  app.delete("/api/notifications/:id", ensureAuthed, <span class="fstat-no" title="function not covered" >(r</span>eq, res) =&gt; {</span>
+<span class="cstat-no" title="statement not covered" >  app.delete("/api/notifications/:id", ensureAuthed, <span class="fstat-no" title="function not covered" >as</span>ync (req, res) =&gt; {</span>
     const userId = <span class="cstat-no" title="statement not covered" >getCurrentUserId(req);</span>
     const notificationId = <span class="cstat-no" title="statement not covered" >parseInt(req.params.id, 10);</span>
     
 <span class="cstat-no" title="statement not covered" >    try {</span>
-<span class="cstat-no" title="statement not covered" >      db.prepare(`DELETE FROM notifications WHERE id = ? AND user_id = ?`).run(notificationId, userId);</span>
+<span class="cstat-no" title="statement not covered" >      await Notification.findOneAndDelete({ _id: String(notificationId), user_id: userId });</span>
 <span class="cstat-no" title="statement not covered" >      res.json({ success: true });</span>
     } catch (e) {
 <span class="cstat-no" title="statement not covered" >      console.error('[Notifications API] Error deleting notification:', e.message);</span>
@@ -325,7 +295,7 @@ export default function <span class="fstat-no" title="function not covered" >reg
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2025-10-21T20:36:54.510Z
+                at 2025-11-04T15:18:03.329Z
             </div>
         <script src="../../prettify.js"></script>
         <script>

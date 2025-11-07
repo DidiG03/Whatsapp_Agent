@@ -1,7 +1,9 @@
 import { ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
-import { listAvailability, createBooking, cancelBooking, rescheduleBooking } from "../services/booking.mjs";
+import { listAvailability, createBooking, cancelBooking, rescheduleBooking, getCalendarById } from "../services/booking.mjs";
 import { sendBookingNotification } from "../services/email.mjs";
 import { db } from "../db-mongodb.mjs";
+import mongoose from 'mongoose';
+import { Staff } from "../schemas/mongodb.mjs";
 
 export default function registerBookingRoutes(app) {
   // Public read: availability (admin-auth optional). If authed, uses their user_id.
@@ -73,15 +75,90 @@ export default function registerBookingRoutes(app) {
     }
   });
 
-  // Cancel booking
-  app.delete("/booking/:id", ensureAuthed, async (req, res) => {
+  // Read single booking details
+  app.get("/booking/:id", ensureAuthed, async (req, res) => {
     try {
       const userId = getCurrentUserId(req);
       const id = Number(req.params.id || 0);
       if (!id) return res.status(400).json({ error: "invalid id" });
-      const ok = await cancelBooking({ userId, appointmentId: id });
-      return res.json({ ok });
+      const dbh = db; // db adapter supports SQL-like helpers and Mongo-like access elsewhere
+      try {
+        const mongo = (await import('../db-mongodb.mjs')).getDB();
+        const row = await mongo.collection('appointments')
+          .aggregate([
+            { $match: { user_id: String(userId), id } },
+            { $lookup: { from: 'staff', localField: 'staff_id', foreignField: '_id', as: 'staff_docs' } },
+            { $addFields: { staff_name: { $arrayElemAt: ['$staff_docs.name', 0] } } },
+            { $project: { id: 1, start_ts: 1, end_ts: 1, contact_phone: 1, status: 1, notes: 1, staff_name: 1, staff_id: 1 } }
+          ])
+          .limit(1)
+          .next();
+        if (!row) return res.status(404).json({ error: 'not found' });
+        return res.json({ booking: row });
+      } catch (e) {
+        return res.status(500).json({ error: String(e && e.message || e) });
+      }
     } catch (e) {
+      return res.status(500).json({ error: String(e && e.message || e) });
+    }
+  });
+
+  // Update notes for a booking
+  app.patch("/booking/:id/notes", ensureAuthed, async (req, res) => {
+    try {
+      const userId = getCurrentUserId(req);
+      const id = Number(req.params.id || 0);
+      const notes = String((req.body && req.body.notes) || '').slice(0, 2000);
+      if (!id) return res.status(400).json({ error: "invalid id" });
+      const mongo = (await import('../db-mongodb.mjs')).getDB();
+      const r = await mongo.collection('appointments').updateOne({ user_id: String(userId), id }, { $set: { notes, updatedAt: new Date() } });
+      return res.json({ ok: r && (r.modifiedCount > 0) });
+    } catch (e) {
+      return res.status(500).json({ error: String(e && e.message || e) });
+    }
+  });
+
+  // Cancel booking
+  app.delete("/booking/:id", ensureAuthed, async (req, res) => {
+    try {
+      const userId = getCurrentUserId(req);
+      const raw = String(req.params.id || '').trim();
+      console.log('[Bookings][DELETE] incoming cancel', { userId: String(userId), raw });
+      let ok = false;
+      // Try legacy numeric id path first
+      if (/^\d+$/.test(raw)) {
+        try { ok = await cancelBooking({ userId, appointmentId: Number(raw) }); } catch (e) { console.warn('[Bookings][DELETE] legacy cancel failed', e?.message || e); }
+        if (ok) { console.log('[Bookings][DELETE] legacy path success'); return res.json({ ok: true }); }
+      }
+      // Generic path: find by either numeric id or Mongo _id
+      try {
+        const mongo = (await import('../db-mongodb.mjs')).getDB();
+        const or = [];
+        if (/^\d+$/.test(raw)) or.push({ id: Number(raw) });
+        if (mongoose.Types.ObjectId.isValid(raw)) or.push({ _id: new mongoose.Types.ObjectId(raw) });
+        if (or.length === 0) { console.warn('[Bookings][DELETE] invalid id format'); return res.status(400).json({ error: 'invalid id' }); }
+        const appt = await mongo.collection('appointments').findOne({ user_id: String(userId), $or: or });
+        if (!appt) { console.warn('[Bookings][DELETE] appointment not found for', { userId: String(userId), raw }); return res.json({ ok: false }); }
+        console.log('[Bookings][DELETE] canceling appt', { _id: String(appt._id), id: appt.id });
+        // Remove Google event if present
+        try {
+          if (appt.gcal_event_id && appt.staff_id) {
+            const owner = await Staff.findOne({ _id: appt.staff_id }).lean();
+            if (owner?.calendar_id) {
+              const cal = await getCalendarById(owner.calendar_id, userId);
+              if (cal) { const { deleteEvent } = await import('../services/google.mjs'); try { await deleteEvent(cal, appt.gcal_event_id); console.log('[Bookings][DELETE] google event removed'); } catch (e) { console.warn('[Bookings][DELETE] google delete failed', e?.message || e); } }
+            }
+          }
+        } catch {}
+        await mongo.collection('appointments').updateOne({ _id: appt._id }, { $set: { status: 'canceled', updatedAt: new Date() } });
+        console.log('[Bookings][DELETE] marked canceled in DB');
+        return res.json({ ok: true });
+      } catch (e) {
+        console.error('[Bookings][DELETE] server error', e?.message || e);
+        return res.status(500).json({ error: String(e && e.message || e) });
+      }
+    } catch (e) {
+      console.error('[Bookings][DELETE] outer error', e?.message || e);
       return res.status(500).json({ error: String(e && e.message || e) });
     }
   });
@@ -90,10 +167,40 @@ export default function registerBookingRoutes(app) {
   app.put("/booking/:id", ensureAuthed, async (req, res) => {
     try {
       const userId = getCurrentUserId(req);
-      const id = Number(req.params.id || 0);
+      const raw = String(req.params.id || '').trim();
       const { start, end } = req.body || {};
-      if (!id || !start || !end) return res.status(400).json({ error: "id, start, end required" });
-      await rescheduleBooking({ userId, appointmentId: id, startISO: String(start), endISO: String(end) });
+      if (!start || !end) return res.status(400).json({ error: "start, end required" });
+      if (/^\d+$/.test(raw)) {
+        await rescheduleBooking({ userId, appointmentId: Number(raw), startISO: String(start), endISO: String(end) });
+      } else {
+        // Fallback to Mongo _id
+        const mongo = (await import('../db-mongodb.mjs')).getDB();
+        if (!mongoose.Types.ObjectId.isValid(raw)) return res.status(400).json({ error: "invalid id" });
+        const _id = new mongoose.Types.ObjectId(raw);
+        const appt = await mongo.collection('appointments').findOne({ _id, user_id: String(userId) });
+        if (!appt) return res.status(404).json({ error: 'not found' });
+        // If the legacy id exists, reuse service to ensure Google sync; otherwise update directly
+        if (appt.id && Number(appt.id)) {
+          await rescheduleBooking({ userId, appointmentId: Number(appt.id), startISO: String(start), endISO: String(end) });
+        } else {
+          // Update and try Google calendar if linked
+          try {
+            if (appt.gcal_event_id && appt.staff_id) {
+              const owner = await Staff.findOne({ _id: appt.staff_id }).lean();
+              if (owner?.calendar_id) {
+                const cal = await getCalendarById(owner.calendar_id, userId);
+                if (cal) {
+                  const { updateEvent } = await import('../services/google.mjs');
+                  await updateEvent(cal, appt.gcal_event_id, { start: { dateTime: String(start) }, end: { dateTime: String(end) } });
+                }
+              }
+            }
+          } catch {}
+          const startTs = Math.floor(new Date(start).getTime() / 1000);
+          const endTs = Math.floor(new Date(end).getTime() / 1000);
+          await mongo.collection('appointments').updateOne({ _id }, { $set: { start_ts: startTs, end_ts: endTs, status: 'confirmed', updatedAt: new Date() } });
+        }
+      }
       return res.json({ ok: true });
     } catch (e) {
       return res.status(409).json({ error: String(e && e.message || e) });

@@ -18,6 +18,7 @@ async function setupMongoDB() {
   try {
     // Connect to MongoDB
     await mongoose.connect(MONGODB_URI, {
+      dbName: MONGODB_DB_NAME,
       useNewUrlParser: true,
       useUnifiedTopology: true,
     });
@@ -41,10 +42,7 @@ async function setupMongoDB() {
     await db.collection('ai_requests').createIndex({ user_id: 1 });
     await db.collection('ai_requests').createIndex({ createdAt: -1 });
     
-    // User settings collection indexes
-    await db.collection('user_settings').createIndex({ user_id: 1 }, { unique: true });
-    
-    // Settings multi collection indexes
+    // Settings multi collection indexes (now also stores dashboard preferences)
     await db.collection('settings_multi').createIndex({ user_id: 1 }, { unique: true });
     
     // Customers collection indexes

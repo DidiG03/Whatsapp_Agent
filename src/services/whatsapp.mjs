@@ -6,6 +6,10 @@ import fetch from "node-fetch";
 import fs from "fs";
 import path from "path";
 import FormData from "form-data";
+import https from "node:https";
+
+// Reuse HTTP connections for lower latency and fewer TCP handshakes
+const keepAliveAgent = new https.Agent({ keepAlive: true, keepAliveMsecs: 10_000 });
 
 async function postWhatsAppMessage(cfg, payload, { retry = false } = {}) {
   if (!cfg.phone_number_id || !cfg.whatsapp_token) {
@@ -25,22 +29,24 @@ async function postWhatsAppMessage(cfg, payload, { retry = false } = {}) {
   };
 
   // Diagnostics: log request metadata without secrets
-  try {
-    const meta = {
-      target: 'whatsapp_send',
-      phoneId_tail: String(cfg.phone_number_id || '').slice(-6),
-      hasToken: !!cfg.whatsapp_token,
-      payload_type: payload?.type || 'text',
-      to_tail: String(payload?.to || '').slice(-6),
-      has_context: !!payload?.context,
-      retry
-    };
-    console.log('[WA] Request meta:', meta);
-  } catch {}
+  if (process.env.DEBUG_LOGS === '1') {
+    try {
+      const meta = {
+        target: 'whatsapp_send',
+        phoneId_tail: String(cfg.phone_number_id || '').slice(-6),
+        hasToken: !!cfg.whatsapp_token,
+        payload_type: payload?.type || 'text',
+        to_tail: String(payload?.to || '').slice(-6),
+        has_context: !!payload?.context,
+        retry
+      };
+      console.log('[WA] Request meta:', meta);
+    } catch {}
+  }
 
   if (!retry) {
     try {
-      const resp = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload) });
+      const resp = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload), agent: keepAliveAgent });
       if (!resp.ok) {
         const text = await resp.text();
         console.error('[WA] HTTP error', { status: resp.status, body: text.slice(0, 2000) });
@@ -51,7 +57,7 @@ async function postWhatsAppMessage(cfg, payload, { retry = false } = {}) {
         throw new Error(`WhatsApp error ${resp.status}: ${text}`);
       }
       const json = await resp.json();
-      try { console.log('[WA] HTTP ok', { hasMessages: !!json?.messages?.[0]?.id, keys: Object.keys(json||{}).slice(0, 12) }); } catch {}
+      if (process.env.DEBUG_LOGS === '1') { try { console.log('[WA] HTTP ok', { hasMessages: !!json?.messages?.[0]?.id, keys: Object.keys(json||{}).slice(0, 12) }); } catch {} }
       return json;
     } catch (e) {
       console.error('[WA] Network/Fetch error:', e?.message || e);
@@ -65,7 +71,7 @@ async function postWhatsAppMessage(cfg, payload, { retry = false } = {}) {
   while (attempt < maxRetries) {
     attempt++;
     try {
-      const resp = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload) });
+      const resp = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload), agent: keepAliveAgent });
       if (resp.status === 401) {
         // Don't retry 401 errors - they indicate authentication issues
         const text = await resp.text();
@@ -79,7 +85,7 @@ async function postWhatsAppMessage(cfg, payload, { retry = false } = {}) {
         throw new Error(`WhatsApp error ${resp.status}: ${text}`);
       }
       const json = await resp.json();
-      try { console.log('[WA] Retry HTTP ok', { hasMessages: !!json?.messages?.[0]?.id, keys: Object.keys(json||{}).slice(0, 12) }); } catch {}
+      if (process.env.DEBUG_LOGS === '1') { try { console.log('[WA] Retry HTTP ok', { hasMessages: !!json?.messages?.[0]?.id, keys: Object.keys(json||{}).slice(0, 12) }); } catch {} }
       return json;
     } catch (e) {
       lastErr = e;
@@ -114,7 +120,7 @@ export async function sendWhatsAppText(to, body, cfg, replyToMessageId = null) {
     payload.context = { message_id: replyToMessageId };
   }
   // Debug: minimal payload log (no secrets)
-  try { console.log('[WA] Sending text', { to: String(to).slice(-6), hasToken: !!cfg?.whatsapp_token, hasPhoneId: !!cfg?.phone_number_id }); } catch {}
+  if (process.env.DEBUG_LOGS === '1') { try { console.log('[WA] Sending text', { to: String(to).slice(-6), hasToken: !!cfg?.whatsapp_token, hasPhoneId: !!cfg?.phone_number_id }); } catch {} }
 
   let result;
   try {
@@ -125,13 +131,15 @@ export async function sendWhatsAppText(to, body, cfg, replyToMessageId = null) {
   }
 
   // Debug: log shape of response to diagnose missing message id
-  try {
-    const meta = {
-      hasMessages: !!(result && result.messages && result.messages[0] && result.messages[0].id),
-      rawKeys: result ? Object.keys(result).slice(0, 10) : null
-    };
-    console.log('[WA] Send text API result', meta);
-  } catch {}
+  if (process.env.DEBUG_LOGS === '1') {
+    try {
+      const meta = {
+        hasMessages: !!(result && result.messages && result.messages[0] && result.messages[0].id),
+        rawKeys: result ? Object.keys(result).slice(0, 10) : null
+      };
+      console.log('[WA] Send text API result', meta);
+    } catch {}
+  }
   
   // Track outbound message usage
   if (cfg.user_id && result?.messages?.[0]?.id) {
@@ -232,7 +240,8 @@ export async function sendWhatsappReaction(to, messageId, emoji, cfg) {
       "Authorization": `Bearer ${cfg.whatsapp_token}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
+    agent: keepAliveAgent
   });
   
   const text = await resp.text().catch(() => '');
@@ -314,7 +323,8 @@ export async function sendWhatsappImageBase64(to, imagePath, caption, cfg) {
       const uploadResponse = await fetch('https://tmpfiles.org/api/v1/upload', {
         method: 'POST',
         body: formData,
-        headers: formData.getHeaders()
+        headers: formData.getHeaders(),
+        agent: keepAliveAgent
       });
       
       if (uploadResponse.ok) {
@@ -342,7 +352,8 @@ export async function sendWhatsappImageBase64(to, imagePath, caption, cfg) {
         const uploadResponse = await fetch('https://0x0.st', {
           method: 'POST',
           body: formData,
-          headers: formData.getHeaders()
+          headers: formData.getHeaders(),
+          agent: keepAliveAgent
         });
         
         if (uploadResponse.ok) {
@@ -477,7 +488,8 @@ export async function sendWhatsappDocumentBase64(to, documentPath, filename, cap
       const uploadResponse = await fetch('https://tmpfiles.org/api/v1/upload', {
         method: 'POST',
         body: formData,
-        headers: formData.getHeaders()
+        headers: formData.getHeaders(),
+        agent: keepAliveAgent
       });
       
       if (uploadResponse.ok) {

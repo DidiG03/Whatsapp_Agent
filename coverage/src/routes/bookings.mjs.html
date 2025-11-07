@@ -1,0 +1,724 @@
+
+<!doctype html>
+<html lang="en">
+
+<head>
+    <title>Code coverage report for src/routes/bookings.mjs</title>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="../../prettify.css" />
+    <link rel="stylesheet" href="../../base.css" />
+    <link rel="shortcut icon" type="image/x-icon" href="../../favicon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style type='text/css'>
+        .coverage-summary .sorter {
+            background-image: url(../../sort-arrow-sprite.png);
+        }
+    </style>
+</head>
+    
+<body>
+<div class='wrapper'>
+    <div class='pad1'>
+        <h1><a href="../../index.html">All files</a> / <a href="index.html">src/routes</a> bookings.mjs</h1>
+        <div class='clearfix'>
+            
+            <div class='fl pad1y space-right2'>
+                <span class="strong">0% </span>
+                <span class="quiet">Statements</span>
+                <span class='fraction'>0/55</span>
+            </div>
+        
+            
+            <div class='fl pad1y space-right2'>
+                <span class="strong">0% </span>
+                <span class="quiet">Branches</span>
+                <span class='fraction'>0/70</span>
+            </div>
+        
+            
+            <div class='fl pad1y space-right2'>
+                <span class="strong">0% </span>
+                <span class="quiet">Functions</span>
+                <span class='fraction'>0/8</span>
+            </div>
+        
+            
+            <div class='fl pad1y space-right2'>
+                <span class="strong">0% </span>
+                <span class="quiet">Lines</span>
+                <span class='fraction'>0/50</span>
+            </div>
+        
+            
+        </div>
+        <p class="quiet">
+            Press <em>n</em> or <em>j</em> to go to the next uncovered block, <em>b</em>, <em>p</em> or <em>k</em> for the previous block.
+        </p>
+        <template id="filterTemplate">
+            <div class="quiet">
+                Filter:
+                <input type="search" id="fileSearch">
+            </div>
+        </template>
+    </div>
+    <div class='status-line low'></div>
+    <pre><table class="coverage">
+<tr><td class="line-count quiet"><a name='L1'></a><a href='#L1'>1</a>
+<a name='L2'></a><a href='#L2'>2</a>
+<a name='L3'></a><a href='#L3'>3</a>
+<a name='L4'></a><a href='#L4'>4</a>
+<a name='L5'></a><a href='#L5'>5</a>
+<a name='L6'></a><a href='#L6'>6</a>
+<a name='L7'></a><a href='#L7'>7</a>
+<a name='L8'></a><a href='#L8'>8</a>
+<a name='L9'></a><a href='#L9'>9</a>
+<a name='L10'></a><a href='#L10'>10</a>
+<a name='L11'></a><a href='#L11'>11</a>
+<a name='L12'></a><a href='#L12'>12</a>
+<a name='L13'></a><a href='#L13'>13</a>
+<a name='L14'></a><a href='#L14'>14</a>
+<a name='L15'></a><a href='#L15'>15</a>
+<a name='L16'></a><a href='#L16'>16</a>
+<a name='L17'></a><a href='#L17'>17</a>
+<a name='L18'></a><a href='#L18'>18</a>
+<a name='L19'></a><a href='#L19'>19</a>
+<a name='L20'></a><a href='#L20'>20</a>
+<a name='L21'></a><a href='#L21'>21</a>
+<a name='L22'></a><a href='#L22'>22</a>
+<a name='L23'></a><a href='#L23'>23</a>
+<a name='L24'></a><a href='#L24'>24</a>
+<a name='L25'></a><a href='#L25'>25</a>
+<a name='L26'></a><a href='#L26'>26</a>
+<a name='L27'></a><a href='#L27'>27</a>
+<a name='L28'></a><a href='#L28'>28</a>
+<a name='L29'></a><a href='#L29'>29</a>
+<a name='L30'></a><a href='#L30'>30</a>
+<a name='L31'></a><a href='#L31'>31</a>
+<a name='L32'></a><a href='#L32'>32</a>
+<a name='L33'></a><a href='#L33'>33</a>
+<a name='L34'></a><a href='#L34'>34</a>
+<a name='L35'></a><a href='#L35'>35</a>
+<a name='L36'></a><a href='#L36'>36</a>
+<a name='L37'></a><a href='#L37'>37</a>
+<a name='L38'></a><a href='#L38'>38</a>
+<a name='L39'></a><a href='#L39'>39</a>
+<a name='L40'></a><a href='#L40'>40</a>
+<a name='L41'></a><a href='#L41'>41</a>
+<a name='L42'></a><a href='#L42'>42</a>
+<a name='L43'></a><a href='#L43'>43</a>
+<a name='L44'></a><a href='#L44'>44</a>
+<a name='L45'></a><a href='#L45'>45</a>
+<a name='L46'></a><a href='#L46'>46</a>
+<a name='L47'></a><a href='#L47'>47</a>
+<a name='L48'></a><a href='#L48'>48</a>
+<a name='L49'></a><a href='#L49'>49</a>
+<a name='L50'></a><a href='#L50'>50</a>
+<a name='L51'></a><a href='#L51'>51</a>
+<a name='L52'></a><a href='#L52'>52</a>
+<a name='L53'></a><a href='#L53'>53</a>
+<a name='L54'></a><a href='#L54'>54</a>
+<a name='L55'></a><a href='#L55'>55</a>
+<a name='L56'></a><a href='#L56'>56</a>
+<a name='L57'></a><a href='#L57'>57</a>
+<a name='L58'></a><a href='#L58'>58</a>
+<a name='L59'></a><a href='#L59'>59</a>
+<a name='L60'></a><a href='#L60'>60</a>
+<a name='L61'></a><a href='#L61'>61</a>
+<a name='L62'></a><a href='#L62'>62</a>
+<a name='L63'></a><a href='#L63'>63</a>
+<a name='L64'></a><a href='#L64'>64</a>
+<a name='L65'></a><a href='#L65'>65</a>
+<a name='L66'></a><a href='#L66'>66</a>
+<a name='L67'></a><a href='#L67'>67</a>
+<a name='L68'></a><a href='#L68'>68</a>
+<a name='L69'></a><a href='#L69'>69</a>
+<a name='L70'></a><a href='#L70'>70</a>
+<a name='L71'></a><a href='#L71'>71</a>
+<a name='L72'></a><a href='#L72'>72</a>
+<a name='L73'></a><a href='#L73'>73</a>
+<a name='L74'></a><a href='#L74'>74</a>
+<a name='L75'></a><a href='#L75'>75</a>
+<a name='L76'></a><a href='#L76'>76</a>
+<a name='L77'></a><a href='#L77'>77</a>
+<a name='L78'></a><a href='#L78'>78</a>
+<a name='L79'></a><a href='#L79'>79</a>
+<a name='L80'></a><a href='#L80'>80</a>
+<a name='L81'></a><a href='#L81'>81</a>
+<a name='L82'></a><a href='#L82'>82</a>
+<a name='L83'></a><a href='#L83'>83</a>
+<a name='L84'></a><a href='#L84'>84</a>
+<a name='L85'></a><a href='#L85'>85</a>
+<a name='L86'></a><a href='#L86'>86</a>
+<a name='L87'></a><a href='#L87'>87</a>
+<a name='L88'></a><a href='#L88'>88</a>
+<a name='L89'></a><a href='#L89'>89</a>
+<a name='L90'></a><a href='#L90'>90</a>
+<a name='L91'></a><a href='#L91'>91</a>
+<a name='L92'></a><a href='#L92'>92</a>
+<a name='L93'></a><a href='#L93'>93</a>
+<a name='L94'></a><a href='#L94'>94</a>
+<a name='L95'></a><a href='#L95'>95</a>
+<a name='L96'></a><a href='#L96'>96</a>
+<a name='L97'></a><a href='#L97'>97</a>
+<a name='L98'></a><a href='#L98'>98</a>
+<a name='L99'></a><a href='#L99'>99</a>
+<a name='L100'></a><a href='#L100'>100</a>
+<a name='L101'></a><a href='#L101'>101</a>
+<a name='L102'></a><a href='#L102'>102</a>
+<a name='L103'></a><a href='#L103'>103</a>
+<a name='L104'></a><a href='#L104'>104</a>
+<a name='L105'></a><a href='#L105'>105</a>
+<a name='L106'></a><a href='#L106'>106</a>
+<a name='L107'></a><a href='#L107'>107</a>
+<a name='L108'></a><a href='#L108'>108</a>
+<a name='L109'></a><a href='#L109'>109</a>
+<a name='L110'></a><a href='#L110'>110</a>
+<a name='L111'></a><a href='#L111'>111</a>
+<a name='L112'></a><a href='#L112'>112</a>
+<a name='L113'></a><a href='#L113'>113</a>
+<a name='L114'></a><a href='#L114'>114</a>
+<a name='L115'></a><a href='#L115'>115</a>
+<a name='L116'></a><a href='#L116'>116</a>
+<a name='L117'></a><a href='#L117'>117</a>
+<a name='L118'></a><a href='#L118'>118</a>
+<a name='L119'></a><a href='#L119'>119</a>
+<a name='L120'></a><a href='#L120'>120</a>
+<a name='L121'></a><a href='#L121'>121</a>
+<a name='L122'></a><a href='#L122'>122</a>
+<a name='L123'></a><a href='#L123'>123</a>
+<a name='L124'></a><a href='#L124'>124</a>
+<a name='L125'></a><a href='#L125'>125</a>
+<a name='L126'></a><a href='#L126'>126</a>
+<a name='L127'></a><a href='#L127'>127</a>
+<a name='L128'></a><a href='#L128'>128</a>
+<a name='L129'></a><a href='#L129'>129</a>
+<a name='L130'></a><a href='#L130'>130</a>
+<a name='L131'></a><a href='#L131'>131</a>
+<a name='L132'></a><a href='#L132'>132</a>
+<a name='L133'></a><a href='#L133'>133</a>
+<a name='L134'></a><a href='#L134'>134</a>
+<a name='L135'></a><a href='#L135'>135</a>
+<a name='L136'></a><a href='#L136'>136</a>
+<a name='L137'></a><a href='#L137'>137</a>
+<a name='L138'></a><a href='#L138'>138</a>
+<a name='L139'></a><a href='#L139'>139</a>
+<a name='L140'></a><a href='#L140'>140</a>
+<a name='L141'></a><a href='#L141'>141</a>
+<a name='L142'></a><a href='#L142'>142</a>
+<a name='L143'></a><a href='#L143'>143</a>
+<a name='L144'></a><a href='#L144'>144</a>
+<a name='L145'></a><a href='#L145'>145</a>
+<a name='L146'></a><a href='#L146'>146</a>
+<a name='L147'></a><a href='#L147'>147</a>
+<a name='L148'></a><a href='#L148'>148</a>
+<a name='L149'></a><a href='#L149'>149</a>
+<a name='L150'></a><a href='#L150'>150</a>
+<a name='L151'></a><a href='#L151'>151</a>
+<a name='L152'></a><a href='#L152'>152</a>
+<a name='L153'></a><a href='#L153'>153</a>
+<a name='L154'></a><a href='#L154'>154</a>
+<a name='L155'></a><a href='#L155'>155</a>
+<a name='L156'></a><a href='#L156'>156</a>
+<a name='L157'></a><a href='#L157'>157</a>
+<a name='L158'></a><a href='#L158'>158</a>
+<a name='L159'></a><a href='#L159'>159</a>
+<a name='L160'></a><a href='#L160'>160</a>
+<a name='L161'></a><a href='#L161'>161</a>
+<a name='L162'></a><a href='#L162'>162</a>
+<a name='L163'></a><a href='#L163'>163</a>
+<a name='L164'></a><a href='#L164'>164</a>
+<a name='L165'></a><a href='#L165'>165</a>
+<a name='L166'></a><a href='#L166'>166</a>
+<a name='L167'></a><a href='#L167'>167</a>
+<a name='L168'></a><a href='#L168'>168</a>
+<a name='L169'></a><a href='#L169'>169</a>
+<a name='L170'></a><a href='#L170'>170</a>
+<a name='L171'></a><a href='#L171'>171</a>
+<a name='L172'></a><a href='#L172'>172</a>
+<a name='L173'></a><a href='#L173'>173</a>
+<a name='L174'></a><a href='#L174'>174</a>
+<a name='L175'></a><a href='#L175'>175</a>
+<a name='L176'></a><a href='#L176'>176</a>
+<a name='L177'></a><a href='#L177'>177</a>
+<a name='L178'></a><a href='#L178'>178</a>
+<a name='L179'></a><a href='#L179'>179</a>
+<a name='L180'></a><a href='#L180'>180</a>
+<a name='L181'></a><a href='#L181'>181</a>
+<a name='L182'></a><a href='#L182'>182</a>
+<a name='L183'></a><a href='#L183'>183</a>
+<a name='L184'></a><a href='#L184'>184</a>
+<a name='L185'></a><a href='#L185'>185</a>
+<a name='L186'></a><a href='#L186'>186</a>
+<a name='L187'></a><a href='#L187'>187</a>
+<a name='L188'></a><a href='#L188'>188</a>
+<a name='L189'></a><a href='#L189'>189</a>
+<a name='L190'></a><a href='#L190'>190</a>
+<a name='L191'></a><a href='#L191'>191</a>
+<a name='L192'></a><a href='#L192'>192</a>
+<a name='L193'></a><a href='#L193'>193</a>
+<a name='L194'></a><a href='#L194'>194</a>
+<a name='L195'></a><a href='#L195'>195</a>
+<a name='L196'></a><a href='#L196'>196</a>
+<a name='L197'></a><a href='#L197'>197</a>
+<a name='L198'></a><a href='#L198'>198</a>
+<a name='L199'></a><a href='#L199'>199</a>
+<a name='L200'></a><a href='#L200'>200</a>
+<a name='L201'></a><a href='#L201'>201</a>
+<a name='L202'></a><a href='#L202'>202</a>
+<a name='L203'></a><a href='#L203'>203</a>
+<a name='L204'></a><a href='#L204'>204</a>
+<a name='L205'></a><a href='#L205'>205</a>
+<a name='L206'></a><a href='#L206'>206</a>
+<a name='L207'></a><a href='#L207'>207</a>
+<a name='L208'></a><a href='#L208'>208</a>
+<a name='L209'></a><a href='#L209'>209</a>
+<a name='L210'></a><a href='#L210'>210</a>
+<a name='L211'></a><a href='#L211'>211</a>
+<a name='L212'></a><a href='#L212'>212</a>
+<a name='L213'></a><a href='#L213'>213</a>
+<a name='L214'></a><a href='#L214'>214</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js">import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
+import { getDB } from "../db-mongodb.mjs";
+import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
+import { renderSidebar, renderTopbar, escapeHtml, getProfessionalHead } from "../utils.mjs";
+&nbsp;
+export default function <span class="fstat-no" title="function not covered" >registerBookingsTab(</span>app) {
+<span class="cstat-no" title="statement not covered" >  app.get("/bookings", ensureAuthed, <span class="fstat-no" title="function not covered" >as</span>ync (req, res) =&gt; {</span>
+    const userId = <span class="cstat-no" title="statement not covered" >getCurrentUserId(req);</span>
+    const email = <span class="cstat-no" title="statement not covered" >await getSignedInEmail(req);</span>
+    const s = <span class="cstat-no" title="statement not covered" >await getSettingsForUser(userId);</span>
+    const db = <span class="cstat-no" title="statement not covered" >getDB();</span>
+&nbsp;
+    // Pull appointments for calendar (past 30d to next 90d)
+    const nowSec = <span class="cstat-no" title="statement not covered" >Math.floor(Date.now()/1000);</span>
+    const fromSec = <span class="cstat-no" title="statement not covered" >nowSec - 30*86400;</span>
+    const toSec = <span class="cstat-no" title="statement not covered" >nowSec + 90*86400;</span>
+    let appts = <span class="cstat-no" title="statement not covered" >[];</span>
+<span class="cstat-no" title="statement not covered" >    try {</span>
+<span class="cstat-no" title="statement not covered" >      appts = await db.collection('appointments')</span>
+        .aggregate([
+          { $match: { user_id: String(userId), start_ts: { $gte: fromSec, $lte: toSec } } },
+          { $lookup: { from: 'staff', localField: 'staff_id', foreignField: '_id', as: 'staff_docs' } },
+          { $addFields: { staff_name: { $arrayElemAt: ['$staff_docs.name', 0] } } },
+          { $addFields: { _id_str: { $toString: '$_id' } } },
+          { $project: { _id_str: 1, id: 1, start_ts: 1, end_ts: 1, contact_phone: 1, status: 1, notes: 1, staff_name: 1 } },
+          { $sort: { start_ts: 1 } }
+        ]).toArray();
+    } catch {}
+    const apptJson = <span class="cstat-no" title="statement not covered" >JSON.stringify(appts || []);</span>
+&nbsp;
+    // Settings values with defaults
+    const bookingMaxPerDay = <span class="cstat-no" title="statement not covered" >Number(s?.booking_max_per_day || 0);</span>
+    const bookingDaysAhead = <span class="cstat-no" title="statement not covered" >Number(s?.booking_days_ahead || 60);</span>
+    const displayInterval = <span class="cstat-no" title="statement not covered" >Number(s?.booking_display_interval_minutes || 30);</span>
+    const capacityWindow = <span class="cstat-no" title="statement not covered" >Number(s?.booking_capacity_window_minutes || 60);</span>
+    const capacityLimit = <span class="cstat-no" title="statement not covered" >Number(s?.booking_capacity_limit || 0);</span>
+    const closedDatesJson = <span class="cstat-no" title="statement not covered" >String(s?.closed_dates_json || '[]');</span>
+    const holidayRulesJson = <span class="cstat-no" title="statement not covered" >String(s?.holidays_rules_json || '[]');</span>
+    const bookingQuestionsJson = <span class="cstat-no" title="statement not covered" >String(s?.booking_questions_json || '[]');</span>
+&nbsp;
+    // Security headers and no-cache
+<span class="cstat-no" title="statement not covered" >    res.setHeader("Content-Type", "text/html; charset=utf-8");</span>
+<span class="cstat-no" title="statement not covered" >    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");</span>
+<span class="cstat-no" title="statement not covered" >    res.setHeader("Pragma", "no-cache");</span>
+<span class="cstat-no" title="statement not covered" >    res.setHeader("Expires", "0");</span>
+<span class="cstat-no" title="statement not covered" >    res.end(`</span>
+      &lt;html&gt;${getProfessionalHead('Bookings')}&lt;body&gt;
+        &lt;style&gt;
+          /* Disable global spinner pseudo-element on this page */
+          .loading::after { display: none !important; }
+        &lt;/style&gt;
+        &lt;div class="container"&gt;
+          ${renderTopbar('Bookings', email)}
+          &lt;div class="layout"&gt;
+            ${renderSidebar('bookings')}
+            &lt;main class="main"&gt;
+              &lt;div class="main-content"&gt;
+                &lt;div class="card" style="margin-bottom:12px;"&gt;
+                  &lt;h3 style="margin:0 0 8px 0;"&gt;Booking Settings&lt;/h3&gt;
+                  &lt;form method="post" action="/bookings/settings" style="display:grid; gap:16px;" onsubmit="return true;"&gt;
+                    &lt;div class="settings-grid"&gt;
+                      &lt;label class="settings-label"&gt;Max bookings per day (per staff)
+                        &lt;input type="number" min="0" step="1" class="settings-field" name="booking_max_per_day" value="${bookingMaxPerDay}" /&gt;
+                      &lt;/label&gt;
+                      &lt;label class="settings-label"&gt;Accept bookings up to (days ahead)
+                        &lt;input type="number" min="1" step="1" class="settings-field" name="booking_days_ahead" value="${bookingDaysAhead}" /&gt;
+                      &lt;/label&gt;
+                      &lt;label class="settings-label"&gt;Display interval for available times
+                        &lt;select name="booking_display_interval_minutes" class="settings-field"&gt;
+                          ${[15,20,30,40,60,90,120].map(<span class="fstat-no" title="function not covered" >v=</span>&gt;<span class="cstat-no" title="statement not covered" >`&lt;option value="${v}" ${displayInterval===v?'selected':''}&gt;${v===60?'1 hour':(v===120?'2 hours':v+' min')}&lt;/option&gt;`)</span>.join('')}
+                        &lt;/select&gt;
+                      &lt;/label&gt;
+                      &lt;label class="settings-label"&gt;Capacity window (how many per window)
+                        &lt;select name="booking_capacity_window_minutes" class="settings-field"&gt;
+                          ${[30,60,90,120].map(<span class="fstat-no" title="function not covered" >v=</span>&gt;<span class="cstat-no" title="statement not covered" >`&lt;option value="${v}" ${capacityWindow===v?'selected':''}&gt;${v===60?'per hour':(v+' min window')}&lt;/option&gt;`)</span>.join('')}
+                        &lt;/select&gt;
+                      &lt;/label&gt;
+                      &lt;label class="settings-label"&gt;Capacity limit per window
+                        &lt;input type="number" min="0" step="1" class="settings-field" name="booking_capacity_limit" value="${capacityLimit}" /&gt;
+                      &lt;/label&gt;
+                    &lt;/div&gt;
+                    &lt;div class="settings-row"&gt;
+                      &lt;label class="settings-label"&gt;Closed dates
+                        &lt;div style="display:grid; gap:8px;"&gt;
+                          &lt;div id="closedDatesList" class="list" style="display:flex; flex-wrap:wrap; gap:6px;"&gt;&lt;/div&gt;
+                          &lt;div class="input-inline"&gt;
+                            &lt;input type="date" id="closedDateInput" class="settings-field" style="max-width:220px;" /&gt;
+                            &lt;button type="button" class="btn" id="addClosedDateBtn"&gt;Add&lt;/button&gt;
+                          &lt;/div&gt;
+                          &lt;textarea name="closed_dates_json" id="closed_dates_json" rows="2" style="display:none;"&gt;${escapeHtml(closedDatesJson)}&lt;/textarea&gt;
+                          &lt;div class="settings-help"&gt;Tip: click a chip to remove a date.&lt;/div&gt;
+                        &lt;/div&gt;
+                      &lt;/label&gt;
+                      &lt;label class="settings-label"&gt;Holiday rules
+                        &lt;div style="display:grid; gap:8px;"&gt;
+                          &lt;div id="holidayRulesList" class="list" style="display:flex; flex-direction:column; gap:6px;"&gt;&lt;/div&gt;
+                          &lt;div class="input-inline"&gt;
+                            &lt;input type="date" id="holidayDate" class="settings-field" style="max-width:180px;" /&gt;
+                            &lt;input type="time" id="holidayStart" class="settings-field" style="max-width:140px;" /&gt;
+                            &lt;input type="time" id="holidayEnd" class="settings-field" style="max-width:140px;" /&gt;
+                            &lt;button type="button" class="btn" id="addHolidayBtn"&gt;Add&lt;/button&gt;
+                          &lt;/div&gt;
+                          &lt;textarea name="holidays_rules_json" id="holidays_rules_json" rows="2" style="display:none;"&gt;${escapeHtml(holidayRulesJson)}&lt;/textarea&gt;
+                          &lt;div class="settings-help"&gt;Tip: click a rule to remove it.&lt;/div&gt;
+                        &lt;/div&gt;
+                      &lt;/label&gt;
+                    &lt;/div&gt;
+                    &lt;div&gt;
+                      &lt;label class="settings-label"&gt;Booking questions
+                        &lt;div style="display:grid; gap:8px;"&gt;
+                          &lt;div id="bookingQuestionsList" class="list" style="display:flex; flex-direction:column; gap:6px;"&gt;&lt;/div&gt;
+                          &lt;div class="input-inline"&gt;
+                            &lt;input type="text" id="questionInput" class="settings-field" placeholder="Add a question (e.g., What's your email?)" /&gt;
+                            &lt;button type="button" class="btn" id="addQuestionBtn"&gt;Add&lt;/button&gt;
+                          &lt;/div&gt;
+                          &lt;textarea name="booking_questions_json" id="booking_questions_json" rows="2" style="display:none;"&gt;${escapeHtml(bookingQuestionsJson)}&lt;/textarea&gt;
+                          &lt;div class="settings-help" style="margin-top:4px;"&gt;Name is mandatory and will be asked first even if omitted.&lt;/div&gt;
+                        &lt;/div&gt;
+                      &lt;/label&gt;
+                    &lt;/div&gt;
+                    &lt;div style="display:flex; gap:8px; justify-content:flex-end;"&gt;
+                      &lt;button type="submit" class="btn"&gt;Save Settings&lt;/button&gt;
+                    &lt;/div&gt;
+                  &lt;/form&gt;
+                &lt;/div&gt;
+&nbsp;
+                &lt;div class="card"&gt;
+                  &lt;div style="display:flex; align-items:center; justify-content:space-between; gap:8px;"&gt;
+                    &lt;h3 style="margin:0 0 8px 0;"&gt;Calendar&lt;/h3&gt;
+                    &lt;div class="small" style="color:#6b7280;"&gt;Past 30 days to next 90 days&lt;/div&gt;
+                  &lt;/div&gt;
+                  &lt;div id="calendarRoot"&gt;&lt;/div&gt;
+                  &lt;script id="appointments-json" type="application/json"&gt;${apptJson.replace(/&lt;/g, '\u003c')}&lt;/script&gt;
+                  &lt;script src="/calendar.js"&gt;&lt;/script&gt;
+                  &lt;script&gt;
+                    (function(){
+                      function parseJson(v, def){ try { return JSON.parse(String(v||'').trim()||'[]'); } catch(_) { return def; } }
+                      function setHidden(id, arr){ document.getElementById(id).value = JSON.stringify(arr||[]); }
+                      function chip(text){ var b=document.createElement('button'); b.type='button'; b.className='chip'; b.textContent=text; return b; }
+&nbsp;
+                      // Closed dates UI
+                      var closedArr = parseJson(${JSON.stringify(JSON.stringify(closedDatesJson))}, []);
+                      closedArr = parseJson(document.getElementById('closed_dates_json').value, []);
+                      var closedList = document.getElementById('closedDatesList');
+                      function renderClosed(){ closedList.innerHTML=''; (closedArr||[]).forEach(function(d,idx){ var c=chip(d); c.onclick=function(){ closedArr.splice(idx,1); renderClosed(); }; closedList.appendChild(c); }); setHidden('closed_dates_json', closedArr); }
+                      document.getElementById('addClosedDateBtn').onclick = function(){ var v=document.getElementById('closedDateInput').value; if(!v) return; if(!closedArr.includes(v)) closedArr.push(v); document.getElementById('closedDateInput').value=''; renderClosed(); };
+                      renderClosed();
+&nbsp;
+                      // Holiday rules UI
+                      var rulesArr = parseJson(document.getElementById('holidays_rules_json').value, []);
+                      var rulesList = document.getElementById('holidayRulesList');
+                      function ruleLabel(r){ return r.date+ ' · ' + (r.start||'00:00') + ' — ' + (r.end||'23:59'); }
+                      function renderRules(){ rulesList.innerHTML=''; (rulesArr||[]).forEach(function(r,idx){ var c=chip(ruleLabel(r)); c.style.width='100%'; c.style.justifyContent='space-between'; c.style.display='flex'; c.onclick=function(){ rulesArr.splice(idx,1); renderRules(); }; rulesList.appendChild(c); }); setHidden('holidays_rules_json', rulesArr); }
+                      document.getElementById('addHolidayBtn').onclick = function(){ var d=document.getElementById('holidayDate').value; var s=document.getElementById('holidayStart').value||'00:00'; var e=document.getElementById('holidayEnd').value||'23:59'; if(!d) return; rulesArr.push({ date:d, start:s, end:e }); document.getElementById('holidayDate').value=''; document.getElementById('holidayStart').value=''; document.getElementById('holidayEnd').value=''; renderRules(); };
+                      renderRules();
+&nbsp;
+                      // Booking questions UI
+                      var qArr = parseJson(document.getElementById('booking_questions_json').value, []);
+                      var qList = document.getElementById('bookingQuestionsList');
+                      function renderQs(){ qList.innerHTML=''; (qArr||[]).forEach(function(q,idx){ var row=document.createElement('div'); row.style.display='flex'; row.style.gap='8px'; row.style.alignItems='center'; var span=document.createElement('div'); span.textContent=q; span.style.flex='1'; span.className='kb-item'; var del=document.createElement('button'); del.type='button'; del.className='btn-ghost'; del.textContent='Remove'; del.onclick=function(){ qArr.splice(idx,1); renderQs(); }; row.appendChild(span); row.appendChild(del); qList.appendChild(row); }); setHidden('booking_questions_json', qArr); }
+                      document.getElementById('addQuestionBtn').onclick=function(){ var v=document.getElementById('questionInput').value.trim(); if(!v) return; qArr.push(v); document.getElementById('questionInput').value=''; renderQs(); };
+                      renderQs();
+                    })();
+                  &lt;/script&gt;
+                &lt;/div&gt;
+              &lt;/div&gt;
+            &lt;/main&gt;
+          &lt;/div&gt;
+        &lt;/div&gt;
+      &lt;/body&gt;&lt;/html&gt;
+    `);
+  });
+&nbsp;
+<span class="cstat-no" title="statement not covered" >  app.post("/bookings/settings", ensureAuthed, <span class="fstat-no" title="function not covered" >as</span>ync (req, res) =&gt; {</span>
+    const userId = <span class="cstat-no" title="statement not covered" >getCurrentUserId(req);</span>
+    const maxPerDay = <span class="cstat-no" title="statement not covered" >Number(req.body?.booking_max_per_day || 0);</span>
+    const daysAhead = <span class="cstat-no" title="statement not covered" >Number(req.body?.booking_days_ahead || 60);</span>
+    const displayInterval = <span class="cstat-no" title="statement not covered" >Number(req.body?.booking_display_interval_minutes || 30);</span>
+    const capacityWindow = <span class="cstat-no" title="statement not covered" >Number(req.body?.booking_capacity_window_minutes || 60);</span>
+    const capacityLimit = <span class="cstat-no" title="statement not covered" >Number(req.body?.booking_capacity_limit || 0);</span>
+    const closed = <span class="cstat-no" title="statement not covered" >(req.body?.closed_dates_json || '').toString();</span>
+    const rules = <span class="cstat-no" title="statement not covered" >(req.body?.holidays_rules_json || '').toString();</span>
+    const qjsonRaw = <span class="cstat-no" title="statement not covered" >(req.body?.booking_questions_json || '').toString();</span>
+    // Normalize booking questions: ensure array of strings and prepend Name if absent
+    let qjsonSave = <span class="cstat-no" title="statement not covered" >'';</span>
+<span class="cstat-no" title="statement not covered" >    try {</span>
+      const arr = <span class="cstat-no" title="statement not covered" >JSON.parse(qjsonRaw || '[]');</span>
+      let qs = <span class="cstat-no" title="statement not covered" >Array.isArray(arr) ? arr.map(<span class="fstat-no" title="function not covered" >x </span>=&gt; <span class="cstat-no" title="statement not covered" >String(x||'').trim())</span>.filter(<span class="fstat-no" title="function not covered" >x </span>=&gt; <span class="cstat-no" title="statement not covered" >!!x)</span> : [];</span>
+      const hasName = <span class="cstat-no" title="statement not covered" >qs.some(<span class="fstat-no" title="function not covered" >q </span>=&gt; <span class="cstat-no" title="statement not covered" >/name/i.test(q))</span>;</span>
+<span class="cstat-no" title="statement not covered" >      if (!hasName) <span class="cstat-no" title="statement not covered" >qs = ["What's your name?", ...qs];</span></span>
+      // Limit to 10 questions to keep flow reasonable
+<span class="cstat-no" title="statement not covered" >      qjsonSave = JSON.stringify(qs.slice(0, 10));</span>
+    } catch { <span class="cstat-no" title="statement not covered" >qjsonSave = JSON.stringify(["What's your name?","What's the reason for the booking?"]); </span>}
+<span class="cstat-no" title="statement not covered" >    try {</span>
+<span class="cstat-no" title="statement not covered" >      await upsertSettingsForUser(userId, {</span>
+        booking_max_per_day: isNaN(maxPerDay) ? 0 : maxPerDay,
+        booking_days_ahead: isNaN(daysAhead) ? 60 : daysAhead,
+        booking_display_interval_minutes: isNaN(displayInterval) ? 30 : displayInterval,
+        booking_capacity_window_minutes: isNaN(capacityWindow) ? 60 : capacityWindow,
+        booking_capacity_limit: isNaN(capacityLimit) ? 0 : capacityLimit,
+        closed_dates_json: closed,
+        holidays_rules_json: rules,
+        booking_questions_json: qjsonSave
+      });
+    } catch {}
+    const wantsJson = <span class="cstat-no" title="statement not covered" >String(req.headers['accept']||'').includes('application/json')</span>
+      || String(req.headers['x-requested-with']||'') === 'XMLHttpRequest';
+<span class="cstat-no" title="statement not covered" >    if (wantsJson) <span class="cstat-no" title="statement not covered" >return res.json({ ok: true });</span></span>
+<span class="cstat-no" title="statement not covered" >    return res.redirect('/bookings');</span>
+  });
+}
+&nbsp;
+&nbsp;
+&nbsp;</pre></td></tr></table></pre>
+
+                <div class='push'></div><!-- for sticky footer -->
+            </div><!-- /wrapper -->
+            <div class='footer quiet pad2 space-top1 center small'>
+                Code coverage generated by
+                <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
+                at 2025-11-04T15:18:03.416Z
+            </div>
+        <script src="../../prettify.js"></script>
+        <script>
+            window.onload = function () {
+                prettyPrint();
+            };
+        </script>
+        <script src="../../sorter.js"></script>
+        <script src="../../block-navigation.js"></script>
+    </body>
+</html>
+    

@@ -23,30 +23,30 @@
         <div class='clearfix'>
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">13.82% </span>
+                <span class="strong">13.4% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>26/188</span>
+                <span class='fraction'>26/194</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">21.66% </span>
+                <span class="strong">20.96% </span>
                 <span class="quiet">Branches</span>
-                <span class='fraction'>13/60</span>
+                <span class='fraction'>13/62</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">17.14% </span>
+                <span class="strong">16.66% </span>
                 <span class="quiet">Functions</span>
-                <span class='fraction'>6/35</span>
+                <span class='fraction'>6/36</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">13.82% </span>
+                <span class="strong">13.4% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>26/188</span>
+                <span class='fraction'>26/194</span>
             </div>
         
             
@@ -523,7 +523,20 @@
 <a name='L458'></a><a href='#L458'>458</a>
 <a name='L459'></a><a href='#L459'>459</a>
 <a name='L460'></a><a href='#L460'>460</a>
-<a name='L461'></a><a href='#L461'>461</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
+<a name='L461'></a><a href='#L461'>461</a>
+<a name='L462'></a><a href='#L462'>462</a>
+<a name='L463'></a><a href='#L463'>463</a>
+<a name='L464'></a><a href='#L464'>464</a>
+<a name='L465'></a><a href='#L465'>465</a>
+<a name='L466'></a><a href='#L466'>466</a>
+<a name='L467'></a><a href='#L467'>467</a>
+<a name='L468'></a><a href='#L468'>468</a>
+<a name='L469'></a><a href='#L469'>469</a>
+<a name='L470'></a><a href='#L470'>470</a>
+<a name='L471'></a><a href='#L471'>471</a>
+<a name='L472'></a><a href='#L472'>472</a>
+<a name='L473'></a><a href='#L473'>473</a>
+<a name='L474'></a><a href='#L474'>474</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -582,6 +595,18 @@
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -983,6 +1008,7 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js">/**
  * Redis Caching Layer
  * Provides high-performance caching for sessions, data, and API responses
@@ -1043,6 +1069,18 @@ export function initRedis() {
   } catch (error) {
 <span class="cstat-no" title="statement not covered" >    logHelpers.logError(error, { component: 'redis', operation: 'initialization' });</span>
 <span class="cstat-no" title="statement not covered" >    return null;</span>
+  }
+}
+&nbsp;
+export async function <span class="fstat-no" title="function not covered" >closeRedis(</span>) {
+<span class="cstat-no" title="statement not covered" >  try {</span>
+<span class="cstat-no" title="statement not covered" >    if (redisClient) {</span>
+<span class="cstat-no" title="statement not covered" >      await redisClient.quit();</span>
+<span class="cstat-no" title="statement not covered" >      redisClient = null;</span>
+<span class="cstat-no" title="statement not covered" >      isConnected = false;</span>
+    }
+  } catch (error) {
+<span class="cstat-no" title="statement not covered" >    logHelpers.logError(error, { component: 'redis', operation: 'close' });</span>
   }
 }
 &nbsp;
@@ -1441,7 +1479,8 @@ export default {
   rateLimiter,
   cacheMiddleware,
   isRedisConnected,
-  getRedisClient
+  getRedisClient,
+  closeRedis
 };
 &nbsp;</pre></td></tr></table></pre>
 
@@ -1450,7 +1489,7 @@ export default {
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2025-10-21T20:36:54.510Z
+                at 2025-11-04T15:18:03.329Z
             </div>
         <script src="../../prettify.js"></script>
         <script>

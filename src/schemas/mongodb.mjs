@@ -66,6 +66,10 @@ const kbItemSchema = new mongoose.Schema({
   user_id: String,
   file_url: String,
   file_mime: String,
+  // Optional GridFS id when file is stored inside MongoDB
+  file_id: String,
+  // Optional extracted/plaintext content for retrieval (e.g., from PDF/TXT)
+  file_text: String,
   show_in_menu: { type: Boolean, default: false }
 }, {
   timestamps: true,
@@ -108,20 +112,16 @@ const aiRequestSchema = new mongoose.Schema({
   collection: 'ai_requests'
 });
 
-// User Settings Schema
-const userSettingsSchema = new mongoose.Schema({
-  user_id: { type: String, required: true, unique: true },
-  dashboard_preferences: String
-}, {
-  timestamps: true,
-  collection: 'user_settings'
-});
+// NOTE: Previously there was a separate `user_settings` collection that only
+// stored `dashboard_preferences`. To reduce collections, we now store this
+// field inside `settings_multi`.
 
 // Settings Multi Schema
 const settingsMultiSchema = new mongoose.Schema({
   user_id: { type: String, required: true, unique: true },
   name: String,
   phone_number_id: String,
+  waba_id: String,
   whatsapp_token: String,
   verify_token: String,
   app_secret: String,
@@ -157,11 +157,16 @@ const settingsMultiSchema = new mongoose.Schema({
   booking_display_interval_minutes: { type: Number, default: 30 },
   booking_capacity_window_minutes: { type: Number, default: 60 },
   booking_capacity_limit: { type: Number, default: 0 },
+  // Services and waitlist
+  services_json: String,
+  waitlist_enabled: { type: Boolean, default: false },
   smtp_host: String,
   smtp_port: { type: Number, default: 587 },
   smtp_secure: { type: Boolean, default: false },
   smtp_user: String,
-  smtp_pass: String
+  smtp_pass: String,
+  // Dashboard preferences moved from legacy `user_settings`
+  dashboard_preferences: String
 }, {
   timestamps: true,
   collection: 'settings_multi'
@@ -455,7 +460,6 @@ export const MessageReply = mongoose.model('MessageReply', messageReplySchema);
 export const KBItem = mongoose.model('KBItem', kbItemSchema);
 export const Handoff = mongoose.model('Handoff', handoffSchema);
 export const AIRequest = mongoose.model('AIRequest', aiRequestSchema);
-export const UserSettings = mongoose.model('UserSettings', userSettingsSchema);
 export const SettingsMulti = mongoose.model('SettingsMulti', settingsMultiSchema);
 export const OnboardingState = mongoose.model('OnboardingState', onboardingStateSchema);
 export const Calendar = mongoose.model('Calendar', calendarSchema);
@@ -484,7 +488,6 @@ export default {
   KBItem,
   Handoff,
   AIRequest,
-  UserSettings,
   SettingsMulti,
   OnboardingState,
   Calendar,

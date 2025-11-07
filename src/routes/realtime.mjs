@@ -21,12 +21,15 @@ const activeConnections = new Map();
 const userSessions = new Map();
 const typingUsers = new Map();
 const connectionTimestamps = new Map(); // Track connection times for cleanup
+// Cache for WhatsApp token validations to avoid validating on every send
+const tokenValidationCache = new Map(); // key -> { ok: boolean, exp: number }
 
 // Connection limits and cleanup
 const MAX_CONNECTIONS_PER_USER = 3;
 const MAX_TOTAL_CONNECTIONS = 1000;
 const CONNECTION_CLEANUP_INTERVAL = 5 * 60 * 1000; // 5 minutes
 const TYPING_CLEANUP_INTERVAL = 30 * 1000; // 30 seconds
+const MAX_TYPING_CLEANUP_PER_TICK = Math.max(100, Number(process.env.MAX_TYPING_CLEANUP_PER_TICK || 1000));
 
 // Initialize Socket.IO server
 let io = null;
@@ -118,16 +121,16 @@ export function initializeSocketIO(server) {
       const token = socket.handshake.auth.token || socket.handshake.query.token;
       const userIdClaim = socket.handshake.auth.userId || socket.handshake.query.userId;
       
-      console.log('🔐 Socket.IO auth attempt:', { userId: userIdClaim, token: token ? 'present' : 'missing' });
+      if (process.env.DEBUG_LOGS === '1') console.log('🔐 Socket.IO auth attempt:', { userId: userIdClaim, token: token ? 'present' : 'missing' });
       
       const verifiedUid = token ? verifySessionToken(token) : null;
       if (verifiedUid) {
         if (userIdClaim && String(userIdClaim) !== String(verifiedUid)) {
-          console.log('❌ Socket.IO auth failed: Token/user mismatch');
+          if (process.env.DEBUG_LOGS === '1') console.log('❌ Socket.IO auth failed: Token/user mismatch');
           return next(new Error('Auth user mismatch'));
         }
         socket.userId = String(verifiedUid);
-        console.log('✅ Socket.IO auth successful for userId:', socket.userId);
+        if (process.env.DEBUG_LOGS === '1') console.log('✅ Socket.IO auth successful for userId:', socket.userId);
         return next();
       }
       
@@ -138,32 +141,37 @@ export function initializeSocketIO(server) {
         return next();
       }
       
-      console.log('❌ Socket.IO auth failed: Invalid or missing credentials');
+      if (process.env.DEBUG_LOGS === '1') console.log('❌ Socket.IO auth failed: Invalid or missing credentials');
       return next(new Error('Invalid auth token'));
     } catch (e) {
-      console.log('❌ Socket.IO auth error:', e?.message || e);
+      if (process.env.DEBUG_LOGS === '1') console.log('❌ Socket.IO auth error:', e?.message || e);
       next(new Error('Authentication required'));
     }
   });
 
   // Set up cleanup intervals
-  setInterval(cleanupStaleConnections, CONNECTION_CLEANUP_INTERVAL);
-  setInterval(() => {
+  const connTimer = setInterval(cleanupStaleConnections, CONNECTION_CLEANUP_INTERVAL);
+  if (typeof connTimer.unref === 'function') connTimer.unref();
+  const typingTimer = setInterval(() => {
     // Clean up stale typing indicators more frequently
     const now = Date.now();
+    let processed = 0;
     for (const [key, timestamp] of typingUsers.entries()) {
       if (now - timestamp > 60000) { // 1 minute
         typingUsers.delete(key);
       }
+      processed++;
+      if (processed >= MAX_TYPING_CLEANUP_PER_TICK) break;
     }
   }, TYPING_CLEANUP_INTERVAL);
+  if (typeof typingTimer.unref === 'function') typingTimer.unref();
 
   // Handle connections
   io.on('connection', (socket) => {
     const userId = socket.userId;
     const sessionId = `${userId}-${Date.now()}`;
     
-    console.log(`🔌 User ${userId} connected with session ${sessionId}`);
+    if (process.env.DEBUG_LOGS === '1') console.log(`🔌 User ${userId} connected with session ${sessionId}`);
     
     // Enforce connection limits
     if (!enforceConnectionLimits(userId)) {
@@ -181,7 +189,7 @@ export function initializeSocketIO(server) {
     
     // Handle ping/heartbeat with error handling
     socket.on('ping', (data) => {
-      console.log('💓 Heartbeat received from user:', userId);
+      if (process.env.DEBUG_LOGS === '1') console.log('💓 Heartbeat received from user:', userId);
       try {
         if (socket.connected) {
           socket.emit('pong', { timestamp: Date.now(), received: data.timestamp });
@@ -204,7 +212,7 @@ export function initializeSocketIO(server) {
       }
       socket.join(room);
       socket.currentChat = phone;
-      console.log(`👤 User ${userId} joined chat ${phone}`);
+      if (process.env.DEBUG_LOGS === '1') console.log(`👤 User ${userId} joined chat ${phone}`);
       // Notify others in the chat that user is online
       socket.to(room).emit('user_online', {
         userId,
@@ -219,7 +227,7 @@ export function initializeSocketIO(server) {
       if (phone) {
         socket.leave(`chat:${phone}`);
         socket.currentChat = null;
-        console.log(`👤 User ${userId} left chat ${phone}`);
+        if (process.env.DEBUG_LOGS === '1') console.log(`👤 User ${userId} left chat ${phone}`);
         
         // Notify others in the chat that user is offline
         socket.to(`chat:${phone}`).emit('user_offline', {
@@ -287,11 +295,11 @@ export function initializeSocketIO(server) {
           }
           if (phone && message) {
             try {
-              console.log('📤 Real-time message send request:', { userId, phone, message, type });
+              if (process.env.DEBUG_LOGS === '1') console.log('📤 Real-time message send request:', { userId, phone, type, len: String(message||'').length });
               
               // Clean phone number to remove any URL parameters
               let cleanPhone = phone.split('?')[0];
-              console.log('📱 Cleaned phone number:', cleanPhone);
+              if (process.env.DEBUG_LOGS === '1') console.log('📱 Cleaned phone number:', cleanPhone);
               
               // Get user settings for WhatsApp API
               const cfg = await getSettingsForUser(userId);
@@ -300,19 +308,30 @@ export function initializeSocketIO(server) {
                 throw new Error('WhatsApp configuration not found');
               }
             
-            // If queue is enabled, quickly validate token before optimistic enqueue
+            // If queue is enabled, validate token with short-lived cache to reduce network calls
             if (isQueueEnabled()) {
-              try {
-                const fetch = (await import('node-fetch')).default;
-                const resp = await fetch(`https://graph.facebook.com/v20.0/${encodeURIComponent(String(cfg.phone_number_id))}`, {
-                  headers: { Authorization: `Bearer ${cfg.whatsapp_token}` }
-                });
-                if (resp.status === 401 || resp.status === 403) {
-                  throw new Error('Invalid or expired WhatsApp token');
+              const ttlMs = Math.max(60_000, Number(process.env.REALTIME_TOKEN_CACHE_TTL_MS || 600_000));
+              const cacheKey = `${String(cfg.phone_number_id)}:${String(cfg.whatsapp_token||'').slice(0,12)}`;
+              const nowMs = Date.now();
+              const cached = tokenValidationCache.get(cacheKey);
+              if (!cached || cached.exp <= nowMs) {
+                try {
+                  const fetch = (await import('node-fetch')).default;
+                  const resp = await fetch(`https://graph.facebook.com/v20.0/${encodeURIComponent(String(cfg.phone_number_id))}`, {
+                    headers: { Authorization: `Bearer ${cfg.whatsapp_token}` }
+                  });
+                  const ok = resp.status >= 200 && resp.status < 300;
+                  tokenValidationCache.set(cacheKey, { ok, exp: nowMs + ttlMs });
+                  if (!ok) {
+                    throw new Error(resp.status === 401 || resp.status === 403 ? 'Invalid or expired WhatsApp token' : `Token validation failed (${resp.status})`);
+                  }
+                } catch (e) {
+                  tokenValidationCache.set(cacheKey, { ok: false, exp: nowMs + Math.min(ttlMs, 60_000) });
+                  // Force immediate failure so UI shows red bang without needing refresh
+                  throw new Error(e?.message || 'WhatsApp token validation failed');
                 }
-              } catch (e) {
-                // Force immediate failure so UI shows red bang without needing refresh
-                throw new Error(e?.message || 'WhatsApp token validation failed');
+              } else if (!cached.ok) {
+                throw new Error('Invalid or expired WhatsApp token');
               }
             }
           
@@ -340,9 +359,9 @@ export function initializeSocketIO(server) {
             // Ensure user id is present in cfg for downstream usage tracking
           if (!cfg.user_id) cfg.user_id = userId;
             try {
-              console.log('📨 Sending WA text…', { to_tail: String(cleanPhone).slice(-6), cfg_meta: { hasPhoneId: !!cfg?.phone_number_id, hasToken: !!cfg?.whatsapp_token, phoneId_tail: String(cfg?.phone_number_id||'').slice(-6) } });
+              if (process.env.DEBUG_LOGS === '1') console.log('📨 Sending WA text…', { to_tail: String(cleanPhone).slice(-6), cfg_meta: { hasPhoneId: !!cfg?.phone_number_id, hasToken: !!cfg?.whatsapp_token, phoneId_tail: String(cfg?.phone_number_id||'').slice(-6) } });
               lastSendResponse = await sendWhatsAppText(cleanPhone, message, cfg, replyTo || null);
-              console.log('📨 WhatsApp API response:', {
+              if (process.env.DEBUG_LOGS === '1') console.log('📨 WhatsApp API response:', {
                 hasMessages: !!lastSendResponse?.messages?.[0]?.id,
                 keys: lastSendResponse ? Object.keys(lastSendResponse).slice(0, 12) : null
               });
@@ -354,7 +373,7 @@ export function initializeSocketIO(server) {
           }
           
           if (outboundId) {
-            console.log('✅ WhatsApp message sent successfully:', outboundId);
+            if (process.env.DEBUG_LOGS === '1') console.log('✅ WhatsApp message sent successfully:', outboundId);
             
             // Store message in database with WhatsApp message ID
             await recordOutboundMessage({
@@ -366,6 +385,18 @@ export function initializeSocketIO(server) {
               text: message,
               raw: { to: cleanPhone, text: message }
             });
+            // Link reply relationship so UI can render quoted preview
+            try {
+              if (replyTo) {
+                const { createReply } = await import('../services/replies.mjs');
+                createReply(String(replyTo), String(outboundId));
+              }
+            } catch {}
+            // Mark conversation as In Progress when agent sends any message via realtime
+            try {
+              const { updateConversationStatus, CONVERSATION_STATUSES } = await import('../services/conversationStatus.mjs');
+              await updateConversationStatus(userId, String(cleanPhone), CONVERSATION_STATUSES.IN_PROGRESS, 'agent_reply');
+            } catch {}
             
             // Broadcast message to chat room
             const messageData = {
@@ -616,15 +647,19 @@ export function broadcastLiveModeChange(userId, phone, isLive) {
 
 // Function to broadcast message reactions
 export function broadcastReaction(userId, phone, messageId, emoji, action, reactionData) {
-  console.log('📡 Broadcasting reaction:', { userId, phone, messageId, emoji, action });
-  console.log('📡 Socket.IO available:', !!io);
-  console.log('📡 Socket.IO connected clients:', io ? io.engine.clientsCount : 'N/A');
+  if (process.env.DEBUG_LOGS === '1') {
+    console.log('📡 Broadcasting reaction:', { userId, phone, messageId, emoji, action });
+    console.log('📡 Socket.IO available:', !!io);
+    console.log('📡 Socket.IO connected clients:', io ? io.engine.clientsCount : 'N/A');
+  }
   
   try {
     if (io) {
       const roomName = `chat:${phone}`;
-      console.log('📡 Broadcasting to room:', roomName);
-      console.log('📡 Room clients:', io.sockets.adapter.rooms.get(roomName)?.size || 0);
+      if (process.env.DEBUG_LOGS === '1') {
+        console.log('📡 Broadcasting to room:', roomName);
+        console.log('📡 Room clients:', io.sockets.adapter.rooms.get(roomName)?.size || 0);
+      }
       
       io.to(roomName).emit('message_reaction', {
         userId,
@@ -636,9 +671,9 @@ export function broadcastReaction(userId, phone, messageId, emoji, action, react
         timestamp: Date.now()
       });
       
-      console.log('📡 Reaction broadcasted successfully');
+      if (process.env.DEBUG_LOGS === '1') console.log('📡 Reaction broadcasted successfully');
     } else {
-      console.log('❌ Socket.IO not available for reaction broadcasting');
+      if (process.env.DEBUG_LOGS === '1') console.log('❌ Socket.IO not available for reaction broadcasting');
     }
   } catch (error) {
     console.error('❌ Error broadcasting reaction:', error);
@@ -647,15 +682,19 @@ export function broadcastReaction(userId, phone, messageId, emoji, action, react
 
 // Function to broadcast message status updates
 export function broadcastMessageStatus(userId, phone, messageId, status, statusData) {
-  console.log('📡 Broadcasting message status:', { userId, phone, messageId, status });
-  console.log('📡 Socket.IO available:', !!io);
-  console.log('📡 Socket.IO connected clients:', io ? io.engine.clientsCount : 'N/A');
+  if (process.env.DEBUG_LOGS === '1') {
+    console.log('📡 Broadcasting message status:', { userId, phone, messageId, status });
+    console.log('📡 Socket.IO available:', !!io);
+    console.log('📡 Socket.IO connected clients:', io ? io.engine.clientsCount : 'N/A');
+  }
   
   try {
     if (io) {
       const roomName = `chat:${phone}`;
-      console.log('📡 Broadcasting status to room:', roomName);
-      console.log('📡 Room clients:', io.sockets.adapter.rooms.get(roomName)?.size || 0);
+      if (process.env.DEBUG_LOGS === '1') {
+        console.log('📡 Broadcasting status to room:', roomName);
+        console.log('📡 Room clients:', io.sockets.adapter.rooms.get(roomName)?.size || 0);
+      }
       
       io.to(roomName).emit('message_status_update', {
         userId,
@@ -666,9 +705,9 @@ export function broadcastMessageStatus(userId, phone, messageId, status, statusD
         timestamp: Date.now()
       });
       
-      console.log('📡 Message status broadcasted successfully');
+      if (process.env.DEBUG_LOGS === '1') console.log('📡 Message status broadcasted successfully');
     } else {
-      console.log('❌ Socket.IO not available for status broadcasting');
+      if (process.env.DEBUG_LOGS === '1') console.log('❌ Socket.IO not available for status broadcasting');
     }
   } catch (error) {
     console.error('❌ Error broadcasting message status:', error);
@@ -677,12 +716,12 @@ export function broadcastMessageStatus(userId, phone, messageId, status, statusD
 
 // Function to broadcast metrics updates
 export function broadcastMetricsUpdate(userId, metricsData) {
-  console.log('📊 Broadcasting metrics update for user:', userId);
+  if (process.env.DEBUG_LOGS === '1') console.log('📊 Broadcasting metrics update for user:', userId);
   
   try {
     if (io) {
       const roomName = `user:${userId}`;
-      console.log('📊 Broadcasting metrics to room:', roomName);
+      if (process.env.DEBUG_LOGS === '1') console.log('📊 Broadcasting metrics to room:', roomName);
       
       io.to(roomName).emit('metrics_update', {
         userId,
@@ -690,9 +729,9 @@ export function broadcastMetricsUpdate(userId, metricsData) {
         timestamp: Date.now()
       });
       
-      console.log('📊 Metrics update broadcasted successfully');
+      if (process.env.DEBUG_LOGS === '1') console.log('📊 Metrics update broadcasted successfully');
     } else {
-      console.log('❌ Socket.IO not available for metrics broadcasting');
+      if (process.env.DEBUG_LOGS === '1') console.log('❌ Socket.IO not available for metrics broadcasting');
     }
   } catch (error) {
     console.error('❌ Error broadcasting metrics update:', error);

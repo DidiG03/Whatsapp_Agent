@@ -3,8 +3,37 @@ import { KBItem } from "../schemas/mongodb.mjs";
 import { getUserPlan, getPlanPricing } from "../services/usage.mjs";
 import { getSettingsForUser } from "../services/settings.mjs";
 import { renderSidebar, escapeHtml, renderTopbar } from "../utils.mjs";
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
 
 export default function registerKbRoutes(app) {
+  // Uploads base dir (same pattern as inbox)
+  const UPLOADS_BASE_DIR = path.resolve(process.cwd(), 'uploads');
+  const storage = process.env.VERCEL
+    ? multer.memoryStorage()
+    : multer.diskStorage({
+        destination: (req, file, cb) => {
+          if (!fs.existsSync(UPLOADS_BASE_DIR)) {
+            fs.mkdirSync(UPLOADS_BASE_DIR, { recursive: true });
+          }
+          cb(null, UPLOADS_BASE_DIR);
+        },
+        filename: (req, file, cb) => {
+          const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+          cb(null, 'kb-' + uniqueSuffix + path.extname(file.originalname));
+        }
+      });
+  const uploadKb = multer({
+    storage,
+    limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
+    fileFilter: (req, file, cb) => {
+      const allowed = /pdf|txt|md|doc|docx|rtf|odt|csv|xls|xlsx/i;
+      if (allowed.test(file.mimetype) || allowed.test(path.extname(file.originalname))) return cb(null, true);
+      cb(new Error('Unsupported file type'));
+    }
+  });
+
   app.post("/kb", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const { title, content, file_url, file_mime } = req.body || {};
@@ -45,6 +74,99 @@ export default function registerKbRoutes(app) {
       user_id: userId
     });
     return res.json({ id: String(doc._id), title: doc.title, content: doc.content, file_url: doc.file_url, file_mime: doc.file_mime, show_in_menu: doc.show_in_menu, user_id: doc.user_id });
+  });
+
+  // Upload a document and create a KB item that references it
+  app.post("/kb/upload", ensureAuthed, uploadKb.single('document'), async (req, res) => {
+    try {
+      const userId = getCurrentUserId(req);
+      if (!req.file) return res.status(400).json({ error: 'file_required' });
+      const title = (req.body?.title || req.file.originalname || 'Document').toString().trim().slice(0, 120);
+      const summary = (req.body?.summary || '').toString().trim().slice(0, 2000);
+      const showInMenu = !!req.body?.show_in_menu;
+      const { getDB } = await import('../db-mongodb.mjs');
+      const dbNative = getDB();
+      const { GridFSBucket, ObjectId } = await import('mongodb');
+      const bucket = new GridFSBucket(dbNative, { bucketName: 'kbfiles' });
+
+      // Upload binary into GridFS
+      const filename = req.file.originalname || 'kb-file';
+      const uploadStream = bucket.openUploadStream(filename, {
+        contentType: req.file.mimetype || 'application/octet-stream',
+        metadata: { user_id: String(userId), title }
+      });
+      await new Promise((resolve, reject) => {
+        if (req.file.buffer) {
+          uploadStream.end(req.file.buffer, (err) => err ? reject(err) : resolve());
+        } else {
+          fs.createReadStream(req.file.path)
+            .on('error', reject)
+            .pipe(uploadStream)
+            .on('error', reject)
+            .on('finish', resolve);
+        }
+      });
+      const fileId = uploadStream.id ? uploadStream.id.toString() : null;
+
+      // Attempt lightweight text extraction for better retrieval
+      let extracted = '';
+      try {
+        const mime = (req.file.mimetype || '').toLowerCase();
+        if (/^text\//.test(mime) || /csv|markdown|md/.test(mime)) {
+          if (req.file.buffer) extracted = req.file.buffer.toString('utf8');
+          else extracted = fs.readFileSync(req.file.path, 'utf8');
+        } else if (/pdf/.test(mime)) {
+          try {
+            const mod = await import('pdf-parse').catch(()=>null);
+            if (mod && req.file.buffer) {
+              const out = await mod.default(req.file.buffer);
+              extracted = out?.text || '';
+            }
+          } catch {}
+        }
+      } catch {}
+      const MAX_TEXT = 200000; // 200k chars cap
+      const contentForSearch = (summary + '\n\n' + extracted).trim().slice(0, MAX_TEXT) || summary || (title + ' (document)');
+
+      // File URL served via GridFS route
+      const fileUrl = fileId ? (`/kb/file/${fileId}`) : null;
+      const fileMime = req.file.mimetype || '';
+
+      await KBItem.create({
+        user_id: userId,
+        title,
+        content: contentForSearch,
+        file_url: fileUrl,
+        file_mime: fileMime,
+        file_id: fileId,
+        file_text: extracted ? extracted.slice(0, MAX_TEXT) : null,
+        show_in_menu: showInMenu
+      });
+      return res.redirect('/kb/ui');
+    } catch (e) {
+      console.error('KB upload error:', e?.message || e);
+      return res.status(500).json({ error: 'kb_upload_failed' });
+    }
+  });
+
+  // Stream a KB file from GridFS by id
+  app.get('/kb/file/:id', ensureAuthed, async (req, res) => {
+    try {
+      const { getDB } = await import('../db-mongodb.mjs');
+      const dbNative = getDB();
+      const { GridFSBucket, ObjectId } = await import('mongodb');
+      const bucket = new GridFSBucket(dbNative, { bucketName: 'kbfiles' });
+      const id = new ObjectId(String(req.params.id));
+      // Try to fetch file doc for content-type
+      try {
+        const files = dbNative.collection('kbfiles.files');
+        const meta = await files.findOne({ _id: id });
+        if (meta?.contentType) res.setHeader('Content-Type', meta.contentType);
+      } catch {}
+      bucket.openDownloadStream(id).on('error', () => res.status(404).end()).pipe(res);
+    } catch (e) {
+      return res.status(404).send('Not Found');
+    }
   });
 
   // Update an existing KB item (title and/or content)
@@ -275,6 +397,16 @@ export default function registerKbRoutes(app) {
                 }).catch(()=>{});
               });
             });
+            // Nicely show selected file name
+            try {
+              var f = document.getElementById('kbFile');
+              var fn = document.getElementById('kbFileName');
+              if (f && fn) {
+                f.addEventListener('change', function(){
+                  fn.textContent = (this.files && this.files[0]) ? this.files[0].name : 'No file chosen';
+                });
+              }
+            } catch(_){ }
           });
         </script>
         <div class="container">
@@ -283,9 +415,18 @@ export default function registerKbRoutes(app) {
             ${renderSidebar('kb')}
             <main class="main">
               <div class="main-content">
-                <div class="card kb-toolbar" style="margin-bottom:12px; display:flex; gap:8px; align-items:center;">
+                <div class="card kb-toolbar" style="margin-bottom:12px; display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
                   <input id="kb-search" class="settings-field" placeholder="Search knowledge items..."/>
                   <button class="btn-ghost" onclick="addKbItem()" ${atLimit ? 'disabled' : ''} title="${atLimit ? 'KB limit reached' : '+Add'}">${atLimit ? 'Add (Limit Reached)' : 'Add'}</button>
+                  <form method="post" action="/kb/upload" enctype="multipart/form-data" style="display:flex; gap:10px; align-items:center; background:#f9fafb; border:1px solid #e5e7eb; padding:8px 12px; border-radius:10px;">
+                    <input id="kbFile" type="file" name="document" accept=".pdf,.txt,.md,.doc,.docx,.rtf,.odt,.csv,.xls,.xlsx" ${atLimit ? 'disabled' : ''} style="display:none;" />
+                    <label for="kbFile" class="btn-ghost" style="border:none; background:#eef2ff; color:#3730a3; padding:8px 12px; border-radius:8px; cursor:pointer; ${atLimit ? 'opacity:.5; pointer-events:none;' : ''}">📄 Select file</label>
+                    <span id="kbFileName" class="small" style="color:#6b7280; max-width:220px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">No file chosen</span>
+                    <input type="text" name="title" class="settings-field" placeholder="Title (optional)" style="width:200px;"/>
+                    <input type="text" name="summary" class="settings-field" placeholder="Short summary (optional)" style="width:260px;"/>
+                    <label class="small" style="display:flex; align-items:center; gap:6px; color:#374151;"><input type="checkbox" name="show_in_menu"/> Show in menu</label>
+                    <button type="submit" class="btn" style="padding:8px 12px;" ${atLimit ? 'disabled' : ''}>Upload</button>
+                  </form>
                   ${devFallbackNotice ? `<span class="small" style="color:#6b7280;">${devFallbackNotice}</span>` : ''}
                 </div>
                 <div class="card" style="margin-bottom:12px;">

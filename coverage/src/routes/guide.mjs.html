@@ -32,7 +32,7 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">0% </span>
                 <span class="quiet">Branches</span>
-                <span class='fraction'>0/34</span>
+                <span class='fraction'>0/38</span>
             </div>
         
             
@@ -391,16 +391,16 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js">import { renderSidebar, renderTopbar, escapeHtml } from "../utils.mjs";
 import { getSignedInEmail, ensureAuthed } from "../middleware/auth.mjs";
-import { db } from "../db.mjs";
+import { Guide } from "../schemas/mongodb.mjs";
 &nbsp;
 export default function <span class="fstat-no" title="function not covered" >registerGuideRoutes(</span>app) {
   // Guides index
 <span class="cstat-no" title="statement not covered" >  app.get("/guide", ensureAuthed, <span class="fstat-no" title="function not covered" >as</span>ync (req, res) =&gt; {</span>
     const email = <span class="cstat-no" title="statement not covered" >await getSignedInEmail(req);</span>
-    const guides = <span class="cstat-no" title="statement not covered" >db.prepare(`SELECT slug, title, summary, created_at FROM guides ORDER BY created_at DESC`).all();</span>
-    const cards = <span class="cstat-no" title="statement not covered" >guides.map(<span class="fstat-no" title="function not covered" >g </span>=&gt; <span class="cstat-no" title="statement not covered" >`</span></span>
+    const guides = <span class="cstat-no" title="statement not covered" >await Guide.find({}).select('slug title summary createdAt').sort({ createdAt: -1 }).lean();</span>
+    const cards = <span class="cstat-no" title="statement not covered" >(guides || []).map(<span class="fstat-no" title="function not covered" >g </span>=&gt; <span class="cstat-no" title="statement not covered" >`</span></span>
       &lt;a class="guide-card" href="/guide/${encodeURIComponent(g.slug)}"&gt;
-        &lt;div class="guide-card-date"&gt;${new Date((g.created_at||0)*1000).toLocaleDateString()}&lt;/div&gt;
+        &lt;div class="guide-card-date"&gt;${new Date(g.createdAt || Date.now()).toLocaleDateString()}&lt;/div&gt;
         &lt;div class="guide-card-header"&gt;${escapeHtml(g.title)}&lt;/div&gt;
         &lt;div class="guide-card-body"&gt;${escapeHtml(g.summary || '')}&lt;/div&gt;
         &lt;div class="guide-card-cta"&gt;Read more →&lt;/div&gt;
@@ -415,7 +415,7 @@ export default function <span class="fstat-no" title="function not covered" >reg
       &lt;html&gt;&lt;head&gt;&lt;title&gt;Code Orbit - Guide&lt;/title&gt;&lt;link rel="stylesheet" href="/styles.css"&gt;&lt;/head&gt;
         &lt;body&gt;
             &lt;script src="/toast.js"&gt;&lt;/script&gt;
-            &lt;script src="/notifications.js"&gt;&lt;/script&gt;
+            
             &lt;script&gt;
               // Check authentication on page load
               (async function checkAuthOnLoad(){
@@ -467,15 +467,15 @@ export default function <span class="fstat-no" title="function not covered" >reg
 <span class="cstat-no" title="statement not covered" >  app.get("/guide/:slug", ensureAuthed, <span class="fstat-no" title="function not covered" >as</span>ync (req, res) =&gt; {</span>
     const email = <span class="cstat-no" title="statement not covered" >await getSignedInEmail(req);</span>
     const slug = <span class="cstat-no" title="statement not covered" >String(req.params.slug || '').trim();</span>
-    const g = <span class="cstat-no" title="statement not covered" >db.prepare(`SELECT * FROM guides WHERE slug = ?`).get(slug);</span>
+    const g = <span class="cstat-no" title="statement not covered" >await Guide.findOne({ slug }).lean();</span>
 <span class="cstat-no" title="statement not covered" >    if (!g) <span class="cstat-no" title="statement not covered" >return res.redirect('/guide');</span></span>
-    const others = <span class="cstat-no" title="statement not covered" >db.prepare(`SELECT slug, title, summary, created_at FROM guides WHERE slug &lt;&gt; ? ORDER BY created_at DESC LIMIT 6`).all(slug);</span>
-    const related = <span class="cstat-no" title="statement not covered" >others.map(<span class="fstat-no" title="function not covered" >o </span>=&gt; <span class="cstat-no" title="statement not covered" >`</span></span>
+    const others = <span class="cstat-no" title="statement not covered" >await Guide.find({ slug: { $ne: slug } }).select('slug title summary createdAt').sort({ createdAt: -1 }).limit(6).lean();</span>
+    const related = <span class="cstat-no" title="statement not covered" >(others || []).map(<span class="fstat-no" title="function not covered" >o </span>=&gt; <span class="cstat-no" title="statement not covered" >`</span></span>
       &lt;li class="related-item"&gt;
         &lt;a href="/guide/${encodeURIComponent(o.slug)}"&gt;
           &lt;div class="related-title"&gt;${escapeHtml(o.title)}&lt;/div&gt;
           &lt;div class="related-summary"&gt;${escapeHtml(o.summary || '')}&lt;/div&gt;
-          &lt;div class="related-date"&gt;${new Date((o.created_at||0)*1000).toLocaleDateString()}&lt;/div&gt;
+          &lt;div class="related-date"&gt;${new Date(o.createdAt || Date.now()).toLocaleDateString()}&lt;/div&gt;
         &lt;/a&gt;
       &lt;/li&gt;
     `).join('');
@@ -535,7 +535,7 @@ export default function <span class="fstat-no" title="function not covered" >reg
                 &lt;div class="card article"&gt;
                   &lt;a href="/guide" class="back"&gt;← Back to Guides&lt;/a&gt;
                   &lt;div class="title"&gt;${escapeHtml(g.title)}&lt;/div&gt;
-                  &lt;div class="meta"&gt;Published ${new Date((g.created_at||0)*1000).toLocaleDateString()}&lt;/div&gt;
+                  &lt;div class="meta"&gt;Published ${new Date(g.createdAt || Date.now()).toLocaleDateString()}&lt;/div&gt;
                   &lt;div class="separator" style="margin:8px 0;"&gt;&lt;/div&gt;
                   &lt;div class="prose"&gt;${body}&lt;/div&gt;
                 &lt;/div&gt;
@@ -559,7 +559,7 @@ export default function <span class="fstat-no" title="function not covered" >reg
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2025-10-21T20:36:54.577Z
+                at 2025-11-04T15:18:03.416Z
             </div>
         <script src="../../prettify.js"></script>
         <script>

@@ -7,6 +7,8 @@ import { startNotificationsScheduler } from "./src/jobs/notifications.mjs";
 import { logHelpers } from "./src/monitoring/logger.mjs";
 import { createServer } from "http";
 import { initTelemetry } from "./src/monitoring/otel.mjs";
+import { closeMongoDB } from "./src/db-mongodb.mjs";
+import { closeRedis } from "./src/scalability/redis.mjs";
 
 // Initialize server with scalability features
 async function startServer() {
@@ -59,8 +61,13 @@ async function startServer() {
         } catch (error) {
           console.error('Error stopping notifications scheduler:', error);
         }
-        
-        process.exit(0);
+        // Close external resources
+        Promise.allSettled([
+          (async () => { try { await closeMongoDB(); } catch {} })(),
+          (async () => { try { await closeRedis(); } catch {} })()
+        ]).finally(() => {
+          process.exit(0);
+        });
       });
       
       // Force shutdown after 30 seconds

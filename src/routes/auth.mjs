@@ -22,7 +22,7 @@ export default function registerAuthRoutes(app) {
         <link rel="icon" href="/logo-icon.png" type="image/png">
         <script src="https://unpkg.com/@clerk/clerk-js@latest/dist/clerk.browser.js" data-clerk-publishable-key="${CLERK_PUBLISHABLE}"></script>
       </head>
-      <body class="auth-aurora">
+      <body class="auth-aurora auth-dark">
         <div class="auth-shell">
           <aside class="brand-pane">
             <div class="brand-inner">
@@ -139,7 +139,7 @@ export default function registerAuthRoutes(app) {
         <link rel="icon" href="/logo-icon.png" type="image/png">
         <script src="https://unpkg.com/@clerk/clerk-js@latest/dist/clerk.browser.js" data-clerk-publishable-key="${CLERK_PUBLISHABLE}"></script>
       </head>
-      <body class="auth-aurora">
+      <body class="auth-aurora auth-dark">
         <div class="auth-shell">
           <aside class="brand-pane">
             <div class="brand-inner">

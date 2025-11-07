@@ -50,7 +50,7 @@ function createTransporter(userSettings = {}) {
 export async function sendEscalationNotification(userId, escalationData) {
   try {
     // Check if email notifications are enabled for this user
-    const settings = getSettingsForUser(userId);
+    const settings = await getSettingsForUser(userId);
     if (!settings?.escalation_email_enabled) {
       console.log('[Email] Escalation notifications disabled for user:', userId);
       return { success: false, reason: 'disabled' };
@@ -199,7 +199,7 @@ To manage notification settings, visit: ${process.env.PUBLIC_BASE_URL || 'http:/
 export async function sendBookingNotification(userId, bookingData) {
   try {
     // Check if email notifications are enabled for this user
-    const settings = getSettingsForUser(userId);
+    const settings = await getSettingsForUser(userId);
     if (!settings?.escalation_email_enabled) {
       console.log('[Email] Email notifications disabled for user:', userId);
       return { success: false, reason: 'disabled' };
@@ -347,6 +347,74 @@ To manage notification settings, visit: ${process.env.PUBLIC_BASE_URL || 'http:/
   } catch (error) {
     console.error('[Email] Failed to send booking notification:', error.message);
     return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Notify account when a WhatsApp template status changes (APPROVED/REJECTED)
+ * @param {string} userId
+ * @param {Object} t - Template payload
+ * @param {string} t.name
+ * @param {string} t.language
+ * @param {string} t.category
+ * @param {string} t.status
+ * @param {string} [t.quality_score]
+ * @param {string} [oldStatus]
+ */
+export async function sendTemplateStatusEmail(userId, t, oldStatus = null) {
+  try {
+    const settings = await getSettingsForUser(userId);
+    // Destination email: custom notification email or Clerk primary
+    let toEmail = settings?.escalation_email;
+    if (!toEmail) {
+      try {
+        const user = await clerkClient.users.getUser(userId);
+        const primaryId = user.primaryEmailAddressId;
+        toEmail = user.emailAddresses?.find(e => e.id === primaryId)?.emailAddress || user.emailAddresses?.[0]?.emailAddress;
+      } catch {}
+    }
+    if (!toEmail) return { success: false, reason: 'no_email' };
+
+    const transporter = createTransporter(settings);
+    if (!transporter) return { success: false, reason: 'no_smtp_config' };
+
+    const fromEmail = settings?.smtp_user || process.env.SMTP_USER;
+    const businessName = settings?.business_name || 'Your Business';
+    const status = String(t?.status || '').toUpperCase();
+    const name = t?.name || '(unnamed)';
+    const lang = t?.language || 'en_US';
+    const category = t?.category || '-';
+    const quality = t?.quality_score || '-';
+    const subject = `${status === 'APPROVED' ? '✅' : '❌'} Template ${name} (${lang}) ${status}`;
+
+    const htmlBody = `
+      <!DOCTYPE html>
+      <html><body style="font-family:Arial, sans-serif;line-height:1.6;color:#111">
+        <div style="max-width:600px;margin:0 auto;padding:20px;background:#fff;border:1px solid #eee;border-radius:8px;">
+          <h2 style="margin-top:0;">Template ${status}</h2>
+          ${oldStatus ? `<p style="margin:0 0 8px 0;color:#6b7280;">Previous status: ${oldStatus}</p>` : ''}
+          <table style="width:100%;border-collapse:collapse;">
+            <tr><td style="padding:6px 0;width:140px;color:#6b7280;">Name</td><td>${name}</td></tr>
+            <tr><td style="padding:6px 0;color:#6b7280;">Language</td><td>${lang}</td></tr>
+            <tr><td style="padding:6px 0;color:#6b7280;">Category</td><td>${category}</td></tr>
+            <tr><td style="padding:6px 0;color:#6b7280;">Quality</td><td>${quality}</td></tr>
+          </table>
+          <p style="margin-top:16px;">You can now use this template in Campaigns if it is approved.</p>
+        </div>
+      </body></html>`;
+
+    const textBody = `Template ${status}\n\nName: ${name}\nLanguage: ${lang}\nCategory: ${category}\nQuality: ${quality}${oldStatus ? `\nPrevious status: ${oldStatus}` : ''}`;
+
+    const info = await transporter.sendMail({
+      from: `"${businessName}" <${fromEmail}>`,
+      to: toEmail,
+      subject,
+      text: textBody,
+      html: htmlBody,
+    });
+    return { success: true, messageId: info.messageId };
+  } catch (e) {
+    return { success: false, error: e?.message || String(e) };
   }
 }
 

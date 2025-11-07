@@ -447,15 +447,36 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
     "INTENT TYPES: availability, book, reschedule, cancel, handoff, none.",
     "For availability/book intents, you can include natural date/time phrases; the server will parse.",
     "For complex or missing info, ask in your text what is needed (e.g., preferred date/time).",
+    "If a Service catalog is provided, and the user asks about booking or prices/services, present a compact list of services (name, minutes, price if available) and ask the user to pick one.",
+    "Format the services inline with semicolons, e.g., \"Basic (30 min, $40); Deluxe (60 min, $70)\". Keep it to one short line if possible.",
+    "Never invent services or prices; use only the provided catalog. If no price is available for a service, omit the price.",
     "OUTPUT STRICTLY AS A SINGLE JSON OBJECT with keys: text, intent (optional). No markdown.",
   ].filter(Boolean).join("\n");
 
   const capabilityHint = `Capabilities:\n- bookings_enabled: ${features.bookings_enabled ? 'true' : 'false'}\n- reminders_enabled: ${features.reminders_enabled ? 'true' : 'false'}`;
+  const servicesArr = Array.isArray(features.services) ? features.services : [];
+  const servicesLine = (() => {
+    try {
+      if (!servicesArr.length) return '';
+      const parts = servicesArr.slice(0, 10).map(s => {
+        const n = String(s?.name || '').trim();
+        const m = Number(s?.minutes || 0);
+        const p = String(s?.price || '').trim();
+        const bits = [];
+        if (m > 0) bits.push(`${m} min`);
+        if (p) bits.push(p);
+        return bits.length ? `${n} (${bits.join(', ')})` : n;
+      }).filter(Boolean);
+      if (!parts.length) return '';
+      return 'Services:\n' + parts.join('; ');
+    } catch { return ''; }
+  })();
 
   const messages = [
     { role: 'system', content: system },
     { role: 'system', content: 'Docs:\n' + context },
     { role: 'system', content: capabilityHint },
+    servicesLine ? { role: 'system', content: servicesLine } : null,
   ];
   for (const m of historyMessages.slice(-10)) {
     try {
@@ -518,14 +539,19 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
 
 // ----------------------------- onboardingCoachReply -------------------------
 
-function buildOnboardingSystem() {
+function buildOnboardingSystem(tonePref, stylePref, blockedTopics) {
+  const toneLine = tonePref ? `- Tone: ${String(tonePref)}.` : "- Tone/style: concise, helpful; adopt ai_tone/ai_style if provided by user.";
+  const styleLine = stylePref ? `- Style: ${String(stylePref)}.` : "";
+  const blockedLine = blockedTopics ? `- Avoid or briefly refuse topics: ${String(blockedTopics)}.` : "";
   return [
     "You are an expert onboarding copilot that interviews a business owner and turns their answers into customer‑ready KB entries.",
     "Follow the output protocol EXACTLY. No markdown, no bullets, no code fences, no extra lines.",
     "",
     "Rules:",
     "- Language: reply in the user's language from userMessage.",
-    "- Tone/style: concise, helpful; adopt ai_tone/ai_style if provided by user.",
+    toneLine,
+    styleLine,
+    blockedLine,
     "- Never invent facts. Extract facts from userMessage and prior transcript; if missing, ask via ASK_MORE.",
     "- Output may contain only these lines in any order: ASK_MORE|..., ADD_KB|...|..., SET|...|..., COMPLETE",
     "",
@@ -592,10 +618,11 @@ ${history || "(no history)"}
  * @param {string} userMessage
  * @param {{ title?: string }[]} kbItems
  * @param {string} historyTranscript
+ * @param {{ tone?: string, style?: string, blockedTopics?: string }} options
  * @returns {Promise<string>}
  */
-export async function onboardingCoachReply(userMessage, kbItems = [], historyTranscript = "") {
-  const system = buildOnboardingSystem();
+export async function onboardingCoachReply(userMessage, kbItems = [], historyTranscript = "", options = {}) {
+  const system = buildOnboardingSystem(options?.tone, options?.style, options?.blockedTopics);
   const instruction = buildOnboardingInstruction(kbItems, historyTranscript, userMessage);
 
   async function callOnce() {

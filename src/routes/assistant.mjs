@@ -220,7 +220,13 @@ export default function registerAssistantRoutes(app) {
     try {
       const titles = (await KBItem.find({ user_id: userId, title: { $ne: null } }).select('title').lean()).map(r => r.title);
       const history = state.transcript || "";
-      let coach = await onboardingCoachReply(userMsg, titles, history);
+      // Apply AI preferences from settings
+      const prefs = await getSettingsForUser(userId);
+      let coach = await onboardingCoachReply(userMsg, titles, history, {
+        tone: prefs?.ai_tone,
+        style: prefs?.ai_style,
+        blockedTopics: prefs?.ai_blocked_topics
+      });
       coach = coach || "Got it.";
 
       const lines = coach.split('\n');

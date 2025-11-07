@@ -459,12 +459,59 @@
     }
   }
 
+  // Lightweight Parallax Manager for landing sections
+  class ParallaxManager {
+    constructor() {
+      this.items = [];
+      this.ticking = false;
+      this.scroller = null;
+      this.bind();
+    }
+    bind() {
+      document.addEventListener('DOMContentLoaded', () => {
+        this.items = Array.from(document.querySelectorAll('[data-parallax-speed]'));
+        if (!this.items.length) return;
+        // Determine the active scroll container (window/document/body fallback)
+        this.scroller = document.scrollingElement || document.documentElement || document.body;
+        this.onScroll(); // initial paint
+        // Listen to both window and the scroller element to be safe across browsers/CSS
+        window.addEventListener('scroll', () => this.requestTick(), { passive: true });
+        this.scroller.addEventListener && this.scroller.addEventListener('scroll', () => this.requestTick(), { passive: true });
+        window.addEventListener('resize', () => this.onScroll(), { passive: true });
+      });
+    }
+    requestTick() {
+      if (!this.ticking) {
+        this.ticking = true;
+        requestAnimationFrame(() => {
+          this.onScroll();
+          this.ticking = false;
+        });
+      }
+    }
+    onScroll() {
+      const viewportH = window.innerHeight || (this.scroller && this.scroller.clientHeight) || 0;
+      const scrollTop = window.pageYOffset != null ? window.pageYOffset : (this.scroller ? this.scroller.scrollTop : 0);
+      this.items.forEach(el => {
+        const speed = parseFloat(el.getAttribute('data-parallax-speed')) || 0.3;
+        const rect = el.getBoundingClientRect();
+        // Convert rect.top (relative to viewport) to a stable offset using current scroll
+        const elementCenterY = scrollTop + rect.top + rect.height / 2;
+        const viewportCenterY = scrollTop + (viewportH / 2);
+        const centerOffset = viewportCenterY - elementCenterY;
+        const translate = centerOffset * speed;
+        el.style.transform = `translateY(${translate.toFixed(2)}px)`;
+      });
+    }
+  }
+
   // Initialize all managers when DOM is ready
   document.addEventListener('DOMContentLoaded', () => {
     new LoadingManager();
     new ScrollManager();
     new InteractionManager();
     new AnimationManager();
+    new ParallaxManager();
   });
 
   // Export for potential external use
@@ -472,7 +519,8 @@
     LoadingManager,
     ScrollManager,
     InteractionManager,
-    AnimationManager
+    AnimationManager,
+    ParallaxManager
   };
 
 })();

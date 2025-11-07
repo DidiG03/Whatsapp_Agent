@@ -47,7 +47,19 @@ export default function registerSettingsRoutes(app) {
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     res.end(`
-      <html><head><title>Code Orbit - Settings</title><link rel="stylesheet" href="/styles.css"></head><body>
+      <html><head><title>Code Orbit - Settings</title><link rel="stylesheet" href="/styles.css">
+        <style>
+          /* Lightweight accordion styling for clearer organization */
+          .section { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; margin-bottom: 12px; background:#fff; }
+          .section h3 { margin: 0 0 8px 0; display:flex; align-items:center; gap:8px; cursor:pointer; }
+          .section .section-body { margin-top: 8px; }
+          .section.collapsed .section-body { display: none; }
+          .caret { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 7px solid #6b7280; transition: transform .15s ease; }
+          .section:not(.collapsed) .caret { transform: rotate(180deg); }
+          .toolbar-btn { background:#f3f4f6; border:1px solid #e5e7eb; border-radius:9999px; padding:6px 10px; font-size:12px; cursor:pointer; }
+          .toolbar-btn:hover { background:#e5e7eb; }
+        </style>
+      </head><body>
         
         <script src="/auth-utils.js"></script>
         <script>
@@ -68,6 +80,47 @@ export default function registerSettingsRoutes(app) {
             const el=document.getElementById(id); if(!el) return;
             try{ await navigator.clipboard.writeText(el.value||''); }catch(e){}
           }
+          // Accordion helper: wrap section content and allow toggle per section
+          const ACCORDION_STORE_KEY = 'settings:accordion:v1';
+          function readAccordionPrefs(){ try{ return JSON.parse(localStorage.getItem(ACCORDION_STORE_KEY)||'{}'); }catch(_){ return {}; } }
+          function writeAccordionPrefs(p){ try{ localStorage.setItem(ACCORDION_STORE_KEY, JSON.stringify(p||{})); }catch(_){} }
+          function initAccordions(){
+            const prefs = readAccordionPrefs();
+            const sections = document.querySelectorAll('.section');
+            sections.forEach(sec => {
+              const header = sec.querySelector('h3');
+              if(!header) return;
+              // Wrap body once
+              if (!sec.querySelector('.section-body')) {
+                const body = document.createElement('div');
+                body.className = 'section-body';
+                const nodes = Array.from(sec.childNodes).slice(Array.from(sec.childNodes).indexOf(header)+1);
+                nodes.forEach(n => body.appendChild(n));
+                sec.appendChild(body);
+              }
+              // Add caret if missing
+              if (!header.querySelector('.caret')) { const caret = document.createElement('span'); caret.className='caret'; header.prepend(caret); }
+              // Apply persisted state
+              const id = sec.getAttribute('id');
+              if (id && prefs[id] === true) sec.classList.add('collapsed');
+              header.addEventListener('click', () => {
+                sec.classList.toggle('collapsed');
+                const id2 = sec.getAttribute('id');
+                if (id2) { const p = readAccordionPrefs(); p[id2] = sec.classList.contains('collapsed'); writeAccordionPrefs(p); }
+              });
+            });
+          }
+          function expandAll(){
+            const p = readAccordionPrefs();
+            document.querySelectorAll('.section').forEach(s=>{ s.classList.remove('collapsed'); const id=s.id; if(id){ p[id]=false; } });
+            writeAccordionPrefs(p);
+          }
+          function collapseAll(){
+            const p = readAccordionPrefs();
+            document.querySelectorAll('.section').forEach(s=>{ s.classList.add('collapsed'); const id=s.id; if(id){ p[id]=true; } });
+            writeAccordionPrefs(p);
+          }
+          window.addEventListener('DOMContentLoaded', initAccordions);
         </script>
         <div class="container">
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Settings`, email)}
@@ -87,6 +140,10 @@ export default function registerSettingsRoutes(app) {
                   <a href="#staff" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Staff</a>
                   <a href="#quick-replies" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Quick Replies</a>
                   <a href="#data" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Data</a>
+                </div>
+                <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
+                  <button type="button" class="toolbar-btn" onclick="expandAll()">Expand all</button>
+                  <button type="button" class="toolbar-btn" onclick="collapseAll()">Collapse all</button>
                 </div>
               </div>
                 <div class="card chat-box-settings">
@@ -123,6 +180,9 @@ export default function registerSettingsRoutes(app) {
                     <div class="grid-2">
                       <label>Phone Number ID
                         <input placeholder="8***************" class="settings-field" name="phone_number_id" value="${s.phone_number_id || ''}"/>
+                      </label>
+                      <label>WABA ID
+                        <input placeholder="2208283003006315" class="settings-field" name="waba_id" value="${s.waba_id || ''}"/>
                       </label>
                       <label>Business Phone
                         <input placeholder="1***************" class="settings-field" name="business_phone" value="${s.business_phone || ''}"/>
@@ -292,6 +352,44 @@ export default function registerSettingsRoutes(app) {
                           }
                         }
                       }
+                    </script>
+                    <div style="margin-top:16px;">
+                      <h4 style="margin:0 0 6px 0;">Closed dates (full-day)</h4>
+                      <div id="closedDatesList" class="list" style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px;"></div>
+                      <div class="input-inline" style="display:flex; gap:8px; align-items:center;">
+                        <input type="date" id="closedDateInput" class="settings-field" style="max-width:220px;" />
+                        <button type="button" class="btn-ghost" id="addClosedDateBtn">Add</button>
+                      </div>
+                      <textarea name="closed_dates_json" id="closed_dates_json" rows="2" style="display:none;">${(() => {
+                        try { return (s.closed_dates_json || '[]').replace(/</g, '&lt;'); } catch { return '[]'; }
+                      })()}</textarea>
+                      <div class="small">Tip: click a chip to remove a date.</div>
+                    </div>
+                    <script>
+                      (function(){
+                        function parseJson(v, def){ try { return JSON.parse(String(v||'').trim()||'[]'); } catch(_) { return def; } }
+                        function setHidden(id, arr){ document.getElementById(id).value = JSON.stringify(arr||[]); }
+                        function chip(text){ var b=document.createElement('button'); b.type='button'; b.className='chip'; b.textContent=text; return b; }
+                        var closedArr = parseJson(document.getElementById('closed_dates_json').value, []);
+                        var closedList = document.getElementById('closedDatesList');
+                        function renderClosed(){
+                          closedList.innerHTML='';
+                          (closedArr||[]).forEach(function(d,idx){
+                            var c=chip(d);
+                            c.onclick=function(){ closedArr.splice(idx,1); renderClosed(); };
+                            closedList.appendChild(c);
+                          });
+                          setHidden('closed_dates_json', closedArr);
+                        }
+                        document.getElementById('addClosedDateBtn').onclick = function(){
+                          var v=document.getElementById('closedDateInput').value;
+                          if(!v) return;
+                          if(!closedArr.includes(v)) closedArr.push(v);
+                          document.getElementById('closedDateInput').value='';
+                          renderClosed();
+                        };
+                        renderClosed();
+                      })();
                     </script>
                   </div>
                   <div class="section" id="bookings_section" style="${s.conversation_mode === 'escalation' ? 'display:none;' : ''}">
@@ -899,6 +997,7 @@ export default function registerSettingsRoutes(app) {
     const values = {
       name: req.body?.name || null,
       phone_number_id: req.body?.phone_number_id || null,
+      waba_id: req.body?.waba_id || null,
       whatsapp_token: req.body?.whatsapp_token || null,
       verify_token: req.body?.verify_token || null,
       app_secret: req.body?.app_secret || null,
@@ -942,6 +1041,7 @@ export default function registerSettingsRoutes(app) {
         return questionArray.length > 0 ? JSON.stringify(questionArray) : null;
       })(),
       holidays_json_url: req.body?.holidays_json_url || null,
+      closed_dates_json: (req.body?.closed_dates_json || null),
       // Structured holiday rules from arrays
       holidays_rules_json: (() => {
         const names = ([]).concat(req.body?.holiday_name || []);

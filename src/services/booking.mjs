@@ -8,8 +8,20 @@ import { getSettingsForUser } from "./../services/settings.mjs";
 import mongoose from 'mongoose';
 import { Staff, Calendar, Appointment } from "../schemas/mongodb.mjs";
 import { freeBusy, createEvent, updateEvent, deleteEvent } from "./google.mjs";
+import { getYmdPartsInTimeZone } from "../utils.mjs";
 
 // (removed unused toISO)
+
+function localMinutesOfDay(dateObj, timeZone) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone, hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(dateObj);
+    const hh = Number(parts.find(p => p.type === 'hour')?.value || '0');
+    const mm = Number(parts.find(p => p.type === 'minute')?.value || '0');
+    return hh * 60 + mm;
+  } catch {
+    return dateObj.getUTCHours() * 60 + dateObj.getUTCMinutes();
+  }
+}
 
 function getDowKeyInTz(dateObj, timeZone) {
   try {
@@ -28,10 +40,7 @@ function computeDaySlots(dayDate, slotMinutes, tz, workingHours, busyBlocks) {
   if (process.env.DEBUG_BOOKINGS === '1') try { console.log('[availability] spans', { date: dayDate.toISOString().slice(0,10), dow, spans }); } catch {}
   const slots = [];
   // Resolve Y-M-D in the staff timezone to avoid DST offset errors
-  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: tz || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(dayDate);
-  const y = Number(parts.find(p=>p.type==='year')?.value || '1970');
-  const m = Number(parts.find(p=>p.type==='month')?.value || '01');
-  const d = Number(parts.find(p=>p.type==='day')?.value || '01');
+  const { year: y, month: m, day: d } = getYmdPartsInTimeZone(dayDate, tz || 'UTC');
   for (const span of spans) {
     const [startStr, endStr] = String(span||"").split("-");
     if (!startStr || !endStr) continue;
@@ -76,7 +85,14 @@ export function getCalendarById(calendarId, userId) {
 export async function listAvailability({ userId, staffId, dateISO, days = 1, slotMinutes }) {
   const staff = await getStaffById(staffId, userId);
   if (!staff) return [];
-  const calendar = staff.calendar_id ? await getCalendarById(staff.calendar_id, userId) : null;
+  let calendar = staff.calendar_id ? await getCalendarById(staff.calendar_id, userId) : null;
+  // Fallback: use any calendar linked to this user if staff has none explicitly assigned
+  if (!calendar) {
+    try {
+      const db = getDB();
+      calendar = await db.collection('calendars').findOne({ user_id: String(userId) });
+    } catch {}
+  }
   const tz = staff.timezone || calendar?.timezone || "UTC";
   const settings = await (async () => { try { return await getSettingsForUser(userId); } catch { return {}; } })();
   const minutes = Number(slotMinutes || settings?.booking_display_interval_minutes || staff.slot_minutes || 30);
@@ -95,6 +111,20 @@ export async function listAvailability({ userId, staffId, dateISO, days = 1, slo
   const DBG = process.env.DEBUG_BOOKINGS === '1';
   if (DBG) console.log('[availability] input', { userId, staffId: String(staffId), tz, minutes, days, startDate: dateISO, maxPerDay, daysAhead, capWindowMin, capLimit });
 
+  // Tenant closures and holiday rules
+  const closedDatesSet = (() => {
+    try {
+      const arr = JSON.parse(settings?.closed_dates_json || '[]');
+      return new Set(Array.isArray(arr) ? arr.map(String) : []);
+    } catch { return new Set(); }
+  })();
+  const holidayRules = (() => {
+    try {
+      const arr = JSON.parse(settings?.holidays_rules_json || '[]');
+      return Array.isArray(arr) ? arr : [];
+    } catch { return []; }
+  })();
+
   const startDay = new Date(dateISO);
   startDay.setHours(0,0,0,0);
   const results = [];
@@ -104,6 +134,13 @@ export async function listAvailability({ userId, staffId, dateISO, days = 1, slo
     if (daysAhead > 0) {
       const diffDays = Math.floor((day.getTime() - Date.now()) / 86400000);
       if (diffDays > daysAhead) { results.push({ date: day.toISOString().slice(0,10), slots: [] }); continue; }
+    }
+    // Enforce closed dates (full-day)
+    const ymdParts = getYmdPartsInTimeZone(day, tz || 'UTC');
+    const ymdKey = `${ymdParts.year}-${String(ymdParts.month).padStart(2,'0')}-${String(ymdParts.day).padStart(2,'0')}`;
+    if (closedDatesSet.has(ymdKey)) {
+      results.push({ date: day.toISOString().slice(0,10), slots: [] });
+      continue;
     }
     const tMin = new Date(day); tMin.setHours(0,0,0,0);
     const tMax = new Date(day); tMax.setHours(23,59,59,999);
@@ -123,6 +160,26 @@ export async function listAvailability({ userId, staffId, dateISO, days = 1, slo
     try { if (!slots.length) console.log('availability-debug', { userId, staffId, tz, date: day.toISOString().slice(0,10), minutes, spans: (working && working[getDowKeyInTz(day, tz)] || []).length, busy: busy.length }); } catch {}
     let mapped = slots.map(s => ({ start: s.start.toISOString(), end: s.end.toISOString() }));
     if (DBG) console.log('[availability] pre-filter', { date: day.toISOString().slice(0,10), slotCount: mapped.length, busyCount: (busy||[]).length, apptCount: (dayAppts||[]).length });
+    // Enforce holiday rules (partial-day closures)
+    try {
+      const dayRules = holidayRules.filter(r => String(r?.date) === ymdKey);
+      if (dayRules.length) {
+        mapped = mapped.filter(s => {
+          const sm = localMinutesOfDay(new Date(s.start), tz);
+          const em = localMinutesOfDay(new Date(s.end), tz);
+          // A slot is allowed only if it does NOT overlap any closed window
+          const overlapsClosed = dayRules.some(r => {
+            const m1 = /^\s*(\d{2}):(\d{2})\s*$/.exec(String(r?.start||'00:00'));
+            const m2 = /^\s*(\d{2}):(\d{2})\s*$/.exec(String(r?.end||'23:59'));
+            if (!m1 || !m2) return false;
+            const rs = Number(m1[1]) * 60 + Number(m1[2]);
+            const re = Number(m2[1]) * 60 + Number(m2[2]);
+            return (sm < re) && (em > rs);
+          });
+          return !overlapsClosed;
+        });
+      }
+    } catch {}
     // Enforce max bookings per day by emptying day when limit reached
     if (maxPerDay > 0) {
       try {
@@ -325,8 +382,8 @@ export function buildDayRows(staffId, apptId = null) {
 }
 
 /** Build time rows for a given date using availability. */
-export async function buildTimeRows({ userId, staffId, dateISO, limit = 10, apptId = null }) {
-  const avail = await listAvailability({ userId, staffId, dateISO, days: 1 });
+export async function buildTimeRows({ userId, staffId, dateISO, limit = 10, apptId = null, slotMinutes = undefined }) {
+  const avail = await listAvailability({ userId, staffId, dateISO, days: 1, slotMinutes });
   const slots = Array.isArray(avail) ? (avail[0]?.slots || []) : [];
   const upcoming = slots.filter(s => new Date(s.start).getTime() > Date.now()).slice(0, Number(limit||10));
   const rows = upcoming.map(s => ({

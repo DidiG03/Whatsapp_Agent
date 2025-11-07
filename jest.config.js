@@ -35,6 +35,8 @@ export default {
     '**/__tests__/**/*.test.{js,mjs}',
     '**/?(*.)+(spec|test).{js,mjs}'
   ],
+  // Ignore non-test directories/files picked up by patterns
+  testPathIgnorePatterns: ['/node_modules/', '/coverage/', '/api/'],
   
   // Setup files
   setupFilesAfterEnv: ['<rootDir>/tests/setup.js'],
@@ -47,7 +49,7 @@ export default {
     'src/**/*.{js,mjs}',
     '!src/**/*.test.{js,mjs}',
     '!src/**/__tests__/**',
-    '!src/db.mjs', // Exclude database setup
+    '!src/db-mongodb.mjs', // Exclude database setup
     '!src/config.mjs', // Exclude config
   ],
   
@@ -60,8 +62,8 @@ export default {
   // Verbose output
   verbose: true,
   
-  // Global variables
-  globals: {
-    'process.env.NODE_ENV': 'test'
+  // Map legacy paths in tests to current modules
+  moduleNameMapper: {
+    '.*src/db\\.mjs$': '<rootDir>/src/db-mongodb.mjs'
   }
 };

@@ -25,7 +25,7 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">0% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>0/186</span>
+                <span class='fraction'>0/184</span>
             </div>
         
             
@@ -39,14 +39,14 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">0% </span>
                 <span class="quiet">Functions</span>
-                <span class='fraction'>0/17</span>
+                <span class='fraction'>0/16</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
                 <span class="strong">0% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>0/164</span>
+                <span class='fraction'>0/163</span>
             </div>
         
             
@@ -353,8 +353,7 @@
 <a name='L288'></a><a href='#L288'>288</a>
 <a name='L289'></a><a href='#L289'>289</a>
 <a name='L290'></a><a href='#L290'>290</a>
-<a name='L291'></a><a href='#L291'>291</a>
-<a name='L292'></a><a href='#L292'>292</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
+<a name='L291'></a><a href='#L291'>291</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -621,7 +620,6 @@
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
@@ -651,7 +649,7 @@ import { renderSidebar, renderTranscriptAsBubbles, renderTopbar } from "../utils
 import { upsertKbItem } from "../services/kb.mjs";
 import { upsertSettingsForUser, getSettingsForUser } from "../services/settings.mjs";
 import { onboardingCoachReply } from "../services/ai.mjs";
-import { db } from "../db.mjs";
+import { KBItem } from "../schemas/mongodb.mjs";
 &nbsp;
 export default function <span class="fstat-no" title="function not covered" >registerOnboardingRoutes(</span>app) {
 <span class="cstat-no" title="statement not covered" >  app.get("/onboarding", ensureAuthed, <span class="fstat-no" title="function not covered" >as</span>ync (req, res) =&gt; {</span>
@@ -727,7 +725,7 @@ export default function <span class="fstat-no" title="function not covered" >reg
     // AI-driven onboarding/KB coach (single path)
 <span class="cstat-no" title="statement not covered" >    if (!userMsg) <span class="cstat-no" title="statement not covered" >return res.redirect("/onboarding");</span></span>
 <span class="cstat-no" title="statement not covered" >    try {</span>
-      const titles = <span class="cstat-no" title="statement not covered" >db.prepare(`SELECT title FROM kb_items WHERE user_id = ? AND title IS NOT NULL`).all(userId).map(<span class="fstat-no" title="function not covered" >r </span>=&gt; <span class="cstat-no" title="statement not covered" >r.title)</span>;</span>
+      const titles = <span class="cstat-no" title="statement not covered" >(await KBItem.find({ user_id: userId, title: { $ne: null } }).select('title').lean()).map(<span class="fstat-no" title="function not covered" >r </span>=&gt; <span class="cstat-no" title="statement not covered" >r.title)</span>;</span>
       const history = <span class="cstat-no" title="statement not covered" >state.transcript || "";</span>
       // Use onboarding coach so it can both ask for missing info and save KB entries
       let coach = <span class="cstat-no" title="statement not covered" >await onboardingCoachReply(userMsg, titles, history);</span>
@@ -756,7 +754,7 @@ export default function <span class="fstat-no" title="function not covered" >reg
         const title = <span class="cstat-no" title="statement not covered" >(m[1] || '').trim().slice(0, 120) || 'Untitled';</span>
         const content = <span class="cstat-no" title="statement not covered" >(m[2] || '').trim();</span>
 <span class="cstat-no" title="statement not covered" >        if (content) {</span>
-<span class="cstat-no" title="statement not covered" >          upsertKbItem(userId, title, content);</span>
+<span class="cstat-no" title="statement not covered" >          await upsertKbItem(userId, title, content);</span>
 <span class="cstat-no" title="statement not covered" >          savedSummaries.push(`Saved “${title}” to KB.`);</span>
         }
       }
@@ -783,15 +781,15 @@ export default function <span class="fstat-no" title="function not covered" >reg
           // Mirror key settings into KB so they show up in KB UI even when AI returns only SET lines
 <span class="cstat-no" title="statement not covered" >          try {</span>
 <span class="cstat-no" title="statement not covered" >            if (updates.business_name) {</span>
-<span class="cstat-no" title="statement not covered" >              upsertKbItem(userId, 'Business Name', updates.business_name);</span>
+<span class="cstat-no" title="statement not covered" >              await upsertKbItem(userId, 'Business Name', updates.business_name);</span>
 <span class="cstat-no" title="statement not covered" >              savedSummaries.push('Saved “Business Name” to KB.');</span>
             }
 <span class="cstat-no" title="statement not covered" >            if (updates.website_url) {</span>
-<span class="cstat-no" title="statement not covered" >              upsertKbItem(userId, 'Website', updates.website_url);</span>
+<span class="cstat-no" title="statement not covered" >              await upsertKbItem(userId, 'Website', updates.website_url);</span>
 <span class="cstat-no" title="statement not covered" >              savedSummaries.push('Saved “Website” to KB.');</span>
             }
 <span class="cstat-no" title="statement not covered" >            if (updates.business_phone) {</span>
-<span class="cstat-no" title="statement not covered" >              upsertKbItem(userId, 'Contact', updates.business_phone);</span>
+<span class="cstat-no" title="statement not covered" >              await upsertKbItem(userId, 'Contact', updates.business_phone);</span>
 <span class="cstat-no" title="statement not covered" >              savedSummaries.push('Saved “Contact” to KB.');</span>
             }
           } catch {}
@@ -828,7 +826,7 @@ export default function <span class="fstat-no" title="function not covered" >reg
 <span class="cstat-no" title="statement not covered" >        if (bn &amp;&amp; bn[3]) {</span>
           const raw = <span class="cstat-no" title="statement not covered" >bn[3].trim().replace(/^[\'"\s]+|[\'"\s]+$/g, "");</span>
 <span class="cstat-no" title="statement not covered" >          pushSetting('business_name', raw);</span>
-<span class="cstat-no" title="statement not covered" >          upsertKbItem(userId, 'Business Name', raw);</span>
+<span class="cstat-no" title="statement not covered" >          await upsertKbItem(userId, 'Business Name', raw);</span>
 <span class="cstat-no" title="statement not covered" >          savedSummaries.push('Saved “Business Name” to KB.');</span>
         }
         const ws = <span class="cstat-no" title="statement not covered" >/\b(website|site|url)\s*(is|:)\s*(\S+)/i.exec(userMsg);</span>
@@ -842,7 +840,7 @@ export default function <span class="fstat-no" title="function not covered" >reg
         // What We Do
 <span class="cstat-no" title="statement not covered" >        if (/\bwe\s+are\b|\bwe\s+do\b|\bour\s+business\b|\bwe\s+sell\b|\brestaurant|cafe|salon|clinic|store|shop\b/i.test(userMsg)) {</span>
           const sentence = <span class="cstat-no" title="statement not covered" >extractSentence(userMsg, 'we') || userMsg;</span>
-<span class="cstat-no" title="statement not covered" >          upsertKbItem(userId, 'What We Do', sentence);</span>
+<span class="cstat-no" title="statement not covered" >          await upsertKbItem(userId, 'What We Do', sentence);</span>
 <span class="cstat-no" title="statement not covered" >          savedSummaries.push('Saved “What We Do” to KB.');</span>
         }
         // Hours detection: days or time patterns
@@ -850,18 +848,18 @@ export default function <span class="fstat-no" title="function not covered" >reg
         const hasTime = <span class="cstat-no" title="statement not covered" >/\b(\d{1,2})([:.][0-5]\d)?\s*(am|pm)?\b.*?-.*?\b(\d{1,2})([:.][0-5]\d)?\s*(am|pm)?\b/i.test(userMsg);</span>
 <span class="cstat-no" title="statement not covered" >        if (hasDay || hasTime) {</span>
           const sentence = <span class="cstat-no" title="statement not covered" >extractSentence(userMsg, 'mon') || extractSentence(userMsg, 'sun') || userMsg;</span>
-<span class="cstat-no" title="statement not covered" >          upsertKbItem(userId, 'Hours', sentence);</span>
+<span class="cstat-no" title="statement not covered" >          await upsertKbItem(userId, 'Hours', sentence);</span>
 <span class="cstat-no" title="statement not covered" >          savedSummaries.push('Saved “Hours” to KB.');</span>
         }
         // Locations detection: common address/location cues
 <span class="cstat-no" title="statement not covered" >        if (/(street|st\.|ave\.|avenue|blvd\.|boulevard|road|rd\.|drive|dr\.|plaza|center|centre|city|town|village|address|located|location|near)/i.test(userMsg)) {</span>
           const sentence = <span class="cstat-no" title="statement not covered" >extractSentence(userMsg, 'location') || extractSentence(userMsg, 'address') || userMsg;</span>
-<span class="cstat-no" title="statement not covered" >          upsertKbItem(userId, 'Locations', sentence);</span>
+<span class="cstat-no" title="statement not covered" >          await upsertKbItem(userId, 'Locations', sentence);</span>
 <span class="cstat-no" title="statement not covered" >          savedSummaries.push('Saved “Locations” to KB.');</span>
         }
 <span class="cstat-no" title="statement not covered" >        if (/\bcuisine\b/i.test(userMsg)) {</span>
           const sentence = <span class="cstat-no" title="statement not covered" >extractSentence(userMsg, 'cuisine') || userMsg;</span>
-<span class="cstat-no" title="statement not covered" >          upsertKbItem(userId, 'Cuisine', sentence);</span>
+<span class="cstat-no" title="statement not covered" >          await upsertKbItem(userId, 'Cuisine', sentence);</span>
 <span class="cstat-no" title="statement not covered" >          savedSummaries.push('Saved “Cuisine” to KB.');</span>
         }
         let resText = <span class="cstat-no" title="statement not covered" >'';</span>
@@ -873,7 +871,7 @@ export default function <span class="fstat-no" title="function not covered" >reg
 <span class="cstat-no" title="statement not covered" >          resText = `We accept ${hasRes ? 'reservations' : ''}${hasRes &amp;&amp; hasWalk ? ' and ' : ''}${hasWalk ? 'walk-ins' : ''}.`;</span>
         }
 <span class="cstat-no" title="statement not covered" >        if (resText) {</span>
-<span class="cstat-no" title="statement not covered" >          upsertKbItem(userId, 'Reservations', resText);</span>
+<span class="cstat-no" title="statement not covered" >          await upsertKbItem(userId, 'Reservations', resText);</span>
 <span class="cstat-no" title="statement not covered" >          savedSummaries.push('Saved “Reservations” to KB.');</span>
         }
       } catch {}
@@ -912,13 +910,12 @@ export default function <span class="fstat-no" title="function not covered" >reg
 <span class="cstat-no" title="statement not covered" >    return res.redirect("/onboarding");</span>
   });
 &nbsp;
-<span class="cstat-no" title="statement not covered" >  app.post("/onboarding/reset", ensureAuthed, <span class="fstat-no" title="function not covered" >(r</span>eq, res) =&gt; {</span>
+<span class="cstat-no" title="statement not covered" >  app.post("/onboarding/reset", ensureAuthed, <span class="fstat-no" title="function not covered" >as</span>ync (req, res) =&gt; {</span>
     const userId = <span class="cstat-no" title="statement not covered" >getCurrentUserId(req);</span>
 <span class="cstat-no" title="statement not covered" >    try {</span>
 <span class="cstat-no" title="statement not covered" >      console.log("[ONBOARD][RESET] requested by", { userId });</span>
       const titles = <span class="cstat-no" title="statement not covered" >ONBOARD_STEPS.map(<span class="fstat-no" title="function not covered" >s </span>=&gt; <span class="cstat-no" title="statement not covered" >s.title)</span>;</span>
-      const placeholders = <span class="cstat-no" title="statement not covered" >titles.map(<span class="fstat-no" title="function not covered" >()</span> =&gt; <span class="cstat-no" title="statement not covered" >'?')</span>.join(',');</span>
-<span class="cstat-no" title="statement not covered" >      db.prepare(`DELETE FROM kb_items WHERE user_id = ? AND title IN (${placeholders})`).run(userId, ...titles);</span>
+<span class="cstat-no" title="statement not covered" >      await KBItem.deleteMany({ user_id: userId, title: { $in: titles } });</span>
 <span class="cstat-no" title="statement not covered" >      setOnboarding(userId, { step: 0, transcript: '' });</span>
     } catch {}
 <span class="cstat-no" title="statement not covered" >    return res.redirect("/onboarding");</span>
@@ -943,7 +940,7 @@ export default function <span class="fstat-no" title="function not covered" >reg
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2025-10-21T20:36:54.577Z
+                at 2025-11-04T15:18:03.416Z
             </div>
         <script src="../../prettify.js"></script>
         <script>

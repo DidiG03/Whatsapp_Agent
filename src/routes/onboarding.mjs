@@ -83,7 +83,12 @@ export default function registerOnboardingRoutes(app) {
       const titles = (await KBItem.find({ user_id: userId, title: { $ne: null } }).select('title').lean()).map(r => r.title);
       const history = state.transcript || "";
       // Use onboarding coach so it can both ask for missing info and save KB entries
-      let coach = await onboardingCoachReply(userMsg, titles, history);
+      const prefs = await getSettingsForUser(userId);
+      let coach = await onboardingCoachReply(userMsg, titles, history, {
+        tone: prefs?.ai_tone,
+        style: prefs?.ai_style,
+        blockedTopics: prefs?.ai_blocked_topics
+      });
       coach = coach || "Got it.";
 
       const lines = coach.split('\n');

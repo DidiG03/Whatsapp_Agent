@@ -558,6 +558,10 @@ class RealtimeManager {
       img.style.maxWidth = '200px';
       img.style.borderRadius = '8px';
       bubbleDiv.appendChild(img);
+    } else if (messageData.type === 'interactive') {
+      // Show human-friendly text for interactive messages (lists/buttons)
+      const t = (messageData.text_body || '').trim();
+      bubbleDiv.textContent = t || 'Interactive';
     } else {
       bubbleDiv.textContent = `[${messageData.type}] ${messageData.text_body || ''}`;
     }

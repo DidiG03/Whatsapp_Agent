@@ -126,4 +126,26 @@ export async function deleteEvent(calendarRow, eventId) {
   }
 }
 
+export async function listEvents(calendarRow, timeMinISO, timeMaxISO) {
+  try {
+    const token = await ensureAccessToken(calendarRow);
+    if (!token || !calendarRow?.calendar_id) return [];
+    const params = new URLSearchParams({
+      singleEvents: "true",
+      orderBy: "startTime",
+      timeMin: timeMinISO,
+      timeMax: timeMaxISO,
+      maxResults: "2500"
+    });
+    const url = `${GOOGLE_CAL_BASE}/calendars/${encodeURIComponent(calendarRow.calendar_id)}/events?${params.toString()}`;
+    const resp = await fetch(url, { headers: { "Authorization": `Bearer ${token}` } });
+    if (!resp.ok) return [];
+    const j = await resp.json();
+    const items = Array.isArray(j?.items) ? j.items : [];
+    return items;
+  } catch {
+    return [];
+  }
+}
+
 

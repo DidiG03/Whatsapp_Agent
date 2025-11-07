@@ -7,10 +7,17 @@ import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
 
-// Only load .env file if it exists and we're not in Vercel
-if (!process.env.VERCEL && fs.existsSync('.env')) {
-  dotenv.config();
-} else if (process.env.VERCEL) {
+// Load environment variables for local development.
+// In Vercel, env vars are injected at runtime; we skip dotenv there.
+if (!process.env.VERCEL) {
+  const envLocalPath = path.resolve(process.cwd(), '.env.local');
+  const envPath = path.resolve(process.cwd(), '.env');
+  if (fs.existsSync(envLocalPath)) {
+    dotenv.config({ path: envLocalPath });
+  } else if (fs.existsSync(envPath)) {
+    dotenv.config({ path: envPath });
+  }
+} else {
   console.log('Running in Vercel environment - using environment variables from Vercel');
 }
 
@@ -18,6 +25,10 @@ if (!process.env.VERCEL && fs.existsSync('.env')) {
 export const LOG_LEVEL = process.env.LOG_LEVEL || "info";
 /** Port the HTTP server listens on. */
 export const PORT = process.env.PORT || 3000;
+
+/** Platform/environment helpers */
+export const IS_VERCEL = Boolean(process.env.VERCEL);
+export const VERCEL_ENV = process.env.VERCEL_ENV || (process.env.NODE_ENV === 'production' ? 'production' : 'development');
 
 /** Clerk publishable key, if configured (can also come from NEXT_PUBLIC_ variant). */
 export const CLERK_PUBLISHABLE = process.env.CLERK_PUBLISHABLE || process.env.CLERK_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || null;
@@ -39,7 +50,9 @@ export const CLERK_SIGN_UP_URL = process.env.CLERK_SIGN_UP_URL;
 export const STATIC_DIR = "public";
 
 /** Public base URL used for links sent to users (e.g., ICS downloads). */
-export const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || `http://localhost:${PORT}`;
+export const PUBLIC_BASE_URL =
+  process.env.PUBLIC_BASE_URL
+  || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${PORT}`);
 
 /** Email/SMTP configuration for notifications */
 export const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
