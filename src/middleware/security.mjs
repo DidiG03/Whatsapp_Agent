@@ -58,21 +58,27 @@ export const securityHeaders = (req, res, next) => {
   // Restrict cross-domain policies
   res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
   
+  // Allow optional custom Clerk domain via env (comma-separated for multiple)
+  const CLERK_FRONTEND_DOMAIN = (process.env.CLERK_FRONTEND_DOMAIN || '').trim();
+  const clerkExtras = CLERK_FRONTEND_DOMAIN
+    ? CLERK_FRONTEND_DOMAIN.split(',').map(s => s.trim()).filter(Boolean).join(' ')
+    : '';
+
   // Basic CSP to prevent XSS (can be customized per route)
   // Allow Stripe resources needed by Checkout/Elements
   res.setHeader('Content-Security-Policy', 
     "default-src 'self'; " +
     // Scripts from our domain, Clerk, Cloudflare challenge, UNPKG, and Stripe.js
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://clerk.accounts.dev https://accounts.clerk.com https://unpkg.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com https://js.stripe.com; " +
+    ("script-src 'self' 'unsafe-inline' 'unsafe-eval' https://clerk.accounts.dev https://accounts.clerk.com https://unpkg.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com https://js.stripe.com" + (clerkExtras ? ` ${clerkExtras}` : '') + "; ") +
     "worker-src 'self' blob:; " +
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
     // Images from our domain, data URIs, HTTPS, and Stripe telemetry
-    "img-src 'self' data: https: https://m.stripe.network https://*.stripe.com; " +
+    ("img-src 'self' data: https: https://m.stripe.network https://*.stripe.com" + (clerkExtras ? ` ${clerkExtras}` : '') + "; ") +
     "font-src 'self' data: https://fonts.gstatic.com; " +
     // Allow connections to APIs we call, including Stripe and Clerk, and Stripe telemetry
-    "connect-src 'self' https://api.openai.com https://api.stripe.com https://m.stripe.network https://graph.facebook.com https://*.clerk.accounts.dev https://accounts.clerk.com https://clerk.accounts.dev https://clerk-telemetry.com https://*.cloudflare.com; " +
+    ("connect-src 'self' https://api.openai.com https://api.stripe.com https://m.stripe.network https://graph.facebook.com https://*.clerk.accounts.dev https://accounts.clerk.com https://clerk.accounts.dev https://clerk-telemetry.com https://*.cloudflare.com" + (clerkExtras ? ` ${clerkExtras}` : '') + "; ") +
     // Allow framing from Clerk and Stripe Checkout/Elements
-    "frame-src 'self' https://clerk.accounts.dev https://accounts.clerk.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com https://js.stripe.com https://hooks.stripe.com;"
+    ("frame-src 'self' https://clerk.accounts.dev https://accounts.clerk.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com https://js.stripe.com https://hooks.stripe.com" + (clerkExtras ? ` ${clerkExtras}` : '') + ";")
   );
   
   // HSTS for HTTPS (only in production)
