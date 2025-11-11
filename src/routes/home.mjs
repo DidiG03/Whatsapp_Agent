@@ -77,7 +77,7 @@ export default function registerHomeRoutes(app) {
             </div>
             <div class="landing-art">
               <div class="landing-visual">
-                <img src="/logo-icon.png" alt="WhatsApp Agent" class="landing-logo"/>
+                <img src="/entry-image.png" alt="WhatsApp Agent" width="510" height="410"/>
               </div>
             </div>
           </div>
@@ -122,34 +122,35 @@ export default function registerHomeRoutes(app) {
           
           <section class="split-section" data-parallax-section>
             <div class="split-copy">
-              <div class="eyebrow">ABOUT US</div>
+              <div class="eyebrow">HOW IT WORKS</div>
               <h2 class="giant-heading">
-                <span class="landing-line">Your Vision</span>
-                <span class="landing-line landing-accent">Our Expertise</span>
-                <span class="landing-line landing-dots">Your Success</span>
+                <span class="landing-line">Connect WhatsApp</span>
+                <span class="landing-line landing-accent">Train the Agent</span>
+                <span class="landing-line landing-dots">Start Replying</span>
               </h2>
-              <p class="split-text">We are a team of passionate developers, designers, and innovators dedicated to creating exceptional digital experiences that drive business growth. With years of experience in software development and a commitment to excellence, we help businesses transform their ideas into reality through cutting‑edge technology and innovative solutions.</p>
+              <p class="split-text">Plug in your WhatsApp Cloud API credentials, add your FAQs and internal knowledge, set tone and guardrails, and go live in minutes. The unified inbox keeps your team in control while the agent drafts high‑quality replies, books appointments, and logs outcomes automatically.</p>
             </div>
             <div class="split-media">
               <div class="parallax-card" data-parallax-speed="0.25">
-                <img src="/logo-icon.png" alt="CodeOrbit" class="split-image"/>
+                <img src="/meta-whatsapp-image.png" alt="WhatsApp Agent" class="" width="510" height="410"/>
+
               </div>
             </div>
           </section>
           
           <section class="split-section reverse" data-parallax-section>
             <div class="split-copy">
-              <div class="eyebrow">OUR STORY</div>
+              <div class="eyebrow">PRODUCT FEATURES</div>
               <h2 class="giant-heading">
-                <span class="landing-line">Your Gateway To</span>
-                <span class="landing-line landing-accent">Online Excellence</span>
-                <span class="landing-line landing-dots">Dream Big In Pixels.</span>
+                <span class="landing-line">Campaigns & Bookings</span>
+                <span class="landing-line landing-accent">Analytics & CSAT</span>
+                <span class="landing-line landing-dots">Security by Default.</span>
               </h2>
-              <p class="split-text">From the early prototypes to production readiness, we’ve focused on reliability, speed and delightful UX. WhatsApp Agent gives you AI‑assisted replies, bookings, broadcasts and analytics in a unified workflow so your team can operate faster and grow with confidence.</p>
+              <p class="split-text">Send template broadcasts with delivery guardrails, share one‑tap booking links, and track response time, volume, and CSAT on a real‑time dashboard. Role‑based access, signed media links and rate‑limited APIs are built‑in so you can scale safely.</p>
             </div>
             <div class="split-media">
               <div class="parallax-card glow" data-parallax-speed="0.35">
-                <img src="/logo-icon.png" alt="CodeOrbit" class="split-image"/>
+                <img src="/bot-last-image.png" alt="CodeOrbit" width="510" height="410"/>
               </div>
             </div>
           </section>
