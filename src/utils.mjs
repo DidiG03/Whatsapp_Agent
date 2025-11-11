@@ -27,6 +27,7 @@ export function getProfessionalHead(title) {
   return `
     <head>
       <title>WhatsApp Agent - ${title}</title>
+      <link rel="icon" href="/favicon.ico" sizes="any">
       <link rel="stylesheet" href="/styles.css?v=${ASSET_VER}">
       <link rel="preconnect" href="https://fonts.googleapis.com">
       <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>

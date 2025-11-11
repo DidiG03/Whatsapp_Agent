@@ -98,6 +98,10 @@ export async function createApp() {
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     }
   }));
+  // Favicon fallback: redirect /favicon.ico to our logo PNG if no .ico exists
+  app.get('/favicon.ico', (_req, res) => {
+    res.redirect(302, '/logo-icon.png');
+  });
   // Signed media gate (optional via env)
   app.use('/uploads', (req, res, next) => {
     if (process.env.MEDIA_SIGNING_DISABLED === '1') return next();
