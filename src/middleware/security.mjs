@@ -69,14 +69,14 @@ export const securityHeaders = (req, res, next) => {
   res.setHeader('Content-Security-Policy', 
     "default-src 'self'; " +
     // Scripts from our domain, Clerk, Cloudflare challenge, UNPKG, and Stripe.js
-    ("script-src 'self' 'unsafe-inline' 'unsafe-eval' https://clerk.accounts.dev https://accounts.clerk.com https://unpkg.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com https://js.stripe.com" + (clerkExtras ? ` ${clerkExtras}` : '') + "; ") +
+    ("script-src 'self' 'unsafe-inline' 'unsafe-eval' https://clerk.accounts.dev https://accounts.clerk.com https://unpkg.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com https://js.stripe.com https://vercel.live https://cdn.socket.io" + (clerkExtras ? ` ${clerkExtras}` : '') + "; ") +
     "worker-src 'self' blob:; " +
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
     // Images from our domain, data URIs, HTTPS, and Stripe telemetry
     ("img-src 'self' data: https: https://m.stripe.network https://*.stripe.com" + (clerkExtras ? ` ${clerkExtras}` : '') + "; ") +
     "font-src 'self' data: https://fonts.gstatic.com; " +
     // Allow connections to APIs we call, including Stripe and Clerk, and Stripe telemetry
-    ("connect-src 'self' https://api.openai.com https://api.stripe.com https://m.stripe.network https://graph.facebook.com https://*.clerk.accounts.dev https://accounts.clerk.com https://clerk.accounts.dev https://clerk-telemetry.com https://*.cloudflare.com" + (clerkExtras ? ` ${clerkExtras}` : '') + "; ") +
+    ("connect-src 'self' https://api.openai.com https://api.stripe.com https://m.stripe.network https://graph.facebook.com https://*.clerk.accounts.dev https://accounts.clerk.com https://clerk.accounts.dev https://clerk-telemetry.com https://*.cloudflare.com https://vercel.live wss://vercel.live" + (clerkExtras ? ` ${clerkExtras}` : '') + "; ") +
     // Allow framing from Clerk and Stripe Checkout/Elements
     ("frame-src 'self' https://clerk.accounts.dev https://accounts.clerk.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com https://js.stripe.com https://hooks.stripe.com" + (clerkExtras ? ` ${clerkExtras}` : '') + ";")
   );

@@ -248,7 +248,6 @@ export default function registerDashboardRoutes(app) {
     res.setHeader("Expires", "0");
     res.end(`
       <html>${getProfessionalHead('Dashboard')}<body>
-        <script src="/socket.io/socket.io.js"></script>
         <script src="/auth-utils.js"></script>
         <script>
           // Enhanced authentication check on page load
