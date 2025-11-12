@@ -41,6 +41,23 @@ class RealtimeManager {
       return;
     }
     
+    // Check if the backend actually has Socket.IO available (avoids 404s on serverless)
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 3000);
+      const r = await fetch('/api/realtime/status', { credentials: 'include', signal: ctrl.signal });
+      clearTimeout(t);
+      if (r.ok) {
+        const j = await r.json().catch(() => ({}));
+        if (!j?.socketIOAvailable) {
+          console.log('🔌 Realtime server not available on this deployment; skipping Socket.IO connect');
+          return;
+        }
+      }
+    } catch {
+      // If status check fails, continue; connectSocket will handle failures gracefully
+    }
+    
     if (this.isConnected) {
       console.log('🔌 Already connected');
       return;
@@ -195,7 +212,25 @@ class RealtimeManager {
         };
         
         this.scriptElement.onerror = () => {
-          reject(new Error('Failed to load Socket.IO client'));
+          // Fallback to CDN client in case the server does not serve the client bundle
+          try {
+            const cdn = document.createElement('script');
+            cdn.src = 'https://cdn.socket.io/4.7.2/socket.io.min.js';
+            cdn.integrity = 'sha384-bSgGEs0nq9eGmLMg6m9yN9fImVPL9u/6k3piM7Oz7a5mM4etf5k2s7qk1x9b0Kc5';
+            cdn.crossOrigin = 'anonymous';
+            cdn.onload = () => {
+              // Retry connect path now that client is present (server may still be absent; then connect_error will handle)
+              console.log('🔌 Loaded Socket.IO client from CDN, retrying connect…');
+              // Call onload handler of the primary element to continue flow
+              if (typeof this.scriptElement.onload === 'function') {
+                this.scriptElement.onload();
+              }
+            };
+            cdn.onerror = () => reject(new Error('Failed to load Socket.IO client (CDN fallback)'));
+            document.head.appendChild(cdn);
+          } catch {
+            reject(new Error('Failed to load Socket.IO client'));
+          }
         };
         
         document.head.appendChild(this.scriptElement);

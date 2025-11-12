@@ -3036,7 +3036,8 @@ export default function registerInboxRoutes(app) {
     const userId = getCurrentUserId(req);
     const digits = normalizePhone(phone);
     try {
-      await Message.deleteMany({
+      // Build a single criteria object so we can reuse it
+      const criteria = {
         user_id: String(userId),
         $or: [
           { from_digits: digits },
@@ -3044,7 +3045,53 @@ export default function registerInboxRoutes(app) {
           { from_id: { $in: [digits, '+' + digits] } },
           { to_id: { $in: [digits, '+' + digits] } }
         ]
-      });
+      };
+
+      // Collect message ids first to cascade delete associated entities
+      const ids = (await Message.find(criteria).select('id').lean().catch(() => []))
+        .map(m => m?.id)
+        .filter(Boolean);
+
+      if (ids.length) {
+        const dbNative = getDB();
+        // Delete replies that reference these messages (either side)
+        try {
+          await dbNative.collection('message_replies').deleteMany({
+            $or: [
+              { original_message_id: { $in: ids } },
+              { reply_message_id: { $in: ids } }
+            ]
+          });
+        } catch (e) {
+          console.warn('[Inbox][DELETE] delete message_replies failed:', e?.message || e);
+        }
+        // Delete reactions for these messages
+        try {
+          await dbNative.collection('message_reactions').deleteMany({ message_id: { $in: ids } });
+        } catch (e) {
+          console.warn('[Inbox][DELETE] delete message_reactions failed:', e?.message || e);
+        }
+        // Delete delivery/status rows tied to these messages (best-effort)
+        try {
+          await MessageStatus.deleteMany({ user_id: String(userId), message_id: { $in: ids } });
+        } catch (e) {
+          console.warn('[Inbox][DELETE] delete message_statuses failed:', e?.message || e);
+        }
+      }
+
+      // Finally, delete the conversation messages themselves
+      await Message.deleteMany(criteria);
+
+      // Remove contact interactions history for this contact (best-effort)
+      try {
+        const dbNative = getDB();
+        await dbNative.collection('contact_interactions').deleteMany({
+          user_id: String(userId),
+          contact_id: { $in: [phone, digits, '+' + digits] }
+        });
+      } catch (e) {
+        console.warn('[Inbox][DELETE] delete contact_interactions failed:', e?.message || e);
+      }
     } catch (e) {
       console.error('Delete conversation failed:', e?.message || e);
     }

@@ -5,6 +5,7 @@ import { getOnboarding } from "../services/onboarding.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
 import { renderSidebar, renderTopbar } from "../utils.mjs";
 import { getSignedInEmail } from "../middleware/auth.mjs";
+import { wipeUserData } from "../services/userDeletion.mjs";
 import {
   Calendar,
   Staff,
@@ -948,46 +949,17 @@ export default function registerSettingsRoutes(app) {
     return res.redirect('/settings');
   });
 
-  app.post("/danger/wipe", ensureAuthed, adminWhitelist, async (req, res) => {
+  app.post("/danger/wipe", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     try {
-      const wipe = db.transaction((uid) => {
-        // 1) message_statuses: by message_id and by user_id (for safety)
-        const msgIds = db.prepare(`SELECT id FROM messages WHERE user_id = ?`).all(uid).map(r => r.id);
-        if (msgIds.length) {
-          const ph = msgIds.map(() => '?').join(',');
-          try { db.prepare(`DELETE FROM message_statuses WHERE message_id IN (${ph})`).run(...msgIds); } catch {}
-        }
-        try { db.prepare(`DELETE FROM message_statuses WHERE user_id = ?`).run(uid); } catch {}
-
-        // 2) Messages
-        try { db.prepare(`DELETE FROM messages WHERE user_id = ?`).run(uid); } catch {}
-
-        // 3) Booking related
-        try { db.prepare(`DELETE FROM booking_sessions WHERE user_id = ?`).run(uid); } catch {}
-        try { db.prepare(`DELETE FROM appointments WHERE user_id = ?`).run(uid); } catch {}
-        try { db.prepare(`DELETE FROM staff WHERE user_id = ?`).run(uid); } catch {}
-        try { db.prepare(`DELETE FROM calendars WHERE user_id = ?`).run(uid); } catch {}
-        try { db.prepare(`DELETE FROM contact_state WHERE user_id = ?`).run(uid); } catch {}
-        try { db.prepare(`DELETE FROM customers WHERE user_id = ?`).run(uid); } catch {}
-
-        // 4) Inbox state
-        try { db.prepare(`DELETE FROM handoff WHERE user_id = ?`).run(uid); } catch {}
-
-        // 5) KB & onboarding/settings (FTS is maintained by triggers)
-        try { db.prepare(`DELETE FROM kb_items WHERE user_id = ?`).run(uid); } catch {}
-        try { db.prepare(`DELETE FROM onboarding_state WHERE user_id = ?`).run(uid); } catch {}
-        try { db.prepare(`DELETE FROM settings_multi WHERE user_id = ?`).run(uid); } catch {}
-
-        // 6) Notifications, usage stats, user plans, and quick replies
-        try { db.prepare(`DELETE FROM notifications WHERE user_id = ?`).run(uid); } catch {}
-        try { db.prepare(`DELETE FROM usage_stats WHERE user_id = ?`).run(uid); } catch {}
-        try { db.prepare(`DELETE FROM user_plans WHERE user_id = ?`).run(uid); } catch {}
-        try { db.prepare(`DELETE FROM quick_replies WHERE user_id = ?`).run(uid); } catch {}
-      });
-      wipe(userId);
+      await wipeUserData(userId);
     } catch (e) {
-      console.error('Wipe error:', e?.message || e);
+      console.error('[Wipe] Mongo wipe error:', e?.message || e);
+    }
+    try {
+      await clerkClient.users.deleteUser(userId);
+    } catch (e) {
+      console.error('[Wipe] Clerk delete error:', e?.errors?.[0]?.message || e?.message || e);
     }
     return res.redirect('/logout');
   });

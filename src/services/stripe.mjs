@@ -64,26 +64,38 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
     // Allow env-configured Prices per plan. Falls back to STRIPE_PRICE_ID (single price) if set.
     try {
       const envKey = `STRIPE_PRICE_ID_${String(planName || '').toUpperCase()}`;
-      const priceFromEnv = process.env[envKey] || process.env.STRIPE_PRICE_ID || null;
+      const sanitize = (v) => String(v || '').trim().replace(/^['"]|['"]$/g, '');
+      const priceFromEnv = sanitize(process.env[envKey] || process.env.STRIPE_PRICE_ID || '');
       if (!priceId && priceFromEnv) priceId = priceFromEnv;
     } catch {}
 
-    // If a specific price_id is provided, we will use that price directly (and currency is implied by it)
+    // If a specific price_id is provided, try to validate it in the current account/mode.
+    // If not found, fall back to inline price_data so checkout can still proceed.
+    let currency = String(process.env.STRIPE_CURRENCY || 'usd').toLowerCase();
     if (priceId) {
-      const session = await stripe.checkout.sessions.create({
-        customer: customerId,
-        payment_method_types: ['card'],
-        line_items: [ { price: priceId, quantity: 1 } ],
-        mode: 'subscription',
-        success_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/stripe/success?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/plan?canceled=true`,
-        metadata: { user_id: userId, plan_name: planName, price_id: priceId }
-      });
-      return { url: session.url, sessionId: session.id, planName };
+      try {
+        const priceObj = await stripe.prices.retrieve(priceId);
+        if (priceObj?.id) {
+          if (priceObj.currency) currency = String(priceObj.currency).toLowerCase();
+          const session = await stripe.checkout.sessions.create({
+            customer: customerId,
+            payment_method_types: ['card'],
+            line_items: [ { price: priceObj.id, quantity: 1 } ],
+            mode: 'subscription',
+            success_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/stripe/success?session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/plan?canceled=true`,
+            metadata: { user_id: userId, plan_name: planName, price_id: priceObj.id }
+          });
+          return { url: session.url, sessionId: session.id, planName };
+        }
+      } catch (e) {
+        // Known case: resource_missing -> fallback to price_data
+        const msg = e?.raw?.message || e?.message || '';
+        console.warn('Stripe price validation failed; falling back to price_data:', msg);
+      }
     }
 
     // Determine currency: match existing active subscription currency if present; else from env (default usd)
-    let currency = String(process.env.STRIPE_CURRENCY || 'usd').toLowerCase();
     try {
       if (customerId) {
         const subs = await stripe.subscriptions.list({ customer: customerId, status: 'active', limit: 1 });
