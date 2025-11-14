@@ -881,7 +881,7 @@ export default function registerSettingsRoutes(app) {
     } catch (e) {
       console.error("[KB][CLEAR] final error", e?.message || e);
     }
-    return res.redirect('/settings');
+    return res.redirect(303, '/settings');
   });
 
   // Staff: fresh implementation
@@ -914,7 +914,7 @@ export default function registerSettingsRoutes(app) {
   app.post("/settings/staff", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const name = String(req.body?.name || '').trim();
-    if (!name) return res.redirect('/settings');
+    if (!name) return res.redirect(303, '/settings');
     let timezone = normalizeTimezoneLabel(String(req.body?.timezone || '').trim() || null);
     const slotMinutes = Number(req.body?.slot_minutes || 30) || 30;
     const calIdRaw = (req.body?.calendar_id || '').toString().trim();
@@ -927,15 +927,15 @@ export default function registerSettingsRoutes(app) {
         await Staff.create({ user_id: userId, name, calendar_id: calendarId, timezone, slot_minutes: slotMinutes, working_hours_json: workingJson || '{}' });
       }
     } catch {}
-    return res.redirect('/settings');
+    return res.redirect(303, '/settings');
   });
 
   app.post("/settings/staff/:id", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const id = String(req.params.id || '');
-    if (!id) return res.redirect('/settings');
+    if (!id) return res.redirect(303, '/settings');
     const name = String(req.body?.name || '').trim();
-    if (!name) return res.redirect('/settings');
+    if (!name) return res.redirect(303, '/settings');
     let timezone = normalizeTimezoneLabel(String(req.body?.timezone || '').trim() || null);
     const slotMinutes = Number(req.body?.slot_minutes || 30) || 30;
     const calIdRaw = (req.body?.calendar_id || '').toString().trim();
@@ -944,15 +944,15 @@ export default function registerSettingsRoutes(app) {
     try {
       await Staff.findOneAndUpdate({ _id: id, user_id: userId }, { name, calendar_id: calendarId, timezone, slot_minutes: slotMinutes, working_hours_json: workingJson || '{}' }, { new: true });
     } catch {}
-    return res.redirect('/settings?edit_staff=');
+    return res.redirect(303, '/settings?edit_staff=');
   });
 
   app.post("/settings/staff/:id/delete", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const id = String(req.params.id || '');
-    if (!id) return res.redirect('/settings');
+    if (!id) return res.redirect(303, '/settings');
     try { await Staff.findOneAndDelete({ _id: id, user_id: userId }); } catch {}
-    return res.redirect('/settings');
+    return res.redirect(303, '/settings');
   });
 
   app.post("/danger/wipe", ensureAuthed, async (req, res) => {
@@ -967,7 +967,7 @@ export default function registerSettingsRoutes(app) {
     } catch (e) {
       console.error('[Wipe] Clerk delete error:', e?.errors?.[0]?.message || e?.message || e);
     }
-    return res.redirect('/logout');
+    return res.redirect(303, '/logout');
   });
 
   app.post("/settings", ensureAuthed, async (req, res) => {
@@ -1056,7 +1056,7 @@ export default function registerSettingsRoutes(app) {
     } catch (e) {
       console.error('[POST /settings] upsert error', e?.message || e);
     }
-    res.redirect("/settings");
+    res.redirect(303, "/settings");
   });
 
   // WhatsApp token status check (used by Inbox modal)
@@ -1119,14 +1119,14 @@ export default function registerSettingsRoutes(app) {
   app.post("/settings/email/start", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const newEmail = String(req.body?.new_email || '').trim();
-    if (!newEmail) return res.redirect('/settings?email_error=Missing+email');
+    if (!newEmail) return res.redirect(303, '/settings?email_error=Missing+email');
     try {
       const created = await clerkClient.users.createEmailAddress({ userId, emailAddress: newEmail });
       try { await clerkClient.users.prepareEmailAddressVerification({ userId, emailAddressId: created.id, strategy: 'email_code' }); } catch {}
-      return res.redirect(`/settings?email_update=sent&email_id=${encodeURIComponent(created.id)}`);
+      return res.redirect(303, `/settings?email_update=sent&email_id=${encodeURIComponent(created.id)}`);
     } catch (e) {
       const msg = encodeURIComponent(e?.errors?.[0]?.message || e?.message || 'Failed to start email update');
-      return res.redirect(`/settings?email_error=${msg}`);
+      return res.redirect(303, `/settings?email_error=${msg}`);
     }
   });
 
@@ -1134,13 +1134,13 @@ export default function registerSettingsRoutes(app) {
   app.post("/settings/email/resend", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const emailId = String(req.body?.email_id || '').trim();
-    if (!emailId) return res.redirect('/settings?email_error=Missing+email_id');
+    if (!emailId) return res.redirect(303, '/settings?email_error=Missing+email_id');
     try {
       await clerkClient.users.prepareEmailAddressVerification({ userId, emailAddressId: emailId, strategy: 'email_code' });
-      return res.redirect(`/settings?email_update=sent&email_id=${encodeURIComponent(emailId)}`);
+      return res.redirect(303, `/settings?email_update=sent&email_id=${encodeURIComponent(emailId)}`);
     } catch (e) {
       const msg = encodeURIComponent(e?.errors?.[0]?.message || e?.message || 'Failed to resend code');
-      return res.redirect(`/settings?email_error=${msg}`);
+      return res.redirect(303, `/settings?email_error=${msg}`);
     }
   });
 
@@ -1149,14 +1149,14 @@ export default function registerSettingsRoutes(app) {
     const userId = getCurrentUserId(req);
     const emailId = String(req.body?.email_id || '').trim();
     const code = String(req.body?.code || '').trim();
-    if (!emailId || !code) return res.redirect('/settings?email_error=Missing+verification+data');
+    if (!emailId || !code) return res.redirect(303, '/settings?email_error=Missing+verification+data');
     try {
       await clerkClient.users.verifyEmailAddress({ userId, emailAddressId: emailId, code });
       await clerkClient.users.updateUser(userId, { primaryEmailAddressId: emailId });
-      return res.redirect('/settings?email_update=done');
+      return res.redirect(303, '/settings?email_update=done');
     } catch (e) {
       const msg = encodeURIComponent(e?.errors?.[0]?.message || e?.message || 'Verification failed');
-      return res.redirect(`/settings?email_error=${msg}&email_update=sent&email_id=${encodeURIComponent(emailId)}`);
+      return res.redirect(303, `/settings?email_error=${msg}&email_update=sent&email_id=${encodeURIComponent(emailId)}`);
     }
   });
 
