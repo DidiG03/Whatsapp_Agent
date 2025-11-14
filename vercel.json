@@ -14,18 +14,6 @@
       "dest": "/api/test.js"
     },
     {
-      "src": "/privacy",
-      "dest": "/public/privacy.html"
-    },
-    {
-      "src": "/terms",
-      "dest": "/public/terms.html"
-    },
-    {
-      "src": "/data-deletion",
-      "dest": "/public/data-deletion.html"
-    },
-    {
       "src": "/uploads/(.*)",
       "dest": "/api/index.js"
     },
