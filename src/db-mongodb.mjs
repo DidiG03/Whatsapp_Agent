@@ -43,30 +43,39 @@ mongoose.connection.on('error', (err) => {
 // Initialize MongoDB connection
 export async function initMongoDB() {
   try {
+    // Some environments accidentally append a quote to the write concern in the URI (w=majority%22 or w=majority")
+    // Sanitize the URI defensively to avoid "No write concern mode named 'majority\"'" errors.
+    const SANITIZED_URI = String(MONGODB_URI)
+      .replace(/w=majority(%22|%27|%5C%22|%5C%27|\"|')/gi, 'w=majority')
+      .replace(/(\?|&)w=majority(%22|%27)(&|$)/i, '$1w=majority$3')
+      .replace(/(\"|\')$/g, '');
     // Connect using mongoose for better connection management
-    await mongoose.connect(MONGODB_URI, {
+    await mongoose.connect(SANITIZED_URI, {
       dbName: MONGODB_DB_NAME,
       useNewUrlParser: true,
       useUnifiedTopology: true,
       maxPoolSize: MONGODB_MAX_POOL_SIZE,
       serverSelectionTimeoutMS: MONGODB_SERVER_SELECTION_TIMEOUT_MS,
       socketTimeoutMS: MONGODB_SOCKET_TIMEOUT_MS,
-      retryWrites: true
+      retryWrites: true,
+      // Explicit write concern to override any malformed query string value
+      w: 'majority'
     });
 
     // Also create a native MongoDB client for direct operations
-    client = new MongoClient(MONGODB_URI, {
+    client = new MongoClient(SANITIZED_URI, {
       maxPoolSize: MONGODB_MAX_POOL_SIZE,
       serverSelectionTimeoutMS: MONGODB_SERVER_SELECTION_TIMEOUT_MS,
       socketTimeoutMS: MONGODB_SOCKET_TIMEOUT_MS,
-      retryWrites: true
+      retryWrites: true,
+      w: 'majority'
     });
     await client.connect();
     mongoDb = client.db(MONGODB_DB_NAME);
     isConnected = true;
 
-    logHelpers.logBusinessEvent('mongodb_connected', { 
-      uri: MONGODB_URI.replace(/\/\/.*@/, '//***@'), // Hide credentials in logs
+    logHelpers.logBusinessEvent('mongodb_connected', {
+      uri: SANITIZED_URI.replace(/\/\/.*@/, '//***@'), // Hide credentials in logs
       database: MONGODB_DB_NAME 
     });
 
