@@ -42,6 +42,7 @@ export default function registerSettingsRoutes(app) {
     const staffToEdit = (q.edit_staff ? await Staff.findOne({ _id: String(q.edit_staff), user_id: userId }).lean().catch(() => null) : null);
     const quickReplies = await getQuickReplies(userId);
     const quickReplyCategories = await getQuickReplyCategories(userId);
+    const smtpEnvConfigured = !!(process.env.SMTP_USER && process.env.SMTP_PASS);
     // Prevent caching to avoid showing cached authenticated pages after logout
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
@@ -50,14 +51,14 @@ export default function registerSettingsRoutes(app) {
     res.end(`
       <html><head><title>Code Orbit - Settings</title><link rel="stylesheet" href="/styles.css">
         <style>
-          /* Lightweight accordion styling for clearer organization */
-          .section { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; margin-bottom: 12px; background:#fff; }
+          /* Lightweight accordion styling, clean white cards with no borders */
+          .section { border: none; background:#ffffff; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
           .section h3 { margin: 0 0 8px 0; display:flex; align-items:center; gap:8px; cursor:pointer; }
           .section .section-body { margin-top: 8px; }
           .section.collapsed .section-body { display: none; }
           .caret { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 7px solid #6b7280; transition: transform .15s ease; }
           .section:not(.collapsed) .caret { transform: rotate(180deg); }
-          .toolbar-btn { background:#f3f4f6; border:1px solid #e5e7eb; border-radius:9999px; padding:6px 10px; font-size:12px; cursor:pointer; }
+          .toolbar-btn { background:#f3f4f6; border:none; border-radius:9999px; padding:6px 10px; font-size:12px; cursor:pointer; }
           .toolbar-btn:hover { background:#e5e7eb; }
         </style>
       </head><body>
@@ -126,28 +127,26 @@ export default function registerSettingsRoutes(app) {
         <div class="container">
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Settings`, email)}
           <div class="layout">
-            ${renderSidebar('settings')}
+            ${renderSidebar('settings', { showBookings: !!(s?.bookings_enabled) })}
             <main class="main">
             <div class="main-content">
-              <div id="settings-nav" class="card" style="position:sticky; top:0; z-index:5; background:#ffffff; padding:8px; margin-bottom:12px; border:1px solid #e5e7eb; border-radius:6px;">
+              <div id="settings-nav" style="position:sticky; top:0; z-index:5; padding:8px; margin-bottom:12px;">
                 <div style="display:flex; flex-wrap:wrap; gap:8px;">
-                  <a href="#account" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Account</a>
-                  <a href="#whatsapp" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">WhatsApp</a>
-                  <a href="#conversation" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Conversation</a>
-                  <a href="#greeting" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Greeting</a>
-                  <a href="#holidays" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Holidays</a>
-                  <a href="#bookings_section" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Bookings</a>
-                  <a href="#email" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Email</a>
-                  <a href="#staff" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Staff</a>
-                  <a href="#quick-replies" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Quick Replies</a>
-                  <a href="#data" style="text-decoration:none; background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Data</a>
-                </div>
-                <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
-                  <button type="button" class="toolbar-btn" onclick="expandAll()">Expand all</button>
-                  <button type="button" class="toolbar-btn" onclick="collapseAll()">Collapse all</button>
+                  <a href="#account" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Account</a>
+                  <a href="#whatsapp" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">WhatsApp</a>
+                  <a href="#conversation" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Conversation</a>
+                  <a href="#greeting" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Greeting</a>
+                  <a href="#holidays" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Holidays</a>
+                  <a href="#bookings_section" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Bookings</a>
+                  <a href="#email" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Email</a>
+                  <a href="#staff" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Staff</a>
+                  <a href="#quick-replies" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Quick Replies</a>
+                  <a href="#data" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Data</a>
+                  <button style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;" type="button" onclick="expandAll()">Expand all</button>
+                  <button style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;" type="button" onclick="collapseAll()">Collapse all</button>
                 </div>
               </div>
-                <div class="card chat-box-settings">
+                <div class="chat-box-settings">
                 <form method="post" action="/settings" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;">
                   <div class="section" id="account">
                     <h3>Personal Information</h3>
@@ -215,6 +214,9 @@ export default function registerSettingsRoutes(app) {
                     <label>Website URL
                       <input placeholder="https://www.example.com" class="settings-field" name="website_url" value="${s.website_url || ''}"/>
                     </label>
+                    <label style="margin-top:8px;">Terms of Service URL
+                      <input placeholder="https://www.example.com/terms" class="settings-field" name="terms_url" value="${s.terms_url || ''}"/>
+                    </label>
                   </div>
 
                   <div class="section" id="templates">
@@ -247,7 +249,7 @@ export default function registerSettingsRoutes(app) {
                   <div class="section" id="conversation">
                     <h3>Conversation Mode</h3>
                     <div class="small" style="margin-bottom:12px;">Choose how the chatbot should respond to customer messages:</div>
-                    <label style="display:block; margin-bottom:12px; padding:12px; border:1px solid #e5e7eb; border-radius:6px; ${!isUpgraded ? 'opacity:0.6; cursor:not-allowed; position:relative;' : 'cursor:pointer;'} ${effectiveConversationMode === 'full' ? 'background:#f0f9ff; border-color:#3b82f6;' : ''}">
+                    <label style="display:block; margin-bottom:12px; padding:12px; border:none; border-radius:8px; ${!isUpgraded ? 'opacity:0.6; cursor:not-allowed; position:relative;' : 'cursor:pointer;'} ${effectiveConversationMode === 'full' ? 'background:#f0f9ff;' : ''}">
                       <input type="radio" name="conversation_mode" value="full" ${effectiveConversationMode === 'full' ? 'checked' : ''} ${!isUpgraded ? 'disabled' : ''} style="margin-right:8px;"/>
                       <strong>Full AI Assistant (Knowledge Base + Bookings)</strong>
                       ${!isUpgraded ? `<span class="small" style="margin-left:8px; color:#f59e0b; display:inline-flex; align-items:center; gap:4px;">
@@ -260,17 +262,17 @@ export default function registerSettingsRoutes(app) {
                       </span>` : ''}
                       <div class="small" style="margin-top:4px; margin-left:24px;">The chatbot uses your knowledge base to answer questions and handles reservations, bookings, and complex interactions automatically.</div>
                     </label>
-                    <label style="display:block; margin-bottom:12px; padding:12px; border:1px solid #e5e7eb; border-radius:6px; cursor:pointer; ${effectiveConversationMode === 'escalation' ? 'background:#f0f9ff; border-color:#3b82f6;' : ''}">
+                    <label style="display:block; margin-bottom:12px; padding:12px; border:none; border-radius:8px; cursor:pointer; ${effectiveConversationMode === 'escalation' ? 'background:#f0f9ff;' : ''}">
                       <input type="radio" name="conversation_mode" value="escalation" ${effectiveConversationMode === 'escalation' ? 'checked' : ''} style="margin-right:8px;"/>
                       <strong>Simple Escalation Mode</strong>
                       <div class="small" style="margin-top:4px; margin-left:24px;">The chatbot immediately escalates customers to human support. If support is available (within working hours), it escalates right away. If not, it informs the customer when support will be available next.</div>
                     </label>
-          <div class="small" style="margin-top:12px; padding:12px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; ${effectiveConversationMode === 'escalation' ? '' : 'display:none;'}" id="escalation_info">
+          <div class="small" style="margin-top:12px; padding:12px; background:#f8fafc; border:none; border-radius:6px; ${effectiveConversationMode === 'escalation' ? '' : 'display:none;'}" id="escalation_info">
             <strong>Note:</strong> In Simple Escalation Mode, the bot will use your <strong>Staff working hours</strong> (configured below) to determine when customer support is available. Make sure you have at least one staff member configured with working hours.
           </div>
           
           <!-- Escalation Mode Messages -->
-          <div style="margin-top:16px; padding:12px; background:#f0f9ff; border:1px solid #bfdbfe; border-radius:6px; ${effectiveConversationMode === 'escalation' ? '' : 'display:none;'}" id="escalation_messages">
+          <div style="margin-top:16px; padding:12px; ${effectiveConversationMode === 'escalation' ? '' : 'display:none;'}" id="escalation_messages">
             <h4 style="margin:0 0 12px 0;">Escalation Messages</h4>
             
             <label style="display:block; margin-bottom:8px;">
@@ -430,43 +432,47 @@ export default function registerSettingsRoutes(app) {
                       <input type="checkbox" name="escalation_email_enabled" value="1" ${s.escalation_email_enabled ? 'checked' : ''}/> Send email when customer escalates to support
                     </label>
                     <div class="small" style="margin-top:8px;">Get notified via email when a customer requests to speak with a human.</div>
-                    <label style="margin-top:12px;">Notification Email (optional)
-                      <input placeholder="${email || 'Your account email'}" class="settings-field" name="escalation_email" value="${s.escalation_email || ''}"/>
-                    </label>
-                    <div class="small">Leave blank to use your account email (${email || 'not set'}).</div>
+                    <div class="small" style="margin-top:12px;">
+                      Notifications will be sent to your account email (${email || 'not set'}).
+                      To change it, update your email in <strong>Personal Information</strong> above.
+                    </div>
                     
-                    <div class="section" style="margin-top:16px; border-top: 1px solid #e5e7eb; padding-top:16px;">
+                    <div style="margin-top:16px; padding-top:16px;">
                       <h4 style="margin:0 0 8px 0;">SMTP Configuration</h4>
-                      <div class="small" style="margin-bottom:12px;">Configure your email provider settings. For Gmail, use an App Password.</div>
-                      
-                      <div class="grid-2" style="gap:12px;">
-                        <label>SMTP Host
-                          <input placeholder="smtp.gmail.com" class="settings-field" name="smtp_host" value="${s.smtp_host || ''}"/>
-                        </label>
-                        <label>SMTP Port
-                          <input type="number" placeholder="587" class="settings-field" name="smtp_port" value="${s.smtp_port || '587'}"/>
-                        </label>
-                      </div>
-                      
-                      <label style="margin-top:12px;">
-                        <input type="hidden" name="smtp_secure" value="0"/>
-                        <input type="checkbox" name="smtp_secure" value="1" ${Number(s.smtp_secure) === 1 ? 'checked' : ''}/> Use secure connection (SSL/TLS - port 465)
-                      </label>
-                      <div class="small">Check this if using port 465. Leave unchecked for port 587 (STARTTLS).</div>
-                      
-                      <label style="margin-top:12px;">SMTP Username/Email
-                        <input placeholder="your-email@gmail.com" class="settings-field" name="smtp_user" value="${s.smtp_user || ''}"/>
-                      </label>
-                      
-                      <label style="margin-top:12px;">SMTP Password
-                        <div style="position:relative;">
-                          <input type="password" id="smtp_pass" placeholder="App Password or SMTP password" class="settings-field" name="smtp_pass" value="${s.smtp_pass || ''}" style="padding-right:80px;"/>
-                          <button type="button" onclick="toggleReveal('smtp_pass')" class="btn-ghost" style="position:absolute; right:8px; top:50%; transform:translateY(-50%); padding:4px 8px; font-size:12px;">Show</button>
+                      ${smtpEnvConfigured ? `
+                        <div class="small" style="margin-bottom:12px;">
+                          Email is configured by the workspace. Messages will be sent from
+                          <strong>${s.smtp_user || process.env.SMTP_USER || 'configured sender'}</strong>.
+                          To change the sender, update environment variables on the server.
                         </div>
-                      </label>
-                      <div class="small">
-                        For Gmail: Create an App Password at <a href="https://myaccount.google.com/apppasswords" target="_blank" style="color:#4F46E5;">myaccount.google.com/apppasswords</a>
-                      </div>
+                      ` : `
+                        <div class="small" style="margin-bottom:12px;">Configure your email provider settings. For Gmail, use an App Password.</div>
+                        <div class="grid-2" style="gap:12px;">
+                          <label>SMTP Host
+                            <input placeholder="smtp.gmail.com" class="settings-field" name="smtp_host" value="${s.smtp_host || ''}"/>
+                          </label>
+                          <label>SMTP Port
+                            <input type="number" placeholder="587" class="settings-field" name="smtp_port" value="${s.smtp_port || '587'}"/>
+                          </label>
+                        </div>
+                        <label style="margin-top:12px;">
+                          <input type="hidden" name="smtp_secure" value="0"/>
+                          <input type="checkbox" name="smtp_secure" value="1" ${Number(s.smtp_secure) === 1 ? 'checked' : ''}/> Use secure connection (SSL/TLS - port 465)
+                        </label>
+                        <div class="small">Check this if using port 465. Leave unchecked for port 587 (STARTTLS).</div>
+                        <label style="margin-top:12px;">SMTP Username/Email
+                          <input placeholder="your-email@gmail.com" class="settings-field" name="smtp_user" value="${s.smtp_user || ''}"/>
+                        </label>
+                        <label style="margin-top:12px;">SMTP Password
+                          <div style="position:relative;">
+                            <input type="password" id="smtp_pass" placeholder="App Password or SMTP password" class="settings-field" name="smtp_pass" value="${s.smtp_pass || ''}" style="padding-right:80px;"/>
+                            <button type="button" onclick="toggleReveal('smtp_pass')" class="btn-ghost" style="position:absolute; right:8px; top:50%; transform:translateY(-50%); padding:4px 8px; font-size:12px;">Show</button>
+                          </div>
+                        </label>
+                        <div class="small">
+                          For Gmail: Create an App Password at <a href="https://myaccount.google.com/apppasswords" target="_blank" style="color:#4F46E5;">myaccount.google.com/apppasswords</a>
+                        </div>
+                      `}
                     </div>
                   </div>
                   <button type="submit" class="btn-primary btn-full">Save</button>
@@ -486,7 +492,7 @@ export default function registerSettingsRoutes(app) {
                 </div>
                 <div class="section" id="staff">
                   <h3>Staff</h3>
-                  <div class="card" style="margin-bottom:12px;">
+                  <div style="margin-bottom:12px;">
                     <form method="post" action="/settings/staff" onsubmit="event.preventDefault(); return checkAuthThenSubmit(this);" style="display:grid; grid-template-columns: repeat(2, 1fr); gap:8px;">
                       <label>Name
                         <input class="settings-field" name="name" placeholder="Jane Doe" required />
@@ -518,7 +524,7 @@ export default function registerSettingsRoutes(app) {
                       </div>
                     </form>
                   </div>
-                  <div class="card">
+                  <div>
                     <div class="small" style="margin-bottom:8px;">Existing staff</div>
                     ${staff.length ? `<ul class="list">${staff.map(r => `
                       <li class="inbox-item">
@@ -540,7 +546,7 @@ export default function registerSettingsRoutes(app) {
                     `).join('')}</ul>` : '<div class="small">No staff yet</div>'}
                   </div>
                   ${staffToEdit ? `
-                  <div class="card" style="margin-top:12px;">
+                  <div style="margin-top:12px;">
                     <h3 style="margin-top:0;">Edit Staff</h3>
                     <form method="post" action="/settings/staff/${String(staffToEdit._id)}" onsubmit="event.preventDefault(); return checkAuthThenSubmit(this);" style="display:grid; grid-template-columns: repeat(2, 1fr); gap:8px;">
                       <label>Name
@@ -769,75 +775,75 @@ export default function registerSettingsRoutes(app) {
                   </script>
                   
                 </div>
-              </div>
-              
-              <!-- Quick Replies Section -->
-              <div class="section" id="quick-replies">
-                <h3>Quick Replies</h3>
-                <div class="card" style="margin-bottom:12px;">
-                  <form id="quick-reply-form" onsubmit="return addQuickReply(event)" style="display:grid; grid-template-columns: 1fr auto auto; gap:8px; align-items:end;">
-                    <div>
-                      <label>Quick Reply Text
-                        <textarea class="settings-field" name="text" placeholder="Thank you for your message! I'll get back to you shortly." required rows="2"></textarea>
-                      </label>
-                    </div>
-                    <div>
-                      <label>Category
-                        <select class="settings-field" name="category">
-                          <option value="General">General</option>
-                          <option value="Confirmations">Confirmations</option>
-                          <option value="Greetings">Greetings</option>
-                          <option value="Questions">Questions</option>
-                          <option value="Appointments">Appointments</option>
-                          <option value="Support">Support</option>
-                        </select>
-                      </label>
-                    </div>
-                    <button type="submit" class="btn-primary">Add Reply</button>
-                  </form>
-                </div>
-                <div class="card">
-                  <div class="small" style="margin-bottom:8px;">Your Quick Replies</div>
-                  ${quickReplies.length ? `
-                    <div class="quick-replies-list">
-                      ${quickReplyCategories.length > 0 ? `
-                        <div class="quick-replies-categories" style="margin-bottom: 12px;">
-                          <button type="button" class="btn-ghost active" onclick="filterQuickRepliesSettings('All')" style="background: #007bff; color: white; border: none; padding: 4px 8px; margin-right: 4px; border-radius: 4px; font-size: 0.8em; cursor: pointer;">
-                            All (${quickReplies.length})
-                          </button>
-                          ${quickReplyCategories.map(cat => `
-                            <button type="button" class="btn-ghost" onclick="filterQuickRepliesSettings('${cat.category}')" style="background: #e9ecef; color: #495057; border: none; padding: 4px 8px; margin-right: 4px; border-radius: 4px; font-size: 0.8em; cursor: pointer;">
-                              ${cat.category} (${cat.count})
+                <!-- Quick Replies Section -->
+                <div class="section" id="quick-replies">
+                  <h3>Quick Replies</h3>
+                  <div style="margin-bottom:12px;">
+                    <form id="quick-reply-form" onsubmit="return addQuickReply(event)" style="display:grid; grid-template-columns: 1fr auto auto; gap:8px; align-items:end;">
+                      <div>
+                        <label>Quick Reply Text
+                          <textarea class="settings-field" name="text" placeholder="Thank you for your message! I'll get back to you shortly." required rows="2"></textarea>
+                        </label>
+                      </div>
+                      <div>
+                        <label>Category
+                          <select class="settings-field" name="category">
+                            <option value="General">General</option>
+                            <option value="Confirmations">Confirmations</option>
+                            <option value="Greetings">Greetings</option>
+                            <option value="Questions">Questions</option>
+                            <option value="Appointments">Appointments</option>
+                            <option value="Support">Support</option>
+                          </select>
+                        </label>
+                      </div>
+                      <button type="submit" class="btn-primary">Add Reply</button>
+                    </form>
+                  </div>
+                  <div class="card">
+                    <div class="small" style="margin-bottom:8px;">Your Quick Replies</div>
+                    ${quickReplies.length ? `
+                      <div class="quick-replies-list">
+                        ${quickReplyCategories.length > 0 ? `
+                          <div class="quick-replies-categories" style="margin-bottom: 12px;">
+                            <button type="button" class="btn-ghost active" onclick="filterQuickRepliesSettings('All')" style="background: #007bff; color: white; border: none; padding: 4px 8px; margin-right: 4px; border-radius: 4px; font-size: 0.8em; cursor: pointer;">
+                              All (${quickReplies.length})
                             </button>
-                          `).join('')}
-                        </div>
-                      ` : ''}
-                      <div id="quick-replies-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 8px;">
-                        ${quickReplies.map(reply => `
-                          <div class="quick-reply-item" data-category="${reply.category || 'General'}" style="background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 6px; padding: 12px; position: relative;">
-                            <div style="display: flex; justify-content: between; align-items: start; gap: 8px;">
-                              <div style="flex: 1;">
-                                <div style="font-weight: 500; color: #495057; margin-bottom: 4px;">${reply.category || 'General'}</div>
-                                <div style="color: #666; font-size: 0.9em; line-height: 1.4;">${reply.text}</div>
-                                ${reply.usage_count > 0 ? `<div style="font-size: 0.8em; color: #6c757d; margin-top: 4px;">Used ${reply.usage_count} times</div>` : ''}
-                              </div>
-                              <div style="display: flex; gap: 4px;">
-                                <button type="button" onclick="editQuickReply(${reply.id}, '${encodeURIComponent(reply.text)}', '${reply.category || 'General'}')" style="background:#f0f9ff; padding:8px; border-radius:6px; cursor:pointer;" class="btn-ghost">
-                                  <img src="/pencil-icon.svg" alt="Edit" style="width:16px;height:16px;"/>
-                                </button>
-                                <button type="button" onclick="deleteQuickReply(${reply.id})" style="background:#fef2f2; padding:8px; border-radius:6px; cursor:pointer;" class="btn-ghost">
-                                  <img src="/delete-icon.svg" alt="Delete" style="width:16px;height:16px;margin-right:8px;"/>
-                                </button>
+                            ${quickReplyCategories.map(cat => `
+                              <button type="button" class="btn-ghost" onclick="filterQuickRepliesSettings('${cat.category}')" style="background: #e9ecef; color: #495057; border: none; padding: 4px 8px; margin-right: 4px; border-radius: 4px; font-size: 0.8em; cursor: pointer;">
+                                ${cat.category} (${cat.count})
+                              </button>
+                            `).join('')}
+                          </div>
+                        ` : ''}
+                        <div id="quick-replies-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 8px;">
+                          ${quickReplies.map(reply => `
+                            <div class="quick-reply-item" data-category="${reply.category || 'General'}" style="background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 6px; padding: 12px; position: relative;">
+                              <div style="display: flex; justify-content: between; align-items: start; gap: 8px;">
+                                <div style="flex: 1;">
+                                  <div style="font-weight: 500; color: #495057; margin-bottom: 4px;">${reply.category || 'General'}</div>
+                                  <div style="color: #666; font-size: 0.9em; line-height: 1.4;">${reply.text}</div>
+                                  ${reply.usage_count > 0 ? `<div style="font-size: 0.8em; color: #6c757d; margin-top: 4px;">Used ${reply.usage_count} times</div>` : ''}
+                                </div>
+                                <div style="display: flex; gap: 4px;">
+                                  <button type="button" onclick="editQuickReply(${reply.id}, '${encodeURIComponent(reply.text)}', '${reply.category || 'General'}')" style="background:#f0f9ff; padding:8px; border-radius:6px; cursor:pointer;" class="btn-ghost">
+                                    <img src="/pencil-icon.svg" alt="Edit" style="width:16px;height:16px;"/>
+                                  </button>
+                                  <button type="button" onclick="deleteQuickReply(${reply.id})" style="background:#fef2f2; padding:8px; border-radius:6px; cursor:pointer;" class="btn-ghost">
+                                    <img src="/delete-icon.svg" alt="Delete" style="width:16px;height:16px;margin-right:8px;"/>
+                                  </button>
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        `).join('')}
+                          `).join('')}
+                        </div>
                       </div>
-                    </div>
-                  ` : '<div class="small">No quick replies yet. Add your first one above!</div>'}
+                    ` : '<div class="small">No quick replies yet. Add your first one above!</div>'}
+                  </div>
+                </div>
                 </div>
               </div>
-              </div>
+              
             </main>
           </div>
         </div>
@@ -975,6 +981,7 @@ export default function registerSettingsRoutes(app) {
       app_secret: req.body?.app_secret || null,
       business_phone: req.body?.business_phone || null,
       website_url: req.body?.website_url || null,
+      terms_url: req.body?.terms_url || null,
       ai_tone: req.body?.ai_tone || null,
       ai_blocked_topics: req.body?.ai_blocked_topics || null,
       ai_style: req.body?.ai_style || null,
@@ -984,7 +991,8 @@ export default function registerSettingsRoutes(app) {
       cancel_min_lead_minutes: req.body?.cancel_min_lead_minutes ? Number(req.body.cancel_min_lead_minutes) : null,
       reminders_enabled: (req.body?.reminders_enabled && req.body?.bookings_enabled && req.body?.conversation_mode !== 'escalation') ? 1 : 0,
       escalation_email_enabled: req.body?.escalation_email_enabled ? 1 : 0,
-      escalation_email: req.body?.escalation_email || null,
+      // Always use the account's primary email for notifications
+      escalation_email: null,
       smtp_host: req.body?.smtp_host || null,
       smtp_port: req.body?.smtp_port ? parseInt(req.body.smtp_port, 10) : 587,
       smtp_secure: (() => {

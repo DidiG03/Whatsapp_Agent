@@ -8,7 +8,7 @@ export default function registerDashboardRoutes(app) {
   app.get("/dashboard", ensureAuthed, async (req, res) => {
     const email = await getSignedInEmail(req);
     const userId = getCurrentUserId(req);
-    const s = getSettingsForUser(userId);
+    const s = await getSettingsForUser(userId);
     
     // Get usage and plan info
     const usage = getCurrentUsage(userId);
@@ -17,7 +17,7 @@ export default function registerDashboardRoutes(app) {
 
     // Create metrics dashboard HTML
     const metricsHtml = `
-      <div class="card">
+      <div style="padding: 16px;">
         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
           <h3 style="margin: 0;">Live Metrics</h3>
           <div style="display: flex; gap: 8px; align-items: center;">
@@ -746,9 +746,9 @@ export default function registerDashboardRoutes(app) {
           initMetricsDashboard();
         </script>
         <div class="container">
-          ${renderTopbar('Dashboard', email)}
+      ${renderTopbar('Dashboard', email)}
           <div class="layout">
-            ${renderSidebar('dashboard')}
+      ${renderSidebar('dashboard', { showBookings: !!(s?.bookings_enabled) })}
             <main class="main">
                 ${metricsHtml}
                 ${apptHtml}

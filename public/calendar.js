@@ -113,7 +113,7 @@
     cal.appendChild(grid);
 
     var wrap = document.createElement('div');
-    wrap.className = 'card calendar-card';
+    wrap.className = 'calendar';
     wrap.appendChild(toolbar);
     wrap.appendChild(cal);
     root.appendChild(wrap);

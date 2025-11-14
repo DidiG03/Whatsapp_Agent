@@ -331,6 +331,64 @@ export default function registerKbRoutes(app) {
         <script>
           window.kbLimitReached = ${JSON.stringify(atLimit)};
           function isPdfLink(u){ try{ const href=String(u||'').toLowerCase(); return href.endsWith('.pdf') || href.includes('.pdf?') || href.includes('.pdf#'); }catch(e){ return false; } }
+          function toggleKbMenu(show){
+            const m = document.getElementById('kb-menu');
+            if(!m) return;
+            if (typeof show === 'boolean') {
+              m.style.display = show ? 'block' : 'none';
+            } else {
+              m.style.display = (m.style.display === 'block') ? 'none' : 'block';
+            }
+          }
+          function openKbUploadModal(){
+            if (window.kbLimitReached) { alert('KB limit reached for your plan. Please upgrade to add more.'); return; }
+            const el = document.getElementById('kbUploadModal');
+            if (el) el.classList.add('show');
+            toggleKbMenu(false);
+          }
+          function closeKbUploadModal(){
+            const el = document.getElementById('kbUploadModal');
+            if (el) el.classList.remove('show');
+          }
+          function openKbAddModal(){
+            if (window.kbLimitReached) { alert('KB limit reached for your plan. Please upgrade to add more.'); return; }
+            const el = document.getElementById('kbAddModal');
+            if (el) el.classList.add('show');
+            toggleKbMenu(false);
+          }
+          function closeKbAddModal(){
+            const el = document.getElementById('kbAddModal');
+            if (el) el.classList.remove('show');
+          }
+          async function submitKbAddForm(e){
+            if (e && e.preventDefault) e.preventDefault();
+            const titleEl = document.getElementById('kbAddTitle');
+            const summaryEl = document.getElementById('kbAddSummary');
+            const linkEl = document.getElementById('kbAddLink');
+            const menuEl = document.getElementById('kbAddShowMenu');
+            const title = (titleEl?.value || '').trim();
+            if (!title) { alert('Title is required'); return; }
+            const content = (summaryEl?.value || '').trim();
+            const file_url = (linkEl?.value || '').trim();
+            const isPdf = file_url ? isPdfLink(file_url) : false;
+            try {
+              await fetch('/kb', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  title,
+                  content,
+                  file_url: file_url || null,
+                  file_mime: isPdf ? 'application/pdf' : null,
+                  show_in_menu: !!(menuEl?.checked)
+                })
+              });
+              closeKbAddModal();
+              window.location.reload();
+            } catch (_) {
+              alert('Failed to create item');
+            }
+          }
           function attachKbFilter(){
             const input = document.getElementById('kb-search');
             if(!input) return;
@@ -386,6 +444,13 @@ export default function registerKbRoutes(app) {
           }
           window.addEventListener('DOMContentLoaded', function(){
             attachKbFilter();
+            // KB three-dot menu interactions
+            const kbMenuBtn = document.getElementById('kb-menu-btn');
+            const kbMenu = document.getElementById('kb-menu');
+            if (kbMenuBtn && kbMenu) {
+              kbMenuBtn.addEventListener('click', function(e){ e.stopPropagation(); toggleKbMenu(); });
+              document.addEventListener('click', function(e){ if (!kbMenu.contains(e.target) && e.target !== kbMenuBtn) toggleKbMenu(false); });
+            }
             // Toggle show_in_menu
             document.querySelectorAll('.kb-menu-toggle').forEach(function(chk){
               chk.addEventListener('change', function(){
@@ -406,39 +471,47 @@ export default function registerKbRoutes(app) {
                   fn.textContent = (this.files && this.files[0]) ? this.files[0].name : 'No file chosen';
                 });
               }
+              var f2 = document.getElementById('kbFile2');
+              var fn2 = document.getElementById('kbFileName2');
+              if (f2 && fn2) {
+                f2.addEventListener('change', function(){
+                  fn2.textContent = (this.files && this.files[0]) ? this.files[0].name : 'No file chosen';
+                });
+              }
             } catch(_){ }
           });
         </script>
         <div class="container">
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / KB`, email)}
           <div class="layout">
-            ${renderSidebar('kb')}
+            ${renderSidebar('kb', { showBookings: !!(settings?.bookings_enabled) })}
             <main class="main">
               <div class="main-content">
-                <div class="card kb-toolbar" style="margin-bottom:12px; display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
-                  <input id="kb-search" class="settings-field" placeholder="Search knowledge items..."/>
-                  <button class="btn-ghost" onclick="addKbItem()" ${atLimit ? 'disabled' : ''} title="${atLimit ? 'KB limit reached' : '+Add'}">${atLimit ? 'Add (Limit Reached)' : 'Add'}</button>
-                  <form method="post" action="/kb/upload" enctype="multipart/form-data" style="display:flex; gap:10px; align-items:center; background:#f9fafb; border:1px solid #e5e7eb; padding:8px 12px; border-radius:10px;">
-                    <input id="kbFile" type="file" name="document" accept=".pdf,.txt,.md,.doc,.docx,.rtf,.odt,.csv,.xls,.xlsx" ${atLimit ? 'disabled' : ''} style="display:none;" />
-                    <label for="kbFile" class="btn-ghost" style="border:none; background:#eef2ff; color:#3730a3; padding:8px 12px; border-radius:8px; cursor:pointer; ${atLimit ? 'opacity:.5; pointer-events:none;' : ''}">📄 Select file</label>
-                    <span id="kbFileName" class="small" style="color:#6b7280; max-width:220px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">No file chosen</span>
-                    <input type="text" name="title" class="settings-field" placeholder="Title (optional)" style="width:200px;"/>
-                    <input type="text" name="summary" class="settings-field" placeholder="Short summary (optional)" style="width:260px;"/>
-                    <label class="small" style="display:flex; align-items:center; gap:6px; color:#374151;"><input type="checkbox" name="show_in_menu"/> Show in menu</label>
-                    <button type="submit" class="btn" style="padding:8px 12px;" ${atLimit ? 'disabled' : ''}>Upload</button>
-                  </form>
-                  ${devFallbackNotice ? `<span class="small" style="color:#6b7280;">${devFallbackNotice}</span>` : ''}
-                </div>
-                <div class="card" style="margin-bottom:12px;">
+                <div style="margin-bottom:12px;">
                   <div class="small" style="margin-bottom:6px;">Knowledge Base usage</div>
                   <div class="usage-progress" style="width:100%; height:8px; background:#e5e7eb; border-radius:4px; overflow:hidden;">
                     <div class="usage-progress-bar" style="width:${docsPct}%; height:100%; background:${docsPct>90?'#ef4444':docsPct>75?'#f59e0b':'#10b981'};"></div>
                   </div>
                   <div class="small" style="margin-top:6px; color:#6b7280;">${itemsCount} / ${docsLimit} items • ${(charsCount/1024/1024).toFixed(2)} MB / ${(charsLimit/1024/1024).toFixed(0)} MB</div>
                 </div>
+                <hr style="opacity:0.3;" />
+                <div class="" style="margin-bottom:12px; display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                  <div style="display:flex; gap:8px; align-items:center; flex: 1 1 auto; min-width:260px;">
+                    <input id="kb-search" class="settings-field" placeholder="Search knowledge items..." style="flex:1;"/>
+                    <div class="dropdown" style="position:relative;">
+                      <button type="button" id="kb-menu-btn" class="btn-ghost" aria-haspopup="true" aria-expanded="false" title="Menu" style="width:36px;height:36px;display:inline-flex;align-items:center;justify-content:center;">
+                        <img src="/menu.svg" alt="Menu" style="width:16px;height:16px;"/>
+                      </button>
+                      <div id="kb-menu" class="dropdown-menu" style="display:none; position:absolute; right:0; top:100%; margin-top:8px; background:#fff; border:1px solid #e5e7eb; border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,0.12); padding:6px; min-width:160px;">
+                        <button type="button" class="btn-ghost" style="display:block; width:100%; text-align:left; margin:2px 0;" onclick="openKbAddModal()">Add Item</button>
+                        <button type="button" class="btn-ghost" style="display:block; width:100%; text-align:left; margin:2px 0;" onclick="openKbUploadModal()">Upload File</button>
+                      </div>
+                    </div>
+                  </div>
+                  ${devFallbackNotice ? `<span class="small" style="color:#6b7280;">${devFallbackNotice}</span>` : ''}
+                </div>
                 <div class="kb-list">${bookingsCard + (html || `
                   <div class="empty-state" style="text-align:center; padding:60px 20px; color:#666;">
-                    <div style="font-size:48px; margin-bottom:20px; opacity:0.3;">📚</div>
                     <h3 style="margin:0 0 12px 0; color:#333; font-size:20px; font-weight:500;">No knowledge items yet</h3>
                     <p style="margin:0 0 24px 0; font-size:14px; line-height:1.5; max-width:400px; margin-left:auto; margin-right:auto;">
                       Create your first knowledge base item to help your AI assistant provide better responses to customers.
@@ -456,6 +529,54 @@ export default function registerKbRoutes(app) {
                 `)}</div>
               </div>
             </main>
+          </div>
+        </div>
+        <!-- Upload Modal -->
+        <div id="kbUploadModal" class="day-modal">
+          <div class="day-modal-overlay" onclick="closeKbUploadModal()"></div>
+          <div class="day-modal-content">
+            <div class="day-modal-header">
+              <h3>Upload Knowledge Item</h3>
+              <button class="day-modal-close" onclick="closeKbUploadModal()">×</button>
+            </div>
+            <div class="day-modal-body">
+              <form method="post" action="/kb/upload" enctype="multipart/form-data" style="display:flex; flex-direction:column; gap:12px;">
+                <div style="display:flex; gap:10px; align-items:center; background:#f9fafb; border:1px solid #e5e7eb; padding:8px 12px; border-radius:10px;">
+                  <input id="kbFile2" type="file" name="document" accept=".pdf,.txt,.md,.doc,.docx,.rtf,.odt,.csv,.xls,.xlsx" style="display:none;" />
+                  <label for="kbFile2" class="btn-ghost" style="border:none; background:#eef2ff; color:#3730a3; padding:8px 12px; border-radius:8px; cursor:pointer;">📄 Select file</label>
+                  <span id="kbFileName2" class="small" style="color:#6b7280; max-width:220px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">No file chosen</span>
+                </div>
+                <input type="text" name="title" class="settings-field" placeholder="Title (optional)" />
+                <input type="text" name="summary" class="settings-field" placeholder="Short summary (optional)" />
+                <label class="small" style="display:flex; align-items:center; gap:6px; color:#374151;"><input type="checkbox" name="show_in_menu"/> Show in menu</label>
+                <div style="display:flex; gap:8px; justify-content:flex-end;">
+                  <button type="button" class="btn-ghost" onclick="closeKbUploadModal()">Cancel</button>
+                  <button type="submit" class="btn">Upload</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+        <!-- Add Item Modal -->
+        <div id="kbAddModal" class="day-modal">
+          <div class="day-modal-overlay" onclick="closeKbAddModal()"></div>
+          <div class="day-modal-content">
+            <div class="day-modal-header">
+              <h3>Add Knowledge Item</h3>
+              <button class="day-modal-close" onclick="closeKbAddModal()">×</button>
+            </div>
+            <div class="day-modal-body">
+              <form onsubmit="submitKbAddForm(event)" style="display:flex; flex-direction:column; gap:12px;">
+                <input id="kbAddTitle" type="text" class="settings-field" placeholder="Title (e.g., Menu (PDF))" required />
+                <input id="kbAddSummary" type="text" class="settings-field" placeholder="Short summary (optional)" />
+                <input id="kbAddLink" type="url" class="settings-field" placeholder="PDF link (optional)" />
+                <label class="small" style="display:flex; align-items:center; gap:6px; color:#374151;"><input id="kbAddShowMenu" type="checkbox" /> Show in menu</label>
+                <div style="display:flex; gap:8px; justify-content:flex-end;">
+                  <button type="button" class="btn-ghost" onclick="closeKbAddModal()">Cancel</button>
+                  <button type="submit" class="btn">Create</button>
+                </div>
+              </form>
+            </div>
           </div>
         </div>
       </body></html>

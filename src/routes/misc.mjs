@@ -3,6 +3,10 @@ import { getSettingsForUser } from "../services/settings.mjs";
 
 export default function registerMiscRoutes(app) {
   app.get("/.well-known/appspecific/com.chrome.devtools.json", (_req, res) => res.sendStatus(204));
+  // Friendly routes for legal pages
+  app.get('/privacy', (_req, res) => res.sendFile('privacy.html', { root: 'public' }));
+  app.get('/data-deletion', (_req, res) => res.sendFile('data-deletion.html', { root: 'public' }));
+  app.get('/terms', (_req, res) => res.sendFile('terms.html', { root: 'public' }));
   // ICS: simple calendar invite generator for Apple/Google
   app.get("/ics", (req, res) => {
     try{

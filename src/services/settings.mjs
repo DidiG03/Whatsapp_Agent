@@ -33,6 +33,7 @@ export async function upsertSettingsForUser(userId, values) {
     business_phone: values.business_phone ?? current.business_phone ?? null,
     business_name: values.business_name ?? current.business_name ?? null,
     website_url: values.website_url ?? current.website_url ?? null,
+    terms_url: values.terms_url ?? current.terms_url ?? null,
     ai_tone: values.ai_tone ?? current.ai_tone ?? null,
     ai_blocked_topics: values.ai_blocked_topics ?? current.ai_blocked_topics ?? null,
     ai_style: values.ai_style ?? current.ai_style ?? null,

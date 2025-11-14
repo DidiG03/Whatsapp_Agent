@@ -1,5 +1,6 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
 import { renderSidebar, renderTopbar, escapeHtml } from "../utils.mjs";
+import { getSettingsForUser } from "../services/settings.mjs";
 import { getCurrentUsage, getUserPlan, getUsageHistory, getPlanPricing, updateUserPlan } from "../services/usage.mjs";
 import { isStripeEnabled, getStripePublishableKey } from "../services/stripe.mjs";
 
@@ -54,112 +55,105 @@ export default function registerPlanRoutes(app) {
         <div class="container">
           ${renderTopbar('Plan & Usage', email)}
           <div class="layout">
-            ${renderSidebar('plan')}
+            ${renderSidebar('plan', { showBookings: !!((await getSettingsForUser(userId))?.bookings_enabled) })}
             <main class="main">
               <div class="main-content">
-                <div class="card">
-                <h2>Current Plan: ${currentPlanDetails.name}</h2>
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin: 16px 0;">
-                  <div class="usage-stat">
-                    <div class="usage-stat-label">Monthly Messages</div>
-                    <div class="usage-stat-value">${totalMessages} / ${plan.monthly_limit}</div>
-                    <div class="usage-progress">
-                      <div class="usage-progress-bar" style="width: ${Math.min(usagePercentage, 100)}%; background-color: ${usagePercentage > 90 ? '#ef4444' : usagePercentage > 75 ? '#f59e0b' : '#10b981'};"></div>
+                <section class="plan-card-shell">
+                  <h2 style="margin:0 0 12px 0;">Current Plan: ${currentPlanDetails.name}</h2>
+                  <div class="plan-stats-grid">
+                    <div class="plan-stat ">
+                      <div class="plan-stat-label">Monthly Messages</div>
+                      <div class="plan-stat-value">${totalMessages} / ${plan.monthly_limit}</div>
+                      <div class="plan-progress">
+                        <div class="plan-progress-bar ${usagePercentage > 90 ? 'danger' : usagePercentage > 75 ? 'warning' : 'success'}" style="width:${Math.min(usagePercentage, 100)}%"></div>
+                      </div>
+                    </div>
+                    <div class="plan-stat ">
+                      <div class="plan-stat-label">WhatsApp Numbers</div>
+                      <div class="plan-stat-value">1 / ${plan.whatsapp_numbers}</div>
+                    </div>
+                    <div class="plan-stat">
+                      <div class="plan-stat-label">Plan Cost</div>
+                      <div class="plan-stat-value">$${currentPlanDetails.price}/month</div>
                     </div>
                   </div>
-                  <div class="usage-stat">
-                    <div class="usage-stat-label">WhatsApp Numbers</div>
-                    <div class="usage-stat-value">1 / ${plan.whatsapp_numbers}</div>
-                  </div>
-                  <div class="usage-stat">
-                    <div class="usage-stat-label">Plan Cost</div>
-                    <div class="usage-stat-value">$${currentPlanDetails.price}/month</div>
-                  </div>
-                </div>
-                
-                ${usagePercentage > 90 ? `
-                  <div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 12px; margin: 16px 0;">
-                    <strong style="color: #dc2626;">⚠️ Usage Warning</strong>
-                    <p style="margin: 4px 0 0 0; color: #991b1b;">You've used ${usagePercentage}% of your monthly limit. Consider upgrading your plan to avoid interruptions.</p>
-                  </div>
-                ` : ''}
-              </div>
-              
-              <div class="card">
-                <h3>Usage Breakdown</h3>
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px; margin: 16px 0;">
-                  <div class="usage-breakdown">
-                    <div class="usage-breakdown-label">Inbound</div>
-                    <div class="usage-breakdown-value">${usage.inbound_messages}</div>
-                    <div class="usage-breakdown-desc">Messages received</div>
-                  </div>
-                  <div class="usage-breakdown">
-                    <div class="usage-breakdown-label">Outbound</div>
-                    <div class="usage-breakdown-value">${usage.outbound_messages}</div>
-                    <div class="usage-breakdown-desc">Messages sent</div>
-                  </div>
-                  <div class="usage-breakdown">
-                    <div class="usage-breakdown-label">Templates</div>
-                    <div class="usage-breakdown-value">${usage.template_messages}</div>
-                    <div class="usage-breakdown-desc">Template messages</div>
-                  </div>
-                </div>
-              </div>
-              
-              <div class="card">
-                <h3>Usage History</h3>
-                <div style="overflow-x: auto;">
-                  <table style="width: 100%; border-collapse: collapse;">
-                    <thead>
-                      <tr style="background: #f9fafb;">
-                        <th style="padding: 8px; text-align: left; border-bottom: 1px solid #e5e7eb;">Month</th>
-                        <th style="padding: 8px; text-align: left; border-bottom: 1px solid #e5e7eb;">Inbound</th>
-                        <th style="padding: 8px; text-align: left; border-bottom: 1px solid #e5e7eb;">Outbound</th>
-                        <th style="padding: 8px; text-align: left; border-bottom: 1px solid #e5e7eb;">Templates</th>
-                        <th style="padding: 8px; text-align: left; border-bottom: 1px solid #e5e7eb;">Total</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${historyRows || '<tr><td colspan="5" style="padding: 16px; text-align: center; color: #6b7280;">No usage data yet</td></tr>'}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-              
-              <div class="card">
-                <h3>Available Plans</h3>
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; margin: 16px 0;">
-                  ${Object.entries(pricing).map(([planKey, planDetails]) => `
-                    <div class="plan-card ${plan.plan_name === planKey ? 'plan-current' : ''}" style="border: 2px solid ${plan.plan_name === planKey ? '#4f46e5' : '#e5e7eb'}; border-radius: 12px; padding: 20px; background: ${plan.plan_name === planKey ? '#f8faff' : 'white'};">
-                      <div style="display: flex; justify-content: between; align-items: center; margin-bottom: 12px;">
-                        <h4 style="margin: 0;">${planDetails.name}</h4>
-                        ${plan.plan_name === planKey ? '<span style="background: #4f46e5; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px;">Current</span>' : ''}
-                      </div>
-                      <div style="font-size: 24px; font-weight: bold; margin-bottom: 8px;">
-                        $${planDetails.price}<span style="font-size: 14px; font-weight: normal; color: #6b7280;">/month</span>
-                      </div>
-                      <ul style="list-style: none; padding: 0; margin: 16px 0;">
-                        ${planDetails.features.map(feature => `<li style="padding: 4px 0; color: #374151;">✓ ${escapeHtml(feature)}</li>`).join('')}
-                      </ul>
-                      ${plan.plan_name !== planKey ? `
-                        ${stripeEnabled && planKey !== 'free' ? `
-                          <button onclick="subscribeToPlan('${planKey}')" style="width: 100%; padding: 8px 16px; background: #4f46e5; color: white; border: none; border-radius: 6px; cursor: pointer;">
-                            Subscribe to ${planDetails.name}
-                          </button>
-                        ` : `
-                          <button onclick="upgradePlan('${planKey}')" style="width: 100%; padding: 8px 16px; background: #4f46e5; color: white; border: none; border-radius: 6px; cursor: pointer;">
-                            ${planKey === 'free' ? 'Downgrade' : 'Upgrade'} to ${planDetails.name}
-                          </button>
-                        `}
-                      ` : plan.plan_name === 'starter' && stripeEnabled ? `
-                        <button onclick="cancelSubscription()" style="width: 100%; padding: 8px 16px; background: #ef4444; color: white; border: none; border-radius: 6px; cursor: pointer;">
-                          Cancel Subscription
-                        </button>
-                      ` : ''}
+                  ${usagePercentage > 90 ? `
+                    <div class="alert alert-warning" style="margin-top:12px;">
+                      <strong>Usage Warning</strong>
+                      <div>You've used ${usagePercentage}% of your monthly limit. Consider upgrading to avoid interruptions.</div>
                     </div>
-                  `).join('')}
-                </div>
-              </div>
+                  ` : ''}
+                </section>
+                <hr style="opacity:0.3;" />
+                <section>
+                  <h3>Usage Breakdown</h3>
+                  <div class="plan-breakdown-grid">
+                    <div class="plan-breakdown card">
+                      <div class="plan-breakdown-label">Inbound</div>
+                      <div class="plan-breakdown-value">${usage.inbound_messages}</div>
+                      <div class="plan-breakdown-desc">Messages received</div>
+                    </div>
+                    <div class="plan-breakdown card">
+                      <div class="plan-breakdown-label">Outbound</div>
+                      <div class="plan-breakdown-value">${usage.outbound_messages}</div>
+                      <div class="plan-breakdown-desc">Messages sent</div>
+                    </div>
+                    <div class="plan-breakdown card">
+                      <div class="plan-breakdown-label">Templates</div>
+                      <div class="plan-breakdown-value">${usage.template_messages}</div>
+                      <div class="plan-breakdown-desc">Template messages</div>
+                    </div>
+                  </div>
+                </section>
+                <hr style="opacity:0.3;" />
+                <section style="margin-top:12px; margin-bottom:12px;">
+                  <h3>Usage History</h3>
+                  <div class="table-responsive">
+                    <table class="table">
+                      <thead>
+                        <tr>
+                          <th>Month</th>
+                          <th>Inbound</th>
+                          <th>Outbound</th>
+                          <th>Templates</th>
+                          <th>Total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${historyRows || '<tr><td colspan="5" class="table-empty">No usage data yet</td></tr>'}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+
+                <section class="card">
+                  <h3>Available Plans</h3>
+                  <div class="plans-grid">
+                    ${Object.entries(pricing).map(([planKey, planDetails]) => `
+                      <div class="plan-option ${plan.plan_name === planKey ? 'current' : ''}">
+                        <div class="plan-option-head">
+                          <h4>${planDetails.name}</h4>
+                          ${plan.plan_name === planKey ? '<span class="badge-current">Current</span>' : ''}
+                        </div>
+                        <div class="plan-price">$${planDetails.price}<span class="plan-price-period">/month</span></div>
+                        <ul class="plan-features">
+                          ${planDetails.features.map(feature => `<li>✓ ${escapeHtml(feature)}</li>`).join('')}
+                        </ul>
+                        <div class="cta-row">
+                          ${plan.plan_name !== planKey ? `
+                            ${stripeEnabled && planKey !== 'free' ? `
+                              <button class="btn-primary btn-full" onclick="subscribeToPlan('${planKey}')">Subscribe to ${planDetails.name}</button>
+                            ` : `
+                              <button class="btn-primary btn-full" onclick="upgradePlan('${planKey}')">${planKey === 'free' ? 'Downgrade' : 'Upgrade'} to ${planDetails.name}</button>
+                            `}
+                          ` : plan.plan_name === 'starter' && stripeEnabled ? `
+                            <button class="btn-danger btn-full" onclick="cancelSubscription()">Cancel Subscription</button>
+                          ` : ''}
+                        </div>
+                      </div>
+                    `).join('')}
+                  </div>
+                </section>
             </main>
           </div>
         </div>
@@ -259,78 +253,7 @@ export default function registerPlanRoutes(app) {
           ` : ''}
         </script>
         
-        <style>
-          .usage-stat {
-            background: #f9fafb;
-            border-radius: 8px;
-            padding: 16px;
-            text-align: center;
-          }
-          
-          .usage-stat-label {
-            font-size: 14px;
-            color: #6b7280;
-            margin-bottom: 4px;
-          }
-          
-          .usage-stat-value {
-            font-size: 20px;
-            font-weight: bold;
-            color: #111827;
-          }
-          
-          .usage-progress {
-            width: 100%;
-            height: 8px;
-            background: #e5e7eb;
-            border-radius: 4px;
-            margin-top: 8px;
-            overflow: hidden;
-          }
-          
-          .usage-progress-bar {
-            height: 100%;
-            transition: width 0.3s ease;
-          }
-          
-          .usage-breakdown {
-            text-align: center;
-            padding: 16px;
-            background: #f9fafb;
-            border-radius: 8px;
-          }
-          
-          .usage-breakdown-label {
-            font-size: 14px;
-            color: #6b7280;
-            margin-bottom: 4px;
-          }
-          
-          .usage-breakdown-value {
-            font-size: 24px;
-            font-weight: bold;
-            color: #111827;
-            margin-bottom: 4px;
-          }
-          
-          .usage-breakdown-desc {
-            font-size: 12px;
-            color: #6b7280;
-          }
-          
-          .plan-card {
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
-          }
-          
-          .plan-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-          }
-          
-          .plan-current {
-            position: relative;
-          }
-        </style>
+        
                 </div>
               </div>
             </main>

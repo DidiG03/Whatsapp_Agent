@@ -75,9 +75,9 @@ export default function registerCampaignRoutes(app) {
       </head>
       <body>
         <div class="container">
-          ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Campaigns`, email)}
+        ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Campaigns`, email)}
           <div class="layout">
-            ${renderSidebar('campaigns')}
+          ${renderSidebar('campaigns', { showBookings: !!((await getSettingsForUser(userId))?.bookings_enabled) })}
             <main class="main">
               <div class="main-content">
                 <div class="meta-card" style="margin-bottom:12px;">
@@ -96,24 +96,17 @@ export default function registerCampaignRoutes(app) {
                   </div>
                 </div>
 
-                <!-- Modals -->
-                <style>
-                  .wa-modal { position:fixed; inset:0; background:rgba(17,24,39,0.45); display:none; align-items:center; justify-content:center; }
-                  .wa-modal.show { display:flex; }
-                  .wa-dialog { background:#ffffff; border:1px solid #e5e7eb; border-radius:12px; width:min(900px,95vw); max-height:90vh; overflow:auto; }
-                  .wa-dialog-header { display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border-bottom:1px solid #e5e7eb; }
-                  .wa-dialog-body { padding:16px; }
-                  .wa-close { border:1px solid #e5e7eb; background:#fff; border-radius:8px; height:32px; padding:0 10px; cursor:pointer; }
-                  .meta-form-vertical { display:grid; grid-template-columns: 1fr; gap:10px; }
-                </style>
+                <!-- Modals (reuse global day-modal styles) -->
+                <style>.meta-form-vertical { display:grid; grid-template-columns: 1fr; gap:10px; }</style>
 
-                <div id="modalCreate" class="wa-modal">
-                  <div class="wa-dialog">
-                    <div class="wa-dialog-header">
+                <div id="modalCreate" class="day-modal">
+                  <div class="day-modal-overlay" data-close="modalCreate"></div>
+                  <div class="day-modal-content" style="max-width: 900px;">
+                    <div class="day-modal-header">
                       <strong>Create Campaign</strong>
-                      <button class="wa-close" data-close="modalCreate">Close</button>
+                      <button class="day-modal-close" data-close="modalCreate">×</button>
                     </div>
-                    <div class="wa-dialog-body">
+                    <div class="day-modal-body">
                       <form method="post" action="/campaigns/send" class="meta-form-vertical">
                         <input class="settings-field meta-input" name="name" placeholder="Campaign name" required />
                         <select class="settings-field meta-select" name="segment_type">
@@ -139,13 +132,14 @@ export default function registerCampaignRoutes(app) {
                   </div>
                 </div>
 
-                <div id="modalTemplate" class="wa-modal">
-                  <div class="wa-dialog">
-                    <div class="wa-dialog-header">
+                <div id="modalTemplate" class="day-modal">
+                  <div class="day-modal-overlay" data-close="modalTemplate"></div>
+                  <div class="day-modal-content" style="max-width: 900px;">
+                    <div class="day-modal-header">
                       <strong>Submit Template for Approval</strong>
-                      <button class="wa-close" data-close="modalTemplate">Close</button>
+                      <button class="day-modal-close" data-close="modalTemplate">×</button>
                     </div>
-                    <div class="wa-dialog-body">
+                    <div class="day-modal-body">
                       <form method="post" action="/campaigns/templates/submit" class="meta-form-vertical">
                         <input class="settings-field meta-input" name="name" placeholder="Template name" required />
                         <input class="settings-field meta-input" name="language" placeholder="Language (e.g., en_US)" required />
@@ -170,8 +164,6 @@ export default function registerCampaignRoutes(app) {
                     document.addEventListener('click', function(e){
                       var closeId = e.target && e.target.getAttribute && e.target.getAttribute('data-close');
                       if(closeId){ var el = document.getElementById(closeId); hide(el); }
-                      if(e.target === modalCreate){ hide(modalCreate); }
-                      if(e.target === modalTemplate){ hide(modalTemplate); }
                     });
                     document.addEventListener('keydown', function(e){ if(e.key==='Escape'){ hide(modalCreate); hide(modalTemplate); } });
                   })();

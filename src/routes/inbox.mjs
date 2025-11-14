@@ -380,6 +380,7 @@ export default function registerInboxRoutes(app) {
         : await listContactsForUser(userId, { page, pageSize });
     }
     const email = await getSignedInEmail(req);
+    const s = await getSettingsForUser(userId);
     // Plan gating: only upgraded users can reply/react
     const plan = await getUserPlan(userId);
     const isUpgraded = (plan?.plan_name || 'free') !== 'free';
@@ -670,10 +671,9 @@ export default function registerInboxRoutes(app) {
         <div class="container page-transition">
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Inbox`, email)}
           <div class="layout">
-            ${renderSidebar('inbox')}
+            ${renderSidebar('inbox', { showBookings: !!(s?.bookings_enabled) })}
             <main class="main">
               <div class="main-content">
-                <div class="search-container">
                   <form method="get" action="/inbox" class="search-form">
                   <div class="search-input-group">
                     <input class="search-input" type="text" name="q" placeholder='Search conversations...' value="${q}"/>
@@ -725,8 +725,7 @@ export default function registerInboxRoutes(app) {
                       </a>
                     `}
                   </div>
-              </form>
-              </div>
+                </form>
               <div id="nameModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.35); z-index:1000; align-items:center; justify-content:center;">
                 <div class="card" style="width:420px; max-width:95vw;">
                   <div class="small" style="margin-bottom:8px;">Name Customer</div>
@@ -931,7 +930,7 @@ export default function registerInboxRoutes(app) {
                   document.querySelectorAll('.dropdown-menu').forEach(el=>{ el.style.display='none'; });
                 });
               </script>
-                <ul class="list card">${searchResultsCount}${list || `
+                <ul class="list">${searchResultsCount}${list || `
                   <div class="empty-state" style="text-align:center; padding:60px 20px; color:#666;">
                     <h3 style="margin:0 0 12px 0; color:#333; font-size:20px; font-weight:500;">No conversations yet</h3>
                     <p style="margin:0 0 24px 0; font-size:14px; line-height:1.5; max-width:400px; margin-left:auto; margin-right:auto;">
@@ -1079,7 +1078,7 @@ export default function registerInboxRoutes(app) {
         <div class="container">
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / <a href="/inbox">Inbox</a> / Search Results`, email)}
           <div class="layout">
-            ${renderSidebar('inbox')}
+            ${renderSidebar('inbox', { showBookings: !!((await getSettingsForUser(userId))?.bookings_enabled) })}
             <main class="main">
               <div class="search-container">
                 <form method="get" action="/search" class="search-form">
@@ -2487,7 +2486,7 @@ export default function registerInboxRoutes(app) {
           <div class="container page-transition">
             ${renderTopbar(`<a href="/dashboard">Dashboard</a> / <a href="/inbox">Inbox</a> / +${String(phone).replace(/^\+/, '')}`, email)}
             <div class="layout">
-              ${renderSidebar('inbox')}
+              ${renderSidebar('inbox', { showBookings: !!((await getSettingsForUser(userId))?.bookings_enabled) })}
               <main class="main">
                 <div class="main-content">
                   <div class="wa-chat-header">

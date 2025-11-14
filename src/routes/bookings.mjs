@@ -9,6 +9,13 @@ export default function registerBookingsTab(app) {
     const userId = getCurrentUserId(req);
     const email = await getSignedInEmail(req);
     const s = await getSettingsForUser(userId);
+    // Gate access when bookings are disabled
+    if (!s?.bookings_enabled) {
+      res.statusCode = 302;
+      res.setHeader('Location', '/settings');
+      res.end('Redirecting to settings...');
+      return;
+    }
     const db = getDB();
     // Calendar connection status
     let cal = null;
@@ -94,10 +101,10 @@ export default function registerBookingsTab(app) {
         <div class="container">
           ${renderTopbar('Bookings', email)}
           <div class="layout">
-            ${renderSidebar('bookings')}
+            ${renderSidebar('bookings', { showBookings: true })}
             <main class="main">
               <div class="main-content">
-                <div class="card" style="margin-bottom:12px;">
+                <div style="margin-bottom:12px;">
                   <h3 style="margin:0 0 8px 0;">Booking Settings</h3>
                   <form method="post" action="/bookings/settings" style="display:grid; gap:16px;" onsubmit="return true;">
                     <div class="settings-row" style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 0; border-bottom:1px solid #eee;">
@@ -174,8 +181,8 @@ export default function registerBookingsTab(app) {
                     </div>
                   </form>
                 </div>
-
-                <div class="card">
+                <hr style="opacity:0.3;" />
+                <div>
                   <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
                     <h3 style="margin:0 0 8px 0;">Calendar</h3>
                     <div class="small" style="color:#6b7280;">Past 30 days to next 90 days</div>

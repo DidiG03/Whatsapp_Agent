@@ -128,6 +128,7 @@ const settingsMultiSchema = new mongoose.Schema({
   business_phone: String,
   business_name: String,
   website_url: String,
+  terms_url: String,
   ai_tone: String,
   ai_blocked_topics: String,
   ai_style: String,
@@ -478,7 +479,8 @@ export const Guide = mongoose.model('Guide', guideSchema);
 export const Enquiry = mongoose.model('Enquiry', enquirySchema);
 
 // Initialize indexes when module loads
-createIndexes();
+// Note: Index creation is triggered post-connection from db-mongodb.mjs
+export { createIndexes };
 
 export default {
   Message,

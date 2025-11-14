@@ -39,7 +39,6 @@ export default function registerAuthRoutes(app) {
           <main class="form-pane">
             <div class="form-card">
               <div class="auth-header">
-                <img src="/logo-icon.png" alt="WhatsApp Agent" class="auth-logo">
                 <h1 class="auth-title">Create Account</h1>
                 <p class="auth-subtitle">Join WhatsApp Agent and start automating your conversations</p>
               </div>
@@ -156,7 +155,6 @@ export default function registerAuthRoutes(app) {
           <main class="form-pane">
             <div class="form-card">
               <div class="auth-header">
-                <img src="/logo-icon.png" alt="WhatsApp Agent" class="auth-logo">
                 <h1 class="auth-title">Welcome Back</h1>
                 <p class="auth-subtitle">Sign in to your WhatsApp Agent account</p>
               </div>

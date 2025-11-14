@@ -53,6 +53,17 @@ export default function registerHomeRoutes(app) {
               </main>
             </div>
           </div>
+          <footer style="max-width: 1200px; margin: 0 auto 32px; padding: 16px 24px; color:#94a3b8;">
+            <div style="border-top:1px solid #1f2937; padding-top:16px; display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between;">
+              <div>© <script>document.write(new Date().getFullYear())</script> Code Orbit</div>
+              <nav>
+                <a href="/" style="color:#93c5fd; text-decoration:none; margin-right:12px;">Home</a>
+                <a href="/privacy" style="color:#93c5fd; text-decoration:none; margin-right:12px;">Privacy</a>
+                <a href="/terms" style="color:#93c5fd; text-decoration:none; margin-right:12px;">Terms</a>
+                <a href="/data-deletion" style="color:#93c5fd; text-decoration:none;">Data Deletion</a>
+              </nav>
+            </div>
+          </footer>
         </body></html>
       `);
     } else {
@@ -154,6 +165,17 @@ export default function registerHomeRoutes(app) {
               </div>
             </div>
           </section>
+          <footer style="max-width: 1200px; margin: 0 auto 32px; padding: 16px 24px; color:#94a3b8;">
+            <div style="border-top:1px solid #1f2937; padding-top:16px; display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between;">
+              <div>© <script>document.write(new Date().getFullYear())</script> Code Orbit</div>
+              <nav>
+                <a href="/" style="color:#93c5fd; text-decoration:none; margin-right:12px;">Home</a>
+                <a href="/privacy" style="color:#93c5fd; text-decoration:none; margin-right:12px;">Privacy</a>
+                <a href="/terms" style="color:#93c5fd; text-decoration:none; margin-right:12px;">Terms</a>
+                <a href="/data-deletion" style="color:#93c5fd; text-decoration:none;">Data Deletion</a>
+              </nav>
+            </div>
+          </footer>
         </body></html>
       `);
     }

@@ -10,10 +10,35 @@ import { logHelpers } from './monitoring/logger.mjs';
 // MongoDB connection configuration
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/whatsapp_agent';
 const MONGODB_DB_NAME = process.env.MONGODB_DB_NAME || 'whatsapp_agent';
+const MONGOOSE_BUFFER_TIMEOUT_MS = Number(process.env.MONGOOSE_BUFFER_TIMEOUT_MS || '30000');
+const MONGODB_MAX_POOL_SIZE = Number(process.env.DB_POOL_MAX || '10');
+const MONGODB_SERVER_SELECTION_TIMEOUT_MS = Number(process.env.MONGODB_SERVER_SELECTION_TIMEOUT_MS || '10000');
+const MONGODB_SOCKET_TIMEOUT_MS = Number(process.env.MONGODB_SOCKET_TIMEOUT_MS || '60000');
 
 let client = null;
 let mongoDb = null;
 let isConnected = false;
+
+// Global Mongoose settings to avoid silent buffering timeouts
+try {
+  mongoose.set('bufferCommands', false);
+  mongoose.set('bufferTimeoutMS', MONGOOSE_BUFFER_TIMEOUT_MS);
+} catch {}
+
+// Connection state logging and flags
+mongoose.connection.on('connected', () => {
+  isConnected = true;
+});
+mongoose.connection.on('reconnected', () => {
+  isConnected = true;
+});
+mongoose.connection.on('disconnected', () => {
+  isConnected = false;
+});
+mongoose.connection.on('error', (err) => {
+  isConnected = false;
+  logHelpers.logError(err, { component: 'mongodb', operation: 'connection_event' });
+});
 
 // Initialize MongoDB connection
 export async function initMongoDB() {
@@ -23,13 +48,19 @@ export async function initMongoDB() {
       dbName: MONGODB_DB_NAME,
       useNewUrlParser: true,
       useUnifiedTopology: true,
-      maxPoolSize: 10,
-      serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 45000,
+      maxPoolSize: MONGODB_MAX_POOL_SIZE,
+      serverSelectionTimeoutMS: MONGODB_SERVER_SELECTION_TIMEOUT_MS,
+      socketTimeoutMS: MONGODB_SOCKET_TIMEOUT_MS,
+      retryWrites: true
     });
 
     // Also create a native MongoDB client for direct operations
-    client = new MongoClient(MONGODB_URI);
+    client = new MongoClient(MONGODB_URI, {
+      maxPoolSize: MONGODB_MAX_POOL_SIZE,
+      serverSelectionTimeoutMS: MONGODB_SERVER_SELECTION_TIMEOUT_MS,
+      socketTimeoutMS: MONGODB_SOCKET_TIMEOUT_MS,
+      retryWrites: true
+    });
     await client.connect();
     mongoDb = client.db(MONGODB_DB_NAME);
     isConnected = true;
@@ -57,6 +88,11 @@ export async function initMongoDB() {
           { key: { user_id: 1, start_ts: 1 }, name: 'appts_user_start' }
         ])
       ]);
+    } catch {}
+    // Trigger Mongoose model-backed index creation after connection is ready
+    try {
+      const { createIndexes } = await import('./schemas/mongodb.mjs');
+      await createIndexes();
     } catch {}
     return { client, db: mongoDb };
   } catch (error) {

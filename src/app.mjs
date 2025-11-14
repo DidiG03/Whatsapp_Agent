@@ -18,7 +18,7 @@ import { metricsMiddleware, startMetricsCollection } from "./monitoring/metrics.
 import { scalabilityManager, createPerformanceMiddleware, scalabilityHealthCheck } from "./scalability/index.mjs";
 
 // Ensure DB side-effects are applied by importing appropriate db module
-import "./db-mongodb.mjs";
+import { initMongoDB, isMongoConnected } from "./db-mongodb.mjs";
 
 // Routes
 import registerHomeRoutes from "./routes/home.mjs";
@@ -50,6 +50,18 @@ import { isQueueEnabled, initOutboundQueue } from "./jobs/outboundQueue.mjs";
  */
 export async function createApp() {
   const app = express();
+  
+  // Ensure database is connected before proceeding
+  try { await initMongoDB(); } catch {}
+  // Fallback guard during early traffic or transient disconnects
+  app.use(async (_req, res, next) => {
+    if (!isMongoConnected()) {
+      try { await initMongoDB(); } catch {
+        return res.status(503).json({ error: 'Database temporarily unavailable' });
+      }
+    }
+    next();
+  });
   
   // Initialize scalability systems first
   await scalabilityManager.init();
