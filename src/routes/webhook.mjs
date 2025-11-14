@@ -1564,19 +1564,20 @@ export default function registerWebhookRoutes(app) {
         }
       } catch {}
       const sig = req.header("X-Hub-Signature-256") || req.header("x-hub-signature-256");
-      const prospective = (() => {
-        try {
-          const obj = JSON.parse((req.rawBody || Buffer.from("{}"))?.toString("utf8"));
-          const firstOf = (x) => Array.isArray(x) ? x[0] : (x && typeof x === 'object' ? Object.values(x)[0] : undefined);
-          const entry = firstOf(obj.entry);
-          const changeNode = firstOf(entry?.changes);
-          const change = changeNode?.value || changeNode;
-          const pnid = change?.metadata?.phone_number_id || null;
-          if (!pnid) return null;
-          return findSettingsByPhoneNumberId(pnid);
-        } catch { return null; }
-      })();
-      const s = prospective || {};
+      // Resolve tenant settings by phone_number_id from the raw payload BEFORE signature verification
+      // Note: the earlier implementation returned a Promise and was not awaited, causing s.app_secret to be undefined.
+      let s = {};
+      try {
+        const obj = JSON.parse((req.rawBody || Buffer.from("{}"))?.toString("utf8"));
+        const firstOf = (x) => Array.isArray(x) ? x[0] : (x && typeof x === 'object' ? Object.values(x)[0] : undefined);
+        const entry = firstOf(obj?.entry);
+        const changeNode = firstOf(entry?.changes);
+        const change = changeNode?.value || changeNode;
+        const pnid = change?.metadata?.phone_number_id || null;
+        if (pnid) {
+          s = (await findSettingsByPhoneNumberId(pnid)) || {};
+        }
+      } catch {}
       // Verify webhook signature for security
       const REQUIRE_SIG = (process.env.NODE_ENV === 'production') && (process.env.REQUIRE_WEBHOOK_SIGNATURE !== '0');
       if (REQUIRE_SIG && (!sig || !s.app_secret)) {
