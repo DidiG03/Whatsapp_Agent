@@ -867,7 +867,7 @@ export default function registerWebhookRoutes(app) {
     try {
       const plan = await getUserPlan(tenantUserId);
       if ((plan?.plan_name || 'free') === 'free') {
-        try { await sendTextTracked(to, 'This chat is powered by Code Orbit.', cfg); } catch {}
+        try { await sendTextTracked(to, 'This chat is powered by https://agent.codeorbit.tech', cfg); } catch {}
       }
     } catch {}
   }
@@ -1925,148 +1925,23 @@ export default function registerWebhookRoutes(app) {
         humanActive = humanLive;
       } catch {}
 
-      // Check conversation mode - if Simple Escalation Mode, handle differently (but never while human is explicitly live)
-      // Uses in-memory session so this mode does not require the database at all
+      // Check conversation mode - Simple Escalation Mode should still leverage AI.
+      // Only intercept for out-of-hours; otherwise fall through to unified AI handling.
       if (cfg.conversation_mode === 'escalation' && !humanLive) {
-        if (DEBUG_LOGS) console.log("Simple Escalation Mode active");
-        // Out-of-hours check applies in escalation too: show OOH text instead of starting questions
+        if (DEBUG_LOGS) console.log("Simple Escalation Mode active (AI-controlled)");
         try {
           const within = await isWithinStaffWorkingHours(tenantUserId, cfg);
           if (!within) {
+            try { await recordAndBroadcastInbound({ message, tenantUserId, metadata, normalizedType, text, mediaUrl }); } catch {}
             const ok = await shouldSendOutOfHours(tenantUserId, from);
             if (ok) {
-            const oohMsg = cfg.escalation_out_of_hours_message || await generateAssistantNudge('out_of_hours', {}, { tone: tenant?.ai_tone, style: tenant?.ai_style });
-            await sendTextTracked(from, oohMsg, cfg);
+              const oohMsg = cfg.escalation_out_of_hours_message || await generateAssistantNudge('out_of_hours', {}, { tone: tenant?.ai_tone, style: tenant?.ai_style });
+              await sendTextTracked(from, oohMsg, cfg);
             }
             return res.sendStatus(200);
           }
         } catch {}
-        // Ensure inbound gets recorded and shown even in escalation flow (which returns early)
-        try {
-          const inboundIdEsc = message.id;
-          if (inboundIdEsc) {
-            const insertedEsc = await recordInboundMessage({
-              messageId: inboundIdEsc,
-              userId: tenantUserId,
-              from,
-              businessPhone: metadata?.display_phone_number?.replace(/\D/g, ""),
-              type: normalizedType,
-              text: normalizedType === 'image' ? null : text,
-              timestamp: message.timestamp ? Number(message.timestamp) : undefined,
-              raw: message
-            });
-            if (insertedEsc) {
-              try { incrementUsage(tenantUserId, 'inbound_messages'); } catch {}
-              const messageDataEsc = {
-                id: inboundIdEsc,
-                direction: 'inbound',
-                type: normalizedType || 'text',
-                text_body: normalizedType === 'image' ? null : text,
-                timestamp: message.timestamp ? Number(message.timestamp) : Math.floor(Date.now() / 1000),
-                from_digits: normalizePhone(from),
-                to_digits: normalizePhone(metadata?.display_phone_number),
-                contact_name: null,
-                contact: from,
-                formatted_time: new Date((message.timestamp ? Number(message.timestamp) : Math.floor(Date.now() / 1000)) * 1000).toLocaleString(),
-                media_url: mediaUrl
-              };
-              broadcastNewMessage(tenantUserId, from, messageDataEsc);
-              try {
-                await Handoff.findOneAndUpdate(
-                  { user_id: tenantUserId, contact_id: from },
-                  { $set: { is_archived: false, deleted_at: null, updatedAt: new Date() }, $setOnInsert: { user_id: tenantUserId, contact_id: from } },
-                  { upsert: true }
-                );
-              } catch {}
-            }
-          }
-        } catch {}
-        
-        // Build questions from settings (fallback defaults)
-        let escalationQuestions = [];
-        try { escalationQuestions = JSON.parse(cfg.escalation_questions_json || '[]'); } catch {}
-        if (!Array.isArray(escalationQuestions) || escalationQuestions.length === 0) {
-          escalationQuestions = ["What's your name?"];
-        }
-
-        // Fetch/create a memory session
-        const { key, rec } = await getMemSession(tenantUserId, from);
-        if (!rec) {
-          // First message for this contact in the current process lifetime
-          const greetText = cfg.entry_greeting || await generateAssistantNudge('greeting', {}, { tone: tenant?.ai_tone, style: tenant?.ai_style });
-          const greetingOnly = isGreeting(text) && !hasSubstantiveRequest(text);
-
-          // Always greet
-          await sendTextTracked(from, greetText, cfg);
-          await sendBrandingIfFree({ tenantUserId, to: from, cfg });
-
-          if (greetingOnly) {
-            // Wait for a substantive request before escalating (no KB menu in escalation mode)
-            await setMemSession(tenantUserId, from, { step: 'greeted', qIndex: 0, answers: [], questions: escalationQuestions, buffer: '', bufferTs: Date.now() });
-            return res.sendStatus(200);
-          }
-
-          // Greeting + request in one message OR first message is a request → escalate now
-          const additional = cfg.escalation_additional_message;
-          const outOfHours = cfg.escalation_out_of_hours_message;
-          if (additional) {
-            await sendTextTracked(from, additional, cfg);
-          } else if (outOfHours) {
-            await sendTextTracked(from, outOfHours, cfg);
-          }
-          await setMemSession(tenantUserId, from, { step: 'ask_question', qIndex: 0, answers: [], questions: escalationQuestions });
-          await sendTextTracked(from, String(escalationQuestions[0]).slice(0,200), cfg);
-          return res.sendStatus(200);
-        }
-        
-        // Continue with dynamic escalation questions flow for subsequent messages (memory only)
-        if (rec.step === 'greeted') {
-          // Accumulate short fragments, escalate once message is substantive
-          const now = Date.now();
-          const within = (now - (rec.bufferTs || 0)) <= Number(process.env.ESCALATION_BUFFER_WINDOW_MS || 180_000); // default 3 min
-          const prior = within ? (rec.buffer || '') : '';
-          const joined = [prior, String(text || '')].filter(Boolean).join(' ').replace(/\s+/g,' ').trim();
-          // If buffer expired and the user sends a fresh greeting, respond with greeting again
-          if (!within && isGreeting(text) && !hasSubstantiveRequest(text)) {
-            const greetText = cfg.entry_greeting || await generateAssistantNudge('greeting', {}, { tone: tenant?.ai_tone, style: tenant?.ai_style });
-            await sendTextTracked(from, greetText, cfg);
-            await sendBrandingIfFree({ tenantUserId, to: from, cfg });
-            await setMemSession(tenantUserId, from, { step: 'greeted', qIndex: 0, answers: [], questions: Array.isArray(rec.questions)?rec.questions:[], buffer: '', bufferTs: now });
-            return res.sendStatus(200);
-          }
-          if (hasSubstantiveRequest(joined)) {
-            const additional = cfg.escalation_additional_message;
-            const outOfHours = cfg.escalation_out_of_hours_message;
-            if (additional) {
-            await sendTextTracked(from, additional, cfg);
-            } else if (outOfHours) {
-              await sendTextTracked(from, outOfHours, cfg);
-            }
-            await setMemSession(tenantUserId, from, { step: 'ask_question', qIndex: 0, answers: [], questions: Array.isArray(rec.questions)?rec.questions:escalationQuestions });
-            await sendTextTracked(from, String((Array.isArray(rec.questions)?rec.questions:escalationQuestions)[0]).slice(0,200), cfg);
-            return res.sendStatus(200);
-          }
-          // Not substantive yet → keep buffering, no extra messages to avoid spam
-          await setMemSession(tenantUserId, from, { step: 'greeted', qIndex: 0, answers: [], questions: rec.questions, buffer: joined.slice(0, 400), bufferTs: now });
-          return res.sendStatus(200);
-        }
-        if (rec.step === 'ask_question') {
-          const currentIndex = Number(rec.qIndex || 0);
-          const nextIndex = currentIndex + 1;
-          const ans = String(text || '').trim().slice(0, 300);
-          const answers = Array.isArray(rec.answers) ? rec.answers.slice() : [];
-          answers[currentIndex] = ans;
-          const questions = Array.isArray(rec.questions) ? rec.questions : escalationQuestions;
-
-          if (nextIndex < questions.length) {
-            await setMemSession(tenantUserId, from, { step: 'ask_question', qIndex: nextIndex, answers, questions });
-            await sendTextTracked(from, String(questions[nextIndex]).slice(0,200), cfg);
-          } else {
-            await setMemSession(tenantUserId, from, { step: 'done', qIndex: nextIndex, answers, questions }, 5*60*1000);
-            await sendTextTracked(from, "Got it. I'm connecting you with a human now. Please wait a moment.", cfg);
-          }
-          return res.sendStatus(200);
-        }
+        // Proceed to AI pipeline below with no predefined escalation conversation.
       }
 
       const inboundId = message.id;
@@ -3037,8 +2912,8 @@ export default function registerWebhookRoutes(app) {
       }
 
       // AI-first decision mode: let the model craft replies and propose one optional intent to execute
-      // Honor conversation mode explicitly: 'full' → use decision planner; 'escalation' handled earlier
-      const preferFullAI = (cfg?.conversation_mode !== 'escalation');
+      // Allow AI decision planner in all modes (including simple escalation).
+      const preferFullAI = true;
       if (!humanActive && preferFullAI) {
         try {
           const kbMatchesAIBase = await cachedRetrieveKbMatches(text, 8, tenantUserId, '', from);
@@ -3052,7 +2927,9 @@ export default function registerWebhookRoutes(app) {
             features: {
               bookings_enabled: !!cfg?.bookings_enabled,
               reminders_enabled: !!cfg?.reminders_enabled,
-              services: (() => { try { const s = JSON.parse(cfg?.services_json || '[]'); return Array.isArray(s) ? s : []; } catch { return []; } })()
+              services: (() => { try { const s = JSON.parse(cfg?.services_json || '[]'); return Array.isArray(s) ? s : []; } catch { return []; } })(),
+              conversation_mode: cfg?.conversation_mode || '',
+              escalation_questions: (() => { try { const arr = JSON.parse(cfg?.escalation_questions_json || '[]'); return Array.isArray(arr) ? arr.slice(0, 10) : []; } catch { return []; } })()
             }
           });
           if (decision?.text) {

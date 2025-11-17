@@ -436,6 +436,9 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
     ? `Refuse questions about these topics: ${blockedTopics}. If asked, briefly refuse and suggest contacting support.`
     : "";
 
+  const isEscalationMode = String(features.conversation_mode || '').toLowerCase() === 'escalation';
+  const escalationQuestions = Array.isArray(features.escalation_questions) ? features.escalation_questions.filter(Boolean).slice(0, 10) : [];
+
   const system = [
     "You are a sales-savvy WhatsApp assistant for a business.",
     "Primary goal: satisfy the user's request with helpful, persuasive, concise replies.",
@@ -450,6 +453,9 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
     "If a Service catalog is provided, and the user asks about booking or prices/services, present a compact list of services (name, minutes, price if available) and ask the user to pick one.",
     "Format the services inline with semicolons, e.g., \"Basic (30 min, $40); Deluxe (60 min, $70)\". Keep it to one short line if possible.",
     "Never invent services or prices; use only the provided catalog. If no price is available for a service, omit the price.",
+    isEscalationMode ? "Escalation Mode is active: your job is to quickly collect the user's request and then ask the predefined Escalation Questions one-by-one (at most one question per message). Keep messages very short." : "",
+    isEscalationMode ? "While in Escalation Mode, once all Escalation Questions appear answered (or the user explicitly asks for a human), set intent to { type: 'handoff', data: { summary: '<1-line summary>', name?: string, reason?: string } } and keep your text a brief acknowledgement like 'Got it — connecting you to a human now.'." : "",
+    isEscalationMode ? "Infer answers from prior chat history when possible. Do not repeat questions already answered." : "",
     "OUTPUT STRICTLY AS A SINGLE JSON OBJECT with keys: text, intent (optional). No markdown.",
   ].filter(Boolean).join("\n");
 
@@ -472,11 +478,16 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
     } catch { return ''; }
   })();
 
+  const escalationHeader = isEscalationMode && escalationQuestions.length
+    ? ('Escalation Questions (ask in order, one per turn):\n' + escalationQuestions.map((q, i) => `${i + 1}. ${String(q).trim()}`).join('\n'))
+    : (isEscalationMode ? 'Escalation Questions: (none provided)' : '');
+
   const messages = [
     { role: 'system', content: system },
     { role: 'system', content: 'Docs:\n' + context },
     { role: 'system', content: capabilityHint },
     servicesLine ? { role: 'system', content: servicesLine } : null,
+    escalationHeader ? { role: 'system', content: escalationHeader } : null,
   ];
   for (const m of historyMessages.slice(-10)) {
     try {
