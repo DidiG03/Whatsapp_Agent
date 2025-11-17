@@ -2938,6 +2938,10 @@ export default function registerWebhookRoutes(app) {
           const intentType = String(decision?.intent?.type || 'none').toLowerCase();
           const intentData = decision?.intent?.data || {};
           if (intentType && intentType !== 'none') {
+            // In Simple Escalation Mode, ignore any operational intents except handoff.
+            if (cfg?.conversation_mode === 'escalation' && intentType !== 'handoff') {
+              return res.sendStatus(200);
+            }
             // Execute lightweight intents if we have enough info
             if (intentType === 'availability' && cfg?.bookings_enabled) {
               try {
@@ -3070,18 +3074,29 @@ export default function registerWebhookRoutes(app) {
             }
             if (intentType === 'handoff') {
               try {
+                const intendedName = String(intentData?.name || '').trim();
+                if (intendedName) {
+                  try {
+                    db.prepare(`INSERT INTO customers (user_id, contact_id, display_name, created_at, updated_at)
+                      VALUES (?, ?, ?, strftime('%s','now'), strftime('%s','now'))
+                      ON CONFLICT(user_id, contact_id) DO UPDATE SET display_name = excluded.display_name, updated_at = excluded.updated_at`).run(tenantUserId, from, intendedName.slice(0,80));
+                  } catch {}
+                }
                 const customer = db.prepare(`SELECT display_name FROM customers WHERE user_id = ? AND contact_id = ?`).get(tenantUserId, from) || {};
                 const hasName = !!customer.display_name;
                 if (!hasName) {
                   db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
                     VALUES (?, ?, 'ask_name', strftime('%s','now'))
                     ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = 'ask_name', updated_at = excluded.updated_at`).run(from, tenantUserId);
+                  { const n = await generateAssistantNudge('handoff_ask_name', {}, { tone: tenant?.ai_tone, style: tenant?.ai_style }); await sendTextTracked(from, n, cfg); }
                 } else {
                   db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
                     VALUES (?, ?, 'ask_reason', strftime('%s','now'))
                     ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = 'ask_reason', updated_at = excluded.updated_at`).run(from, tenantUserId);
+                  { const n = await generateAssistantNudge('handoff_ask_reason', {}, { tone: tenant?.ai_tone, style: tenant?.ai_style }); await sendTextTracked(from, n, cfg); }
                 }
               } catch {}
+              return res.sendStatus(200);
             }
           }
           return res.sendStatus(200);

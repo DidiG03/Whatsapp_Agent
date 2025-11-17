@@ -454,6 +454,8 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
     "Format the services inline with semicolons, e.g., \"Basic (30 min, $40); Deluxe (60 min, $70)\". Keep it to one short line if possible.",
     "Never invent services or prices; use only the provided catalog. If no price is available for a service, omit the price.",
     isEscalationMode ? "Escalation Mode is active: your job is to quickly collect the user's request and then ask the predefined Escalation Questions one-by-one (at most one question per message). Keep messages very short." : "",
+    isEscalationMode ? "Do NOT fulfill or resolve the request yourself (no booking, rescheduling, canceling, or definitive answers). Your sole goal is to collect info and then escalate." : "",
+    isEscalationMode ? "Always ensure you have the user's name captured among the questions before escalation." : "",
     isEscalationMode ? "While in Escalation Mode, once all Escalation Questions appear answered (or the user explicitly asks for a human), set intent to { type: 'handoff', data: { summary: '<1-line summary>', name?: string, reason?: string } } and keep your text a brief acknowledgement like 'Got it — connecting you to a human now.'." : "",
     isEscalationMode ? "Infer answers from prior chat history when possible. Do not repeat questions already answered." : "",
     "OUTPUT STRICTLY AS A SINGLE JSON OBJECT with keys: text, intent (optional). No markdown.",
