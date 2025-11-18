@@ -76,7 +76,7 @@ export const securityHeaders = (req, res, next) => {
     ("img-src 'self' data: https: https://m.stripe.network https://*.stripe.com" + (clerkExtras ? ` ${clerkExtras}` : '') + "; ") +
     "font-src 'self' data: https://fonts.gstatic.com; " +
     // Allow connections to APIs we call, including Stripe and Clerk, and Stripe telemetry
-    ("connect-src 'self' https://api.openai.com https://api.stripe.com https://m.stripe.network https://graph.facebook.com https://*.clerk.accounts.dev https://accounts.clerk.com https://clerk.accounts.dev https://clerk-telemetry.com https://*.cloudflare.com https://vercel.live wss://vercel.live" + (clerkExtras ? ` ${clerkExtras}` : '') + "; ") +
+    ("connect-src 'self' https://api.openai.com https://api.stripe.com https://m.stripe.network https://graph.facebook.com https://*.clerk.accounts.dev https://accounts.clerk.com https://clerk.accounts.dev https://clerk-telemetry.com https://*.cloudflare.com https://vercel.live wss://vercel.live https://rest.ably.io https://*.ably.io https://ably.io https://*.ably-realtime.com wss://*.ably.io wss://ably.io wss://*.ably-realtime.com" + (clerkExtras ? ` ${clerkExtras}` : '') + "; ") +
     // Allow framing from Clerk and Stripe Checkout/Elements
     ("frame-src 'self' https://clerk.accounts.dev https://accounts.clerk.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com https://js.stripe.com https://hooks.stripe.com https://vercel.live" + (clerkExtras ? ` ${clerkExtras}` : '') + ";")
   );
