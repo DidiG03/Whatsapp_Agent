@@ -34,6 +34,25 @@ function userChannel(userId) {
   return `user:${String(userId || "").trim()}`;
 }
 
+function createTokenRequestCompat(ably, params) {
+  if (!ably || !ably.auth || typeof ably.auth.createTokenRequest !== "function") {
+    throw new Error("Ably client not initialized");
+  }
+  return new Promise((resolve, reject) => {
+    try {
+      ably.auth.createTokenRequest(params, (err, tokenRequest) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(tokenRequest);
+        }
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
 async function publish(channel, eventName, payload) {
   const ably = getAblyClient();
   if (!ably) return;
@@ -185,7 +204,7 @@ export default function registerRealtimeRoutes(app) {
         "subscribe",
         "presence"
       ];
-      const tokenRequest = await ably.auth.createTokenRequest({
+      const tokenRequest = await createTokenRequestCompat(ably, {
         clientId: `user:${userId}`,
         capability: JSON.stringify(capability),
         ttl: ABLY_TOKEN_TTL_MS
