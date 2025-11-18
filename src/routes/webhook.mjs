@@ -35,6 +35,7 @@ const ACK_TOKENS = [
 ];
 const ACK_TOKENS_SET = new Set(ACK_TOKENS);
 const SUBSTANTIVE_INTENT_RE = /(book|booking|reserve|reservation|appointment|order|buy|purchase|price|cost|quote|hours|open|closing|when\s*open|location|address|where|near|deliver|delivery|ship|shipping|pickup|refund|return|exchange|warranty|support|help|issue|problem|complaint|agent|human|connect|cancel|resched|change|modify|update|subscribe|signup|register|payment|pay|invoice|billing|menu|service|services|product|products|availability|slot|table|contact|phone|email)/i;
+const DEFAULT_ESCALATION_ACK = "An agent will respond to you shortly.";
 
 // In-memory cache for KB matches (per tenant+contact+query) with short TTL
 const memKb = new Map();
@@ -875,6 +876,162 @@ export default function registerWebhookRoutes(app) {
     } catch {}
     return false;
   }
+
+function getEscalationAckMessage(cfg) {
+  const raw = String(cfg?.escalation_additional_message || '').trim();
+  return raw || DEFAULT_ESCALATION_ACK;
+}
+
+async function sendEscalationIntroMessage(to, cfg) {
+  const intro = getEscalationAckMessage(cfg);
+  if (!intro) return;
+  await sendTextTracked(to, intro, cfg);
+}
+
+async function promptForEscalationName(to, cfg) {
+  const prompt = await generateAssistantNudge('handoff_ask_name', {}, { tone: cfg?.ai_tone, style: cfg?.ai_style });
+  await sendTextTracked(to, prompt, cfg);
+}
+
+async function promptForEscalationReason(to, cfg) {
+  const prompt = await generateAssistantNudge('handoff_ask_reason', {}, { tone: cfg?.ai_tone, style: cfg?.ai_style });
+  await sendTextTracked(to, prompt, cfg);
+}
+
+async function completeEscalationHandoff({ tenantUserId, from, reason, cfg, customerName }) {
+  const expires = Math.floor(Date.now() / 1000) + 5 * 60;
+  try {
+    db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, escalation_reason, is_human, human_expires_ts, updated_at)
+      VALUES (?, ?, NULL, ?, 1, ?, strftime('%s','now'))
+      ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = NULL, escalation_reason = excluded.escalation_reason, is_human = 1, human_expires_ts = excluded.human_expires_ts, updated_at = excluded.updated_at`).run(from, tenantUserId, reason, expires);
+  } catch (e) {
+    console.error('[Webhook] Failed to store escalation completion:', e?.message || e);
+  }
+  try {
+    await sendEscalationNotification(tenantUserId, {
+      customerName: customerName || null,
+      customerPhone: from,
+      reason,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (e) {
+    console.error('[Webhook] Failed to send escalation email:', e?.message || e);
+  }
+  try {
+    const displayName = customerName || from;
+    db.prepare(`INSERT INTO notifications (user_id, type, title, message, link, metadata) 
+      VALUES (?, ?, ?, ?, ?, ?)`).run(
+        tenantUserId,
+        'escalation',
+        'New Support Escalation',
+        `${displayName} requested to speak with a human: "${reason}"`,
+        `/inbox/${encodeURIComponent(from)}`,
+        JSON.stringify({ contact_id: from, reason, customer_name: displayName })
+      );
+  } catch (e) {
+    console.error('[Webhook] Failed to create escalation notification:', e?.message || e);
+  }
+  const connecting = await generateAssistantNudge('handoff_connecting', {}, { tone: cfg?.ai_tone, style: cfg?.ai_style });
+  await sendTextTracked(from, connecting, cfg);
+}
+
+async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
+  try {
+    if (!tenantUserId || !from) return true;
+
+    const outHandled = await handleOutOfHoursGuard(tenantUserId, from, cfg);
+    if (outHandled) return true;
+
+    const state = db.prepare(`SELECT escalation_step FROM handoff WHERE contact_id = ? AND user_id = ?`).get(from, tenantUserId) || {};
+    const customer = db.prepare(`SELECT display_name FROM customers WHERE user_id = ? AND contact_id = ?`).get(tenantUserId, from) || {};
+    const trimmed = String(text || '').trim();
+    const step = state.escalation_step || null;
+
+    if (!step) {
+      await sendEscalationIntroMessage(from, cfg);
+      if (customer.display_name) {
+        try {
+          db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
+            VALUES (?, ?, 'ask_reason', strftime('%s','now'))
+            ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = 'ask_reason', updated_at = excluded.updated_at`).run(from, tenantUserId);
+        } catch (e) {
+          console.error('[Webhook] Failed to set escalation step ask_reason:', e?.message || e);
+        }
+        await promptForEscalationReason(from, cfg);
+      } else {
+        try {
+          db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
+            VALUES (?, ?, 'ask_name', strftime('%s','now'))
+            ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = 'ask_name', updated_at = excluded.updated_at`).run(from, tenantUserId);
+        } catch (e) {
+          console.error('[Webhook] Failed to set escalation step ask_name:', e?.message || e);
+        }
+        await promptForEscalationName(from, cfg);
+      }
+      return true;
+    }
+
+    if (step === 'ask_name') {
+      const parsed = parseNameFromMessage(text) || trimmed.slice(0, 80);
+      if (parsed) {
+        try {
+          db.prepare(`INSERT INTO customers (user_id, contact_id, display_name, created_at, updated_at)
+            VALUES (?, ?, ?, strftime('%s','now'), strftime('%s','now'))
+            ON CONFLICT(user_id, contact_id) DO UPDATE SET display_name = excluded.display_name, updated_at = excluded.updated_at`).run(tenantUserId, from, parsed);
+        } catch (e) {
+          console.error('[Webhook] Failed to store customer name:', e?.message || e);
+        }
+        try { await rememberName(tenantUserId, from, parsed); } catch {}
+        customer.display_name = parsed;
+        try {
+          db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
+            VALUES (?, ?, 'ask_reason', strftime('%s','now'))
+            ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = 'ask_reason', updated_at = excluded.updated_at`).run(from, tenantUserId);
+        } catch (e) {
+          console.error('[Webhook] Failed to advance to ask_reason:', e?.message || e);
+        }
+        await sendTextTracked(from, "Thanks, and what’s the reason for contacting a human today?", cfg);
+      } else {
+        await promptForEscalationName(from, cfg);
+      }
+      return true;
+    }
+
+    if (step === 'ask_reason') {
+      const reason = trimmed.slice(0, 300);
+      if (reason) {
+        await completeEscalationHandoff({
+          tenantUserId,
+          from,
+          reason,
+          cfg,
+          customerName: customer.display_name || null
+        });
+      } else {
+        await promptForEscalationReason(from, cfg);
+      }
+      return true;
+    }
+
+    // Fallback: restart escalation flow
+    await sendEscalationIntroMessage(from, cfg);
+    try {
+      db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
+        VALUES (?, ?, 'ask_name', strftime('%s','now'))
+        ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = 'ask_name', updated_at = excluded.updated_at`).run(from, tenantUserId);
+    } catch (e) {
+      console.error('[Webhook] Failed to reset escalation step:', e?.message || e);
+    }
+    await promptForEscalationName(from, cfg);
+    return true;
+  } catch (err) {
+    console.error('[Webhook] Simple escalation flow error:', err?.message || err);
+    try {
+      await sendTextTracked(from, "I’m having trouble connecting you to an agent right now. Please try again in a moment.", cfg);
+    } catch {}
+    return true;
+  }
+}
 
   async function maybeJoinRecentFragments({ text, from, tenantUserId, timestampSec }) {
     try {
@@ -1973,25 +2130,6 @@ export default function registerWebhookRoutes(app) {
         humanActive = humanLive;
       } catch {}
 
-      // Check conversation mode - Simple Escalation Mode should still leverage AI.
-      // Only intercept for out-of-hours; otherwise fall through to unified AI handling.
-      if (cfg.conversation_mode === 'escalation' && !humanLive) {
-        if (DEBUG_LOGS) console.log("Simple Escalation Mode active (AI-controlled)");
-        try {
-          const within = await isWithinStaffWorkingHours(tenantUserId, cfg);
-          if (!within) {
-            try { await recordAndBroadcastInbound({ message, tenantUserId, metadata, normalizedType, text, mediaUrl }); } catch {}
-            const ok = await shouldSendOutOfHours(tenantUserId, from);
-            if (ok) {
-              const oohMsg = cfg.escalation_out_of_hours_message || await generateAssistantNudge('out_of_hours', {}, { tone: tenant?.ai_tone, style: tenant?.ai_style });
-              await sendTextTracked(from, oohMsg, cfg);
-            }
-            return res.sendStatus(200);
-          }
-        } catch {}
-        // Proceed to AI pipeline below with no predefined escalation conversation.
-      }
-
       const inboundId = message.id;
       // Replay protection: dedupe message.id per-tenant for short TTL
       try {
@@ -2022,15 +2160,6 @@ export default function registerWebhookRoutes(app) {
           const now = Math.floor(Date.now()/1000);
           if (cust?.opted_out) return res.sendStatus(200);
           if (cust?.blocked_until_ts && cust.blocked_until_ts > now) return res.sendStatus(200);
-        }
-      } catch {}
-
-      // Working hours guard: In full AI mode, do NOT block replies purely due to hours.
-      // Only apply OOH messaging during explicit escalation moments elsewhere.
-      try {
-        if (tenantUserId && cfg?.conversation_mode === 'escalation') {
-          const handled = await handleOutOfHoursGuard(tenantUserId, from, cfg);
-          if (handled) return res.sendStatus(200);
         }
       } catch {}
 
@@ -2082,84 +2211,10 @@ export default function registerWebhookRoutes(app) {
         return res.sendStatus(200);
       }
 
-      // Escalation state machine: collect name and reason before human handoff
-      // Only run escalation state machine if in escalation mode
       if (cfg.conversation_mode === 'escalation') {
-        try {
-          const state = db.prepare(`SELECT escalation_step, escalation_reason FROM handoff WHERE contact_id = ? AND user_id = ?`).get(from, tenantUserId) || {};
-          const customer = db.prepare(`SELECT display_name FROM customers WHERE user_id = ? AND contact_id = ?`).get(tenantUserId, from) || {};
-
-        // If we are waiting for the user's name
-        if (state.escalation_step === 'ask_name') {
-          const parsed = parseNameFromMessage(text) || String(text || '').trim().slice(0, 80);
-          if (parsed) {
-            try {
-              db.prepare(`INSERT INTO customers (user_id, contact_id, display_name, created_at, updated_at)
-                VALUES (?, ?, ?, strftime('%s','now'), strftime('%s','now'))
-                ON CONFLICT(user_id, contact_id) DO UPDATE SET display_name = excluded.display_name, updated_at = excluded.updated_at`).run(tenantUserId, from, parsed);
-            } catch {}
-            try {
-              db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
-                VALUES (?, ?, 'ask_reason', strftime('%s','now'))
-                ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = 'ask_reason', updated_at = excluded.updated_at`).run(from, tenantUserId);
-            } catch {}
-            await sendTextTracked(from, "Thanks, and what’s the reason for contacting a human today?", cfg);
-            return res.sendStatus(200);
-          } else {
-            await sendTextTracked(from, "Could you please share your name so I can connect you to a human?", cfg);
-            return res.sendStatus(200);
-          }
-        }
-
-        // If we are waiting for the reason
-        if (state.escalation_step === 'ask_reason') {
-          const reason = String(text || '').trim().slice(0, 300);
-          if (reason) {
-            try {
-              const exp = Math.floor(Date.now()/1000) + 5*60;
-              db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, escalation_reason, is_human, human_expires_ts, updated_at)
-                VALUES (?, ?, NULL, ?, 1, ?, strftime('%s','now'))
-                ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = NULL, escalation_reason = excluded.escalation_reason, is_human = 1, human_expires_ts = excluded.human_expires_ts, updated_at = excluded.updated_at`).run(from, tenantUserId, reason, exp);
-            } catch {}
-            
-            // Send email notification to account owner
-            try {
-              const customerName = customer.display_name || null;
-              await sendEscalationNotification(tenantUserId, {
-                customerName,
-                customerPhone: from,
-                reason,
-                timestamp: new Date().toISOString(),
-              });
-            } catch (e) {
-              console.error('[Webhook] Failed to send escalation email:', e.message);
-            }
-            
-            // Create web notification
-            try {
-              const customerName = customer.display_name || from;
-              db.prepare(`INSERT INTO notifications (user_id, type, title, message, link, metadata) 
-                VALUES (?, ?, ?, ?, ?, ?)`).run(
-                tenantUserId,
-                'escalation',
-                'New Support Escalation',
-                `${customerName} requested to speak with a human: "${reason}"`,
-                `/inbox/${encodeURIComponent(from)}`,
-                JSON.stringify({ contact_id: from, reason, customer_name: customerName })
-              );
-            } catch (e) {
-              console.error('[Webhook] Failed to create notification:', e.message);
-            }
-            
-            { const n = await generateAssistantNudge('handoff_connecting', {}, { tone: tenant?.ai_tone, style: tenant?.ai_style }); await sendTextTracked(from, n, cfg); }
-            return res.sendStatus(200);
-          } else {
-            await sendTextTracked(from, "Could you share a brief reason so I can route you to the right person?", cfg);
-            return res.sendStatus(200);
-          }
-        }
-      } catch {}
-      } // End escalation mode check
+        const handledEscalation = await handleSimpleEscalationFlow({ tenantUserId, from, text, cfg });
+        if (handledEscalation) return res.sendStatus(200);
+      }
 
       // Handle interactive replies (buttons/lists) BEFORE filtering to text
       if (message?.type === "interactive") {
