@@ -438,32 +438,54 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
 
   const isEscalationMode = String(features.conversation_mode || '').toLowerCase() === 'escalation';
   const escalationQuestions = Array.isArray(features.escalation_questions) ? features.escalation_questions.filter(Boolean).slice(0, 10) : [];
+  const knownCustomerName = String(features.customer_name || '').trim();
 
-  const system = [
+  const systemParts = [
     "You are a sales-savvy WhatsApp assistant for a business.",
-    "Primary goal: satisfy the user's request with helpful, persuasive, concise replies.",
+    `Tone: ${tone}. Style: ${style}.`,
     "Use ONLY the provided Docs (KB context) for factual answers; never invent facts.",
     blockedLine ? blockedLine : "",
-    `Tone: ${tone}. Style: ${style}.`,
-    "If user intent is booking-related, be proactive and helpful: keep it short, ask for any missing date/time efficiently.",
-    "You may plan ONE optional intent for the server to execute. Choose wisely and only if enough info is present.",
-    "INTENT TYPES: availability, book, reschedule, cancel, handoff, none.",
-    "For availability/book intents, you can include natural date/time phrases; the server will parse.",
-    "For complex or missing info, ask in your text what is needed (e.g., preferred date/time).",
-    "If a Service catalog is provided, and the user asks about booking or prices/services, present a compact list of services (name, minutes, price if available) and ask the user to pick one.",
-    "Format the services inline with semicolons, e.g., \"Basic (30 min, $40); Deluxe (60 min, $70)\". Keep it to one short line if possible.",
-    "Never invent services or prices; use only the provided catalog. If no price is available for a service, omit the price.",
-    isEscalationMode ? "Escalation Mode is active: your job is to quickly collect the user's request and then ask the predefined Escalation Questions one-by-one (at most one question per message). Keep messages very short." : "",
-    isEscalationMode ? "Do NOT fulfill or resolve the request yourself (no booking, rescheduling, canceling, or definitive answers). Your sole goal is to collect info and then escalate." : "",
-    isEscalationMode ? "Always ensure you have the user's name captured among the questions before escalation." : "",
-    isEscalationMode ? "While in Escalation Mode, once all Escalation Questions appear answered (or the user explicitly asks for a human), set intent to { type: 'handoff', data: { summary: '<1-line summary>', name?: string, reason?: string } } and keep your text a brief acknowledgement like 'Got it — connecting you to a human now.'." : "",
-    isEscalationMode ? "Infer answers from prior chat history when possible. Do not repeat questions already answered." : "",
-    "OUTPUT STRICTLY AS A SINGLE JSON OBJECT with keys: text, intent (optional). No markdown.",
-  ].filter(Boolean).join("\n");
+  ];
 
-  const capabilityHint = `Capabilities:\n- bookings_enabled: ${features.bookings_enabled ? 'true' : 'false'}\n- reminders_enabled: ${features.reminders_enabled ? 'true' : 'false'}`;
+  if (isEscalationMode) {
+    systemParts.push(
+      "Escalation Mode is active: you must not fulfill or resolve the request yourself.",
+      "Your sole objective is to collect the information requested in the Escalation Questions and then connect the user with a human.",
+      "Ask exactly ONE question per reply. Follow the Escalation Questions list in order, always starting with the first unanswered item.",
+      "Always ensure the customer's name is captured before escalating. If a known name is provided, skip that question.",
+      "Keep responses under two short sentences. Never say that something is booked/reserved/confirmed or that the issue is fully resolved.",
+      "When all questions appear answered (or the user explicitly asks for a human), output intent = { type: 'handoff', data: { summary: '<brief summary>', name?: string, reason?: string } } and reply with a short acknowledgement such as “Thanks! Connecting you with a human now.”",
+      "Capture the customer's name inside intent.data.name whenever they provide it.",
+      "Intent types allowed: handoff or none."
+    );
+  } else {
+    systemParts.push(
+      "Primary goal: satisfy the user's request with helpful, persuasive, concise replies.",
+      "If user intent is booking-related, be proactive and helpful: keep it short, ask for any missing date/time efficiently.",
+      "You may plan ONE optional intent for the server to execute. Choose wisely and only if enough info is present.",
+      "INTENT TYPES: availability, book, reschedule, cancel, handoff, none.",
+      "For availability/book intents, you can include natural date/time phrases; the server will parse.",
+      "For complex or missing info, ask in your text what is needed (e.g., preferred date/time).",
+      "If a Service catalog is provided, and the user asks about booking or prices/services, present a compact list of services (name, minutes, price if available) and ask the user to pick one.",
+      "Format the services inline with semicolons, e.g., \"Basic (30 min, $40); Deluxe (60 min, $70)\". Keep it to one short line if possible.",
+      "Never invent services or prices; use only the provided catalog. If no price is available for a service, omit the price."
+    );
+  }
+
+  systemParts.push(
+    "Infer answers from prior chat history when possible. Do not repeat questions already answered.",
+    "OUTPUT STRICTLY AS A SINGLE JSON OBJECT with keys: text, intent (optional). No markdown."
+  );
+
+  const system = systemParts.filter(Boolean).join("\n");
+
+  const capabilityHint = isEscalationMode
+    ? `Escalation context:\n- Known customer name: ${knownCustomerName || '(not captured yet)'}\n- Tools: ask Escalation Questions sequentially, then emit intent type 'handoff'.`
+    : `Capabilities:\n- bookings_enabled: ${features.bookings_enabled ? 'true' : 'false'}\n- reminders_enabled: ${features.reminders_enabled ? 'true' : 'false'}`;
+
   const servicesArr = Array.isArray(features.services) ? features.services : [];
   const servicesLine = (() => {
+    if (isEscalationMode) return '';
     try {
       if (!servicesArr.length) return '';
       const parts = servicesArr.slice(0, 10).map(s => {
@@ -483,6 +505,9 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
   const escalationHeader = isEscalationMode && escalationQuestions.length
     ? ('Escalation Questions (ask in order, one per turn):\n' + escalationQuestions.map((q, i) => `${i + 1}. ${String(q).trim()}`).join('\n'))
     : (isEscalationMode ? 'Escalation Questions: (none provided)' : '');
+  const knownNameLine = isEscalationMode
+    ? `Known customer name status: ${knownCustomerName ? knownCustomerName : 'not provided yet (collect it).'}`
+    : '';
 
   const messages = [
     { role: 'system', content: system },
@@ -490,6 +515,7 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
     { role: 'system', content: capabilityHint },
     servicesLine ? { role: 'system', content: servicesLine } : null,
     escalationHeader ? { role: 'system', content: escalationHeader } : null,
+    knownNameLine ? { role: 'system', content: knownNameLine } : null,
   ];
   for (const m of historyMessages.slice(-10)) {
     try {

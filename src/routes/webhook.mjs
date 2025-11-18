@@ -372,6 +372,41 @@ function hasSubstantiveRequest(raw) {
   } catch { return false; }
 }
 
+function digitsOnly(value) {
+  try {
+    return String(value || '').replace(/\D/g, '');
+  } catch {
+    return '';
+  }
+}
+
+async function findUpcomingConfirmedAppointment({ userId, digits, projection } = {}) {
+  const userIdStr = String(userId || '').trim();
+  const contactDigits = digits ? digitsOnly(digits) : '';
+  if (!userIdStr || !contactDigits) return null;
+  try {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const dbNative = getDB();
+    const rows = await dbNative.collection('appointments')
+      .find({
+        user_id: userIdStr,
+        status: 'confirmed',
+        $or: [
+          { contact_phone: contactDigits },
+          { contact_phone: '+' + contactDigits }
+        ],
+        start_ts: { $gte: nowSec }
+      })
+      .project(projection || { id: 1, start_ts: 1, staff_id: 1 })
+      .sort({ start_ts: 1 })
+      .limit(1)
+      .toArray();
+    return rows[0] || null;
+  } catch {
+    return null;
+  }
+}
+
 // Escalation session storage: prefer Redis with TTL; fallback to in-memory Map
 const memEscalation = new Map();
 // Tenant settings cache (PNID/BusinessPhone) with TTL
@@ -467,7 +502,7 @@ export default function registerWebhookRoutes(app) {
   const OUT_OF_SCOPE_PHRASE = 'That seems outside my scope. Try choosing one of these topics';
   function maskPhone(p) {
     try {
-      const d = String(p||'').replace(/\D/g,'');
+      const d = digitsOnly(p);
       if (d.length <= 4) return '***';
       return d.slice(0,2) + '******' + d.slice(-2);
     } catch { return '***'; }
@@ -506,6 +541,7 @@ export default function registerWebhookRoutes(app) {
   
   // Helpers to eliminate duplicated logic
   async function getFirstStaffOrNotifyNoStaff(tenantUserId, from, cfg) {
+    const tenant = cfg;
     try {
       // Primary: Mongo native driver (for performance)
       const s = await getDB().collection('staff')
@@ -541,6 +577,7 @@ export default function registerWebhookRoutes(app) {
   }
 
   async function notifyTooClose(from, minLead, cfg) {
+    const tenant = cfg;
     const n = await generateAssistantNudge('too_close', { minLead }, { tone: tenant?.ai_tone, style: tenant?.ai_style });
     await sendTextTracked(from, n || `It's too close to your start time (less than ${minLead} min). Please contact us directly.`, cfg);
   }
@@ -773,6 +810,7 @@ export default function registerWebhookRoutes(app) {
   }
 
   async function maybeSendHoldingMessage(tenantUserId, from, cfg) {
+    const tenant = cfg;
     try {
       if (!tenantUserId) return false;
       const current = await getConversationStatus(tenantUserId, from);
@@ -822,6 +860,7 @@ export default function registerWebhookRoutes(app) {
   }
 
   async function handleOutOfHoursGuard(tenantUserId, from, cfg) {
+    const tenant = cfg;
     try {
       if (!tenantUserId) return false;
       const within = await isWithinStaffWorkingHours(tenantUserId, cfg);
@@ -840,7 +879,8 @@ export default function registerWebhookRoutes(app) {
   async function maybeJoinRecentFragments({ text, from, tenantUserId, timestampSec }) {
     try {
       const nowSec = Number(timestampSec || Math.floor(Date.now()/1000));
-      const digits = String(from || '').replace(/\D/g, '');
+      const digits = digitsOnly(from);
+      if (!digits) return text;
       const windowSec = 20;
       const recent = db.prepare(`
         SELECT text_body AS t, timestamp AS ts
@@ -863,16 +903,17 @@ export default function registerWebhookRoutes(app) {
     return text;
   }
 
-  async function sendBrandingIfFree({ tenantUserId, to, cfg }) {
+  async function sendBrandingIfFree({ tenantUserId, to, cfg, planHint = null }) {
     try {
-      const plan = await getUserPlan(tenantUserId);
+      const plan = planHint || await getUserPlan(tenantUserId);
       if ((plan?.plan_name || 'free') === 'free') {
         try { await sendTextTracked(to, 'This chat is powered by https://agent.codeorbit.tech', cfg); } catch {}
       }
     } catch {}
   }
 
-  async function maybeHandleGreeting({ text, tenantUserId, from, cfg }) {
+  async function maybeHandleGreeting({ text, tenantUserId, from, cfg, planHint = null }) {
+    const tenant = cfg;
     if (!isGreeting(text)) return false;
     try { incrementCounter('greeting_detected', 1, { userId: String(tenantUserId||'') }); } catch {}
     try {
@@ -892,7 +933,7 @@ export default function registerWebhookRoutes(app) {
     const greetText = cfg.entry_greeting || await generateAssistantNudge('greeting', {}, { tone: tenant?.ai_tone, style: tenant?.ai_style });
     if (DEBUG_LOGS) console.log('[Webhook] Sending greeting to customer:', { to: from, greetText });
     const greetResp = await sendTextTracked(from, greetText, cfg);
-    await sendBrandingIfFree({ tenantUserId, to: from, cfg });
+    await sendBrandingIfFree({ tenantUserId, to: from, cfg, planHint });
     if (DEBUG_LOGS) console.log('[Webhook] Greeting send result:', { id: greetResp?.messages?.[0]?.id || null });
     // In Simple Escalation Mode, do not show KB menu on greeting
     if (cfg?.conversation_mode !== 'escalation') {
@@ -1072,6 +1113,7 @@ export default function registerWebhookRoutes(app) {
 
   // Encapsulated interactive handlers
   async function handleButtonReply({ id, title, tenantUserId, from, cfg }) {
+    const tenant = cfg;
     if (!id) return;
     if (id === 'BOOKING_START') {
       const staff = await getFirstStaffOrNotifyNoStaff(tenantUserId, from, cfg);
@@ -1199,6 +1241,7 @@ export default function registerWebhookRoutes(app) {
   }
 
   async function handleListReply({ id, title, tenantUserId, from, cfg }) {
+    const tenant = cfg;
     if (!id) return;
     if (/^CSAT_[1-5]$/.test(id)) {
       try {
@@ -1425,14 +1468,17 @@ export default function registerWebhookRoutes(app) {
       }
       
       const cfg = { ...tenant, user_id: tenantUserId };
+      let tenantPlan = null;
       try {
-        const plan = await getUserPlan(tenantUserId);
-        if ((plan?.plan_name || 'free') === 'free') {
+        tenantPlan = await getUserPlan(tenantUserId);
+        if ((tenantPlan?.plan_name || 'free') === 'free') {
           cfg.conversation_mode = 'escalation';
           cfg.bookings_enabled = 0;
           cfg.reminders_enabled = 0;
         }
-      } catch {}
+      } catch {
+        tenantPlan = null;
+      }
       const from = message.from;
       let text = message.text?.body || "";
 
@@ -1884,6 +1930,7 @@ export default function registerWebhookRoutes(app) {
 
       // Define sender and extract content by type
       const from = message.from;
+      const fromDigits = digitsOnly(from);
       let text = message.text?.body || "";
       let mediaUrl = null;
       let normalizedType = message.type || 'text';
@@ -1899,7 +1946,6 @@ export default function registerWebhookRoutes(app) {
       // Precompute live-mode status to avoid sending any bot messages when human is explicitly active
       let humanActive = false;
       let humanLive = false; // true only when an agent explicitly toggled live mode (is_human)
-      let recentlySeen = false; // true when an agent recently viewed the chat
       try {
         // Read both legacy (SQLite) and current (Mongo) sources and consider human live if either indicates active
         let hsSql = null;
@@ -1919,7 +1965,6 @@ export default function registerWebhookRoutes(app) {
         const lastSeenTs = Math.max(Number(hsSql?.lastSeen || 0), Number(hsMongo?.lastSeen || 0));
 
         humanLive = mongoLive || sqlLive; // prefer live if either source says so
-        recentlySeen = !!(lastSeenTs && (now - lastSeenTs) <= seenWindow);
         // Only suppress bot when an agent explicitly enabled live mode.
         // Viewing the chat recently should not block AI replies after resolution.
         humanActive = humanLive;
@@ -1958,15 +2003,12 @@ export default function registerWebhookRoutes(app) {
           }
         }
       } catch {}
-      let isFirstTimeInbound = true;
       if (inboundId) {
         try {
           const inserted = await recordAndBroadcastInbound({ message, tenantUserId, metadata, normalizedType, text, mediaUrl });
           if (DEBUG_LOGS) console.log('[Webhook] Inbound record result:', { inserted, inboundId });
-          isFirstTimeInbound = !!inserted;
         } catch (e) {
           console.warn('[Webhook] Failed to record inbound message, continuing to process reply anyway:', e?.message || e);
-          isFirstTimeInbound = true;
         }
       }
 
@@ -2107,7 +2149,6 @@ export default function registerWebhookRoutes(app) {
             }
             
             { const n = await generateAssistantNudge('handoff_connecting', {}, { tone: tenant?.ai_tone, style: tenant?.ai_style }); await sendTextTracked(from, n, cfg); }
-            { const n = await generateAssistantNudge('handoff_connecting', {}, { tone: tenant?.ai_tone, style: tenant?.ai_style }); await sendTextTracked(from, n, cfg); }
             return res.sendStatus(200);
           } else {
             await sendTextTracked(from, "Could you share a brief reason so I can route you to the right person?", cfg);
@@ -2194,7 +2235,7 @@ export default function registerWebhookRoutes(app) {
 
       // Show greeting + KB menu on pure greetings regardless of conversation mode
       if (!humanActive) {
-        const greeted = await maybeHandleGreeting({ text, tenantUserId, from, cfg });
+        const greeted = await maybeHandleGreeting({ text, tenantUserId, from, cfg, planHint: tenantPlan });
         if (greeted) return res.sendStatus(200);
       }
 
@@ -2207,14 +2248,7 @@ export default function registerWebhookRoutes(app) {
 
       // Dev/test: manual reminder preview
       if (/\btest\s+reminder\b/i.test(text || "")) {
-        const digits = String(from || '').replace(/\D/g, '');
-        let apptArr = await getDB().collection('appointments')
-          .find({ user_id: String(tenantUserId), status: 'confirmed', $or: [ { contact_phone: digits }, { contact_phone: '+' + digits } ], start_ts: { $gte: Math.floor(Date.now()/1000) } })
-          .project({ id: 1, start_ts: 1, staff_id: 1 })
-          .sort({ start_ts: 1 })
-          .limit(1)
-          .toArray();
-        let appt = apptArr[0] || null;
+        let appt = await findUpcomingConfirmedAppointment({ userId: tenantUserId, digits: fromDigits });
         if (!appt) {
           // Create a lightweight test appointment 60 minutes from now if none exists
           const staff = db.prepare(`SELECT id, slot_minutes FROM staff WHERE user_id = ? ORDER BY id LIMIT 1`).get(tenantUserId);
@@ -2245,7 +2279,7 @@ export default function registerWebhookRoutes(app) {
       // Appointment lookup intent ("When is my booking?")
       const bookingLookup = /(when|what\s*time|time|date|when\s*is)\b[\s\S]*\b(booking|appointment|reservation)s?/i.test(text || "");
       if (cfg?.bookings_enabled && bookingLookup) {
-        const digits = String(from || '').replace(/\D/g, '');
+        const digits = fromDigits;
         const dbNative = getDB();
         const upcoming = await dbNative.collection('appointments')
           .aggregate([
@@ -2290,7 +2324,7 @@ export default function registerWebhookRoutes(app) {
       const prevAgentLookup = /\b(previous|last)\s+(agent|staff|person|rep|representative)\b/i.test(text || "");
       if (cfg?.bookings_enabled && prevAgentLookup) {
         try {
-          const digits = String(from || '').replace(/\D/g, '');
+          const digits = fromDigits;
           const dbNative = getDB();
           const lastArr = await dbNative.collection('appointments')
             .aggregate([
@@ -2627,15 +2661,12 @@ export default function registerWebhookRoutes(app) {
       const wantsWaitlist = /\b(waitlist|notify\s+(me\s+)?(if\s+)?(earlier|sooner)|earlier\s+slot|sooner\s+(time|slot))\b/i.test(text || "");
       if (cfg?.bookings_enabled && cfg?.waitlist_enabled && wantsWaitlist) {
         try {
-          const digits = String(from || '').replace(/\D/g, '');
           const dbNative = getDB();
-          const appt = await dbNative.collection('appointments')
-            .find({ user_id: String(tenantUserId), status: 'confirmed', $or: [ { contact_phone: digits }, { contact_phone: '+' + digits } ], start_ts: { $gte: Math.floor(Date.now()/1000) } })
-            .project({ start_ts: 1, staff_id: 1 })
-            .sort({ start_ts: 1 })
-            .limit(1)
-            .toArray()
-            .then(arr => arr[0] || null);
+          const appt = await findUpcomingConfirmedAppointment({
+            userId: tenantUserId,
+            digits: fromDigits,
+            projection: { start_ts: 1, staff_id: 1 }
+          });
           if (appt?.staff_id && appt?.start_ts) {
             const dateKey = formatYmdFromTs(appt.start_ts);
             await dbNative.collection('waitlist').updateOne(
@@ -2651,15 +2682,8 @@ export default function registerWebhookRoutes(app) {
 
       if (cfg?.bookings_enabled && (wantsReschedule || wantsCancel)) {
         const now = Math.floor(Date.now()/1000);
-        const digits = String(from || '').replace(/\D/g, '');
         const dbNative = getDB();
-        const appt = await dbNative.collection('appointments')
-          .find({ user_id: String(tenantUserId), status: 'confirmed', $or: [ { contact_phone: digits }, { contact_phone: '+' + digits } ], start_ts: { $gte: Math.floor(Date.now()/1000) } })
-          .project({ id: 1, start_ts: 1, staff_id: 1 })
-          .sort({ start_ts: 1 })
-          .limit(1)
-          .toArray()
-          .then(arr => arr[0] || null);
+        const appt = await findUpcomingConfirmedAppointment({ userId: tenantUserId, digits: fromDigits });
         if (!appt) {
           const n = await generateAssistantNudge('no_booking_found', {}, { tone: tenant?.ai_tone, style: tenant?.ai_style });
           await sendTextTracked(from, n, cfg);
@@ -2880,7 +2904,14 @@ export default function registerWebhookRoutes(app) {
         style: tenant?.ai_style,
         blockedTopics: tenant?.ai_blocked_topics,
         historyMessages
-      }
+      };
+
+      let cachedCustomerProfile = {};
+      let knownCustomerName = '';
+      try {
+        cachedCustomerProfile = db.prepare(`SELECT display_name FROM customers WHERE user_id = ? AND contact_id = ?`).get(tenantUserId, from) || {};
+        knownCustomerName = String(cachedCustomerProfile.display_name || '').trim();
+      } catch {}
 
       // Check for escalation requests BEFORE generating AI response
       if (wantsHuman(text)) {
@@ -2890,8 +2921,7 @@ export default function registerWebhookRoutes(app) {
             return res.sendStatus(200);
           }
         } catch {}
-        const customer = db.prepare(`SELECT display_name FROM customers WHERE user_id = ? AND contact_id = ?`).get(tenantUserId, from) || {};
-        const hasName = !!customer.display_name;
+        const hasName = !!knownCustomerName;
         if (!hasName) {
           try {
             db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
@@ -2929,7 +2959,22 @@ export default function registerWebhookRoutes(app) {
               reminders_enabled: !!cfg?.reminders_enabled,
               services: (() => { try { const s = JSON.parse(cfg?.services_json || '[]'); return Array.isArray(s) ? s : []; } catch { return []; } })(),
               conversation_mode: cfg?.conversation_mode || '',
-              escalation_questions: (() => { try { const arr = JSON.parse(cfg?.escalation_questions_json || '[]'); return Array.isArray(arr) ? arr.slice(0, 10) : []; } catch { return []; } })()
+              escalation_questions: (() => {
+                let arr = [];
+                try { arr = JSON.parse(cfg?.escalation_questions_json || '[]'); } catch {}
+                if (!Array.isArray(arr)) arr = [];
+                arr = arr.map(q => String(q || '').trim()).filter(Boolean);
+                if (!arr.length) arr.push("What's your name?");
+                const idx = arr.findIndex(q => /name/i.test(q));
+                if (idx === -1) {
+                  arr.unshift("What's your name?");
+                } else if (idx > 0) {
+                  const [nameQ] = arr.splice(idx, 1);
+                  arr.unshift(nameQ);
+                }
+                return arr.slice(0, 10);
+              })(),
+              customer_name: knownCustomerName || ''
             }
           });
           if (decision?.text) {
@@ -3023,15 +3068,7 @@ export default function registerWebhookRoutes(app) {
             if (intentType === 'cancel' && cfg?.bookings_enabled) {
               try {
                 const now = Math.floor(Date.now()/1000);
-                const digits = String(from || '').replace(/\D/g, '');
-                const dbNative = getDB();
-                const appt = await dbNative.collection('appointments')
-                  .find({ user_id: String(tenantUserId), status: 'confirmed', $or: [ { contact_phone: digits }, { contact_phone: '+' + digits } ], start_ts: { $gte: Math.floor(Date.now()/1000) } })
-                  .project({ id: 1, start_ts: 1, staff_id: 1 })
-                  .sort({ start_ts: 1 })
-                  .limit(1)
-                  .toArray()
-                  .then(arr => arr[0] || null);
+                const appt = await findUpcomingConfirmedAppointment({ userId: tenantUserId, digits: fromDigits });
                 if (appt) {
                   const minLead = Number(cfg.cancel_min_lead_minutes || 60);
                   const minsToStart = Math.floor((appt.start_ts - now)/60);
@@ -3048,15 +3085,8 @@ export default function registerWebhookRoutes(app) {
             if (intentType === 'reschedule' && cfg?.bookings_enabled) {
               try {
                 const now = Math.floor(Date.now()/1000);
-                const digits = String(from || '').replace(/\D/g, '');
                 const dbNative = getDB();
-                const appt = await dbNative.collection('appointments')
-                  .find({ user_id: String(tenantUserId), status: 'confirmed', $or: [ { contact_phone: digits }, { contact_phone: '+' + digits } ], start_ts: { $gte: Math.floor(Date.now()/1000) } })
-                  .project({ id: 1, start_ts: 1, staff_id: 1 })
-                  .sort({ start_ts: 1 })
-                  .limit(1)
-                  .toArray()
-                  .then(arr => arr[0] || null);
+                const appt = await findUpcomingConfirmedAppointment({ userId: tenantUserId, digits: fromDigits });
                 if (appt) {
                   const minLead = Number(cfg.reschedule_min_lead_minutes || 60);
                   const minsToStart = Math.floor((appt.start_ts - now)/60);
