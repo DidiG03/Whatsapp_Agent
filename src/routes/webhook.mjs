@@ -1027,6 +1027,22 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         }
         return true;
       }
+
+      // If there's already a meaningful message, treat it as the escalation reason
+      const isShortGreeting = /^(\s*(hi|hello|hey)\b.*)$/i.test(trimmed) && trimmed.length <= 40;
+      if (trimmed && !isShortGreeting) {
+        const reason = trimmed.slice(0, 300);
+        await completeEscalationHandoff({
+          tenantUserId,
+          from,
+          reason,
+          cfg,
+          customerName: customer.display_name || null
+        });
+        return true;
+      }
+
+      // Otherwise start the structured escalation flow (intro + questions)
       await sendEscalationIntroMessage(from, cfg);
       if (customer.display_name) {
         try {
@@ -1476,33 +1492,35 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
     }
   }
 
+  async function saveCsatRating({ tenantUserId, contactId, score, emoji = null, messageText = '' }) {
+    if (!score || !tenantUserId || !contactId) return;
+    const dbNative = getDB();
+    let cycleTs = null;
+    try {
+      const st = await dbNative.collection('contact_state')
+        .findOne({ user_id: String(tenantUserId), contact_id: String(contactId) }, { projection: { await_rating_ts: 1 } });
+      cycleTs = Number(st?.await_rating_ts || 0) || null;
+    } catch {}
+    await dbNative.collection('csat_ratings').updateOne(
+      { user_id: String(tenantUserId), contact_id: String(contactId), cycle_ts: cycleTs },
+      { $set: { score, emoji, message_text: messageText, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date(), cycle_ts: cycleTs } },
+      { upsert: true }
+    );
+    await dbNative.collection('contact_state').updateOne(
+      { user_id: String(tenantUserId), contact_id: String(contactId) },
+      { $set: { await_rating: 0, updatedAt: new Date() } },
+      { upsert: true }
+    );
+  }
+
   async function handleListReply({ id, title, tenantUserId, from, cfg }) {
     const tenant = cfg;
     if (!id) return;
     if (/^CSAT_[1-5]$/.test(id)) {
-      try {
-        const dbNative = getDB();
-        const score = Number(id.split('_')[1]);
-        const emojiMap = { 1: '😡', 2: '😕', 3: '🙂', 4: '😀', 5: '🤩' };
-        const emoji = emojiMap[score] || null;
-        // Upsert per-resolution cycle (only keep the last review until a new ticket starts)
-        let cycleTs = null;
-        try {
-          const st = await dbNative.collection('contact_state')
-            .findOne({ user_id: String(tenantUserId), contact_id: String(from) }, { projection: { await_rating_ts: 1 } });
-          cycleTs = Number(st?.await_rating_ts || 0) || null;
-        } catch {}
-        await dbNative.collection('csat_ratings').updateOne(
-          { user_id: String(tenantUserId), contact_id: String(from), cycle_ts: cycleTs },
-          { $set: { score, emoji, message_text: `[List] ${title || ''}`, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date(), cycle_ts: cycleTs } },
-          { upsert: true }
-        );
-        await dbNative.collection('contact_state').updateOne(
-          { user_id: String(tenantUserId), contact_id: String(from) },
-          { $set: { await_rating: 0, updatedAt: new Date() } },
-          { upsert: true }
-        );
-      } catch {}
+      const score = Number(id.split('_')[1]);
+      const emojiMap = { 1: '😡', 2: '😕', 3: '🙂', 4: '😀', 5: '🤩' };
+      const emoji = emojiMap[score] || null;
+      try { await saveCsatRating({ tenantUserId, contactId: from, score, emoji, messageText: `[List] ${title || ''}` }); } catch {}
       return;
     }
     if (id === 'GREET_BOOK') {
@@ -2244,36 +2262,47 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
 
       // Proceed with bot logic even if message was seen before; prevents missed replies when duplicate detection is inconclusive
 
-      // CSAT rating capture: if awaiting rating for this contact, capture first emoji and store
+      // CSAT rating capture: if awaiting rating for this contact, capture first emoji/keyword and store
+      let awaitingRating = false;
       try {
         const dbNative = getDB();
         const cs = await dbNative.collection('contact_state').findOne({ user_id: String(tenantUserId), contact_id: String(from) }, { projection: { await_rating: 1 } });
-        const awaiting = !!cs?.await_rating;
-        const emojiMatch = /[\u{1F620}-\u{1F64F}\u{1F600}-\u{1F64F}\u{1F601}\u{1F603}\u{1F604}\u{1F606}\u{1F60A}\u{1F60D}\u{1F62D}\u{1F621}\u{1F620}\u{1F641}\u{1F642}\u{1F622}\u{1F610}\u{1F600}\u{1F929}]/u.exec(String(text||''));
-        if (awaiting && emojiMatch) {
-          const emoji = emojiMatch[0];
-          const scoreMap = { '😡':1, '😕':2, '🙂':3, '😀':4, '🤩':5 };
-          const score = scoreMap[emoji] || null;
-          try {
-            // Use cycle timestamp to upsert one rating per resolution
-            let cycleTs = null;
-            try {
-              const st = await dbNative.collection('contact_state')
-                .findOne({ user_id: String(tenantUserId), contact_id: String(from) }, { projection: { await_rating_ts: 1 } });
-              cycleTs = Number(st?.await_rating_ts || 0) || null;
-            } catch {}
-            await dbNative.collection('csat_ratings').updateOne(
-              { user_id: String(tenantUserId), contact_id: String(from), cycle_ts: cycleTs },
-              { $set: { score, emoji, message_text: String(text||''), updatedAt: new Date() }, $setOnInsert: { createdAt: new Date(), cycle_ts: cycleTs } },
-              { upsert: true }
-            );
-            await dbNative.collection('contact_state').updateOne(
-              { user_id: String(tenantUserId), contact_id: String(from) },
-              { $set: { await_rating: 0, updatedAt: new Date() } }
-            );
-          } catch {}
-          // Acknowledge without triggering further bot logic
-          return res.sendStatus(200);
+        awaitingRating = !!cs?.await_rating;
+        if (awaitingRating) {
+          const rawText = String(text || '');
+          const emojiMatch = /[\u{1F600}-\u{1F64F}\u{1F920}-\u{1F9FF}\u{1F300}-\u{1F5FF}]/u.exec(rawText);
+          const emoji = emojiMatch ? emojiMatch[0] : null;
+          const emojiScores = { '😡':1, '😕':2, '🙂':3, '😀':4, '🤩':5, '😠':1, '😢':2, '😃':4, '😄':4, '😁':4, '😍':5 };
+          const keywordScores = [
+            { match: 'excellent', score: 5 },
+            { match: 'amazing', score: 5 },
+            { match: 'great', score: 5 },
+            { match: 'good', score: 4 },
+            { match: 'okay', score: 3 },
+            { match: 'ok', score: 3 },
+            { match: 'fine', score: 3 },
+            { match: 'bad', score: 2 },
+            { match: 'poor', score: 2 },
+            { match: 'terrible', score: 1 },
+            { match: 'awful', score: 1 },
+            { match: 'very bad', score: 1 }
+          ];
+          let score = emoji ? (emojiScores[emoji] || null) : null;
+          if (!score) {
+            const normalized = rawText.trim().toLowerCase();
+            if (normalized) {
+              for (const { match, score: s } of keywordScores) {
+                if (normalized.includes(match)) {
+                  score = s;
+                  break;
+                }
+              }
+            }
+          }
+          if (score) {
+            try { await saveCsatRating({ tenantUserId, contactId: from, score, emoji, messageText: rawText }); } catch {}
+            return res.sendStatus(200);
+          }
         }
       } catch {}
 
