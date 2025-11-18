@@ -287,21 +287,29 @@ class RealtimeManager {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Accept': 'application/json'
+          'Accept': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest'
         },
         credentials: 'include',
         body: JSON.stringify(body)
       });
-      if (!resp.ok) {
-        throw new Error('Failed to send message');
+      if (resp.status === 401) {
+        this.showToast('Session expired. Please sign in again.', 'error');
+        try { window.authManager?.checkAuthStatus?.(); } catch {}
+        return false;
       }
       const data = await resp.json().catch(() => ({}));
-      if (!data?.success) {
-        throw new Error(data?.error || 'Failed to send message');
+      if (!resp.ok || !data?.success) {
+        const msg = data?.error || `Failed to send message (status ${resp.status})`;
+        throw new Error(msg);
+      }
+      if (data?.templateSent) {
+        this.showToast('24h window was closed. Sent template to reopen conversation.', 'info');
       }
       return true;
     } catch (error) {
       console.error('Failed to send message via HTTP:', error);
+      this.showToast(error?.message || 'Failed to send message. Please try again.', 'error');
       return false;
     }
   }

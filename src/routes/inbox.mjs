@@ -3169,12 +3169,37 @@ export default function registerInboxRoutes(app) {
     return res.redirect(`/inbox`);
   });
 
+  function wantsJsonResponse(req) {
+    const format = (req.query?.format || '').toString().toLowerCase();
+    if (format === 'json' || format === '1' || format === 'true') return true;
+    const accept = (req.headers['accept'] || '').toString().toLowerCase();
+    if (accept.includes('application/json')) return true;
+    if (req.xhr) return true;
+    return false;
+  }
+
   app.post("/send/:phone", ensureAuthed, async (req, res) => {
     const to = req.params.phone;
     const userId = getCurrentUserId(req);
+    const expectJson = wantsJsonResponse(req);
+    const redirectToThread = `/inbox/${encodeURIComponent(to)}`;
+    const respondSuccess = (payload = {}) => {
+      if (expectJson) {
+        return res.json({ success: true, ...payload });
+      }
+      return res.redirect(redirectToThread);
+    };
+    const respondError = (message, status = 400, extra = {}) => {
+      if (expectJson) {
+        return res.status(status).json({ success: false, error: message, ...extra });
+      }
+      const encoded = encodeURIComponent(message || 'Failed to send message.');
+      return res.redirect(`${redirectToThread}?toast=${encoded}&type=error`);
+    };
+
     const cfg = await getSettingsForUser(userId);
     const text = (req.body?.text || "").toString().trim();
-    if (!text) return res.redirect(`/inbox/${to}`);
+    if (!text) return respondError('Message cannot be empty.', 400);
     // Enforce 24h window: if last inbound >24h ago, attempt a template instead
     try {
       const lastInbound = db.prepare(`SELECT MAX(timestamp) AS ts FROM messages WHERE user_id = ? AND from_id = ? AND direction = 'inbound'`).get(userId, to)?.ts || 0;
@@ -3184,10 +3209,10 @@ export default function registerInboxRoutes(app) {
         try {
           await sendWhatsAppTemplate(to, 'hello_world', 'en_US', [], cfg);
           // Optionally queue the freeform reply AFTER user responds to the template
-          return res.redirect(`/inbox/${encodeURIComponent(to)}`);
+          return respondSuccess({ templateSent: true });
         } catch (e) {
           console.error('Template send failed, falling back to text within 24h only:', e?.message || e);
-          return res.redirect(`/inbox/${encodeURIComponent(to)}`);
+          return respondError('Template required before messaging. Please try again after customer responds.', 400);
         }
       }
     } catch {}
@@ -3204,54 +3229,58 @@ export default function registerInboxRoutes(app) {
       const data = await sendWhatsAppText(to, text, cfg, originalMessageId);
       const outboundId = data?.messages?.[0]?.id;
       const fromBiz = (cfg.business_phone || "").replace(/\D/g, "") || null;
-      if (outboundId) {
-        try { await recordOutboundMessage({ messageId: outboundId, userId, cfg, to, type: 'text', text, raw: { to, text } }); } catch {}
+      if (!outboundId) {
+        return respondError('WhatsApp API did not return a message id.', 502);
+      }
+
+      try { await recordOutboundMessage({ messageId: outboundId, userId, cfg, to, type: 'text', text, raw: { to, text } }); } catch {}
+      try {
+        const { broadcastNewMessage } = await import('../routes/realtime.mjs');
+        const nowTs = Math.floor(Date.now() / 1000);
+        const messageData = {
+          id: outboundId,
+          direction: 'outbound',
+          type: 'text',
+          text_body: text,
+          timestamp: nowTs,
+          from_digits: (cfg.business_phone || "").replace(/\D/g, "") || null,
+          to_digits: String(to),
+          contact_name: null,
+          contact: String(to),
+          formatted_time: formatTimestampForDisplay(nowTs),
+          delivery_status: 'sent',
+          read_status: 'unread'
+        };
+        broadcastNewMessage(userId, String(to), messageData);
+      } catch {}
+      // Always move conversation to In Progress when agent replies
+      try { await updateConversationStatus(userId, String(to), CONVERSATION_STATUSES.IN_PROGRESS, 'agent_reply'); } catch {}
+      // Backwards compat: if agent is live, also ensure first-message transition logic
+      try { await ensureInProgressIfHuman(userId, String(to)); } catch {}
+      
+      // Update contact activity
+      try {
+        updateContactActivity(userId, to);
+      } catch (error) {
+        console.error('Error updating contact activity:', error);
+      }
+      
+      // Handle reply relationship if this is a reply to another message
+      const replyTo = req.body?.replyTo;
+      if (replyTo && outboundId) {
         try {
-          const { broadcastNewMessage } = await import('../routes/realtime.mjs');
-          const messageData = {
-            id: outboundId,
-            direction: 'outbound',
-            type: 'text',
-            text_body: text,
-            timestamp: Math.floor(Date.now() / 1000),
-            from_digits: (cfg.business_phone || "").replace(/\D/g, "") || null,
-            to_digits: String(to),
-            contact_name: null,
-            contact: String(to),
-            formatted_time: formatTimestampForDisplay(Math.floor(Date.now() / 1000)),
-            delivery_status: 'sent',
-            read_status: 'unread'
-          };
-          broadcastNewMessage(userId, String(to), messageData);
-        } catch {}
-        // Always move conversation to In Progress when agent replies
-        try { await updateConversationStatus(userId, String(to), CONVERSATION_STATUSES.IN_PROGRESS, 'agent_reply'); } catch {}
-        // Backwards compat: if agent is live, also ensure first-message transition logic
-        try { await ensureInProgressIfHuman(userId, String(to)); } catch {}
-        
-        // Update contact activity
-        try {
-          updateContactActivity(userId, to);
-        } catch (error) {
-          console.error('Error updating contact activity:', error);
-        }
-        
-        // Handle reply relationship if this is a reply to another message
-        const replyTo = req.body?.replyTo;
-        if (replyTo && outboundId) {
-          try {
-            const plan = await getUserPlan(userId);
-            if ((plan?.plan_name || 'free') !== 'free') {
-              const replyResult = createReply(replyTo, outboundId);
-              if (!replyResult.success) {
-                console.error('Failed to create reply relationship:', replyResult.error);
-              }
+          const plan = await getUserPlan(userId);
+          if ((plan?.plan_name || 'free') !== 'free') {
+            const replyResult = createReply(replyTo, outboundId);
+            if (!replyResult.success) {
+              console.error('Failed to create reply relationship:', replyResult.error);
             }
-          } catch (error) {
-            console.error('Error creating reply relationship:', error);
           }
+        } catch (error) {
+          console.error('Error creating reply relationship:', error);
         }
       }
+      return respondSuccess({ messageId: outboundId });
     } catch (e) {
       console.error("Manual send error:", e);
       
@@ -3285,9 +3314,8 @@ export default function registerInboxRoutes(app) {
         console.error("Error creating failed message record:", dbError);
       }
       
-      return res.redirect(`/inbox/${encodeURIComponent(to)}`);
+      return respondError(e?.message || 'Failed to send message.', 502, { temporaryMessageId: tempMessageId });
     }
-    res.redirect(`/inbox/${encodeURIComponent(to)}`);
   });
 
   // Retry failed message endpoint
