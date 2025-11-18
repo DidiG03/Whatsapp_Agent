@@ -17,13 +17,10 @@ async function startServer() {
     await initTelemetry();
     
     // Create app with scalability features
-    const { app, initializeSocketIO } = await createApp();
+    const { app } = await createApp();
     
     // Create HTTP server
     const server = createServer(app);
-    
-    // Initialize Socket.IO
-    initializeSocketIO(server);
     
     // Start notifications scheduler
     const stop = startNotificationsScheduler();

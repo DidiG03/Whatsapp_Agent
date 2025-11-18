@@ -5,7 +5,6 @@
 import { createApp } from "../src/app.mjs";
 
 let app;
-let initializeSocketIO;
 let appInitialized = false;
 
 // Initialize the app once (Vercel will reuse this across requests)
@@ -15,7 +14,6 @@ async function initApp() {
       console.log('Initializing WhatsApp Agent app for Vercel...');
       const appData = await createApp();
       app = appData.app;
-      initializeSocketIO = appData.initializeSocketIO;
       appInitialized = true;
       console.log('App initialized successfully');
     } catch (error) {
@@ -23,7 +21,7 @@ async function initApp() {
       throw error;
     }
   }
-  return { app, initializeSocketIO };
+  return { app };
 }
 
 export default async function handler(req, res) {

@@ -29,7 +29,7 @@ import {
   markMessageAsFailed,
   retryFailedMessage
 } from "../services/messageStatus.mjs";
-import { initializeSocketIO, getIO, broadcastReaction } from "./realtime.mjs";
+import { broadcastReaction, broadcastMessageStatus } from "./realtime.mjs";
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
@@ -602,13 +602,25 @@ export default function registerInboxRoutes(app) {
               });
               const data = await resp.json();
               if (!resp.ok || !data.success) {
-                alert(data?.error || 'Failed to update token');
+                const msg = data?.error || 'Failed to update token';
+                try {
+                  if (window.Toast && typeof window.Toast.error === 'function') {
+                    window.Toast.error(msg);
+                  }
+                } catch(_) {}
                 btn.disabled = false; return;
               }
               closeWaTokenModal();
               // Soft reload the page to refresh settings and media access
               location.reload();
-            }catch(e){ btn.disabled=false; alert('Error: ' + (e?.message||e)); }
+            }catch(e){
+              btn.disabled=false;
+              try {
+                if (window.Toast && typeof window.Toast.error === 'function') {
+                  window.Toast.error('Error: ' + (e?.message||e));
+                }
+              } catch(_) {}
+            }
           }
           // Loading management
           let loadingComplete = false;
@@ -2097,7 +2109,11 @@ export default function registerInboxRoutes(app) {
               // Validate file size (max 100MB)
               const maxSize = 100 * 1024 * 1024; // 100MB
               if (file.size > maxSize) {
-                alert('File size must be less than 100MB');
+                try {
+                  if (window.Toast && typeof window.Toast.error === 'function') {
+                    window.Toast.error('File size must be less than 100MB');
+                  }
+                } catch(_) {}
                 event.target.value = '';
                 return;
               }
@@ -2106,7 +2122,11 @@ export default function registerInboxRoutes(app) {
               const allowedTypes = ['.pdf', '.doc', '.docx', '.txt', '.rtf', '.odt', '.ppt', '.pptx', '.xls', '.xlsx', '.csv', '.zip', '.rar'];
               const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
               if (!allowedTypes.includes(fileExtension)) {
-                alert('File type not supported. Please select a PDF, Word document, text file, or other supported format.');
+                try {
+                  if (window.Toast && typeof window.Toast.error === 'function') {
+                    window.Toast.error('File type not supported. Please select a supported document format.');
+                  }
+                } catch(_) {}
                 event.target.value = '';
                 return;
               }
@@ -2174,7 +2194,11 @@ export default function registerInboxRoutes(app) {
             }
 
             function startVoiceRecording() {
-              alert('Voice recording feature coming soon!');
+              try {
+                if (window.Toast && typeof window.Toast.info === 'function') {
+                  window.Toast.info('Voice recording feature coming soon!');
+                }
+              } catch(_) {}
             }
             // Emoji data
             const emojiCategories = {
@@ -2321,7 +2345,11 @@ export default function registerInboxRoutes(app) {
                   const ok = await ensureConnected();
                   if (!ok) {
                     console.error('Real-time connection unavailable. Message not sent.');
-                    alert('Connection issue: message not sent. Please try again.');
+                    try {
+                      if (window.Toast && typeof window.Toast.error === 'function') {
+                        window.Toast.error('Connection issue: message not sent. Please try again.');
+                      }
+                    } catch(_) {}
                     return;
                   }
                   if (window?.ENV?.DEBUG_LOGS === '1') console.log('📤 Sending message via real-time:', message);
@@ -2331,7 +2359,11 @@ export default function registerInboxRoutes(app) {
                     clearReply();
                   } else {
                     console.error('Failed to send message via real-time');
-                    alert('Failed to send message. Please try again.');
+                    try {
+                      if (window.Toast && typeof window.Toast.error === 'function') {
+                        window.Toast.error('Failed to send message. Please try again.');
+                      }
+                    } catch(_) {}
                   }
                 })();
               }
@@ -2433,7 +2465,13 @@ export default function registerInboxRoutes(app) {
               })
               .catch(error => {
                 console.error('Status update failed:', error);
-                alert('Failed to update status. Please try again.');
+                try {
+                  if (window.Toast && typeof window.Toast.error === 'function') {
+                    window.Toast.error('Failed to update status. Please try again.');
+                  } else {
+                    console.warn('Toast not available; falling back to console only.');
+                  }
+                } catch (_) {}
                 // Revert UI changes on error
                 if (statusChip) {
                   statusChip.textContent = '${statusDisplay}';
@@ -2778,14 +2816,11 @@ export default function registerInboxRoutes(app) {
       simulateDeliveryStatusUpdate(messageId, status);
       
       // Broadcast status update to real-time clients
-      const io = getIO();
-      if (io) {
-        io.to(`chat:${phone}`).emit('message_status_update', {
-          messageId,
-          status,
-          timestamp: Date.now()
-        });
-      }
+      broadcastMessageStatus(userId, phone, messageId, status, {
+        messageId,
+        status,
+        timestamp: Date.now()
+      });
       
       res.json({ success: true, messageId, status });
     } catch (error) {

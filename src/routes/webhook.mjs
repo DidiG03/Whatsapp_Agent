@@ -992,7 +992,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         } catch (e) {
           console.error('[Webhook] Failed to advance to ask_reason:', e?.message || e);
         }
-        await sendTextTracked(from, "Thanks, and what’s the reason for contacting a human today?", cfg);
+        await sendTextTracked(from, "Hello, and what’s the reason for contacting a human today?", cfg);
       } else {
         await promptForEscalationName(from, cfg);
       }

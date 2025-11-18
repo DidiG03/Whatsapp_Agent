@@ -69,7 +69,7 @@ export const securityHeaders = (req, res, next) => {
   res.setHeader('Content-Security-Policy', 
     "default-src 'self'; " +
     // Scripts from our domain, Clerk, Cloudflare challenge, UNPKG, and Stripe.js
-    ("script-src 'self' 'unsafe-inline' 'unsafe-eval' https://clerk.accounts.dev https://accounts.clerk.com https://unpkg.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com https://js.stripe.com https://vercel.live https://cdn.socket.io" + (clerkExtras ? ` ${clerkExtras}` : '') + "; ") +
+    ("script-src 'self' 'unsafe-inline' 'unsafe-eval' https://clerk.accounts.dev https://accounts.clerk.com https://unpkg.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com https://js.stripe.com https://vercel.live https://cdn.ably.io" + (clerkExtras ? ` ${clerkExtras}` : '') + "; ") +
     "worker-src 'self' blob:; " +
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
     // Images from our domain, data URIs, HTTPS, and Stripe telemetry

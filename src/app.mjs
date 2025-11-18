@@ -38,7 +38,7 @@ import registerNotificationRoutes from "./routes/notifications.mjs";
 import registerPlanRoutes from "./routes/plan.mjs";
 import registerStripeRoutes from "./routes/stripe.mjs";
 import registerOnboardingRoutes from "./routes/onboarding.mjs";
-import registerRealtimeRoutes, { initializeSocketIO } from "./routes/realtime.mjs";
+import registerRealtimeRoutes from "./routes/realtime.mjs";
 import registerMonitoringRoutes from "./routes/monitoring.mjs";
 import { signMediaPath } from "./utils.mjs";
 import registerMetricsRoutes from "./routes/metrics.mjs";
@@ -293,7 +293,7 @@ export async function createApp() {
   // Global error handler (must be last)
   app.use(errorHandler);
 
-  // Return app and Socket.IO initializer
-  return { app, initializeSocketIO };
+  // Return configured app
+  return { app };
 }
 

@@ -1,1055 +1,378 @@
 /**
- * Real-time messaging functionality using Socket.IO
- * Handles live chat, typing indicators, and live mode toggles
+ * Realtime manager backed by Ably channels.
+ * Handles live chat updates, typing indicators, and toast notifications.
  */
-
 class RealtimeManager {
   constructor() {
-    this.socket = null;
-    this.isConnected = false;
+    this.ably = null;
+    this.ablyScriptPromise = null;
+    this.userChannel = null;
+    this.chatChannel = null;
+    this.chatChannelName = null;
     this.currentChat = null;
     this.userId = null;
-    this.typingTimeout = null;
-    this.isTyping = false;
-    this.heartbeatInterval = null;
-    this.reconnectTimeout = null;
-    this.scriptElement = null;
-    this.eventListeners = new Map();
+    this.isConnected = false;
+    this.isDestroyed = false;
     this.connectionAttempts = 0;
     this.maxConnectionAttempts = 5;
-    this.isDestroyed = false;
-    this.wsToken = null;
-    this.wsTokenExpTs = 0;
-    this.tokenRefreshTimeout = null;
-    this.authExpired = false;
-    
-    this.init();
+    this.realtimeAvailable = true;
+    this.globalHandlers = new Map();
+    this.typingTimeout = null;
+    this.isTyping = false;
+    console.log('🔌 RealtimeManager initialized (Ably)');
   }
-  
-  async init() {
-    try {
-      // Don't auto-connect, wait for userId to be set manually
-      console.log('🔌 RealtimeManager initialized (waiting for userId)');
-    } catch (error) {
-      console.error('Failed to initialize RealtimeManager:', error);
-    }
-  }
-  
+
   async connect() {
-    if (this.isDestroyed) {
-      console.warn('RealtimeManager is destroyed, cannot connect');
-      return;
-    }
-    
-    // Check if the backend actually has Socket.IO available (avoids 404s on serverless)
+    if (this.isDestroyed) return;
+    if (this.isConnected) return;
+
     try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 3000);
-      const r = await fetch('/api/realtime/status', { credentials: 'include', signal: ctrl.signal });
-      clearTimeout(t);
-      if (r.ok) {
-        const j = await r.json().catch(() => ({}));
-        if (!j?.socketIOAvailable) {
-          console.log('🔌 Realtime server not available on this deployment; skipping Socket.IO connect');
-          return;
-        }
+      if (!this.userId) {
+        this.userId = await this.getUserId();
       }
-    } catch {
-      // If status check fails, continue; connectSocket will handle failures gracefully
-    }
-    
-    if (this.isConnected) {
-      console.log('🔌 Already connected');
-      return;
-    }
-    
-    if (this.connectionAttempts >= this.maxConnectionAttempts) {
-      console.error('Max connection attempts reached, giving up');
-      return;
-    }
-    
-    this.connectionAttempts++;
-    
-    try {
-      // Initialize Socket.IO connection
-      await this.connectSocket();
-      
-      // Set up event listeners
-      this.setupEventListeners();
-      
-      console.log('🔌 RealtimeManager connected with userId:', this.userId);
+      await this.ensureRealtimeAvailable();
+      if (!this.realtimeAvailable) {
+        console.warn('Realtime disabled on this deployment; skipping connect');
+        return;
+      }
+      await this.loadAblyScript();
+      await this.createAblyClient();
     } catch (error) {
-      console.error('Failed to connect RealtimeManager:', error);
+      console.error('Failed to initialize realtime connection:', error);
       this.handleConnectionError();
     }
   }
-  
-  async getUserId() {
-    // Try to get user ID from auth manager
-    if (window.authManager && window.authManager.getCurrentUserId) {
-      return window.authManager.getCurrentUserId();
-    }
-    
-    // Try to get from session storage
-    const sessionData = sessionStorage.getItem('auth_session');
-    if (sessionData) {
-      try {
-        const parsed = JSON.parse(sessionData);
-        return parsed.userId;
-      } catch (e) {
-        console.warn('Failed to parse session data');
+
+  async ensureRealtimeAvailable() {
+    if (this.realtimeChecked) return;
+    this.realtimeChecked = true;
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 4000);
+      const resp = await fetch('/api/realtime/status', {
+        credentials: 'include',
+        signal: ctrl.signal
+      });
+      clearTimeout(t);
+      if (!resp.ok) {
+        this.realtimeAvailable = false;
+        return;
       }
+      const data = await resp.json().catch(() => ({}));
+      if (data?.userId && !this.userId) {
+        this.userId = data.userId;
+      }
+      this.realtimeAvailable = !!data?.ablyAvailable;
+    } catch (error) {
+      console.warn('Realtime status check failed:', error?.message || error);
+      this.realtimeAvailable = false;
     }
-    
-    // Try to get from URL parameters (for testing)
-    const urlParams = new URLSearchParams(window.location.search);
-    return urlParams.get('userId');
   }
-  
-  async connectSocket() {
+
+  async loadAblyScript() {
+    if (window.Ably) return;
+    if (this.ablyScriptPromise) return this.ablyScriptPromise;
+    this.ablyScriptPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://cdn.ably.io/lib/ably.min-1.js';
+      script.async = true;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error('Failed to load Ably client'));
+      document.head.appendChild(script);
+    });
+    return this.ablyScriptPromise;
+  }
+
+  async createAblyClient() {
     return new Promise((resolve, reject) => {
       try {
-        // Clean up any existing script
-        if (this.scriptElement && this.scriptElement.parentNode) {
-          this.scriptElement.parentNode.removeChild(this.scriptElement);
-        }
-        
-        // Import Socket.IO client
-        this.scriptElement = document.createElement('script');
-        this.scriptElement.src = '/socket.io/socket.io.js';
-        this.scriptElement.onload = async () => {
-          console.log('🔌 Socket.IO client loaded, connecting...');
-          // Fetch a short-lived auth token
-          let wsToken = null;
-          try {
-            const r = await fetch('/auth/ws-token', { credentials: 'include' });
-            if (r.ok) {
-              const j = await r.json();
-              wsToken = j.token;
-              if (!this.userId && j.userId) {
-                this.userId = j.userId;
-              }
-            } else {
-              console.warn('Failed to fetch WS token:', r.status);
-            }
-          } catch (e) {
-            console.warn('WS token fetch error:', e);
+        const client = new Ably.Realtime({
+          authUrl: '/api/realtime/ably/token',
+          authMethod: 'GET',
+          authHeaders: { 'X-Requested-With': 'XMLHttpRequest' },
+          clientId: this.userId ? `user:${this.userId}` : undefined,
+          transports: ['web_socket', 'comet']
+        });
+
+        client.connection.on('connected', () => {
+          console.log('🔌 Connected to Ably realtime');
+          this.ably = client;
+          this.isConnected = true;
+          this.connectionAttempts = 0;
+          this.updateConnectionStatus(true);
+          this.setupUserChannel();
+          if (this.currentChat) {
+            this.joinChat(this.currentChat);
           }
-          this.setWsToken(wsToken);
-          // Configure Socket.IO with better connection options
-          this.socket = io({
-            auth: {
-              userId: this.userId,
-              token: this.wsToken
-            },
-            query: {
-              userId: this.userId,
-              token: this.wsToken
-            },
-            transports: ['polling', 'websocket'], // Start with polling, upgrade to websocket
-            timeout: 30000, // 30 seconds
-            reconnection: true,
-            reconnectionDelay: 2000, // 2 seconds
-            reconnectionDelayMax: 10000, // 10 seconds
-            maxReconnectionAttempts: 3, // Reduced attempts
-            forceNew: false, // Don't force new connection
-            upgrade: true, // Allow transport upgrades
-            rememberUpgrade: true, // Remember successful upgrades
-            autoConnect: true
-          });
-          
-          this.socket.on('connect', () => {
-            this.isConnected = true;
-            this.connectionAttempts = 0;
-            console.log('🔌 Connected to real-time server with userId:', this.userId);
-            this.updateConnectionStatus(true);
-            this.startHeartbeat();
-            resolve();
-          });
-          
-          this.socket.on('disconnect', (reason) => {
-            this.isConnected = false;
-            console.log('🔌 Disconnected from real-time server:', reason);
-            this.updateConnectionStatus(false);
-            this.stopHeartbeat();
-            this.clearReconnectTimeout();
-            
-            // Auto-reconnect for certain disconnect reasons (but not if destroyed)
-            if (!this.isDestroyed && (reason === 'io server disconnect' || reason === 'io client disconnect')) {
-              console.log('🔄 Attempting to reconnect...');
-              this.scheduleReconnect();
-            }
-          });
-          
-          this.socket.on('connect_error', (error) => {
-            console.error('❌ Socket connection error:', error);
-            this.isConnected = false;
-            this.updateConnectionStatus(false);
-            this.maybeRefreshTokenOnAuthError(error);
-            this.handleConnectionError();
-          });
+          resolve();
+        });
 
-          this.socket.on('reconnect', (attemptNumber) => {
-            console.log('🔄 Reconnected after', attemptNumber, 'attempts');
-            this.isConnected = true;
-            this.updateConnectionStatus(true);
-            
-            // Rejoin chat room after reconnection
-            if (this.currentChat) {
-              this.joinChat(this.currentChat);
-            }
-          });
+        client.connection.on('disconnected', () => {
+          this.isConnected = false;
+          this.updateConnectionStatus(false);
+        });
 
-          this.socket.on('reconnect_error', (error) => {
-            console.error('Reconnection error:', error);
-            this.updateConnectionStatus(false);
-          });
+        client.connection.on('suspended', () => {
+          this.isConnected = false;
+          this.updateConnectionStatus(false);
+          this.scheduleReconnect();
+        });
 
-          this.socket.on('reconnect_failed', () => {
-            console.error('Failed to reconnect after maximum attempts');
-            this.updateConnectionStatus(false);
-          });
-        };
-        
-        this.scriptElement.onerror = () => {
-          // Fallback to CDN client in case the server does not serve the client bundle
-          try {
-            const cdn = document.createElement('script');
-            cdn.src = 'https://cdn.socket.io/4.7.2/socket.io.min.js';
-            cdn.integrity = 'sha384-bSgGEs0nq9eGmLMg6m9yN9fImVPL9u/6k3piM7Oz7a5mM4etf5k2s7qk1x9b0Kc5';
-            cdn.crossOrigin = 'anonymous';
-            cdn.onload = () => {
-              // Retry connect path now that client is present (server may still be absent; then connect_error will handle)
-              console.log('🔌 Loaded Socket.IO client from CDN, retrying connect…');
-              // Call onload handler of the primary element to continue flow
-              if (typeof this.scriptElement.onload === 'function') {
-                this.scriptElement.onload();
-              }
-            };
-            cdn.onerror = () => reject(new Error('Failed to load Socket.IO client (CDN fallback)'));
-            document.head.appendChild(cdn);
-          } catch {
-            reject(new Error('Failed to load Socket.IO client'));
-          }
-        };
-        
-        document.head.appendChild(this.scriptElement);
+        client.connection.on('failed', (err) => {
+          this.isConnected = false;
+          this.updateConnectionStatus(false);
+          reject(err);
+        });
       } catch (error) {
         reject(error);
       }
     });
   }
-  
-  
-  // Join a chat room
-  joinChat(phone) {
-    if (!this.socket || !this.isConnected) {
-      console.warn('Socket not connected, cannot join chat');
+
+  setupUserChannel() {
+    if (!this.ably || !this.userId) return;
+    if (this.userChannel) {
+      try { this.userChannel.unsubscribe(); } catch {}
+    }
+    this.userChannel = this.ably.channels.get(`user:${this.userId}`);
+    this.userChannel.subscribe((message) => {
+      const name = message?.name;
+      const data = message?.data;
+      this.dispatchGlobalEvent(name, data);
+    });
+  }
+
+  dispatchGlobalEvent(name, data) {
+    if (!name) return;
+    switch (name) {
+      case 'new_message':
+        this.handleNewMessage(data);
+        break;
+      case 'live_mode_changed':
+        this.handleLiveModeChange(data);
+        break;
+      case 'metrics_update':
+        this.emitGlobal(name, data);
+        break;
+      case 'notification_created':
+        this.emitGlobal(name, data);
+        break;
+      default:
+        this.emitGlobal(name, data);
+    }
+  }
+
+  emitGlobal(name, payload) {
+    const listeners = this.globalHandlers.get(name);
+    if (!listeners) return;
+    listeners.forEach((handler) => {
+      try { handler(payload); } catch (error) { console.error('Realtime handler error:', error); }
+    });
+  }
+
+  onGlobal(eventName, handler) {
+    if (!eventName || typeof handler !== 'function') return;
+    if (!this.globalHandlers.has(eventName)) {
+      this.globalHandlers.set(eventName, new Set());
+    }
+    this.globalHandlers.get(eventName).add(handler);
+    // If we are already connected, emit synthetic event for stateful info
+    if (eventName === 'metrics_update' && this.latestMetrics) {
+      handler(this.latestMetrics);
+    }
+  }
+
+  offGlobal(eventName, handler) {
+    const listeners = this.globalHandlers.get(eventName);
+    if (!listeners) return;
+    listeners.delete(handler);
+  }
+
+  async joinChat(phone) {
+    if (!phone) return;
+    if (!this.isConnected) {
+      await this.connect();
+      if (!this.isConnected) return;
+    }
+    const channelName = `chat:${this.userId}:${phone.replace(/[^0-9+]/g, '')}`;
+    if (this.chatChannelName === channelName && this.chatChannel) {
+      this.currentChat = phone;
       return;
     }
-    // Avoid duplicate joins for the same chat
-    if (this.currentChat === phone) {
-      return;
+    if (this.chatChannel) {
+      try { this.chatChannel.unsubscribe(); } catch {}
     }
+    this.chatChannelName = channelName;
+    this.chatChannel = this.ably.channels.get(channelName);
+    this.chatChannel.subscribe((message) => {
+      this.dispatchChatEvent(message?.name, message?.data);
+    });
     this.currentChat = phone;
-    this.socket.emit('join_chat', { phone });
+    this.publishChatEvent('user_online', { userId: this.userId, phone });
     console.log(`👤 Joined chat: ${phone}`);
   }
-  
-  // Leave a chat room
+
   leaveChat(phone) {
-    if (!this.socket || !this.isConnected) return;
-    
-    this.socket.emit('leave_chat', { phone });
+    if (this.chatChannel) {
+      this.publishChatEvent('user_offline', { userId: this.userId, phone });
+      try { this.chatChannel.unsubscribe(); } catch {}
+    }
+    this.chatChannel = null;
+    this.chatChannelName = null;
     this.currentChat = null;
     console.log(`👤 Left chat: ${phone}`);
   }
-  
-  // Send a message (optionally as a reply)
-  sendMessage(phone, message, type = 'text', replyToMessageId = null) {
-    if (!this.socket || !this.isConnected) {
-      console.warn('Socket not connected, cannot send message');
+
+  dispatchChatEvent(name, data) {
+    if (!name) return;
+    switch (name) {
+      case 'new_message':
+        this.handleNewMessage(data);
+        break;
+      case 'typing_start':
+        this.handleTypingStart(data);
+        break;
+      case 'typing_stop':
+        this.handleTypingStop(data);
+        break;
+      case 'live_mode_changed':
+        this.handleLiveModeChange(data);
+        break;
+      case 'user_online':
+        this.handleUserOnline(data);
+        break;
+      case 'user_offline':
+        this.handleUserOffline(data);
+        break;
+      case 'message_status_update':
+        this.handleMessageStatusUpdate(data);
+        break;
+      case 'message_reaction':
+        this.handleMessageReaction(data);
+        break;
+      default:
+        this.emitGlobal(name, data);
+    }
+  }
+
+  publishChatEvent(name, payload) {
+    if (!this.chatChannel) return;
+    try {
+      this.chatChannel.publish(name, payload);
+    } catch (error) {
+      console.warn('Failed to publish chat event:', name, error?.message || error);
+    }
+  }
+
+  async sendMessage(phone, message, type = 'text', replyToMessageId = null) {
+    try {
+      const body = {
+        text: message,
+        type,
+        replyTo: replyToMessageId || undefined
+      };
+      const resp = await fetch(`/send/${encodeURIComponent(phone)}?format=json`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify(body)
+      });
+      if (!resp.ok) {
+        throw new Error('Failed to send message');
+      }
+      const data = await resp.json().catch(() => ({}));
+      if (!data?.success) {
+        throw new Error(data?.error || 'Failed to send message');
+      }
+      return true;
+    } catch (error) {
+      console.error('Failed to send message via HTTP:', error);
       return false;
     }
-    
-    this.socket.emit('send_message', { phone, message, type, replyTo: replyToMessageId });
-    return true;
   }
-  
-  // Start typing indicator
+
   startTyping(phone) {
-    if (!this.socket || !this.isConnected || this.isTyping) return;
-    
+    if (!this.isConnected || this.isTyping) return;
     this.isTyping = true;
-    this.socket.emit('typing_start', { phone });
-    
-    // Auto-stop typing after 3 seconds
-    this.typingTimeout = setTimeout(() => {
-      this.stopTyping(phone);
-    }, 3000);
+    this.publishChatEvent('typing_start', { userId: this.userId, phone });
+    this.typingTimeout = setTimeout(() => this.stopTyping(phone), 3000);
   }
-  
-  // Stop typing indicator
+
   stopTyping(phone) {
-    if (!this.socket || !this.isConnected || !this.isTyping) return;
-    
+    if (!this.isTyping) return;
     this.isTyping = false;
-    this.socket.emit('typing_stop', { phone });
-    
+    this.publishChatEvent('typing_stop', { userId: this.userId, phone });
     if (this.typingTimeout) {
       clearTimeout(this.typingTimeout);
       this.typingTimeout = null;
     }
   }
-  
-  // Toggle live mode
-  toggleLiveMode(phone, isLive) {
-    if (!this.socket || !this.isConnected) return;
-    
-    this.socket.emit('toggle_live_mode', { phone, isLive });
-  }
-  
-  // Handle new message received
-  handleNewMessage(messageData) {
-    console.log('📨 New message received:', messageData);
-    
-    // Check if message already exists to prevent duplicates
-    const existingMessage = document.querySelector(`[data-message-id="${messageData.id}"]`);
-    if (existingMessage) {
-      console.log('📨 Message already exists, skipping duplicate:', messageData.id);
-      return;
-    }
-    
-    // Add message to chat thread
-    this.addMessageToChat(messageData);
-    
-    // Scroll to bottom
-    this.scrollToBottom();
-    
-    // Show actionable toast for inbound messages when not on this conversation
-    try {
-      const isInbound = String(messageData?.direction || '') === 'inbound';
-      const phone = messageData?.contact || messageData?.from_digits || null;
-      const isSameChat = phone && this.currentChat && String(this.currentChat) === String(phone);
-      if (isInbound && phone && (!isSameChat)) {
-        const preview = (messageData?.text_body || 'New message').slice(0, 120);
-        if (window.Toast && typeof window.Toast.showWithActions === 'function') {
-          window.Toast.showWithActions(
-            `New message from ${phone}: ${preview}`,
-            'info',
-            7000,
-            [
-              {
-                label: 'Reply',
-                onClick: () => {
-                  window.location.href = `/inbox/${encodeURIComponent(phone)}`;
-                }
-              }
-            ]
-          );
-        } else if (document.hidden) {
-          // Fallback to browser notification if toast not available
-          this.showNotification(messageData);
-        }
-      } else if (document.hidden) {
-        // Fallback notification when window not focused
-        this.showNotification(messageData);
-      }
-    } catch {}
-  }
-  
-  // Handle typing start
-  handleTypingStart(data) {
-    if (data.userId === this.userId) return; // Don't show own typing
-    
-    this.showTypingIndicator(data.userId, data.phone);
-  }
-  
-  // Handle typing stop
-  handleTypingStop(data) {
-    if (data.userId === this.userId) return; // Don't hide own typing
-    
-    this.hideTypingIndicator(data.userId, data.phone);
-  }
-  
-  // Handle live mode change
-  handleLiveModeChange(data) {
-    console.log('🔄 Live mode changed:', data);
-    this.updateLiveModeIndicator(data.phone, data.isLive);
-  }
-  
-  // Handle user online
-  handleUserOnline(data) {
-    if (data.userId === this.userId) return;
-    this.showUserOnlineIndicator(data.userId, data.phone);
-  }
-  
-  // Handle user offline
-  handleUserOffline(data) {
-    if (data.userId === this.userId) return;
-    this.hideUserOnlineIndicator(data.userId, data.phone);
-  }
-  
-  // Handle message error
-  handleMessageError(error) {
-    console.error('Message error:', error);
-    
-    if (error.type === 'config_error') {
-      this.showErrorMessage('WhatsApp Configuration Error: ' + error.error);
-    } else {
-      this.showErrorMessage(error.error || 'Failed to send message');
-    }
-  }
 
-  handleMessageStatusUpdate(data) {
-    console.log('📊 Message status update:', data);
-    
-    const { messageId, status } = data;
-    const messageElement = document.querySelector(`[data-message-id="${messageId}"]`);
-    
-    if (messageElement) {
-      const statusTicksDiv = messageElement.querySelector('.message-status-ticks');
-      if (!statusTicksDiv) {
-        console.warn(`Status ticks div not found for message ${messageId}`);
-        return;
-      }
-      if (status === 'failed') {
-        statusTicksDiv.className = 'message-status-ticks message-status-failed';
-        statusTicksDiv.innerHTML = `
-          <div class="message-failed-indicator" title="Message failed to send">
-            <span class="failed-icon">!</span>
-          </div>
-        `;
-        return;
-      }
-      // Ensure tick elements exist
-      if (!statusTicksDiv.querySelector('.message-tick')) {
-        statusTicksDiv.innerHTML = '<div class="message-tick"></div><div class="message-tick"></div>';
-      }
-      // Update the status class
-      statusTicksDiv.className = `message-status-ticks message-status-${status}`;
-      
-      const firstTick = statusTicksDiv.querySelector('.message-tick:nth-child(1)');
-      const secondTick = statusTicksDiv.querySelector('.message-tick:nth-child(2)');
-      if (firstTick && secondTick) {
-        switch (status) {
-          case 'pending':
-          case 'sent':
-            firstTick.style.display = 'block';
-            firstTick.style.color = '#999';
-            secondTick.style.display = 'none';
-            break;
-          case 'delivered':
-            firstTick.style.display = 'block';
-            firstTick.style.color = '#999';
-            secondTick.style.display = 'block';
-            secondTick.style.color = '#999';
-            break;
-          case 'read':
-            firstTick.style.display = 'block';
-            firstTick.style.color = '#4fc3f7';
-            secondTick.style.display = 'block';
-            secondTick.style.color = '#4fc3f7';
-            break;
-          default:
-            firstTick.style.display = 'block';
-            firstTick.style.color = '#999';
-            secondTick.style.display = 'none';
-        }
-      }
-      console.log(`✅ Updated message ${messageId} status to: ${status}`);
-    } else {
-      console.warn(`Message element not found for ID: ${messageId}`);
-    }
-  }
-  
-  handleMessageReaction(data) {
-    console.log('😀 Message reaction update received:', data);
-    console.log('😀 Socket connected:', this.isConnected);
-    console.log('😀 Current chat:', this.currentChat);
-    
-    const { messageId, emoji, action, userId } = data;
-    
-    // Use data attribute selector which is more reliable than ID with special characters
-    const messageElement = document.querySelector(`[data-message-id="${messageId}"]`);
-    
-    if (!messageElement) {
-      console.warn(`Message element not found for ID: ${messageId}`);
-      console.warn(`Tried selector: [data-message-id="${messageId}"]`);
-      return;
-    }
-    
-    console.log(`Found message element for ID: ${messageId}`);
-    this.updateReactionOnElement(messageElement, messageId, emoji, action);
-  }
-  
-  updateReactionOnElement(messageElement, messageId, emoji, action) {
-    // Find or create the reactions container
-    let reactionsContainer = messageElement.querySelector('.message-reactions');
-    if (!reactionsContainer) {
-      reactionsContainer = document.createElement('div');
-      reactionsContainer.className = 'message-reactions';
-      
-      // Insert before the action buttons
-      const actionButtons = messageElement.querySelector('.message-actions');
-      if (actionButtons) {
-        actionButtons.parentNode.insertBefore(reactionsContainer, actionButtons);
-      } else {
-        // Insert at the end of the message bubble
-        const messageBubble = messageElement.querySelector('.bubble');
-        if (messageBubble) {
-          messageBubble.appendChild(reactionsContainer);
-        }
-      }
-    }
-    
-    // Find existing reaction for this emoji
-    const existingReaction = reactionsContainer.querySelector(`[data-emoji="${emoji}"]`);
-    
-    if (action === 'added') {
-      if (existingReaction) {
-        // Update count
-        const countSpan = existingReaction.querySelector('.reaction-count');
-        if (countSpan) {
-          const currentCount = parseInt(countSpan.textContent) || 0;
-          countSpan.textContent = currentCount + 1;
-        }
-      } else {
-        // Create new reaction element
-        const reactionElement = document.createElement('span');
-        reactionElement.className = 'reaction customer-reaction';
-        reactionElement.setAttribute('data-message-id', messageId);
-        reactionElement.setAttribute('data-emoji', emoji);
-        reactionElement.title = 'Customer reaction';
-        reactionElement.style.cursor = 'default';
-        reactionElement.innerHTML = `${emoji}<span class="reaction-count">1</span>`;
-        
-        reactionsContainer.appendChild(reactionElement);
-      }
-      
-      // Show a subtle animation for new reactions
-      const reactionElement = reactionsContainer.querySelector(`[data-emoji="${emoji}"]`);
-      if (reactionElement) {
-        reactionElement.style.transform = 'scale(1.2)';
-        reactionElement.style.transition = 'transform 0.2s ease';
-        setTimeout(() => {
-          reactionElement.style.transform = 'scale(1)';
-        }, 200);
-      }
-      
-    } else if (action === 'removed') {
-      if (existingReaction) {
-        const countSpan = existingReaction.querySelector('.reaction-count');
-        if (countSpan) {
-          const currentCount = parseInt(countSpan.textContent) || 0;
-          if (currentCount <= 1) {
-            // Remove the reaction entirely
-            existingReaction.remove();
-          } else {
-            // Decrease count
-            countSpan.textContent = currentCount - 1;
-          }
-        }
-      }
-    }
-    
-    console.log(`✅ Updated reactions for message ${messageId}: ${action} ${emoji}`);
-  }
-  
-  // Add message to chat thread
-  addMessageToChat(messageData) {
-    const chatThread = document.querySelector('.chat-thread');
-    if (!chatThread) return;
-    
-    const messageElement = this.createMessageElement(messageData);
-    chatThread.appendChild(messageElement);
-    
-    // Trigger animation
-    messageElement.style.opacity = '0';
-    messageElement.style.transform = 'translateY(20px)';
-    
-    requestAnimationFrame(() => {
-      messageElement.style.transition = 'all 0.3s ease-out';
-      messageElement.style.opacity = '1';
-      messageElement.style.transform = 'translateY(0)';
-    });
-  }
-  
-  // Create message element
-  createMessageElement(messageData) {
-    const msgDiv = document.createElement('div');
-    msgDiv.className = `msg ${messageData.direction === 'inbound' ? 'msg-in' : 'msg-out'} message-container`;
-    msgDiv.setAttribute('data-message-id', messageData.id);
-    
-    const bubbleDiv = document.createElement('div');
-    bubbleDiv.className = 'bubble';
-    
-    if (messageData.type === 'text') {
-      bubbleDiv.textContent = messageData.text_body;
-    } else if (messageData.type === 'image') {
-      const img = document.createElement('img');
-      img.src = messageData.media_url || '/placeholder-image.png';
-      img.alt = 'Image';
-      img.style.maxWidth = '200px';
-      img.style.borderRadius = '8px';
-      bubbleDiv.appendChild(img);
-    } else if (messageData.type === 'interactive') {
-      // Show human-friendly text for interactive messages (lists/buttons)
-      const t = (messageData.text_body || '').trim();
-      bubbleDiv.textContent = t || 'Interactive';
-    } else {
-      bubbleDiv.textContent = `[${messageData.type}] ${messageData.text_body || ''}`;
-    }
-    
-    // Add timestamp INSIDE the bubble (same as existing messages)
-    const metaDiv = document.createElement('div');
-    metaDiv.className = 'meta';
-    metaDiv.textContent = messageData.formatted_time || new Date().toLocaleString();
-    
-    // Add WhatsApp-style status ticks for outbound messages
-    if (messageData.direction === 'outbound') {
-      const deliveryStatus = messageData.delivery_status || 'sent';
-      const readStatus = messageData.read_status || 'unread';
-      
-      // Determine final status (read overrides delivered)
-      let finalStatus = deliveryStatus;
-      if (readStatus === 'read') {
-        finalStatus = 'read';
-      }
-      
-      const statusTicksDiv = document.createElement('div');
-      if (finalStatus === 'failed') {
-        statusTicksDiv.className = 'message-status-ticks message-status-failed';
-        statusTicksDiv.innerHTML = `
-          <div class="message-failed-indicator" title="Message failed to send">
-            <span class="failed-icon">!</span>
-          </div>
-        `;
-      } else {
-        statusTicksDiv.className = `message-status-ticks message-status-${finalStatus}`;
-        statusTicksDiv.innerHTML = '<div class="message-tick"></div><div class="message-tick"></div>';
-      }
-      metaDiv.appendChild(statusTicksDiv);
-    }
-    
-    bubbleDiv.appendChild(metaDiv);
-    
-    msgDiv.appendChild(bubbleDiv);
-    
-    return msgDiv;
-  }
-  
-  // Show typing indicator
-  showTypingIndicator(userId, phone) {
-    const chatThread = document.querySelector('.chat-thread');
-    if (!chatThread) return;
-    
-    // Remove existing typing indicator
-    this.hideTypingIndicator(userId, phone);
-    
-    const typingDiv = document.createElement('div');
-    typingDiv.className = 'typing-indicator';
-    typingDiv.id = `typing-${userId}-${phone}`;
-    typingDiv.innerHTML = `
-      <div class="msg msg-in">
-        <div class="bubble">
-          <div class="typing-dots">
-            <span></span>
-            <span></span>
-            <span></span>
-          </div>
-        </div>
-      </div>
-    `;
-    
-    chatThread.appendChild(typingDiv);
-    this.scrollToBottom();
-  }
-  
-  // Hide typing indicator
-  hideTypingIndicator(userId, phone) {
-    const existing = document.getElementById(`typing-${userId}-${phone}`);
-    if (existing) {
-      existing.remove();
-    }
-  }
-  
-  // Update live mode indicator
-  updateLiveModeIndicator(phone, isLive) {
-    const handoffBtn = document.getElementById('handoffToggleBtn');
-    if (handoffBtn) {
-      const img = handoffBtn.querySelector('img');
-      if (img) {
-        img.src = isLive ? '/raise-hand-icon.svg' : '/bot-icon.svg';
-        img.alt = isLive ? 'Human handling' : 'AI handling';
-      }
-      handoffBtn.setAttribute('data-is-human', isLive);
-      
-      // Update the hidden input
-      const hiddenInput = handoffBtn.closest('form')?.querySelector('input[name="is_human"]');
-      if (hiddenInput) {
-        hiddenInput.value = isLive ? '1' : '';
-      }
-    }
-  }
-  
-  // Show user online indicator
-  showUserOnlineIndicator(userId, phone) {
-    const statusDiv = document.querySelector('.user-status');
-    if (statusDiv) {
-      statusDiv.textContent = '🟢 Agent Online';
-      statusDiv.classList.add('online');
-    }
-  }
-  
-  // Hide user online indicator
-  hideUserOnlineIndicator(userId, phone) {
-    const statusDiv = document.querySelector('.user-status');
-    if (statusDiv) {
-      statusDiv.textContent = '⚪ Agent Offline';
-      statusDiv.classList.remove('online');
-    }
-  }
-  
-  // Update connection status
-  updateConnectionStatus(isConnected) {
-    const statusElement = document.querySelector('.connection-status');
-    if (statusElement) {
-      statusElement.textContent = isConnected ? '🟢 Connected' : '🔴 Disconnected';
-      statusElement.classList.toggle('connected', isConnected);
-    }
-  }
-  
-  // Scroll to bottom
-  scrollToBottom() {
-    const chatThread = document.querySelector('.chat-thread');
-    if (chatThread) {
-      chatThread.scrollTop = chatThread.scrollHeight;
-    }
-  }
-  
-  // Show notification
-  showNotification(messageData) {
-    if ('Notification' in window && Notification.permission === 'granted') {
-      new Notification('New Message', {
-        body: messageData.text_body,
-        icon: '/logo-icon.png'
-      });
-    }
-  }
-  
-  // Show error message
-  showErrorMessage(message) {
-    if (window.showToast) {
-      window.showToast(message, 'error');
-    } else {
-      alert(message);
-    }
-  }
-  
-  // Get connection status
-  getConnectionStatus() {
-    return {
-      isConnected: this.isConnected,
-      currentChat: this.currentChat,
-      userId: this.userId
-    };
-  }
-
-  // Heartbeat mechanism to keep connection alive
-  startHeartbeat() {
-    this.stopHeartbeat(); // Clear any existing heartbeat
-    this.heartbeatInterval = setInterval(() => {
-      if (!this.isConnected || !this.socket) return;
-      try {
-        this.socket.emit('ping', { timestamp: Date.now() });
-      } catch (error) {
-        console.error('💓 Heartbeat error:', error);
-        this.handleConnectionError();
-      }
-    }, 20000);
-  }
-
-  stopHeartbeat() {
-    if (this.heartbeatInterval) {
-      clearInterval(this.heartbeatInterval);
-      this.heartbeatInterval = null;
-    }
-  }
-
-  // Handle connection errors gracefully
   handleConnectionError() {
-    console.log('🔧 Handling connection error, attempting to reconnect...');
     this.isConnected = false;
     this.updateConnectionStatus(false);
-    
-    // Attempt to reconnect after a short delay
-    setTimeout(() => {
-      if (!this.isConnected && this.socket) {
-        try {
-          this.socket.connect();
-        } catch (error) {
-          console.error('🔧 Reconnection failed:', error);
-        }
-      }
-    }, 2000);
+    this.scheduleReconnect();
   }
 
-  // Handle page visibility changes to manage connection
-  handleVisibilityChange() {
-    if (document.hidden) {
-      console.log('📱 Page hidden, reducing connection activity');
-      // Don't disconnect, but reduce activity
-    } else {
-      console.log('📱 Page visible, resuming full connection activity');
-      // Ensure we're still connected and rejoin chat if needed
-      if (this.isConnected && this.currentChat) {
-        this.joinChat(this.currentChat);
-      }
-    }
-  }
-
-  // Schedule reconnection with exponential backoff
   scheduleReconnect() {
-    if (this.isDestroyed || this.isConnected || this.authExpired) return;
-    
-    const delay = Math.min(1000 * Math.pow(2, this.connectionAttempts - 1), 30000);
-    console.log(`🔄 Scheduling reconnect in ${delay}ms (attempt ${this.connectionAttempts})`);
-    
-    this.reconnectTimeout = setTimeout(() => {
-      if (!this.isDestroyed && !this.isConnected) {
-        this.connect();
-      }
-    }, delay);
-  }
-
-  // Clear reconnection timeout
-  clearReconnectTimeout() {
+    if (this.isDestroyed) return;
+    if (this.connectionAttempts >= this.maxConnectionAttempts) {
+      console.warn('Max realtime reconnection attempts reached');
+      return;
+    }
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
-      this.reconnectTimeout = null;
+    }
+    this.connectionAttempts++;
+    this.reconnectTimeout = setTimeout(() => {
+      this.connect();
+    }, 2000 * this.connectionAttempts);
+  }
+
+  updateConnectionStatus(isConnected) {
+    const statusEl = document.getElementById('realtimeStatus');
+    if (statusEl) {
+      statusEl.textContent = isConnected ? 'Connected' : 'Connecting…';
+      statusEl.className = isConnected ? 'status-connected' : 'status-disconnected';
     }
   }
 
-  // Handle connection errors
-  handleConnectionError() {
-    this.clearReconnectTimeout();
-    this.stopHeartbeat();
-    if (this.tokenRefreshTimeout) { clearTimeout(this.tokenRefreshTimeout); this.tokenRefreshTimeout = null; }
-    
-    if (this.connectionAttempts < this.maxConnectionAttempts) {
-      this.scheduleReconnect();
-    } else {
-      console.error('❌ Max connection attempts reached, giving up');
-      this.updateConnectionStatus(false);
+  handleVisibilityChange() {
+    if (document.hidden) {
+      return;
+    }
+    if (!this.isConnected) {
+      this.connect();
     }
   }
 
-  // ---------------- Token refresh helpers ----------------
-  setWsToken(token) {
-    this.wsToken = token || null;
-    // Decode JWT exp (base64url)
-    try {
-      if (this.wsToken) {
-        const parts = this.wsToken.split('.')
-        if (parts.length === 3) {
-          const p = parts[1].replace(/-/g,'+').replace(/_/g,'/');
-          const pad = p.length % 4 === 2 ? '==' : (p.length % 4 === 3 ? '=' : '');
-          const json = atob(p + pad);
-          const payload = JSON.parse(json);
-          this.wsTokenExpTs = Number(payload.exp || 0) * 1000;
-        }
-      }
-    } catch { this.wsTokenExpTs = 0; }
-    this.scheduleTokenRefresh();
-  }
-
-  scheduleTokenRefresh() {
-    if (this.tokenRefreshTimeout) {
-      clearTimeout(this.tokenRefreshTimeout);
-      this.tokenRefreshTimeout = null;
-    }
-    if (!this.wsTokenExpTs) return;
-    const now = Date.now();
-    // Refresh 5 minutes before expiry; minimum delay 10s
-    const delay = Math.max(this.wsTokenExpTs - now - 5*60*1000, 10000);
-    this.tokenRefreshTimeout = setTimeout(() => this.refreshWsToken(), delay);
-  }
-
-  async refreshWsToken() {
-    try {
-      const r = await fetch('/auth/ws-token', { credentials: 'include' });
-      if (r.status === 401) {
-        this.handleAuthExpired();
-        return;
-      }
-      if (!r.ok) throw new Error('ws-token refresh failed: ' + r.status);
-      const j = await r.json();
-      this.userId = this.userId || j.userId || this.userId;
-      this.setWsToken(j.token);
-      if (this.socket) {
-        // Update auth/query and reconnect to apply new token
-        try { this.socket.auth = { userId: this.userId, token: this.wsToken }; } catch {}
-        try { this.socket.io.opts.query = { userId: this.userId, token: this.wsToken }; } catch {}
-        try { this.socket.disconnect(); } catch {}
-        try { this.socket.connect(); } catch {}
-      }
-    } catch (e) {
-      console.warn('WS token refresh error:', e);
-    }
-  }
-
-  maybeRefreshTokenOnAuthError(error) {
-    try {
-      const msg = String(error?.message || error || '').toLowerCase();
-      const isAuthError = msg.includes('401') || msg.includes('unauthorized') || msg.includes('invalid auth token');
-      if (isAuthError && !this.authExpired) this.refreshWsToken();
-    } catch {}
-  }
-
-  handleAuthExpired() {
-    this.authExpired = true;
-    this.clearReconnectTimeout();
-    this.stopHeartbeat();
-    if (this.tokenRefreshTimeout) { clearTimeout(this.tokenRefreshTimeout); this.tokenRefreshTimeout = null; }
-    try {
-      if (this.socket) {
-        this.socket.removeAllListeners();
-        this.socket.disconnect();
-      }
-    } catch {}
-    this.isConnected = false;
-    this.updateConnectionStatus(false);
-    // Inform user gently; avoid alert loops if tab is hidden
-    try {
-      if (window.Toast && typeof window.Toast.show === 'function') {
-        window.Toast.show('Session expired. Please sign in again.', 'warning');
-      } else {
-        console.warn('Session expired. Please sign in again.');
-      }
-    } catch {}
-  }
-
-  // Properly disconnect and cleanup
   disconnect() {
-    console.log('🔌 Disconnecting RealtimeManager...');
+    try {
+      if (this.chatChannel) {
+        this.chatChannel.unsubscribe();
+        this.chatChannel = null;
+      }
+      if (this.userChannel) {
+        this.userChannel.unsubscribe();
+        this.userChannel = null;
+      }
+      if (this.ably) {
+        try { this.ably.close(); } catch {}
+        this.ably = null;
+      }
+      this.isConnected = false;
+    } catch (error) {
+      console.error('Realtime disconnect error:', error);
+    }
+  }
+
+  destroy() {
     this.isDestroyed = true;
-    
-    // Clear all timeouts and intervals
-    this.clearReconnectTimeout();
-    this.stopHeartbeat();
-    
-    if (this.typingTimeout) {
-      clearTimeout(this.typingTimeout);
-      this.typingTimeout = null;
-    }
-    
-    // Remove all event listeners
-    this.removeAllEventListeners();
-    
-    // Disconnect socket
-    if (this.socket) {
-      this.socket.removeAllListeners();
-      this.socket.disconnect();
-      this.socket = null;
-    }
-    
-    // Clean up script element
-    if (this.scriptElement && this.scriptElement.parentNode) {
-      this.scriptElement.parentNode.removeChild(this.scriptElement);
-      this.scriptElement = null;
-    }
-    
-    // Reset state
-    this.isConnected = false;
-    this.currentChat = null;
-    this.isTyping = false;
-    this.connectionAttempts = 0;
-    
-    console.log('🧹 RealtimeManager cleanup complete');
+    this.disconnect();
+    this.globalHandlers.clear();
   }
 
-  // Remove all event listeners
-  removeAllEventListeners() {
-    for (const [event, listener] of this.eventListeners) {
-      if (this.socket) {
-        this.socket.off(event, listener);
-      }
-    }
-    this.eventListeners.clear();
-  }
-
-  // Enhanced setupEventListeners with proper cleanup tracking
-  setupEventListeners() {
-    if (!this.socket) return;
-    
-    // Store listeners for cleanup
-    const listeners = {
-      'new_message': (messageData) => this.handleNewMessage(messageData),
-      'conversation_status_changed': (data) => {
-        try {
-          // Update the status chip in the header to 'New'
-          const statusChip = document.querySelector('.status-chip');
-          if (statusChip) {
-            statusChip.textContent = 'New';
-            statusChip.style.backgroundColor = '#3b82f6';
-          }
-        } catch {}
-      },
-      'typing_start': (data) => this.handleTypingStart(data),
-      'typing_stop': (data) => this.handleTypingStop(data),
-      'pong': (data) => console.log('💓 Heartbeat acknowledged:', data),
-      'live_mode_changed': (data) => this.handleLiveModeChange(data),
-      'user_online': (data) => this.handleUserOnline(data),
-      'user_offline': (data) => this.handleUserOffline(data),
-      'message_error': (error) => this.handleMessageError(error),
-      'message_status_update': (data) => this.handleMessageStatusUpdate(data),
-      'message_reaction': (data) => {
-        console.log('📡 Received message_reaction event:', data);
-        this.handleMessageReaction(data);
-      }
-    };
-    
-    // Add listeners only once per event
-    for (const [event, listener] of Object.entries(listeners)) {
-      if (this.eventListeners.has(event)) {
-        this.socket.off(event, this.eventListeners.get(event));
-      }
-      this.socket.on(event, listener);
-      this.eventListeners.set(event, listener);
-    }
-  }
-}
-
-// Initialize real-time manager when DOM is loaded
-document.addEventListener('DOMContentLoaded', () => {
-  if (!window.realtimeManager) {
-    window.realtimeManager = new RealtimeManager();
-  }
-  // Attempt auto-connect; server will infer userId from ws token
-  try { window.realtimeManager.connect(); } catch {}
-  
-  // Add visibility change listener to handle page focus/blur
-  document.addEventListener('visibilitychange', () => {
-    if (window.realtimeManager) {
-      window.realtimeManager.handleVisibilityChange();
-    }
-  });
-  
-  // Add cleanup on page unload
-  window.addEventListener('beforeunload', () => {
-    if (window.realtimeManager) {
-      window.realtimeManager.disconnect();
-    }
-  });
-  
-  // Add cleanup on page hide (mobile)
-  window.addEventListener('pagehide', () => {
-    if (window.realtimeManager) {
-      window.realtimeManager.disconnect();
-    }
-  });
-});
-
-// Export for use in other scripts
-window.RealtimeManager = RealtimeManager;
+  // ===== Methods below are reused from the legacy implementation =====
