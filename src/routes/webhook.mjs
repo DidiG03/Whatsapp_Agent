@@ -2306,17 +2306,10 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         }
       } catch {}
 
-      // If human is active for this contact, send holding messages when appropriate
+      // If a human agent is active for this contact, stay completely silent.
+      // Once live mode is enabled, all further messages should go only between
+      // the customer and the human agent, without additional bot messages.
       if (humanActive) {
-        try {
-          if (cfg?.conversation_mode === 'escalation') {
-            await maybeHandleEscalationFollowup({ tenantUserId, from, text, cfg });
-          } else if (tenantUserId) {
-            await maybeSendHoldingMessage(tenantUserId, from, cfg);
-          }
-        } catch (err) {
-          console.error('[Webhook] Holding message error:', err?.message || err);
-        }
         return res.sendStatus(200);
       }
 
