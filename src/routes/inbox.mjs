@@ -1261,6 +1261,7 @@ export default function registerInboxRoutes(app) {
     const statusKey = conversationStatus || 'new';
     const statusDisplay = STATUS_DISPLAY_NAMES[statusKey] || 'New';
     const statusColor = STATUS_COLORS[statusKey] || STATUS_COLORS['new'];
+    const statusLocked = conversationStatus === CONVERSATION_STATUSES.RESOLVED;
     
     const email = await getSignedInEmail(req);
     const quickReplies = await getQuickReplies(userId);
@@ -2568,13 +2569,19 @@ export default function registerInboxRoutes(app) {
                       </button>
                       <div id="statusDropdown" class="status-dropdown-menu" style="position:absolute; right:0; top:32px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:8px; min-width:160px; display:none; box-shadow:0 6px 20px rgba(0,0,0,0.12); z-index:10;">
                         <div style="font-size:12px; color:#666; margin-bottom:6px; padding-bottom:4px; border-bottom:1px solid #eee;">Change Status</div>
-                        ${Object.entries(CONVERSATION_STATUSES).map(([key, value]) => `
-                          <button type="button" class="status-option ${conversationStatus === value ? 'active' : ''}" onclick="updateConversationStatus('${value}')" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none; background:transparent; padding:6px 8px; border-radius:4px; font-size:13px; ${conversationStatus === value ? 'background:#f0f9ff; color:#0369a1;' : ''}">
+                        ${Object.entries(CONVERSATION_STATUSES).map(([key, value]) => {
+                          const isActive = conversationStatus === value;
+                          const disableOption = statusLocked && value !== CONVERSATION_STATUSES.RESOLVED;
+                          const disabledAttr = disableOption ? 'disabled' : '';
+                          const extraStyle = disableOption ? 'opacity:0.5; cursor:not-allowed;' : '';
+                          return `
+                          <button type="button" class="status-option ${isActive ? 'active' : ''}" ${disabledAttr} onclick="${disableOption ? 'return false;' : `updateConversationStatus('${value}')`}" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none; background:transparent; padding:6px 8px; border-radius:4px; font-size:13px; ${isActive ? 'background:#f0f9ff; color:#0369a1;' : ''} ${extraStyle}">
                             <span style="width:8px; height:8px; border-radius:50%; background-color: ${STATUS_COLORS[value]};"></span>
                             ${STATUS_DISPLAY_NAMES[value]}
                             ${conversationStatus === value ? '✓' : ''}
                           </button>
-                        `).join('')}
+                        `;
+                        }).join('')}
                       </div>
                     </div>
                   </div>

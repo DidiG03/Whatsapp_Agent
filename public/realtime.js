@@ -17,9 +17,6 @@ class RealtimeManager {
     this.maxConnectionAttempts = 5;
     this.realtimeAvailable = true;
     this.globalHandlers = new Map();
-    this.typingTimeout = null;
-    this.isTyping = false;
-    this.typingIndicatorHideTimeout = null;
     this.latestMetrics = null;
     this.refreshTimeout = null;
     this.socket = {
@@ -241,12 +238,6 @@ class RealtimeManager {
       case 'new_message':
         this.handleNewMessage(data);
         break;
-      case 'typing_start':
-        this.handleTypingStart(data);
-        break;
-      case 'typing_stop':
-        this.handleTypingStop(data);
-        break;
       case 'live_mode_changed':
         this.handleLiveModeChange(data);
         break;
@@ -311,23 +302,6 @@ class RealtimeManager {
       console.error('Failed to send message via HTTP:', error);
       this.showToast(error?.message || 'Failed to send message. Please try again.', 'error');
       return false;
-    }
-  }
-
-  startTyping(phone) {
-    if (!this.isConnected || this.isTyping) return;
-    this.isTyping = true;
-    this.publishChatEvent('typing_start', { userId: this.userId, phone });
-    this.typingTimeout = setTimeout(() => this.stopTyping(phone), 3000);
-  }
-
-  stopTyping(phone) {
-    if (!this.isTyping) return;
-    this.isTyping = false;
-    this.publishChatEvent('typing_stop', { userId: this.userId, phone });
-    if (this.typingTimeout) {
-      clearTimeout(this.typingTimeout);
-      this.typingTimeout = null;
     }
   }
 
@@ -559,57 +533,8 @@ class RealtimeManager {
     this.emitGlobal('live_mode_changed', data);
   }
 
-  handleTypingStart(data = {}) {
-    const phone = data.phone || data.contact;
-    if (!phone || !this.currentChat || !this.isSamePhone(phone, this.currentChat)) return;
-    const indicator = this.ensureTypingIndicator();
-    if (!indicator) return;
-    indicator.style.display = 'flex';
-    indicator.setAttribute('aria-hidden', 'false');
-    this.scrollThreadToBottom(indicator.parentElement);
-    if (this.typingIndicatorHideTimeout) {
-      clearTimeout(this.typingIndicatorHideTimeout);
-    }
-    this.typingIndicatorHideTimeout = setTimeout(() => {
-      this.handleTypingStop(data);
-    }, 4000);
-  }
 
-  handleTypingStop(data = {}) {
-    const phone = data.phone || data.contact;
-    if (!phone || !this.currentChat || !this.isSamePhone(phone, this.currentChat)) return;
-    const indicator = document.getElementById('typingIndicator');
-    if (indicator) {
-      indicator.style.display = 'none';
-      indicator.setAttribute('aria-hidden', 'true');
-    }
-    if (this.typingIndicatorHideTimeout) {
-      clearTimeout(this.typingIndicatorHideTimeout);
-      this.typingIndicatorHideTimeout = null;
-    }
-  }
 
-  ensureTypingIndicator() {
-    let indicator = document.getElementById('typingIndicator');
-    if (indicator) return indicator;
-    const thread = document.querySelector('.chat-thread');
-    if (!thread) return null;
-    indicator = document.createElement('div');
-    indicator.id = 'typingIndicator';
-    indicator.className = 'typing-indicator';
-    indicator.style.display = 'none';
-    indicator.style.alignItems = 'center';
-    indicator.style.gap = '4px';
-    indicator.style.margin = '8px 0';
-    indicator.innerHTML = `
-      <span class="typing-dot" style="width:6px;height:6px;background:#999;border-radius:50%;display:inline-block;animation: blink 1s infinite;"></span>
-      <span class="typing-dot" style="width:6px;height:6px;background:#999;border-radius:50%;display:inline-block;animation: blink 1s infinite 0.2s;"></span>
-      <span class="typing-dot" style="width:6px;height:6px;background:#999;border-radius:50%;display:inline-block;animation: blink 1s infinite 0.4s;"></span>
-      <span style="font-size:12px;color:#6b7280;">Typing…</span>
-    `;
-    thread.appendChild(indicator);
-    return indicator;
-  }
 
   scrollThreadToBottom(container) {
     if (!container) return;
