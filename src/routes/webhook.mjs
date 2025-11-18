@@ -1919,14 +1919,17 @@ export default function registerWebhookRoutes(app) {
         return res.sendStatus(200);
       }
       const cfg = { ...tenant, user_id: tenantUserId };
+      let tenantPlan = null;
       try {
-        const plan = await getUserPlan(tenantUserId);
-        if ((plan?.plan_name || 'free') === 'free') {
+        tenantPlan = await getUserPlan(tenantUserId);
+        if ((tenantPlan?.plan_name || 'free') === 'free') {
           cfg.conversation_mode = 'escalation';
           cfg.bookings_enabled = 0;
           cfg.reminders_enabled = 0;
         }
-      } catch {}
+      } catch {
+        tenantPlan = null;
+      }
 
       // Define sender and extract content by type
       const from = message.from;
