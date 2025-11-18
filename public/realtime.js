@@ -19,6 +19,8 @@ class RealtimeManager {
     this.globalHandlers = new Map();
     this.latestMetrics = null;
     this.refreshTimeout = null;
+    this.realtimeStatusPromise = null;
+    this.realtimeStatusCache = null;
     this.socket = {
       on: (eventName, handler) => this.onGlobal(eventName, handler),
       off: (eventName, handler) => this.offGlobal(eventName, handler)
@@ -54,26 +56,13 @@ class RealtimeManager {
   async ensureRealtimeAvailable() {
     if (this.realtimeChecked) return;
     this.realtimeChecked = true;
-    try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 4000);
-      const resp = await fetch('/api/realtime/status', {
-        credentials: 'include',
-        signal: ctrl.signal
-      });
-      clearTimeout(t);
-      if (!resp.ok) {
-        this.realtimeAvailable = false;
-        return;
-      }
-      const data = await resp.json().catch(() => ({}));
-      if (data?.userId && !this.userId) {
-        this.userId = data.userId;
-      }
-      this.realtimeAvailable = !!data?.ablyAvailable;
-    } catch (error) {
-      console.warn('Realtime status check failed:', error?.message || error);
-      this.realtimeAvailable = false;
+    const status = await this.fetchRealtimeStatus();
+    if (status?.userId && !this.userId) {
+      this.userId = status.userId;
+    }
+    this.realtimeAvailable = !!status?.ablyAvailable;
+    if (!this.realtimeAvailable && !status) {
+      console.warn('Realtime status check failed; realtime disabled for this session');
     }
   }
 
@@ -397,19 +386,44 @@ class RealtimeManager {
     } catch (error) {
       console.warn('Realtime user id via auth manager failed:', error?.message || error);
     }
-    try {
-      const resp = await fetch('/api/realtime/status', { credentials: 'include' });
-      if (resp.ok) {
-        const data = await resp.json().catch(() => ({}));
-        if (data?.userId) {
-          this.userId = data.userId;
-          return data.userId;
-        }
-      }
-    } catch (error) {
-      console.warn('Realtime user id fetch failed:', error?.message || error);
+    const status = await this.fetchRealtimeStatus();
+    if (status?.userId) {
+      this.userId = status.userId;
+      return this.userId;
     }
     return null;
+  }
+
+  async fetchRealtimeStatus() {
+    if (this.realtimeStatusCache) return this.realtimeStatusCache;
+    if (!this.realtimeStatusPromise) {
+      this.realtimeStatusPromise = (async () => {
+        const ctrl = new AbortController();
+        const timeout = setTimeout(() => ctrl.abort(), 4000);
+        try {
+          const resp = await fetch('/api/realtime/status', {
+            credentials: 'include',
+            signal: ctrl.signal
+          });
+          if (!resp.ok) {
+            return null;
+          }
+          const data = await resp.json().catch(() => ({}));
+          return data;
+        } catch (error) {
+          console.warn('Realtime status fetch failed:', error?.message || error);
+          return null;
+        } finally {
+          clearTimeout(timeout);
+          this.realtimeStatusPromise = null;
+        }
+      })();
+    }
+    const data = await this.realtimeStatusPromise;
+    if (data) {
+      this.realtimeStatusCache = data;
+    }
+    return data;
   }
 
   handleNewMessage(data = {}) {

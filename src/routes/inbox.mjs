@@ -1795,14 +1795,6 @@ export default function registerInboxRoutes(app) {
               // Typing indicators are now handled by Socket.IO in realtime.js
               if (window?.ENV?.DEBUG_LOGS === '1') console.log('Typing indicators initialized via Socket.IO');
             }
-
-            function initTypingIndicator() {
-              const phone = '${phone}'.split('?')[0]; // Clean phone number
-              const userId = '${userId}';
-              
-              // Typing indicators are now handled by Socket.IO in realtime.js
-              if (window?.ENV?.DEBUG_LOGS === '1') console.log('Typing indicators initialized via Socket.IO');
-            }
             
             function showTypingIndicator() {
               const indicator = document.getElementById('typingIndicator');
@@ -2654,27 +2646,6 @@ export default function registerInboxRoutes(app) {
                           <button type="button" class="reaction-option" onclick="addReaction('👏')">👏</button>
                         </div>
                       </div>
-                    </div>
-                    <div id="reactionPicker" class="reaction-picker" style="display:none;">
-                      <div class="reaction-picker-header">
-                        <span class="reaction-picker-title">React to message</span>
-                        <button type="button" class="reaction-picker-close" onclick="hideReactionPicker()">×</button>
-                      </div>
-                      <div class="reaction-picker-grid">
-                        <button type="button" class="reaction-option" onclick="addReaction('😀')">😀</button>
-                        <button type="button" class="reaction-option" onclick="addReaction('😂')">😂</button>
-                        <button type="button" class="reaction-option" onclick="addReaction('😍')">😍</button>
-                        <button type="button" class="reaction-option" onclick="addReaction('😮')">😮</button>
-                        <button type="button" class="reaction-option" onclick="addReaction('😢')">😢</button>
-                        <button type="button" class="reaction-option" onclick="addReaction('😡')">😡</button>
-                        <button type="button" class="reaction-option" onclick="addReaction('👍')">👍</button>
-                        <button type="button" class="reaction-option" onclick="addReaction('👎')">👎</button>
-                        <button type="button" class="reaction-option" onclick="addReaction('❤️')">❤️</button>
-                        <button type="button" class="reaction-option" onclick="addReaction('🎉')">🎉</button>
-                        <button type="button" class="reaction-option" onclick="addReaction('🔥')">🔥</button>
-                        <button type="button" class="reaction-option" onclick="addReaction('👏')">👏</button>
-                      </div>
-                    </div>
                   </div>
                   <form method="post" action="/send/${phone}" onsubmit="event.preventDefault(); handleFormSubmit(event); return false;" style="margin-top: 8px;">
                     <div class="wa-attach-menu" id="attachMenu" style="display: none;">

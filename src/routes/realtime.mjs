@@ -183,10 +183,11 @@ export async function broadcastMetricsUpdate(userId, metricsData) {
 export default function registerRealtimeRoutes(app) {
   app.get("/api/realtime/status", ensureAuthed, (req, res) => {
     const userId = getCurrentUserId(req);
+    const enabled = isRealtimeEnabled();
     res.json({
       userId,
-      transport: isRealtimeEnabled() ? "ably" : "disabled",
-      ablyAvailable: isRealtimeEnabled()
+      transport: enabled ? "ably" : "disabled",
+      ablyAvailable: enabled
     });
   });
 
@@ -246,10 +247,11 @@ export default function registerRealtimeRoutes(app) {
   });
 
   app.get("/realtime", (req, res) => {
+    const enabled = isRealtimeEnabled();
     res.json({
       message: "Realtime service ready",
-      transport: isRealtimeEnabled() ? "ably" : "disabled",
-      ablyAvailable: isRealtimeEnabled(),
+      transport: enabled ? "ably" : "disabled",
+      ablyAvailable: enabled,
       endpoints: [
         "GET /api/realtime/status",
         "GET /api/realtime/ably/token",
