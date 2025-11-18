@@ -3266,7 +3266,6 @@ export default function registerInboxRoutes(app) {
       }
       
       // Handle reply relationship if this is a reply to another message
-      const replyTo = req.body?.replyTo;
       if (replyTo && outboundId) {
         try {
           const plan = await getUserPlan(userId);
