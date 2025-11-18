@@ -329,24 +329,53 @@ class MongoDBAdapter {
             console.warn(`Invalid MongoDB run target:`, collectionName);
             return { changes: 0, lastInsertRowid: null };
           }
-          // Legacy translation: INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at) ... ON CONFLICT ...
+          // Legacy translation: INSERT/UPSERT into handoff table (supports several variants)
           if (typeof collectionName === 'string' && /INSERT\s+INTO\s+handoff/i.test(collectionName)) {
             try {
-              // Args may be (contactId, userId) with step embedded in SQL, or (contactId, userId, step)
-              let [contactId, userId, step] = args;
-              if (!step) {
-                const m = /VALUES\s*\(\s*\?,\s*\?,\s*'([^']+)'/i.exec(collectionName);
-                if (m) step = m[1];
+              const sql = collectionName;
+              const hasReason = /escalation_reason/i.test(sql);
+              const hasStep = /escalation_step/i.test(sql);
+              const hasFlags = /is_human/i.test(sql) || /human_expires_ts/i.test(sql);
+
+              // Basic variant: INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at) ...
+              if (!hasReason && hasStep && !hasFlags) {
+                let [contactId, userId, step] = args;
+                if (!step) {
+                  const m = /VALUES\s*\(\s*\?,\s*\?,\s*'([^']+)'/i.exec(sql);
+                  if (m) step = m[1];
+                }
+                const update = { updatedAt: new Date() };
+                if (step) update.escalation_step = step;
+                await this.db.collection('handoff').updateOne(
+                  { contact_id: String(contactId), user_id: String(userId) },
+                  { $set: update },
+                  { upsert: true }
+                );
+                return { changes: 1, lastInsertRowid: null };
               }
-              const update = { updatedAt: new Date() };
-              if (step) update.escalation_step = step;
-              await this.db.collection('handoff').updateOne(
-                { contact_id: String(contactId), user_id: String(userId) },
-                { $set: update },
-                { upsert: true }
-              );
-              return { changes: 1, lastInsertRowid: null };
-            } catch (e) {}
+
+              // Rich variant used when escalation is completed:
+              // INSERT INTO handoff (contact_id, user_id, escalation_step, escalation_reason, is_human, human_expires_ts, updated_at) ...
+              if (hasReason && hasFlags) {
+                const [contactId, userId, reason, humanExpires] = args;
+                const update = {
+                  updatedAt: new Date(),
+                  escalation_step: null,
+                  escalation_reason: String(reason || ''),
+                  is_human: true,
+                  human_expires_ts: Number(humanExpires || 0)
+                };
+                await this.db.collection('handoff').updateOne(
+                  { contact_id: String(contactId), user_id: String(userId) },
+                  { $set: update },
+                  { upsert: true }
+                );
+                return { changes: 1, lastInsertRowid: null };
+              }
+            } catch (e) {
+              console.warn('MongoDB handoff insert translation failed:', e?.message || e);
+              return { changes: 0, lastInsertRowid: null };
+            }
             console.warn(`Invalid MongoDB run target:`, collectionName);
             return { changes: 0, lastInsertRowid: null };
           }

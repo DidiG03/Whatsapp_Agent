@@ -883,9 +883,11 @@ function getEscalationAckMessage(cfg) {
 }
 
 async function sendEscalationIntroMessage(to, cfg) {
+  const greet = cfg.entry_greeting || await generateAssistantNudge('greeting', {}, { tone: cfg?.ai_tone, style: cfg?.ai_style });
   const intro = getEscalationAckMessage(cfg);
-  if (!intro) return;
-  await sendTextTracked(to, intro, cfg);
+  const parts = [greet, intro].map(s => String(s || '').trim()).filter(Boolean);
+  if (!parts.length) return;
+  await sendTextTracked(to, parts.join(' '), cfg);
 }
 
 async function promptForEscalationName(to, cfg) {
