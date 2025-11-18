@@ -723,16 +723,12 @@ export default function registerInboxRoutes(app) {
                     </div>
                   </div>
                   <div class="search-actions">
-                    <button type="button" onclick="toggleSearchFilters()" class="filter-toggle-btn">
-                      <img src="/filter-icon.svg" alt="Filter" width="20" height="20">
-                    </button>
-
                     ${showArchived ? `
-                      <a href="/inbox" class="btn-ghost" title="Back to Inbox" style="display:inline-flex;align-items:center;gap:6px;">
+                      <a href="/inbox" class="filter-toggle-btn" title="Back to Inbox" style="display:inline-flex;align-items:center;gap:6px;">
                         <img src="/inbox-icon.svg" alt="Inbox" width="18" height="18"> Inbox
                       </a>
                     ` : `
-                      <a href="/inbox?archived=1" class="btn-ghost" title="View Archived" style="display:inline-flex;align-items:center;gap:6px;">
+                      <a href="/inbox?archived=1" class="filter-toggle-btn" title="View Archived" style="display:inline-flex;align-items:center;gap:6px;">
                         <img src="/archive-icon.svg" alt="Archived" width="18" height="18"> 
                       </a>
                     `}

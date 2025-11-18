@@ -1,6 +1,6 @@
 /**
  * Realtime manager backed by Ably channels.
- * Handles live chat updates, typing indicators, and toast notifications.
+ * Handles live chat updates and toast notifications.
  */
 class RealtimeManager {
   constructor() {
