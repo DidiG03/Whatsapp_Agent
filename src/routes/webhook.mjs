@@ -901,7 +901,7 @@ async function promptForEscalationReason(to, cfg) {
 async function completeEscalationHandoff({ tenantUserId, from, reason, cfg, customerName }) {
   const expires = Math.floor(Date.now() / 1000) + 5 * 60;
   try {
-    db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, escalation_reason, is_human, human_expires_ts, updated_at)
+    await db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, escalation_reason, is_human, human_expires_ts, updated_at)
       VALUES (?, ?, NULL, ?, 1, ?, strftime('%s','now'))
       ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = NULL, escalation_reason = excluded.escalation_reason, is_human = 1, human_expires_ts = excluded.human_expires_ts, updated_at = excluded.updated_at`).run(from, tenantUserId, reason, expires);
   } catch (e) {
@@ -919,7 +919,7 @@ async function completeEscalationHandoff({ tenantUserId, from, reason, cfg, cust
   }
   try {
     const displayName = customerName || from;
-    db.prepare(`INSERT INTO notifications (user_id, type, title, message, link, metadata) 
+    await db.prepare(`INSERT INTO notifications (user_id, type, title, message, link, metadata) 
       VALUES (?, ?, ?, ?, ?, ?)`).run(
         tenantUserId,
         'escalation',
@@ -942,8 +942,8 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
     const outHandled = await handleOutOfHoursGuard(tenantUserId, from, cfg);
     if (outHandled) return true;
 
-    const state = db.prepare(`SELECT escalation_step FROM handoff WHERE contact_id = ? AND user_id = ?`).get(from, tenantUserId) || {};
-    const customer = db.prepare(`SELECT display_name FROM customers WHERE user_id = ? AND contact_id = ?`).get(tenantUserId, from) || {};
+    const state = await db.prepare(`SELECT escalation_step FROM handoff WHERE contact_id = ? AND user_id = ?`).get(from, tenantUserId).catch(() => null) || {};
+    const customer = await db.prepare(`SELECT display_name FROM customers WHERE user_id = ? AND contact_id = ?`).get(tenantUserId, from).catch(() => null) || {};
     const trimmed = String(text || '').trim();
     const step = state.escalation_step || null;
 
@@ -951,7 +951,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       await sendEscalationIntroMessage(from, cfg);
       if (customer.display_name) {
         try {
-          db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
+          await db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
             VALUES (?, ?, 'ask_reason', strftime('%s','now'))
             ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = 'ask_reason', updated_at = excluded.updated_at`).run(from, tenantUserId);
         } catch (e) {
@@ -960,7 +960,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         await promptForEscalationReason(from, cfg);
       } else {
         try {
-          db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
+          await db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
             VALUES (?, ?, 'ask_name', strftime('%s','now'))
             ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = 'ask_name', updated_at = excluded.updated_at`).run(from, tenantUserId);
         } catch (e) {
@@ -975,7 +975,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       const parsed = parseNameFromMessage(text) || trimmed.slice(0, 80);
       if (parsed) {
         try {
-          db.prepare(`INSERT INTO customers (user_id, contact_id, display_name, created_at, updated_at)
+          await db.prepare(`INSERT INTO customers (user_id, contact_id, display_name, created_at, updated_at)
             VALUES (?, ?, ?, strftime('%s','now'), strftime('%s','now'))
             ON CONFLICT(user_id, contact_id) DO UPDATE SET display_name = excluded.display_name, updated_at = excluded.updated_at`).run(tenantUserId, from, parsed);
         } catch (e) {
@@ -984,7 +984,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         try { await rememberName(tenantUserId, from, parsed); } catch {}
         customer.display_name = parsed;
         try {
-          db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
+          await db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
             VALUES (?, ?, 'ask_reason', strftime('%s','now'))
             ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = 'ask_reason', updated_at = excluded.updated_at`).run(from, tenantUserId);
         } catch (e) {
@@ -1016,7 +1016,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
     // Fallback: restart escalation flow
     await sendEscalationIntroMessage(from, cfg);
     try {
-      db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
+      await db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
         VALUES (?, ?, 'ask_name', strftime('%s','now'))
         ON CONFLICT(contact_id, user_id) DO UPDATE SET escalation_step = 'ask_name', updated_at = excluded.updated_at`).run(from, tenantUserId);
     } catch (e) {
