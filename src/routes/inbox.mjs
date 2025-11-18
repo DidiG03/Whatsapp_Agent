@@ -2754,7 +2754,6 @@ export default function registerInboxRoutes(app) {
     const now = Math.floor(Date.now()/1000);
     const exp = isHuman ? (now + 5*60) : 0;
     try {
-      // If enabling live mode, require an agent name in Settings
       if (isHuman) {
         const cfg = await getSettingsForUser(userId);
         const agentName = String(cfg?.name || '').trim();
@@ -2762,40 +2761,71 @@ export default function registerInboxRoutes(app) {
           const msg = encodeURIComponent('Please set your Name in Settings before enabling Live mode.');
           return res.redirect(`/inbox/${encodeURIComponent(phone)}?toast=${msg}&type=error`);
         }
-        // Persist live mode first
-        try { await Handoff.findOneAndUpdate({ contact_id: phone, user_id: userId }, { $set: { is_human: true, human_expires_ts: exp, updatedAt: new Date() } }, { upsert: true }); } catch {}
-        // Send premade connection message to the customer
         try {
-          if (cfg?.whatsapp_token && cfg?.phone_number_id) {
-            const text = `You are connected with ${agentName}.`;
-            const resp = await sendWhatsAppText(phone, text, cfg);
-            const outboundId = resp?.messages?.[0]?.id;
-            if (outboundId) {
-              try { await recordOutboundMessage({ messageId: outboundId, userId, cfg, to: phone, type: 'text', text, raw: { to: phone, text, context: 'live_mode_connect' } }); } catch {}
-              try {
-                const { broadcastNewMessage } = await import('../routes/realtime.mjs');
-                const messageData = {
-                  id: outboundId,
-                  direction: 'outbound',
-                  type: 'text',
-                  text_body: text,
-                  timestamp: Math.floor(Date.now() / 1000),
-                  from_digits: (cfg.business_phone || '').replace(/\D/g, '') || null,
-                  to_digits: String(phone),
-                  contact_name: null,
-                  contact: String(phone),
-                  formatted_time: formatTimestampForDisplay(Math.floor(Date.now() / 1000)),
-                  delivery_status: 'sent',
-                  read_status: 'unread'
-                };
-                broadcastNewMessage(userId, String(phone), messageData);
-              } catch {}
+          await Handoff.findOneAndUpdate(
+            { contact_id: phone, user_id: userId },
+            { $set: { is_human: true, human_expires_ts: exp, updatedAt: new Date() } },
+            { upsert: true }
+          );
+        } catch {}
+
+        // Fire-and-forget welcome message so the response isn't blocked by external APIs
+        (async () => {
+          try {
+            if (cfg?.whatsapp_token && cfg?.phone_number_id) {
+              const text = `You are connected with ${agentName}.`;
+              const resp = await sendWhatsAppText(phone, text, cfg);
+              const outboundId = resp?.messages?.[0]?.id;
+              if (outboundId) {
+                try {
+                  await recordOutboundMessage({
+                    messageId: outboundId,
+                    userId,
+                    cfg,
+                    to: phone,
+                    type: 'text',
+                    text,
+                    raw: { to: phone, text, context: 'live_mode_connect' }
+                  });
+                } catch (err) {
+                  console.warn('Live mode welcome message record failed:', err?.message || err);
+                }
+                try {
+                  const { broadcastNewMessage } = await import('../routes/realtime.mjs');
+                  const nowTs = Math.floor(Date.now() / 1000);
+                  const messageData = {
+                    id: outboundId,
+                    direction: 'outbound',
+                    type: 'text',
+                    text_body: text,
+                    timestamp: nowTs,
+                    from_digits: (cfg.business_phone || '').replace(/\D/g, '') || null,
+                    to_digits: String(phone),
+                    contact_name: null,
+                    contact: String(phone),
+                    formatted_time: formatTimestampForDisplay(nowTs),
+                    delivery_status: 'sent',
+                    read_status: 'unread'
+                  };
+                  broadcastNewMessage(userId, String(phone), messageData);
+                } catch (err) {
+                  console.warn('Broadcast live mode welcome message failed:', err?.message || err);
+                }
+              }
             }
+          } catch (err) {
+            console.warn('Live mode welcome message failed:', err?.message || err);
           }
-        } catch (_) {}
+        })();
       } else {
         // Disabling live mode
-        try { await Handoff.findOneAndUpdate({ contact_id: phone, user_id: userId }, { $set: { is_human: false, human_expires_ts: 0, updatedAt: new Date() } }, { upsert: true }); } catch {}
+        try {
+          await Handoff.findOneAndUpdate(
+            { contact_id: phone, user_id: userId },
+            { $set: { is_human: false, human_expires_ts: 0, updatedAt: new Date() } },
+            { upsert: true }
+          );
+        } catch {}
       }
     } catch {}
     return res.redirect(`/inbox/${encodeURIComponent(phone)}`);
