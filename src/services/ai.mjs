@@ -345,6 +345,7 @@ export async function generateAssistantNudge(kind, data = {}, options = {}) {
     greeting: 'Send a short, warm first greeting for WhatsApp. One sentence.',
     out_of_hours: 'Explain you are currently outside working hours and will reply later. One sentence.',
     holding: 'Acknowledge the user and say an agent will be with them shortly. One sentence.',
+    handoff_followup: 'Reassure the user that a human agent is on the way, referencing any known context (reason/wait time). One or two short sentences.',
     no_staff: 'Explain bookings are enabled but staff isn’t configured yet. One sentence.',
     too_close: 'Explain it is too close to the start time (use provided minutes) and suggest contacting directly. One sentence.',
     reminder_ok: 'Acknowledge that the reminder time is fine. One sentence.',
@@ -398,6 +399,7 @@ export async function generateAssistantNudge(kind, data = {}, options = {}) {
     if (kind === 'cancel_aborted') return "Okay, I won’t cancel. If you change your mind later, just say ‘cancel’.";
     if (kind === 'slot_book_failed') return "Sorry — that slot couldn’t be booked. Could you pick another time?";
     if (kind === 'reset_done') return "All set — I’ve reset the booking flow. Share a new date and time when ready.";
+    if (kind === 'handoff_followup') return "Thanks for your patience — I’m still connecting you with a human teammate.";
     return 'Okay.';
   }
 }

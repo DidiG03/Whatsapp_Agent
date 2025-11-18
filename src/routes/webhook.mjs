@@ -125,6 +125,19 @@ function wantsHuman(raw) {
   return /\b(human|agent|representative|real person|support|customer service|talk to (a )?human|speak to (a )?human|live chat)\b/.test(s);
 }
 
+function needsAgentFollowup(raw) {
+  const s = String(raw || '').toLowerCase().trim();
+  if (!s) return false;
+  if (wantsHuman(s)) return true;
+  if (/still\s+(waiting|not|get)/.test(s) && /(agent|human|reply|response|connected)/.test(s)) return true;
+  if (/not\s+(yet\s+)?(connected|hearing)/.test(s) && /(agent|human)/.test(s)) return true;
+  if (/(anyone|someone)\s+(there|available)/.test(s)) return true;
+  if (/connect(ed)?\s+(me\s+)?(with|to)\s+(an?\s+)?(agent|human)/.test(s)) return true;
+  if (/\bhelp\b/.test(s) && s.length <= 40) return true;
+  if (/^(hi|hello|hey)\b/.test(s) && s.length <= 16) return true;
+  return false;
+}
+
 // Helper: send KB item by title (prefers PDF if present), and record outbound message
 async function sendKbItemByTitle({ tenantUserId, to, title, cfg }) {
   try {
@@ -421,6 +434,7 @@ function memKey(userId, contact) {
 }
 // In‑progress holding/throttle memory
 const memProgress = new Map(); // key -> { lastHoldingAtMs: number, hits: number[] (timestamps ms) }
+const memEscalationHold = new Map(); // key -> lastSentAtMs
 async function getMemSession(userId, contact) {
   const key = memKey(userId, contact);
   try {
@@ -890,6 +904,27 @@ async function sendEscalationIntroMessage(to, cfg) {
   await sendTextTracked(to, parts.join(' '), cfg);
 }
 
+function shouldThrottleEscalationHolding(userId, contact) {
+  const key = memKey(userId, contact);
+  const now = Date.now();
+  const last = memEscalationHold.get(key) || 0;
+  const windowMs = Number(process.env.ESCALATION_HOLD_COOLDOWN_MS || 60000);
+  if (now - last < windowMs) return true;
+  memEscalationHold.set(key, now);
+  return false;
+}
+
+async function sendEscalationHoldingMessage({ tenantUserId, to, cfg, reason, waitMinutes }) {
+  if (shouldThrottleEscalationHolding(tenantUserId, to)) return false;
+  const payload = {
+    reason: reason || null,
+    waitMinutes: Number.isFinite(waitMinutes) && waitMinutes > 0 ? Math.round(waitMinutes) : null
+  };
+  const holding = await generateAssistantNudge('handoff_followup', payload, { tone: cfg?.ai_tone, style: cfg?.ai_style });
+  await sendTextTracked(to, holding, cfg);
+  return true;
+}
+
 async function promptForEscalationName(to, cfg) {
   const prompt = await generateAssistantNudge('handoff_ask_name', {}, { tone: cfg?.ai_tone, style: cfg?.ai_style });
   await sendTextTracked(to, prompt, cfg);
@@ -898,6 +933,28 @@ async function promptForEscalationName(to, cfg) {
 async function promptForEscalationReason(to, cfg) {
   const prompt = await generateAssistantNudge('handoff_ask_reason', {}, { tone: cfg?.ai_tone, style: cfg?.ai_style });
   await sendTextTracked(to, prompt, cfg);
+}
+
+async function maybeHandleEscalationFollowup({ tenantUserId, from, text, cfg }) {
+  try {
+    const row = await db.prepare(`SELECT is_human, human_expires_ts, escalation_reason FROM handoff WHERE contact_id = ? AND user_id = ?`).get(from, tenantUserId).catch(() => null);
+    if (!row?.is_human) return false;
+    const now = Math.floor(Date.now() / 1000);
+    const stillWaiting = !row.human_expires_ts || Number(row.human_expires_ts) > now;
+    if (!stillWaiting) return false;
+    if (!needsAgentFollowup(text)) return false;
+    const remainingMinutes = row.human_expires_ts ? Math.max(1, Math.round((Number(row.human_expires_ts) - now) / 60)) : null;
+    return await sendEscalationHoldingMessage({
+      tenantUserId,
+      to: from,
+      cfg,
+      reason: row.escalation_reason || null,
+      waitMinutes: remainingMinutes
+    });
+  } catch (error) {
+    console.error('[Webhook] Failed to send escalation follow-up:', error?.message || error);
+    return false;
+  }
 }
 
 async function completeEscalationHandoff({ tenantUserId, from, reason, cfg, customerName }) {
@@ -933,6 +990,11 @@ async function completeEscalationHandoff({ tenantUserId, from, reason, cfg, cust
   } catch (e) {
     console.error('[Webhook] Failed to create escalation notification:', e?.message || e);
   }
+  try {
+    await updateConversationStatus(tenantUserId, from, CONVERSATION_STATUSES.IN_PROGRESS, 'escalation_pending_handoff');
+  } catch (e) {
+    console.error('[Webhook] Failed to update conversation status for escalation:', e?.message || e);
+  }
   const connecting = await generateAssistantNudge('handoff_connecting', {}, { tone: cfg?.ai_tone, style: cfg?.ai_style });
   await sendTextTracked(from, connecting, cfg);
 }
@@ -944,12 +1006,27 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
     const outHandled = await handleOutOfHoursGuard(tenantUserId, from, cfg);
     if (outHandled) return true;
 
-    const state = await db.prepare(`SELECT escalation_step FROM handoff WHERE contact_id = ? AND user_id = ?`).get(from, tenantUserId).catch(() => null) || {};
+    const state = await db.prepare(`SELECT escalation_step, is_human, human_expires_ts, escalation_reason FROM handoff WHERE contact_id = ? AND user_id = ?`).get(from, tenantUserId).catch(() => null) || {};
     const customer = await db.prepare(`SELECT display_name FROM customers WHERE user_id = ? AND contact_id = ?`).get(tenantUserId, from).catch(() => null) || {};
     const trimmed = String(text || '').trim();
     const step = state.escalation_step || null;
+    const now = Math.floor(Date.now() / 1000);
+    const waitingForAgent = !!state.is_human && (!state.human_expires_ts || Number(state.human_expires_ts) > now);
+    const remainingMinutes = state.human_expires_ts ? Math.max(1, Math.round((Number(state.human_expires_ts) - now) / 60)) : null;
 
     if (!step) {
+      if (waitingForAgent) {
+        if (needsAgentFollowup(trimmed)) {
+          await sendEscalationHoldingMessage({
+            tenantUserId,
+            to: from,
+            cfg,
+            reason: state.escalation_reason || null,
+            waitMinutes: remainingMinutes
+          });
+        }
+        return true;
+      }
       await sendEscalationIntroMessage(from, cfg);
       if (customer.display_name) {
         try {
@@ -2165,14 +2242,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         }
       } catch {}
 
-      // If conversation is In Progress, maybe send a holding message (dedup + throttle)
-      try {
-        if (humanActive && cfg?.conversation_mode !== 'escalation' && tenantUserId) {
-          const handled = await maybeSendHoldingMessage(tenantUserId, from, cfg);
-          if (handled) return res.sendStatus(200);
-        }
-      } catch {}
-
       // Proceed with bot logic even if message was seen before; prevents missed replies when duplicate detection is inconclusive
 
       // CSAT rating capture: if awaiting rating for this contact, capture first emoji and store
@@ -2208,8 +2277,17 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         }
       } catch {}
 
-      // If human is active for this contact, do not auto‑reply at all
+      // If human is active for this contact, send holding messages when appropriate
       if (humanActive) {
+        try {
+          if (cfg?.conversation_mode === 'escalation') {
+            await maybeHandleEscalationFollowup({ tenantUserId, from, text, cfg });
+          } else if (tenantUserId) {
+            await maybeSendHoldingMessage(tenantUserId, from, cfg);
+          }
+        } catch (err) {
+          console.error('[Webhook] Holding message error:', err?.message || err);
+        }
         return res.sendStatus(200);
       }
 
@@ -2274,14 +2352,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       // Combine recent short fragments to improve intent detection
       try {
         text = await maybeJoinRecentFragments({ text, from, tenantUserId, timestampSec: Number(message.timestamp || Math.floor(Date.now()/1000)) });
-      } catch {}
-
-      // Second guard: re-check status before greeting to prevent greetings while In Progress
-      try {
-        if (humanActive && cfg?.conversation_mode !== 'escalation' && tenantUserId) {
-          const handled = await maybeSendHoldingMessage(tenantUserId, from, cfg);
-          if (handled) return res.sendStatus(200);
-        }
       } catch {}
 
       // Before greetings/AI: suppress non-substantive spam bursts (no replies)
