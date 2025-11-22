@@ -8,7 +8,7 @@ import { sendWhatsAppText, sendWhatsAppTemplate, sendWhatsappImage, sendWhatsapp
 import { getQuickReplies } from "../services/quickReplies.mjs";
 import { getMessageReactions, toggleReaction, removeReaction, getMessagesReactions, getUserReactionsForMessages } from "../services/reactions.mjs";
 import { createReply, getMessagesReplies, getReplyOriginals } from "../services/replies.mjs";
-import { getUserPlan } from "../services/usage.mjs";
+import { getUserPlan, getPlanStatus, isPlanUpgraded } from "../services/usage.mjs";
 import { updateContactActivity, upsertContactProfile } from "../services/contacts.mjs";
 import { recordOutboundMessage } from "../services/messages.mjs";
 import { 
@@ -383,7 +383,7 @@ export default function registerInboxRoutes(app) {
     const s = await getSettingsForUser(userId);
     // Plan gating: only upgraded users can reply/react
     const plan = await getUserPlan(userId);
-    const isUpgraded = (plan?.plan_name || 'free') !== 'free';
+    const isUpgraded = isPlanUpgraded(plan);
 
     // Ensure archived conversations are excluded from the default inbox list
     if (!showArchived) {
@@ -683,7 +683,7 @@ export default function registerInboxRoutes(app) {
         <div class="container page-transition">
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Inbox`, email)}
           <div class="layout">
-            ${renderSidebar('inbox', { showBookings: !!(s?.bookings_enabled), showKb: true })}
+            ${renderSidebar('inbox', { showBookings: !!(s?.bookings_enabled), isUpgraded })}
             <main class="main">
               <div class="main-content">
                   <form method="get" action="/inbox" class="search-form">
@@ -1086,7 +1086,7 @@ export default function registerInboxRoutes(app) {
         <div class="container">
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / <a href="/inbox">Inbox</a> / Search Results`, email)}
           <div class="layout">
-            ${renderSidebar('inbox', { showBookings: !!((await getSettingsForUser(userId))?.bookings_enabled), showKb: true })}
+            ${renderSidebar('inbox', { showBookings: !!(sidebarSettings?.bookings_enabled), isUpgraded })}
             <main class="main">
               <div class="search-container">
                 <form method="get" action="/search" class="search-form">
@@ -1179,6 +1179,10 @@ export default function registerInboxRoutes(app) {
   app.get("/inbox/:phone", ensureAuthed, async (req, res) => {
     const phone = req.params.phone.split('?')[0]; // Remove any query parameters from phone
     const userId = getCurrentUserId(req);
+    const [sidebarSettings, { isUpgraded }] = await Promise.all([
+      getSettingsForUser(userId),
+      getPlanStatus(userId)
+    ]);
     const phoneDigits = normalizePhone(phone);
     // Mark as seen (Mongo)
     try {
@@ -1267,13 +1271,6 @@ export default function registerInboxRoutes(app) {
       const etag = 'W/"'+Buffer.from(etagBase).toString('base64').slice(0, 32)+'"';
       if (req.headers['if-none-match'] === etag) return res.status(304).end();
       res.setHeader('ETag', etag);
-    } catch {}
-
-    // Plan gating: only upgraded users can reply/react
-    let isUpgraded = false;
-    try {
-      const plan = await getUserPlan(userId);
-      isUpgraded = (plan?.plan_name || 'free') !== 'free';
     } catch {}
 
     const items = msgs.map(m => {
@@ -2513,7 +2510,7 @@ export default function registerInboxRoutes(app) {
           <div class="container page-transition">
             ${renderTopbar(`<a href="/dashboard">Dashboard</a> / <a href="/inbox">Inbox</a> / +${String(phone).replace(/^\+/, '')}`, email)}
             <div class="layout">
-              ${renderSidebar('inbox', { showBookings: !!((await getSettingsForUser(userId))?.bookings_enabled), showKb: true })}
+              ${renderSidebar('inbox', { showBookings: !!(sidebarSettings?.bookings_enabled), isUpgraded })}
               <main class="main">
                 <div class="main-content">
                   <div class="wa-chat-header">

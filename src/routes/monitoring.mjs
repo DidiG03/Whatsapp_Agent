@@ -8,12 +8,14 @@ import { renderSidebar, renderTopbar, getProfessionalHead } from '../utils.mjs';
 import { getHealthStatus } from '../monitoring/health.mjs';
 import { getAllMetrics } from '../monitoring/metrics.mjs';
 import { logHelpers } from '../monitoring/logger.mjs';
+import { getPlanStatus } from '../services/usage.mjs';
 
 export default function registerMonitoringRoutes(app) {
   // Main monitoring dashboard - Admin only
   app.get('/monitoring', ensureAuthed, ensureAdmin, async (req, res) => {
     const email = await getSignedInEmail(req);
     const userId = getCurrentUserId(req);
+    const { isUpgraded } = await getPlanStatus(userId);
     
     try {
       // Get current metrics and health status
@@ -72,7 +74,7 @@ export default function registerMonitoringRoutes(app) {
           <div class="container">
             ${renderTopbar('Monitoring Dashboard', email)}
             <div class="layout">
-              ${renderSidebar('monitoring', { showKb: true })}
+              ${renderSidebar('monitoring', { isUpgraded })}
               <main class="main">
                 <div class="main-content">
                   

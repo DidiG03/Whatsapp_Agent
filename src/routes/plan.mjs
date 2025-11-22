@@ -1,7 +1,7 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
 import { renderSidebar, renderTopbar, escapeHtml } from "../utils.mjs";
 import { getSettingsForUser } from "../services/settings.mjs";
-import { getCurrentUsage, getUserPlan, getUsageHistory, getPlanPricing, updateUserPlan } from "../services/usage.mjs";
+import { getCurrentUsage, getUserPlan, getUsageHistory, getPlanPricing, updateUserPlan, isPlanUpgraded } from "../services/usage.mjs";
 import { isStripeEnabled, getStripePublishableKey } from "../services/stripe.mjs";
 
 export default function registerPlanRoutes(app) {
@@ -10,10 +10,14 @@ export default function registerPlanRoutes(app) {
     const email = await getSignedInEmail(req);
     
     // Get current usage and plan info
-    const usage = await getCurrentUsage(userId);
-    const plan = await getUserPlan(userId);
+    const [usage, plan, settings] = await Promise.all([
+      getCurrentUsage(userId),
+      getUserPlan(userId),
+      getSettingsForUser(userId)
+    ]);
     const history = await getUsageHistory(userId, 6);
     const pricing = getPlanPricing();
+    const isUpgraded = isPlanUpgraded(plan);
     
     // Calculate usage percentage
     const totalMessages = usage.inbound_messages + usage.outbound_messages + usage.template_messages;
@@ -55,7 +59,7 @@ export default function registerPlanRoutes(app) {
         <div class="container">
           ${renderTopbar('Plan & Usage', email)}
           <div class="layout">
-            ${renderSidebar('plan', { showBookings: !!((await getSettingsForUser(userId))?.bookings_enabled), showKb: true })}
+            ${renderSidebar('plan', { showBookings: !!(settings?.bookings_enabled), isUpgraded })}
             <main class="main">
               <div class="main-content">
                 <section class="plan-card-shell">

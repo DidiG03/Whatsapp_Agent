@@ -1,12 +1,15 @@
 import { renderSidebar, renderTopbar, escapeHtml } from "../utils.mjs";
-import { getSignedInEmail, ensureAuthed } from "../middleware/auth.mjs";
+import { getSignedInEmail, ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
 import { Guide } from "../schemas/mongodb.mjs";
+import { getPlanStatus } from "../services/usage.mjs";
 
 export default function registerGuideRoutes(app) {
   // Guides index
   app.get("/guide", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
     const email = await getSignedInEmail(req);
     const guides = await Guide.find({}).select('slug title summary createdAt').sort({ createdAt: -1 }).lean();
+    const { isUpgraded } = await getPlanStatus(userId);
     const cards = (guides || []).map(g => `
       <a class="guide-card" href="/guide/${encodeURIComponent(g.slug)}">
         <div class="guide-card-date">${new Date(g.createdAt || Date.now()).toLocaleDateString()}</div>
@@ -34,10 +37,10 @@ export default function registerGuideRoutes(app) {
             <div class="container">
                 ${renderTopbar("Dashboard / Guide", email)}
             <div class="layout">
-                    ${renderSidebar("guide", { showKb: true })}
+                    ${renderSidebar("guide", { isUpgraded })}
                     <main class="main">
                         <div class="main-content">
-                          <div class="card">
+                          <div>
                         <div class="hero">
                             <div>
                             <h3>Help Center</h3>
@@ -74,6 +77,7 @@ export default function registerGuideRoutes(app) {
 
   // Guide detail by slug
   app.get("/guide/:slug", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
     const email = await getSignedInEmail(req);
     const slug = String(req.params.slug || '').trim();
     const g = await Guide.findOne({ slug }).lean();
@@ -118,6 +122,7 @@ export default function registerGuideRoutes(app) {
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
+    const { isUpgraded } = await getPlanStatus(userId);
     res.end(`
       <html><head><link rel="stylesheet" href="/styles.css"><script>
           // Check authentication on page load
@@ -138,7 +143,7 @@ export default function registerGuideRoutes(app) {
         <div class="container">
           ${renderTopbar("Dashboard / Guide", email)}
             <div class="layout">
-              ${renderSidebar("guide", { showKb: true })}
+              ${renderSidebar("guide", { isUpgraded })}
             <main class="main">
               <div class="guide-detail">
                 <div class="card article">

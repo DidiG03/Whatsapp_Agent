@@ -1,5 +1,6 @@
-import { isAuthenticated, getSignedInEmail } from "../middleware/auth.mjs";
+import { isAuthenticated, getSignedInEmail, getCurrentUserId } from "../middleware/auth.mjs";
 import { renderTopbar, renderSidebar, getProfessionalHead } from "../utils.mjs";
+import { getPlanStatus } from "../services/usage.mjs";
 
 export default function registerHomeRoutes(app) {
   app.get("/", async (req, res) => {
@@ -7,6 +8,8 @@ export default function registerHomeRoutes(app) {
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     
     if (signedIn) {
+      const userId = getCurrentUserId(req);
+      const { isUpgraded } = await getPlanStatus(userId);
       // Show home page for signed-in users
       const email = await getSignedInEmail(req);
       res.end(`
@@ -16,7 +19,7 @@ export default function registerHomeRoutes(app) {
           <div class="container">
             ${renderTopbar('Home', email)}
           <div class="layout">
-            ${renderSidebar('home', { showKb: true })}
+            ${renderSidebar('home', { isUpgraded })}
               <main class="main">
                 <div class="main-content">
                   <div class="card">

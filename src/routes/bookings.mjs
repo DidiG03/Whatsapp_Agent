@@ -1,6 +1,7 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
 import { getDB } from "../db-mongodb.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
+import { getPlanStatus } from "../services/usage.mjs";
 import { listEvents as gcalListEvents } from "../services/google.mjs";
 import { renderSidebar, renderTopbar, escapeHtml, getProfessionalHead } from "../utils.mjs";
 
@@ -9,6 +10,7 @@ export default function registerBookingsTab(app) {
     const userId = getCurrentUserId(req);
     const email = await getSignedInEmail(req);
     const s = await getSettingsForUser(userId);
+    const { isUpgraded } = await getPlanStatus(userId);
     // Gate access when bookings are disabled
     if (!s?.bookings_enabled) {
       res.statusCode = 302;
@@ -101,7 +103,7 @@ export default function registerBookingsTab(app) {
         <div class="container">
           ${renderTopbar('Bookings', email)}
           <div class="layout">
-            ${renderSidebar('bookings', { showBookings: true, showKb: true })}
+            ${renderSidebar('bookings', { showBookings: true, isUpgraded })}
             <main class="main">
               <div class="main-content">
                 <div style="margin-bottom:12px;">

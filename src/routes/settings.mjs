@@ -22,7 +22,7 @@ import {
   QuickReply
 } from "../schemas/mongodb.mjs";
 import { getQuickReplies, getQuickReplyCategories, createQuickReply, updateQuickReply, deleteQuickReply, reorderQuickReplies } from "../services/quickReplies.mjs";
-import { getUserPlan } from "../services/usage.mjs";
+import { getUserPlan, isPlanUpgraded } from "../services/usage.mjs";
 import { validateSettingsPayload } from "../validators/settingsPayload.mjs";
 import { enforceSettingsPolicy } from "../services/settingsPolicy.mjs";
 import { recordSettingsAudit } from "../services/audit.mjs";
@@ -35,7 +35,7 @@ export default function registerSettingsRoutes(app, options = {}) {
     const userId = getCurrentUserId(req);
     const s = await getSettingsForUser(userId);
     const plan = await getUserPlan(userId);
-    const isUpgraded = (plan?.plan_name || 'free') !== 'free';
+    const isUpgraded = isPlanUpgraded(plan);
     const effectiveConversationMode = isUpgraded ? (s.conversation_mode || 'full') : 'escalation';
     const ob = await getOnboarding(userId);
     const email = await getSignedInEmail(req);
@@ -147,7 +147,7 @@ export default function registerSettingsRoutes(app, options = {}) {
         <div class="container">
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Settings`, email)}
           <div class="layout">
-            ${renderSidebar('settings', { showBookings: !!(s?.bookings_enabled), showKb: true })}
+            ${renderSidebar('settings', { showBookings: !!(s?.bookings_enabled), isUpgraded })}
             <main class="main">
             <div class="main-content">
               <div id="settings-nav" style="position:sticky; top:0; z-index:5; padding:8px; margin-bottom:12px;">

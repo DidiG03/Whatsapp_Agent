@@ -5,11 +5,13 @@ import { upsertKbItem } from "../services/kb.mjs";
 import { upsertSettingsForUser, getSettingsForUser } from "../services/settings.mjs";
 import { onboardingCoachReply } from "../services/ai.mjs";
 import { KBItem } from "../schemas/mongodb.mjs";
+import { getPlanStatus } from "../services/usage.mjs";
 
 export default function registerOnboardingRoutes(app) {
   app.get("/onboarding", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const email = await getSignedInEmail(req);
+    const { isUpgraded } = await getPlanStatus(userId);
     const state = getOnboarding(userId) || setOnboarding(userId, { step: 0, transcript: '' });
     const stepDef = ONBOARD_STEPS[state.step];
     const prompt = 'Ask me to add or improve your KB...';
@@ -36,7 +38,7 @@ export default function registerOnboardingRoutes(app) {
         <div class="container">
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Onboarding`, email)}
           <div class="layout">
-            ${renderSidebar('onboarding')}
+            ${renderSidebar('onboarding', { isUpgraded })}
             <main class="main">
               <div class="card chat-box">
                 <div class="small" style="display:flex; align-items:center; gap:12px;">

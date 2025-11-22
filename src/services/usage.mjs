@@ -162,3 +162,16 @@ export function getPlanPricing() {
     }
   };
 }
+
+export function isPlanUpgraded(plan) {
+  const name = String(plan?.plan_name || 'free').toLowerCase();
+  return name !== 'free';
+}
+
+export async function getPlanStatus(userId) {
+  if (!userId) {
+    return { plan: null, isUpgraded: false };
+  }
+  const plan = await getUserPlan(userId);
+  return { plan, isUpgraded: isPlanUpgraded(plan) };
+}

@@ -2,6 +2,7 @@ import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/
 import { renderSidebar, renderTopbar, escapeHtml } from "../utils.mjs";
 import { getDB } from "../db-mongodb.mjs";
 import { getSettingsForUser } from "../services/settings.mjs";
+import { getPlanStatus } from "../services/usage.mjs";
 import { enqueueOutboundMessage } from "../jobs/outboundQueue.mjs";
 import { sendTemplateStatusEmail } from "../services/email.mjs";
 import { sendWhatsAppText, sendWhatsAppTemplate } from "../services/whatsapp.mjs";
@@ -33,6 +34,11 @@ export default function registerCampaignRoutes(app) {
         <td class="small">${c.scheduled_at ? new Date(c.scheduled_at * 1000).toLocaleString() : '-'}</td>
         <td><span class="badge ${escapeHtml(c.status || 'draft')}">${escapeHtml(c.status || 'draft')}</span></td>
       </tr>`).join("");
+
+    const [settings, { isUpgraded }] = await Promise.all([
+      getSettingsForUser(userId),
+      getPlanStatus(userId)
+    ]);
 
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.end(`
@@ -77,7 +83,7 @@ export default function registerCampaignRoutes(app) {
         <div class="container">
         ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Campaigns`, email)}
           <div class="layout">
-            ${renderSidebar('campaigns', { showBookings: !!((await getSettingsForUser(userId))?.bookings_enabled), showKb: true })}
+            ${renderSidebar('campaigns', { showBookings: !!(settings?.bookings_enabled), isUpgraded })}
             <main class="main">
               <div class="main-content">
                 <div class="meta-card" style="margin-bottom:12px;">

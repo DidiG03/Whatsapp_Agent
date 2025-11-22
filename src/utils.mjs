@@ -113,7 +113,7 @@ export function renderTranscriptAsBubbles(transcript) {
  */
 export function renderSidebar(activeKey, options = {}) {
   const showBookings = options.showBookings !== false; // default true
-  const showKb = options.showKb !== false; // default true
+  const showKb = (options.showKb !== false) && (options.isUpgraded ?? true); // hide KB unless explicitly allowed
   const iconSize = 15; // px, "just a bit bigger"
   const fontSize = "12px"; // Smaller font size for sidebar text
   const svgPrimary = `width:${iconSize}px;height:${iconSize}px;vertical-align:middle;margin-right:5px;`;
