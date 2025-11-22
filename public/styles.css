@@ -969,6 +969,22 @@ button:disabled:hover {
 .chat-thread::before {
   display: none; /* Remove shadow effect */
 }
+
+.chat-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  gap: var(--space-3);
+}
+
+.chat-view .chat-thread {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  height: auto;
+  max-height: none;
+}
 .msg { 
   display: flex; 
   width: 100%; 

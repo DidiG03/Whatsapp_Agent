@@ -2512,7 +2512,7 @@ export default function registerInboxRoutes(app) {
             <div class="layout">
               ${renderSidebar('inbox', { showBookings: !!(sidebarSettings?.bookings_enabled), isUpgraded })}
               <main class="main">
-                <div class="main-content">
+                <div class="main-content chat-view">
                   <div class="wa-chat-header">
                     <a href="/inbox" style="margin-right:20px;">
                       <img src="/left-arrow-icon.svg" alt="Back" style="width:10px;height:10px;vertical-align:middle;"/>
@@ -2588,7 +2588,7 @@ export default function registerInboxRoutes(app) {
                     }catch(_){ }
                     return '';
                   })()}
-                  <div class="chat-thread" style="overflow-y:auto; height:70vh; max-height:70vh;">
+                  <div class="chat-thread">
                     ${items || '<div class="small" style="text-align:center;padding:16px;">No messages</div>'}
                     <div data-thread-anchor="true"></div>
                     <div>
