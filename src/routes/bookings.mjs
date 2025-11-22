@@ -101,7 +101,7 @@ export default function registerBookingsTab(app) {
         <div class="container">
           ${renderTopbar('Bookings', email)}
           <div class="layout">
-            ${renderSidebar('bookings', { showBookings: true })}
+            ${renderSidebar('bookings', { showBookings: true, showKb: true })}
             <main class="main">
               <div class="main-content">
                 <div style="margin-bottom:12px;">

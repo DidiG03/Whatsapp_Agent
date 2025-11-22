@@ -113,6 +113,7 @@ export function renderTranscriptAsBubbles(transcript) {
  */
 export function renderSidebar(activeKey, options = {}) {
   const showBookings = options.showBookings !== false; // default true
+  const showKb = options.showKb !== false; // default true
   const iconSize = 15; // px, "just a bit bigger"
   const fontSize = "12px"; // Smaller font size for sidebar text
   const svgPrimary = `width:${iconSize}px;height:${iconSize}px;vertical-align:middle;margin-right:5px;`;
@@ -290,7 +291,7 @@ export function renderSidebar(activeKey, options = {}) {
       ${link('/dashboard', 'Dashboard', 'dashboard')}
       ${link('/inbox', 'Inbox', 'inbox')}
       ${showBookings ? link('/bookings', 'Bookings', 'bookings') : ''}
-      ${link('/kb/ui', 'Knowledge Base', 'kb')}
+      ${showKb ? link('/kb/ui', 'Knowledge Base', 'kb') : ''}
       ${link('/campaigns', 'Campaigns', 'campaigns')}
       ${link('/plan', 'Plan', 'plan')}
       ${link('/settings', 'Settings', 'settings')}

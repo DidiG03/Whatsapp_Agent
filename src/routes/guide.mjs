@@ -33,8 +33,8 @@ export default function registerGuideRoutes(app) {
             </script>
             <div class="container">
                 ${renderTopbar("Dashboard / Guide", email)}
-                <div class="layout">
-                    ${renderSidebar("guide")}
+            <div class="layout">
+                    ${renderSidebar("guide", { showKb: true })}
                     <main class="main">
                         <div class="main-content">
                           <div class="card">
@@ -137,8 +137,8 @@ export default function registerGuideRoutes(app) {
       </style></head><body>
         <div class="container">
           ${renderTopbar("Dashboard / Guide", email)}
-          <div class="layout">
-            ${renderSidebar("guide")}
+            <div class="layout">
+              ${renderSidebar("guide", { showKb: true })}
             <main class="main">
               <div class="guide-detail">
                 <div class="card article">

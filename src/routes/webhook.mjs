@@ -23,7 +23,7 @@ import { broadcastNewMessage, broadcastReaction, broadcastMessageStatus } from "
 import { updateMessageDeliveryStatus, updateMessageReadStatus, READ_STATUS, MESSAGE_STATUS } from "../services/messageStatus.mjs";
 import { getConversationStatus, updateConversationStatus, CONVERSATION_STATUSES } from "../services/conversationStatus.mjs";
 import { businessMetrics, incrementCounter } from "../monitoring/metrics.mjs";
-import { enqueueOutboundMessage, isQueueEnabled } from "../jobs/outboundQueue.mjs";
+import { enqueueOutboundMessage } from "../jobs/outboundQueue.mjs";
 
 // Precompiled patterns and caches
 const RE_GREETING_SIMPLE = /^(hi|hello|hey|yo|hiya|howdy|greetings)\b/;
@@ -687,16 +687,24 @@ export default function registerWebhookRoutes(app) {
   }
 
   // Unified outbound send helpers that also record outbound messages
-  async function sendTextTracked(to, text, cfg) {
-    if (isQueueEnabled()) {
-      try {
-        const jobId = await enqueueOutboundMessage({ userId: cfg?.user_id || null, cfg, to, message: text });
-        if (jobId) {
-          return { messages: [{ id: `queued:${jobId}` }] };
-        }
-      } catch {}
+  async function sendTextTracked(to, text, cfg, options = {}) {
+    try {
+      const jobId = await enqueueOutboundMessage({
+        userId: cfg?.user_id || null,
+        cfg,
+        to,
+        message: text,
+        replyToMessageId: options.replyToMessageId || null,
+        idempotencyKey: options.idempotencyKey || options.replyToMessageId || null
+      });
+      if (jobId) {
+        return { messages: [{ id: `queued:${jobId}` }] };
+      }
+    } catch (error) {
+      console.error('[Webhook] Failed to enqueue outbound message:', error?.message || error);
     }
-    const resp = await sendWhatsAppText(to, text, cfg);
+
+    const resp = await sendWhatsAppText(to, text, cfg, options.replyToMessageId || null);
     try {
       const outboundId = resp?.messages?.[0]?.id;
       if (outboundId) {

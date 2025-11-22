@@ -1,8 +1,9 @@
 /**
  * Outbound message queue using BullMQ with DLQ.
- * Enabled when QUEUE_OUTBOUND=1 and BullMQ is available.
+ * Always enabled; falls back to direct send only if queue bootstrap fails.
  */
 
+import crypto from 'node:crypto';
 import { logHelpers } from '../monitoring/logger.mjs';
 import { getRedisClient, isRedisConnected } from '../scalability/redis.mjs';
 import { sendWhatsAppText } from '../services/whatsapp.mjs';
@@ -13,10 +14,6 @@ let Worker = null;
 let QueueEvents = null;
 let queue = null;
 let dlq = null;
-
-export function isQueueEnabled() {
-  return process.env.QUEUE_OUTBOUND === '1';
-}
 
 async function loadBullMq() {
   if (Queue) return true;
@@ -33,7 +30,6 @@ async function loadBullMq() {
 }
 
 export async function initOutboundQueue() {
-  if (!isQueueEnabled()) return false;
   if (!isRedisConnected()) {
     logHelpers.logBusinessEvent('queue_disabled', { reason: 'redis_not_connected' });
     return false;
@@ -81,16 +77,18 @@ export async function initOutboundQueue() {
 }
 
 export async function enqueueOutboundMessage(data) {
-  if (!isQueueEnabled()) return false;
   if (!queue) {
     const ok = await initOutboundQueue();
     if (!ok) return false;
   }
   try {
     const attempts = Number(process.env.QUEUE_ATTEMPTS || 5);
+    const idempotencyKey = data.idempotencyKey || data.replyToMessageId || data.messageId || crypto.randomUUID();
+    const jobId = createDeterministicId(idempotencyKey);
     const job = await queue.add('send', data, {
       attempts,
       backoff: { type: 'exponential', delay: 1000 },
+      jobId,
       removeOnComplete: true,
       removeOnFail: false
     });
@@ -102,10 +100,13 @@ export async function enqueueOutboundMessage(data) {
   }
 }
 
+function createDeterministicId(key) {
+  return crypto.createHash('sha256').update(String(key || 'queue')).digest('hex');
+}
+
 export default {
   initOutboundQueue,
-  enqueueOutboundMessage,
-  isQueueEnabled
+  enqueueOutboundMessage
 };
 
 

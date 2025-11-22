@@ -385,6 +385,27 @@ const enquirySchema = new mongoose.Schema({
   collection: 'enquiries'
 });
 
+// Settings audit schema
+const settingsAuditSchema = new mongoose.Schema({
+  user_id: { type: String, required: true },
+  actor_id: { type: String, default: null },
+  actor_email: { type: String, default: null },
+  ip: { type: String, default: null },
+  user_agent: { type: String, default: null },
+  denied_fields: { type: [String], default: [] },
+  changes: {
+    type: [{
+      field: { type: String, required: true },
+      before: mongoose.Schema.Types.Mixed,
+      after: mongoose.Schema.Types.Mixed
+    }],
+    default: []
+  }
+}, {
+  timestamps: true,
+  collection: 'settings_audit'
+});
+
 // Create indexes for better performance
 const createIndexes = async () => {
   try {
@@ -447,6 +468,9 @@ const createIndexes = async () => {
     // Appointments hot-path index: by tenant, phone, and time
     await Appointment.collection.createIndex({ user_id: 1, contact_phone: 1, start_ts: 1 }, { name: 'user_phone_startTs' });
 
+    // Settings audit indexes
+    await SettingsAudit.collection.createIndex({ user_id: 1, createdAt: -1 }, { name: 'settings_audit_user' });
+
     console.log('MongoDB indexes created successfully');
   } catch (error) {
     logHelpers.logError(error, { component: 'mongodb', operation: 'create_indexes' });
@@ -477,6 +501,7 @@ export const UserPlan = mongoose.model('UserPlan', userPlanSchema);
 export const QuickReply = mongoose.model('QuickReply', quickReplySchema);
 export const Guide = mongoose.model('Guide', guideSchema);
 export const Enquiry = mongoose.model('Enquiry', enquirySchema);
+export const SettingsAudit = mongoose.model('SettingsAudit', settingsAuditSchema);
 
 // Initialize indexes when module loads
 // Note: Index creation is triggered post-connection from db-mongodb.mjs
@@ -505,5 +530,6 @@ export default {
   UserPlan,
   QuickReply,
   Guide,
-  Enquiry
+  Enquiry,
+  SettingsAudit
 };

@@ -2,6 +2,7 @@ import { ensureAuthed, getSignedInEmail, getCurrentUserId, signSessionToken } fr
 import { renderSidebar, escapeHtml, renderTopbar, getProfessionalHead } from "../utils.mjs";
 import { db } from "../db-mongodb.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
+import { ONBOARD_STEPS, getOnboarding } from "../services/onboarding.mjs";
 import { getCurrentUsage, getUserPlan } from "../services/usage.mjs";
 
 export default function registerDashboardRoutes(app) {
@@ -9,11 +10,513 @@ export default function registerDashboardRoutes(app) {
     const email = await getSignedInEmail(req);
     const userId = getCurrentUserId(req);
     const s = await getSettingsForUser(userId);
-    
-    // Get usage and plan info
+    const onboardingState = await getOnboarding(userId);
     const usage = getCurrentUsage(userId);
     const plan = getUserPlan(userId);
+    const isUpgraded = (plan?.plan_name || 'free') !== 'free';
+
+    const kbCompletedSteps = Math.min(onboardingState?.step || 0, ONBOARD_STEPS.length);
+    const kbStepCompleted = !isUpgraded || kbCompletedSteps >= ONBOARD_STEPS.length;
+    const metaStepCompleted = !!(s.phone_number_id && s.waba_id && s.business_phone);
+    const tokensStepCompleted = !!(s.whatsapp_token && s.app_secret && s.verify_token);
+    const allCompleted = metaStepCompleted && tokensStepCompleted && kbStepCompleted;
+    const showSetupGuide = !allCompleted;
+    
+    // Get usage and plan info (metrics)
     const totalMessages = usage.inbound_messages + usage.outbound_messages + usage.template_messages;    
+
+    // High-level setup steps for the guide widget
+    const setupSections = [
+      {
+        id: 'meta',
+        title: 'Connect your Meta account',
+        items: [
+          'Create or log in to your Meta for Developers account.',
+          'Create a WhatsApp Business app.',
+          'Link a WhatsApp Business Account (WABA) and phone number.'
+        ]
+      },
+      {
+        id: 'tokens',
+        title: 'Configure WhatsApp API keys',
+        items: [
+          'Copy your Phone Number ID and WhatsApp Business Account ID.',
+          'Copy your Business phone number.',
+          'Generate a long‑lived WhatsApp access token.',
+          'Set your App Secret and Verify Token in WhatsApp Agent settings.'
+        ]
+      }
+    ];
+
+    if (isUpgraded) {
+      setupSections.push({
+        id: 'kb',
+        title: 'Set up your Knowledge Base',
+        items: [
+          'Add your most important FAQs.',
+          'Import documents or website content.',
+          'Test answers using the KB assistant.'
+        ]
+      });
+    }
+
+    const totalSetupSteps = setupSections.length || 1;
+    const completedSetupSteps =
+      (metaStepCompleted ? 1 : 0) +
+      (tokensStepCompleted ? 1 : 0) +
+      (isUpgraded && kbStepCompleted ? 1 : 0);
+    const setupProgress = Math.round((completedSetupSteps / totalSetupSteps) * 100);
+    const nextSection = setupSections[completedSetupSteps] || setupSections[0];
+    const nextStepLabel = 'Next: ' + escapeHtml(nextSection.title);
+
+    const setupStepItems = setupSections.map((section, index) => {
+      const first = index === 0;
+      const sectionId = section.id;
+      const sectionCompleted =
+        sectionId === 'meta' ? metaStepCompleted :
+        sectionId === 'tokens' ? tokensStepCompleted :
+        kbStepCompleted;
+
+      let itemsHtml;
+      if (sectionId === 'tokens') {
+        const tokenTaskStatus = {
+          phone_waba: !!(s.phone_number_id && s.waba_id),
+          business_phone: !!s.business_phone,
+          whatsapp_token: !!s.whatsapp_token,
+          app_secret_verify: !!(s.app_secret && s.verify_token)
+        };
+        itemsHtml = `
+          <li class="sg-item ${tokenTaskStatus.phone_waba ? 'sg-item-completed' : ''}" data-task-id="phone_waba">
+            Copy your Phone Number ID and WhatsApp Business Account ID.
+          </li>
+          <li class="sg-item ${tokenTaskStatus.business_phone ? 'sg-item-completed' : ''}" data-task-id="business_phone">
+            Copy your Business phone number.
+          </li>
+          <li class="sg-item ${tokenTaskStatus.whatsapp_token ? 'sg-item-completed' : ''}" data-task-id="whatsapp_token">
+            Generate a long-lived WhatsApp access token.
+          </li>
+          <li class="sg-item ${tokenTaskStatus.app_secret_verify ? 'sg-item-completed' : ''}" data-task-id="app_secret_verify">
+            Set your App Secret and Verify Token in WhatsApp Agent settings.
+          </li>
+        `;
+      } else {
+        itemsHtml = (section.items || []).map(text => `
+          <li class="sg-item">${escapeHtml(text)}</li>
+        `).join('');
+      }
+
+      return `
+        <div class="sg-section">
+          <button type="button" class="sg-section-header${first ? ' open' : ''}${sectionCompleted ? ' completed' : ''}" data-section-id="${sectionId}">
+            <span class="sg-section-title">${escapeHtml(section.title)}</span>
+            <span class="sg-section-right">
+              <span class="sg-section-check">${sectionCompleted ? '✓' : ''}</span>
+              <span class="sg-section-chevron">⌃</span>
+            </span>
+          </button>
+          <div class="sg-section-body" id="sg-section-${sectionId}" style="${first ? '' : 'display:none;'}">
+            <ul class="sg-items">
+              ${itemsHtml}
+            </ul>
+            ${sectionId === 'meta' ? `
+              <a href="https://developers.facebook.com/apps" target="_blank" rel="noopener" class="sg-link">Open Meta for Developers ↗</a>
+            ` : ''}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    const setupGuideHtml = showSetupGuide ? `
+      <div class="setup-guide-card setup-expanded" id="setupGuideCard">
+        <div class="setup-guide-header">
+          <span>Setup guide</span>
+          <button type="button" class="setup-guide-link" id="setupGuideToggle">Minimize</button>
+        </div>
+        <div class="setup-guide-progress">
+          <div class="setup-guide-progress-bar" style="width:${setupProgress}%;"></div>
+        </div>
+        <div class="setup-guide-next">${nextStepLabel}</div>
+        <div class="setup-guide-steps">
+          ${setupStepItems}
+        </div>
+      </div>
+      <style>
+        .setup-guide-card {
+          position: fixed;
+          z-index: 900;
+          background: #fff;
+          border-radius: 16px;
+          box-shadow: 0 24px 60px rgba(15, 23, 42, 0.25);
+          border: 1px solid #e5e7eb;
+          transition: all 0.25s ease;
+        }
+        .setup-guide-card.setup-expanded {
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          width: 320px;
+          max-width: 90vw;
+          padding: 18px 18px 16px 18px;
+        }
+        .setup-guide-card.setup-minimized {
+          top: 24px;
+          left: 24px;
+          transform: none;
+          width: 260px;
+          max-width: 80vw;
+          padding: 12px 14px 10px 14px;
+          box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
+        }
+        .setup-guide-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          font-weight: 600;
+          color: #111827;
+          margin-bottom: 12px;
+        }
+        .setup-guide-link {
+          font-size: 12px;
+          color: #6366f1;
+          text-decoration: none;
+          border: none;
+          background: transparent;
+          cursor: pointer;
+        }
+        .setup-guide-progress {
+          height: 4px;
+          background: #ede9fe;
+          border-radius: 999px;
+          margin-bottom: 12px;
+          overflow: hidden;
+        }
+        .setup-guide-progress-bar {
+          height: 100%;
+          background: linear-gradient(90deg, #6366f1, #8b5cf6);
+        }
+        .setup-guide-next {
+          font-size: 13px;
+          color: #4b5563;
+          margin: 8px 0 4px 0;
+        }
+        .setup-guide-steps {
+          margin-top: 8px;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .sg-section {
+          border-radius: 10px;
+          background: #f9fafb;
+          border: 1px solid #e5e7eb;
+          overflow: hidden;
+        }
+        .sg-section-header {
+          width: 100%;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 8px 10px;
+          background: #f9fafb;
+          border: none;
+          cursor: pointer;
+          font-size: 13px;
+          font-weight: 500;
+          color: #111827;
+        }
+        .sg-section-header.open {
+          background: #eef2ff;
+        }
+        .sg-section-title {
+          text-align: left;
+        }
+        .sg-section-right {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+        }
+        .sg-section-check {
+          font-size: 12px;
+          color: #16a34a;
+          opacity: 0;
+        }
+        .sg-section-chevron {
+          font-size: 11px;
+          transform: rotate(0deg);
+          transition: transform 0.15s ease;
+        }
+        .sg-section-header.open .sg-section-chevron {
+          transform: rotate(180deg);
+        }
+        .sg-section-body {
+          padding: 8px 10px 10px 10px;
+          background: #ffffff;
+        }
+        .sg-items {
+          list-style: disc;
+          margin: 0 0 6px 16px;
+          padding: 0;
+          font-size: 13px;
+          color: #4b5563;
+        }
+        .sg-item + .sg-item {
+          margin-top: 4px;
+        }
+        .sg-link {
+          font-size: 12px;
+          color: #6366f1;
+          text-decoration: none;
+        }
+        .sg-section-header.completed .sg-section-title {
+          text-decoration: line-through;
+          color: #6b7280;
+        }
+        .sg-section-header.completed .sg-section-check {
+          opacity: 1;
+        }
+        .sg-item-completed {
+          text-decoration: line-through;
+          color: #9ca3af;
+        }
+        .setup-guide-footer {
+          margin-top: 12px;
+        }
+        .setup-guide-card.setup-minimized .setup-guide-steps,
+        .setup-guide-card.setup-minimized .setup-guide-footer {
+          display: none;
+        }
+        .setup-guide-card.setup-expanded .setup-guide-next {
+          display: none;
+        }
+        .setup-guide-card.setup-minimized .setup-guide-next {
+          display: block;
+        }
+        @media (max-width: 900px) {
+          .setup-guide-card {
+            position: fixed;
+            width: 90vw;
+          }
+        }
+        .sg-modal {
+          position: fixed;
+          inset: 0;
+          display: none;
+          align-items: center;
+          justify-content: center;
+          background: rgba(15,23,42,0.35);
+          z-index: 950;
+        }
+        .sg-modal-dialog {
+          background: #ffffff;
+          border-radius: 16px;
+          padding: 16px 18px 14px 18px;
+          max-width: 400px;
+          width: 90vw;
+          box-shadow: 0 24px 60px rgba(15,23,42,0.35);
+          border: 1px solid #e5e7eb;
+        }
+        .sg-modal-title {
+          margin: 0 0 10px 0;
+          font-size: 15px;
+          font-weight: 600;
+          color: #111827;
+        }
+        .sg-modal-fields {
+          display: grid;
+          gap: 8px;
+          margin-bottom: 12px;
+        }
+        .sg-modal-actions {
+          display: flex;
+          justify-content: flex-end;
+          gap: 8px;
+        }
+        .sg-btn {
+          padding: 6px 12px;
+          border-radius: 999px;
+          border: 1px solid #e5e7eb;
+          background: #f9fafb;
+          font-size: 13px;
+          cursor: pointer;
+        }
+        .sg-btn-primary {
+          background: #4f46e5;
+          border-color: #4f46e5;
+          color: #ffffff;
+        }
+      </style>
+      <script>
+        (function(){
+          try {
+            var card = document.getElementById('setupGuideCard');
+            var toggle = document.getElementById('setupGuideToggle');
+            var modal = document.getElementById('sgModal');
+            var modalTitle = document.getElementById('sgModalTitle');
+            var modalFields = document.getElementById('sgModalFields');
+            var modalForm = document.getElementById('sgModalForm');
+            var modalCancel = document.getElementById('sgModalCancel');
+            if (!card || !toggle) return;
+            var key = 'wa_setup_guide_minimized';
+            function applyState(minimized) {
+              card.classList.toggle('setup-minimized', minimized);
+              card.classList.toggle('setup-expanded', !minimized);
+              toggle.textContent = minimized ? 'Expand' : 'Minimize';
+            }
+            var saved = null;
+            try { saved = window.localStorage.getItem(key); } catch(_) {}
+            applyState(saved === '1');
+            toggle.addEventListener('click', function(){
+              var minimizedNow = card.classList.contains('setup-expanded');
+              applyState(minimizedNow);
+              try { window.localStorage.setItem(key, minimizedNow ? '1' : '0'); } catch(_) {}
+            });
+
+            // Accordion behavior for setup sections
+            var headers = card.querySelectorAll('.sg-section-header');
+            headers.forEach(function(btn){
+              btn.addEventListener('click', function(){
+                var id = this.getAttribute('data-section-id');
+                var body = document.getElementById('sg-section-' + id);
+                var isOpen = this.classList.contains('open');
+                headers.forEach(function(h){
+                  h.classList.remove('open');
+                  var hid = h.getAttribute('data-section-id');
+                  var hb = document.getElementById('sg-section-' + hid);
+                  if (hb) hb.style.display = 'none';
+                });
+                if (!isOpen && body) {
+                  this.classList.add('open');
+                  body.style.display = 'block';
+                }
+              });
+            });
+
+            // Setup task → modal mapping (step 2)
+            var TASK_CONFIG = {
+              phone_waba: {
+                title: 'Phone Number ID & WABA ID',
+                fields: [
+                  { name: 'phone_number_id', label: 'Phone Number ID', placeholder: '8***************' },
+                  { name: 'waba_id', label: 'WhatsApp Business Account ID', placeholder: '2208283003006315' }
+                ]
+              },
+              business_phone: {
+                title: 'Business phone number',
+                fields: [
+                  { name: 'business_phone', label: 'Business phone', placeholder: '1***************' }
+                ]
+              },
+              whatsapp_token: {
+                title: 'WhatsApp token',
+                fields: [
+                  { name: 'whatsapp_token', label: 'WhatsApp token', placeholder: 'E***************' }
+                ]
+              },
+              app_secret_verify: {
+                title: 'App Secret & Verify Token',
+                fields: [
+                  { name: 'app_secret', label: 'App Secret', placeholder: 'c***************' },
+                  { name: 'verify_token', label: 'Verify token', placeholder: '***************' }
+                ]
+              }
+            };
+
+            function openTaskModal(taskId) {
+              if (!modal || !modalTitle || !modalFields || !modalForm) return;
+              var cfg = TASK_CONFIG[taskId];
+              if (!cfg) return;
+              modalTitle.textContent = cfg.title;
+              modalFields.innerHTML = '';
+              cfg.fields.forEach(function(f){
+                var wrapper = document.createElement('div');
+                wrapper.className = 'sg-modal-field';
+                wrapper.innerHTML = '<label>'+f.label+'<input class="settings-field" name="'+f.name+'" placeholder="'+(f.placeholder||'')+'"/></label>';
+                modalFields.appendChild(wrapper);
+              });
+              modal.setAttribute('data-task-id', taskId);
+              modal.style.display = 'flex';
+            }
+
+            function closeTaskModal() {
+              if (!modal) return;
+              modal.style.display = 'none';
+              modal.removeAttribute('data-task-id');
+              if (modalForm) modalForm.reset();
+            }
+
+            if (modalCancel) {
+              modalCancel.addEventListener('click', function(e){
+                e.preventDefault();
+                closeTaskModal();
+              });
+            }
+
+            if (modalForm) {
+              modalForm.addEventListener('submit', function(e){
+                e.preventDefault();
+                if (!modal) return;
+                var taskId = modal.getAttribute('data-task-id');
+                var cfg = TASK_CONFIG[taskId];
+                if (!cfg) return;
+                var formData = new FormData(modalForm);
+                var updates = {};
+                cfg.fields.forEach(function(f){
+                  var v = (formData.get(f.name) || '').toString().trim();
+                  if (v) updates[f.name] = v;
+                });
+                if (!Object.keys(updates).length) {
+                  closeTaskModal();
+                  return;
+                }
+                fetch('/api/settings/setup-task', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                  },
+                  credentials: 'include',
+                  body: JSON.stringify({ updates })
+                }).then(function(resp){ return resp.json(); })
+                  .then(function(data){
+                    if (data && data.success) {
+                      window.location.reload();
+                    } else {
+                      alert(data && data.error ? data.error : 'Failed to save settings');
+                    }
+                  }).catch(function(err){
+                    console.error('Setup task save error', err);
+                    alert('Failed to save settings');
+                  }).finally(function(){
+                    closeTaskModal();
+                  });
+              });
+            }
+
+            // Attach click handlers to clickable tasks
+            var taskItems = card.querySelectorAll('.sg-item[data-task-id]');
+            taskItems.forEach(function(li){
+              li.style.cursor = 'pointer';
+              li.addEventListener('click', function(){
+                var id = this.getAttribute('data-task-id');
+                openTaskModal(id);
+              });
+            });
+          } catch(_) {}
+        })();
+      </script>
+      <div class="sg-modal" id="sgModal">
+        <div class="sg-modal-dialog">
+          <h4 class="sg-modal-title" id="sgModalTitle"></h4>
+          <form id="sgModalForm">
+            <div class="sg-modal-fields" id="sgModalFields"></div>
+            <div class="sg-modal-actions">
+              <button type="button" class="sg-btn" id="sgModalCancel">Cancel</button>
+              <button type="submit" class="sg-btn sg-btn-primary">Save</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    ` : '';
 
     // Create metrics dashboard HTML
     const metricsHtml = `
@@ -748,7 +1251,7 @@ export default function registerDashboardRoutes(app) {
         <div class="container">
       ${renderTopbar('Dashboard', email)}
           <div class="layout">
-      ${renderSidebar('dashboard', { showBookings: !!(s?.bookings_enabled) })}
+      ${renderSidebar('dashboard', { showBookings: !!(s?.bookings_enabled), showKb: (plan?.plan_name || 'free') !== 'free' })}
             <main class="main">
                 ${metricsHtml}
                 ${apptHtml}
@@ -765,6 +1268,7 @@ export default function registerDashboardRoutes(app) {
         </div>
         <button id="kb-toggle" onclick="toggleMiniOnboard()" style="position:fixed; right:24px; left:auto; bottom:24px; width:56px; height:56px; border-radius:50%; background:#4f46e5; color:#fff; border:none; box-shadow:0 6px 18px rgba(0,0,0,0.15); display:flex; align-items:center; justify-content:center; font-size:28px; line-height:0; cursor:pointer; z-index:1001;" aria-label="Chat" title="Chat">+
         </button>
+        ${showSetupGuide ? setupGuideHtml : ''}
       </body></html>
     `);
   });

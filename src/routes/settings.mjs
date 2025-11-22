@@ -1,10 +1,7 @@
-import { ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
-import { clerkClient } from "../middleware/auth.mjs";
-import { adminWhitelist } from "../middleware/security.mjs";
+import { ensureAuthed, getCurrentUserId, getSignedInEmail, clerkClient } from "../middleware/auth.mjs";
 import { getOnboarding } from "../services/onboarding.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
 import { renderSidebar, renderTopbar } from "../utils.mjs";
-import { getSignedInEmail } from "../middleware/auth.mjs";
 import { wipeUserData } from "../services/userDeletion.mjs";
 import {
   Calendar,
@@ -26,9 +23,15 @@ import {
 } from "../schemas/mongodb.mjs";
 import { getQuickReplies, getQuickReplyCategories, createQuickReply, updateQuickReply, deleteQuickReply, reorderQuickReplies } from "../services/quickReplies.mjs";
 import { getUserPlan } from "../services/usage.mjs";
+import { validateSettingsPayload } from "../validators/settingsPayload.mjs";
+import { enforceSettingsPolicy } from "../services/settingsPolicy.mjs";
+import { recordSettingsAudit } from "../services/audit.mjs";
 
-export default function registerSettingsRoutes(app) {
-  app.get("/settings", ensureAuthed, async (req, res) => {
+export default function registerSettingsRoutes(app, options = {}) {
+  const protect = options.csrfProtection || ((req, _res, next) => next());
+  const csrfTokenMiddleware = options.csrfTokenMiddleware || ((req, _res, next) => next());
+
+  app.get("/settings", ensureAuthed, protect, csrfTokenMiddleware, async (req, res) => {
     const userId = getCurrentUserId(req);
     const s = await getSettingsForUser(userId);
     const plan = await getUserPlan(userId);
@@ -43,6 +46,9 @@ export default function registerSettingsRoutes(app) {
     const quickReplies = await getQuickReplies(userId);
     const quickReplyCategories = await getQuickReplyCategories(userId);
     const smtpEnvConfigured = !!(process.env.SMTP_USER && process.env.SMTP_PASS);
+    const csrfToken = res.locals.csrfToken || '';
+    const csrfField = `<input type="hidden" name="_csrf" value="${escapeAttr(csrfToken)}">`;
+    const csrfTokenJson = JSON.stringify(csrfToken);
     // Prevent caching to avoid showing cached authenticated pages after logout
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
@@ -64,6 +70,20 @@ export default function registerSettingsRoutes(app) {
       </head><body>
         
         <script src="/auth-utils.js"></script>
+        <script>
+          window.__CSRF_TOKEN__ = ${csrfTokenJson};
+          document.addEventListener('DOMContentLoaded', function(){
+            if (!window.__CSRF_TOKEN__) return;
+            document.querySelectorAll('form').forEach(function(form){
+              if (form.querySelector('input[name="_csrf"]')) return;
+              const input = document.createElement('input');
+              input.type = 'hidden';
+              input.name = '_csrf';
+              input.value = window.__CSRF_TOKEN__;
+              form.appendChild(input);
+            });
+          });
+        </script>
         <script>
           // Enhanced authentication check on page load
           (async function checkAuthOnLoad(){
@@ -127,11 +147,11 @@ export default function registerSettingsRoutes(app) {
         <div class="container">
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Settings`, email)}
           <div class="layout">
-            ${renderSidebar('settings', { showBookings: !!(s?.bookings_enabled) })}
+            ${renderSidebar('settings', { showBookings: !!(s?.bookings_enabled), showKb: true })}
             <main class="main">
             <div class="main-content">
               <div id="settings-nav" style="position:sticky; top:0; z-index:5; padding:8px; margin-bottom:12px;">
-                <div style="display:flex; flex-wrap:wrap; gap:8px;">
+                <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
                   <a href="#account" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Account</a>
                   <a href="#whatsapp" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">WhatsApp</a>
                   <a href="#conversation" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Conversation</a>
@@ -141,13 +161,15 @@ export default function registerSettingsRoutes(app) {
                   <a href="#email" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Email</a>
                   <a href="#staff" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Staff</a>
                   <a href="#quick-replies" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Quick Replies</a>
-                  <a href="#data" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Data</a>
+                  <a href="#danger" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Danger</a>
                   <button style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;" type="button" onclick="expandAll()">Expand all</button>
                   <button style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;" type="button" onclick="collapseAll()">Collapse all</button>
+                  <button style="margin-left:auto; background:#2563eb; border:none; padding:6px 16px; border-radius:9999px; color:white; font-size:12px; font-weight:500; cursor:pointer;" type="submit" form="settings-main-form">Save</button>
                 </div>
               </div>
                 <div class="chat-box-settings">
-                <form method="post" action="/settings" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;">
+                <form id="settings-main-form" method="post" action="/settings" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;">
+                  ${csrfField}
                   <div class="section" id="account">
                     <h3>Personal Information</h3>
                     <div class="grid-2">
@@ -475,21 +497,9 @@ export default function registerSettingsRoutes(app) {
                       `}
                     </div>
                   </div>
-                  <button type="submit" class="btn-primary btn-full">Save</button>
                 </form>
                 <!-- Separate email form (not nested) to avoid interfering with settings submission -->
-                <form id="email-start-form" method="post" action="/settings/email/start" style="display:none;"></form>
-                <div class="section" id="data" style="display:flex; gap:10px; align-items:center;">
-                  <form method="post" action="/kb/clear" style="margin:0;display:inline;">
-                    <button type="submit" class="btn-danger">Clear Knowledge Base</button>
-                  </form>
-                  <form method="post" action="/danger/wipe" style="margin:0;display:inline;" onsubmit="return confirm('Delete all data for this account? This cannot be undone.');">
-                    <button type="submit" class="btn-danger">
-                    <img src="/delete-icon.svg" alt="Delete" style="width:16px;height:16px;margin-right:8px;"/>
-                      Delete my account data
-                    </button>
-                  </form>
-                </div>
+                <form id="email-start-form" method="post" action="/settings/email/start" style="display:none;">${csrfField}</form>
                 <div class="section" id="staff">
                   <h3>Staff</h3>
                   <div style="margin-bottom:12px;">
@@ -841,6 +851,27 @@ export default function registerSettingsRoutes(app) {
                     ` : '<div class="small">No quick replies yet. Add your first one above!</div>'}
                   </div>
                 </div>
+                <!-- Danger Section -->
+                <div class="section" id="danger" style="margin-top:16px; border:1px solid #fee2e2; background:#fef2f2;">
+                  <h3 style="margin-top:0; display:flex; align-items:center; gap:8px; color:#b91c1c;">
+                    <span style="width:8px;height:8px;border-radius:999px;background:#ef4444;"></span>
+                    Danger zone
+                  </h3>
+                  <div class="small" style="margin-bottom:8px; color:#7f1d1d;">
+                    These actions are irreversible. Please proceed with caution.
+                  </div>
+                  <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                    <form method="post" action="/kb/clear" style="margin:0;display:inline;">
+                      <button type="submit" class="btn-danger">Clear Knowledge Base</button>
+                    </form>
+                    <form method="post" action="/danger/wipe" style="margin:0;display:inline;" onsubmit="return confirm('Delete all data for this account? This cannot be undone.');">
+                      <button type="submit" class="btn-danger">
+                        <img src="/delete-icon.svg" alt="Delete" style="width:16px;height:16px;margin-right:8px;"/>
+                        Delete my account data
+                      </button>
+                    </form>
+                  </div>
+                </div>
                 </div>
               </div>
               
@@ -911,7 +942,7 @@ export default function registerSettingsRoutes(app) {
     return JSON.stringify(out);
   }
 
-  app.post("/settings/staff", ensureAuthed, async (req, res) => {
+  app.post("/settings/staff", ensureAuthed, protect, async (req, res) => {
     const userId = getCurrentUserId(req);
     const name = String(req.body?.name || '').trim();
     if (!name) return res.redirect(303, '/settings');
@@ -930,7 +961,7 @@ export default function registerSettingsRoutes(app) {
     return res.redirect(303, '/settings');
   });
 
-  app.post("/settings/staff/:id", ensureAuthed, async (req, res) => {
+  app.post("/settings/staff/:id", ensureAuthed, protect, async (req, res) => {
     const userId = getCurrentUserId(req);
     const id = String(req.params.id || '');
     if (!id) return res.redirect(303, '/settings');
@@ -947,7 +978,7 @@ export default function registerSettingsRoutes(app) {
     return res.redirect(303, '/settings?edit_staff=');
   });
 
-  app.post("/settings/staff/:id/delete", ensureAuthed, async (req, res) => {
+  app.post("/settings/staff/:id/delete", ensureAuthed, protect, async (req, res) => {
     const userId = getCurrentUserId(req);
     const id = String(req.params.id || '');
     if (!id) return res.redirect(303, '/settings');
@@ -955,7 +986,7 @@ export default function registerSettingsRoutes(app) {
     return res.redirect(303, '/settings');
   });
 
-  app.post("/danger/wipe", ensureAuthed, async (req, res) => {
+  app.post("/danger/wipe", ensureAuthed, protect, async (req, res) => {
     const userId = getCurrentUserId(req);
     try {
       await wipeUserData(userId);
@@ -970,93 +1001,53 @@ export default function registerSettingsRoutes(app) {
     return res.redirect(303, '/logout');
   });
 
-  app.post("/settings", ensureAuthed, async (req, res) => {
+  app.post("/settings", ensureAuthed, protect, async (req, res) => {
     const userId = getCurrentUserId(req);
-    const values = {
-      name: req.body?.name || null,
-      phone_number_id: req.body?.phone_number_id || null,
-      waba_id: req.body?.waba_id || null,
-      whatsapp_token: req.body?.whatsapp_token || null,
-      verify_token: req.body?.verify_token || null,
-      app_secret: req.body?.app_secret || null,
-      business_phone: req.body?.business_phone || null,
-      website_url: req.body?.website_url || null,
-      terms_url: req.body?.terms_url || null,
-      ai_tone: req.body?.ai_tone || null,
-      ai_blocked_topics: req.body?.ai_blocked_topics || null,
-      ai_style: req.body?.ai_style || null,
-      entry_greeting: req.body?.entry_greeting || null,
-      bookings_enabled: (req.body?.bookings_enabled && req.body?.conversation_mode !== 'escalation') ? 1 : 0,
-      reschedule_min_lead_minutes: req.body?.reschedule_min_lead_minutes ? Number(req.body.reschedule_min_lead_minutes) : null,
-      cancel_min_lead_minutes: req.body?.cancel_min_lead_minutes ? Number(req.body.cancel_min_lead_minutes) : null,
-      reminders_enabled: (req.body?.reminders_enabled && req.body?.bookings_enabled && req.body?.conversation_mode !== 'escalation') ? 1 : 0,
-      escalation_email_enabled: req.body?.escalation_email_enabled ? 1 : 0,
-      // Always use the account's primary email for notifications
-      escalation_email: null,
-      smtp_host: req.body?.smtp_host || null,
-      smtp_port: req.body?.smtp_port ? parseInt(req.body.smtp_port, 10) : 587,
-      smtp_secure: (() => {
-        const val = req.body?.smtp_secure;
-        // Handle array case (when both hidden and checkbox values are sent)
-        if (Array.isArray(val)) return val.includes('1') ? 1 : 0;
-        return val === '1' || val === 1 ? 1 : 0;
-      })(),
-      smtp_user: req.body?.smtp_user || null,
-      smtp_pass: req.body?.smtp_pass || null,
-      reminder_windows: (() => {
-        const v = req.body?.reminder_windows;
-        const arr = Array.isArray(v) ? v : (v ? [v] : []);
-        const clean = arr.map(x => String(x||'').toLowerCase()).filter(x => ['2h','4h','1d'].includes(x));
-        return clean.length ? JSON.stringify(clean) : null;
-      })(),
-      wa_template_name: req.body?.wa_template_name || null,
-      wa_template_language: req.body?.wa_template_language || null,
-      conversation_mode: req.body?.conversation_mode || 'full',
-      escalation_additional_message: req.body?.escalation_additional_message || null,
-      escalation_out_of_hours_message: req.body?.escalation_out_of_hours_message || null,
-      escalation_questions_json: (() => {
-        const questions = String(req.body?.escalation_questions_json || '').trim();
-        if (!questions) return null;
-        const questionArray = questions.split('\n').map(q => q.trim()).filter(q => q.length > 0);
-        return questionArray.length > 0 ? JSON.stringify(questionArray) : null;
-      })(),
-      holidays_json_url: req.body?.holidays_json_url || null,
-      closed_dates_json: (req.body?.closed_dates_json || null),
-      // Structured holiday rules from arrays
-      holidays_rules_json: (() => {
-        const names = ([]).concat(req.body?.holiday_name || []);
-        const dates = ([]).concat(req.body?.holiday_date || []);
-        const starts = ([]).concat(req.body?.holiday_start || []);
-        const ends = ([]).concat(req.body?.holiday_end || []);
-        const out = [];
-        const isTime = (t) => /^\d{2}:\d{2}$/.test(String(t||''));
-        for(let i=0;i<Math.max(names.length, dates.length, starts.length, ends.length);i++){
-          const date = String(dates[i]||'').trim();
-          const start = String(starts[i]||'').trim();
-          const end = String(ends[i]||'').trim();
-          if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
-          if(!isTime(start) || !isTime(end)) continue;
-          out.push({ name: String(names[i]||'').trim(), date, start, end });
-        }
-        return out.length ? JSON.stringify(out) : null;
-      })(),
-    };
-    // Enforce plan gating: Full AI is for upgraded plans only
+    const validation = validateSettingsPayload(req.body || {});
+    if (!validation.success) {
+      const summary = summarizeValidationError(validation.errors);
+      return res.status(400).send(`Invalid settings payload: ${summary}`);
+    }
+
+    let planName = "free";
     try {
       const plan = await getUserPlan(userId);
-      const isUpgraded = (plan?.plan_name || 'free') !== 'free';
-      if (!isUpgraded) {
-        values.conversation_mode = 'escalation';
-        values.bookings_enabled = 0;
-        values.reminders_enabled = 0;
-      }
+      planName = String(plan?.plan_name || "free").toLowerCase();
     } catch {}
-    try {
-      await upsertSettingsForUser(userId, values);
-    } catch (e) {
-      console.error('[POST /settings] upsert error', e?.message || e);
+
+    const { filtered, deniedFields } = enforceSettingsPolicy(validation.data, { planName });
+    if (planName === "free") {
+      filtered.conversation_mode = "escalation";
+      filtered.bookings_enabled = false;
+      filtered.reminders_enabled = false;
     }
-    res.redirect(303, "/settings");
+    filtered.escalation_email = null;
+
+    const existingSettings = await getSettingsForUser(userId);
+    const diff = computeSettingsDiff(existingSettings, filtered);
+
+    if (!diff.changed.length) {
+      return res.redirect(303, "/settings?updated=0");
+    }
+
+    try {
+      await upsertSettingsForUser(userId, filtered);
+      const actorEmail = await getSignedInEmail(req);
+      await recordSettingsAudit({
+        userId,
+        actorId: userId,
+        actorEmail,
+        ip: req.ip,
+        userAgent: req.headers["user-agent"],
+        deniedFields,
+        changes: diff.changed
+      });
+    } catch (error) {
+      console.error('[POST /settings] upsert error', error?.message || error);
+      return res.status(500).send("Failed to save settings");
+    }
+
+    res.redirect(303, "/settings?saved=1");
   });
 
   // WhatsApp token status check (used by Inbox modal)
@@ -1115,8 +1106,39 @@ export default function registerSettingsRoutes(app) {
     }
   });
 
+  // Lightweight API for dashboard setup tasks (step 2 modal)
+  app.post("/api/settings/setup-task", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
+    const updates = (req.body?.updates || {});
+    const allowed = [
+      'phone_number_id',
+      'waba_id',
+      'business_phone',
+      'whatsapp_token',
+      'app_secret',
+      'verify_token'
+    ];
+    const clean = {};
+    for (const key of allowed) {
+      if (Object.prototype.hasOwnProperty.call(updates, key)) {
+        const v = (updates[key] ?? '').toString().trim();
+        clean[key] = v || null;
+      }
+    }
+    if (!Object.keys(clean).length) {
+      return res.status(400).json({ success: false, error: 'No valid fields to update' });
+    }
+    try {
+      await upsertSettingsForUser(userId, clean);
+      return res.json({ success: true });
+    } catch (e) {
+      console.error('[POST /api/settings/setup-task] upsert error', e?.message || e);
+      return res.status(500).json({ success: false, error: 'Failed to save settings' });
+    }
+  });
+
   // Start email update: create email address and send verification
-  app.post("/settings/email/start", ensureAuthed, async (req, res) => {
+  app.post("/settings/email/start", ensureAuthed, protect, async (req, res) => {
     const userId = getCurrentUserId(req);
     const newEmail = String(req.body?.new_email || '').trim();
     if (!newEmail) return res.redirect(303, '/settings?email_error=Missing+email');
@@ -1131,7 +1153,7 @@ export default function registerSettingsRoutes(app) {
   });
 
   // Resend verification code
-  app.post("/settings/email/resend", ensureAuthed, async (req, res) => {
+  app.post("/settings/email/resend", ensureAuthed, protect, async (req, res) => {
     const userId = getCurrentUserId(req);
     const emailId = String(req.body?.email_id || '').trim();
     if (!emailId) return res.redirect(303, '/settings?email_error=Missing+email_id');
@@ -1145,7 +1167,7 @@ export default function registerSettingsRoutes(app) {
   });
 
   // Verify code and set as primary
-  app.post("/settings/email/verify", ensureAuthed, async (req, res) => {
+  app.post("/settings/email/verify", ensureAuthed, protect, async (req, res) => {
     const userId = getCurrentUserId(req);
     const emailId = String(req.body?.email_id || '').trim();
     const code = String(req.body?.code || '').trim();
@@ -1214,4 +1236,49 @@ export default function registerSettingsRoutes(app) {
       res.status(500).json({ success: false, error: 'Failed to delete quick reply' });
     }
   });
+}
+
+function summarizeValidationError(flattened) {
+  if (!flattened) return "validation failed";
+  const fieldErrors = flattened.fieldErrors || {};
+  const [fieldKey] = Object.keys(fieldErrors);
+  if (fieldKey) {
+    return `${fieldKey}: ${fieldErrors[fieldKey]?.[0] || "invalid"}`;
+  }
+  return flattened.formErrors?.[0] || "validation failed";
+}
+
+function computeSettingsDiff(previous = {}, next = {}) {
+  const changed = [];
+  for (const [key, value] of Object.entries(next)) {
+    const before = previous?.[key];
+    if (!deepEqual(coerceComparable(before), coerceComparable(value))) {
+      changed.push({ field: key, before: before ?? null, after: value ?? null });
+    }
+  }
+  return { changed };
+}
+
+function coerceComparable(value) {
+  if (value === undefined) return null;
+  if (typeof value === "string" && (value.startsWith("{") || value.startsWith("["))) {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value;
+    }
+  }
+  return value;
+}
+
+function deepEqual(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function escapeAttr(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }

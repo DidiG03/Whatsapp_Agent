@@ -15,8 +15,8 @@ export default function registerHomeRoutes(app) {
           
           <div class="container">
             ${renderTopbar('Home', email)}
-            <div class="layout">
-              ${renderSidebar('home')}
+          <div class="layout">
+            ${renderSidebar('home', { showKb: true })}
               <main class="main">
                 <div class="main-content">
                   <div class="card">

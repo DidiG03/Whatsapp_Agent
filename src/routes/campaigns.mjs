@@ -2,7 +2,7 @@ import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/
 import { renderSidebar, renderTopbar, escapeHtml } from "../utils.mjs";
 import { getDB } from "../db-mongodb.mjs";
 import { getSettingsForUser } from "../services/settings.mjs";
-import { enqueueOutboundMessage, isQueueEnabled } from "../jobs/outboundQueue.mjs";
+import { enqueueOutboundMessage } from "../jobs/outboundQueue.mjs";
 import { sendTemplateStatusEmail } from "../services/email.mjs";
 import { sendWhatsAppText, sendWhatsAppTemplate } from "../services/whatsapp.mjs";
 
@@ -77,7 +77,7 @@ export default function registerCampaignRoutes(app) {
         <div class="container">
         ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Campaigns`, email)}
           <div class="layout">
-          ${renderSidebar('campaigns', { showBookings: !!((await getSettingsForUser(userId))?.bookings_enabled) })}
+            ${renderSidebar('campaigns', { showBookings: !!((await getSettingsForUser(userId))?.bookings_enabled), showKb: true })}
             <main class="main">
               <div class="main-content">
                 <div class="meta-card" style="margin-bottom:12px;">
@@ -398,7 +398,8 @@ export default function registerCampaignRoutes(app) {
         createdAt: new Date(),
         updatedAt: new Date()
       };
-      await db.collection('wa_campaigns').insertOne(camp);
+      const { insertedId } = await db.collection('wa_campaigns').insertOne(camp);
+      const campaignId = insertedId?.toString?.() || null;
 
       // If send_now, dispatch
       if (mode === 'send_now') {
@@ -408,9 +409,14 @@ export default function registerCampaignRoutes(app) {
               // Try template send; if fails, skip silently
               try { await sendWhatsAppTemplate(phone, templateName || 'hello_world', templateLang || 'en_US', [], cfg); } catch {}
             } else {
-              if (isQueueEnabled()) {
-                await enqueueOutboundMessage({ userId, cfg, to: phone, message: text || '' });
-              } else {
+              const jobId = await enqueueOutboundMessage({
+                userId,
+                cfg,
+                to: phone,
+                message: text || '',
+                idempotencyKey: campaignId ? `campaign:${campaignId}:${phone}` : undefined
+              });
+              if (!jobId) {
                 await sendWhatsAppText(phone, text || '', cfg);
               }
             }

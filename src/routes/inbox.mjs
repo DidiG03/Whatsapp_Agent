@@ -683,7 +683,7 @@ export default function registerInboxRoutes(app) {
         <div class="container page-transition">
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Inbox`, email)}
           <div class="layout">
-            ${renderSidebar('inbox', { showBookings: !!(s?.bookings_enabled) })}
+            ${renderSidebar('inbox', { showBookings: !!(s?.bookings_enabled), showKb: true })}
             <main class="main">
               <div class="main-content">
                   <form method="get" action="/inbox" class="search-form">
@@ -1086,7 +1086,7 @@ export default function registerInboxRoutes(app) {
         <div class="container">
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / <a href="/inbox">Inbox</a> / Search Results`, email)}
           <div class="layout">
-            ${renderSidebar('inbox', { showBookings: !!((await getSettingsForUser(userId))?.bookings_enabled) })}
+            ${renderSidebar('inbox', { showBookings: !!((await getSettingsForUser(userId))?.bookings_enabled), showKb: true })}
             <main class="main">
               <div class="search-container">
                 <form method="get" action="/search" class="search-form">
@@ -2513,7 +2513,7 @@ export default function registerInboxRoutes(app) {
           <div class="container page-transition">
             ${renderTopbar(`<a href="/dashboard">Dashboard</a> / <a href="/inbox">Inbox</a> / +${String(phone).replace(/^\+/, '')}`, email)}
             <div class="layout">
-              ${renderSidebar('inbox', { showBookings: !!((await getSettingsForUser(userId))?.bookings_enabled) })}
+              ${renderSidebar('inbox', { showBookings: !!((await getSettingsForUser(userId))?.bookings_enabled), showKb: true })}
               <main class="main">
                 <div class="main-content">
                   <div class="wa-chat-header">

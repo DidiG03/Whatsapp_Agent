@@ -3,10 +3,12 @@
  * Mounts logging, body parsers, static assets, Clerk auth, security middleware, and all routes.
  */
 import express from "express";
+import cookieParser from "cookie-parser";
 import { STATIC_DIR } from "./config.mjs";
 import { initClerk } from "./middleware/auth.mjs";
 import { securityHeaders, createRateLimiters, sanitizeInput } from "./middleware/security.mjs";
 import { errorHandler, requestLogger } from "./middleware/errors.mjs";
+import { csrfProtection, attachCsrfToken } from "./middleware/csrf.mjs";
 
 // Monitoring and Logging
 import { initSentry } from "./monitoring/sentry.mjs";
@@ -37,19 +39,19 @@ import registerGuideRoutes from "./routes/guide.mjs";
 import registerNotificationRoutes from "./routes/notifications.mjs";
 import registerPlanRoutes from "./routes/plan.mjs";
 import registerStripeRoutes from "./routes/stripe.mjs";
-import registerOnboardingRoutes from "./routes/onboarding.mjs";
 import registerRealtimeRoutes from "./routes/realtime.mjs";
 import registerMonitoringRoutes from "./routes/monitoring.mjs";
 import { signMediaPath } from "./utils.mjs";
 import registerMetricsRoutes from "./routes/metrics.mjs";
 import registerGoogleRoutes from "./routes/google.mjs";
-import { isQueueEnabled, initOutboundQueue } from "./jobs/outboundQueue.mjs";
+import { initOutboundQueue } from "./jobs/outboundQueue.mjs";
 /**
  * Create and configure an Express app instance.
  * @returns {import('express').Express}
  */
 export async function createApp() {
   const app = express();
+  app.use(cookieParser());
   
   // Ensure database is connected before proceeding
   try { await initMongoDB(); } catch {}
@@ -82,9 +84,14 @@ export async function createApp() {
   // Monitoring middleware (before other middleware)
   app.use(loggingMiddleware());
   app.use(metricsMiddleware());
-  // Warm up outbound queue once at boot (if enabled)
-  if (isQueueEnabled()) {
-    try { await initOutboundQueue(); } catch {}
+  // Warm up outbound queue once at boot (falls back to direct send if unavailable)
+  try {
+    const queueReady = await initOutboundQueue();
+    if (!queueReady) {
+      console.warn('[Queue] Outbound queue not ready; falling back to direct sends until Redis is available.');
+    }
+  } catch (error) {
+    console.error('[Queue] Failed to initialize outbound queue:', error?.message || error);
   }
   
   // Rate limiting
@@ -265,14 +272,13 @@ export async function createApp() {
   registerAuthRoutes(app);
   registerDashboardRoutes(app);
   registerInboxRoutes(app);
-  registerSettingsRoutes(app);
+  registerSettingsRoutes(app, { csrfProtection, csrfTokenMiddleware: attachCsrfToken });
   registerGuideRoutes(app);
   registerKbRoutes(app);
   registerCampaignRoutes(app);
   registerBookingsTab(app);
   registerBookingRoutes(app);
   registerAssistantRoutes(app);
-  registerOnboardingRoutes(app);
   registerNotificationRoutes(app);
   registerPlanRoutes(app);
   registerStripeRoutes(app);

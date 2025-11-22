@@ -72,7 +72,7 @@ export default function registerMonitoringRoutes(app) {
           <div class="container">
             ${renderTopbar('Monitoring Dashboard', email)}
             <div class="layout">
-              ${renderSidebar('monitoring')}
+              ${renderSidebar('monitoring', { showKb: true })}
               <main class="main">
                 <div class="main-content">
                   

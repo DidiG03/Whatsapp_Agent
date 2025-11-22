@@ -55,7 +55,7 @@ export default function registerPlanRoutes(app) {
         <div class="container">
           ${renderTopbar('Plan & Usage', email)}
           <div class="layout">
-            ${renderSidebar('plan', { showBookings: !!((await getSettingsForUser(userId))?.bookings_enabled) })}
+            ${renderSidebar('plan', { showBookings: !!((await getSettingsForUser(userId))?.bookings_enabled), showKb: true })}
             <main class="main">
               <div class="main-content">
                 <section class="plan-card-shell">

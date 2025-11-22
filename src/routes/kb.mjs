@@ -204,6 +204,11 @@ export default function registerKbRoutes(app) {
 
   app.get("/kb/ui", ensureAuthed, async (req,res) =>{
     const userId = getCurrentUserId(req);
+    const plan = await getUserPlan(userId);
+    const isUpgraded = (plan?.plan_name || 'free') !== 'free';
+    if (!isUpgraded) {
+      return res.redirect(303, '/plan');
+    }
     const email = await getSignedInEmail(req);
     const settings = await getSettingsForUser(userId);
     let rows = await KBItem.find({ user_id: userId }).sort({ _id: -1 }).limit(200).lean();
@@ -221,7 +226,6 @@ export default function registerKbRoutes(app) {
     }
     const itemsCount = rows.length;
     const charsCount = rows.reduce((n, r) => n + (String(r.content||'').length), 0);
-    const plan = await getUserPlan(userId);
     const pricing = getPlanPricing();
     const planCfg = pricing[plan?.plan_name || 'free'] || pricing.free;
     const docsLimit = planCfg.kb_docs_limit || Infinity;
@@ -484,7 +488,7 @@ export default function registerKbRoutes(app) {
         <div class="container">
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / KB`, email)}
           <div class="layout">
-            ${renderSidebar('kb', { showBookings: !!(settings?.bookings_enabled) })}
+            ${renderSidebar('kb', { showBookings: !!(settings?.bookings_enabled), showKb: true })}
             <main class="main">
               <div class="main-content">
                 <div style="margin-bottom:12px;">
