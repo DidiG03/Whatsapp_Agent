@@ -2590,6 +2590,7 @@ export default function registerInboxRoutes(app) {
                   })()}
                   <div class="chat-thread" style="overflow-y:auto; height:70vh; max-height:70vh;">
                     ${items || '<div class="small" style="text-align:center;padding:16px;">No messages</div>'}
+                    <div data-thread-anchor="true"></div>
                     <div>
                       <div id="imagePreview" style="display:none; margin-bottom:8px; padding:8px; background:#f0f0f0; border-radius:8px;">
                         <div style="display:flex; gap:8px; align-items:center;">

@@ -465,7 +465,12 @@ class RealtimeManager {
         <div class="meta">${meta}</div>
       `;
       container.appendChild(bubble);
-      thread.appendChild(container);
+      const anchor = thread.querySelector('[data-thread-anchor]');
+      if (anchor && anchor.parentElement === thread) {
+        thread.insertBefore(container, anchor);
+      } else {
+        thread.appendChild(container);
+      }
       this.scrollThreadToBottom(thread);
       return true;
     } catch (error) {
