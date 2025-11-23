@@ -710,3 +710,86 @@ export async function onboardingCoachReply(userMessage, kbItems = [], historyTra
 
   return out.trim();
 }
+
+// ----------------------------- usageInsights ----------------------------------
+
+/**
+ * Generate a short insights recap for the Home dashboard based on recent usage.
+ *
+ * @param {{ plan?: any, usage?: any, history?: any[] }} params
+ *   - plan: UserPlan document (or plain object with plan_name/monthly_limit/etc.)
+ *   - usage: current month UsageStats (inbound_messages, outbound_messages, template_messages, month_year)
+ *   - history: optional array of recent UsageStats objects for previous months
+ *
+ * @returns {Promise<string>} Human‑readable text with a few sentences of suggestions.
+ */
+export async function generateUsageInsights(params = {}) {
+  const { plan, usage, history = [] } = params || {};
+
+  const planName = String(plan?.plan_name || "Free");
+  const monthlyLimit = typeof plan?.monthly_limit === "number" ? plan.monthly_limit : null;
+  const usedTotal = typeof usage?.inbound_messages === "number" || typeof usage?.outbound_messages === "number" || typeof usage?.template_messages === "number"
+    ? (Number(usage?.inbound_messages || 0) + Number(usage?.outbound_messages || 0) + Number(usage?.template_messages || 0))
+    : null;
+
+  const monthLabel = usage?.month_year || "";
+  const historyLines = Array.isArray(history) && history.length
+    ? history
+        .map((row) => {
+          const total = Number(row.inbound_messages || 0) + Number(row.outbound_messages || 0) + Number(row.template_messages || 0);
+          return `- ${row.month_year}: ${total} total messages (in: ${row.inbound_messages || 0}, out: ${row.outbound_messages || 0}, templates: ${row.template_messages || 0})`;
+        })
+        .join("\n")
+    : "(no historical data yet)";
+
+  const summaryParts = [];
+  if (usedTotal != null && monthlyLimit != null && monthlyLimit > 0) {
+    const pct = Math.round((usedTotal / monthlyLimit) * 100);
+    summaryParts.push(`Current month (${monthLabel || "this month"}): ${usedTotal} messages used out of ${monthlyLimit} in your ${planName} plan (~${isNaN(pct) ? "0" : pct}% of your allowance).`);
+  } else if (usedTotal != null) {
+    summaryParts.push(`Current month activity: ${usedTotal} total messages so far.`);
+  }
+  if (usage?.inbound_messages != null && usage?.outbound_messages != null) {
+    summaryParts.push(`Inbound vs outbound mix this month: ${usage.inbound_messages} received / ${usage.outbound_messages} sent.`);
+  }
+
+  const baseContext = summaryParts.length ? summaryParts.join(" ") : "This account has limited recent message data so far.";
+
+  const historyContext = history.length ? `\n\nRecent months:\n${historyLines}` : "";
+
+  const system = [
+    "You are a business coach helping a user improve how they use their WhatsApp Agent.",
+    "You will receive a brief summary of their recent messaging and plan usage.",
+    "Your job is to provide 3–5 concise, practical insights: what is going well, where they might be struggling, and specific suggestions to improve response times, campaign performance, or knowledge base coverage.",
+    "Be encouraging but honest. Avoid generic fluff. Use plain language, no marketing buzzwords.",
+    "Output a short paragraph followed by a few bullet points starting with a dash (\"-\").",
+  ].join("\n");
+
+  const userPrompt = `Here is the latest usage summary and history for a user's WhatsApp Agent account:
+
+${baseContext}
+${historyContext}
+
+The user wants to know:
+- What they are doing well
+- Where they might be struggling
+- The most impactful next steps to improve their automated support and campaigns
+
+Write a brief recap with clear, actionable advice.`;
+
+  try {
+    const resp = await openai.chat.completions.create({
+      model: MODEL,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: userPrompt },
+      ],
+      temperature: 0.5,
+      max_tokens: 260,
+    });
+    return resp.choices?.[0]?.message?.content?.trim() || "";
+  } catch (e) {
+    logOpenAiError(e, "Usage insights error");
+    return "";
+  }
+}

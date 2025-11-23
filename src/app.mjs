@@ -100,9 +100,9 @@ export async function createApp() {
           console.error('[Queue] Failed to initialize outbound queue (async):', error?.message || error);
         });
     } else {
-      const queueReady = await initOutboundQueue();
-      if (!queueReady) {
-        console.warn('[Queue] Outbound queue not ready; falling back to direct sends until Redis is available.');
+    const queueReady = await initOutboundQueue();
+    if (!queueReady) {
+      console.warn('[Queue] Outbound queue not ready; falling back to direct sends until Redis is available.');
       }
     }
   } catch (error) {

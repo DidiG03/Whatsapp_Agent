@@ -1,6 +1,7 @@
 import { isAuthenticated, getSignedInEmail, getCurrentUserId } from "../middleware/auth.mjs";
-import { renderTopbar, renderSidebar, getProfessionalHead } from "../utils.mjs";
-import { getPlanStatus } from "../services/usage.mjs";
+import { renderTopbar, renderSidebar, getProfessionalHead, escapeHtml } from "../utils.mjs";
+import { getPlanStatus, getCurrentUsage, getUsageHistory } from "../services/usage.mjs";
+import { generateUsageInsights } from "../services/ai.mjs";
 
 export default function registerHomeRoutes(app) {
   app.get("/", async (req, res) => {
@@ -9,7 +10,20 @@ export default function registerHomeRoutes(app) {
     
     if (signedIn) {
       const userId = getCurrentUserId(req);
-      const { isUpgraded } = await getPlanStatus(userId);
+      const [{ plan, isUpgraded }, usage, history] = await Promise.all([
+        getPlanStatus(userId),
+        getCurrentUsage(userId),
+        getUsageHistory(userId, 6)
+      ]);
+      let insights = "";
+      try {
+        insights = await generateUsageInsights({ plan, usage, history });
+      } catch (_) {}
+      const fallbackInsights = "As soon as your WhatsApp agent has a bit more activity, this panel will highlight where it is strong and where you can improve.";
+      // Escape HTML, then convert simple markdown-style **bold** to <strong> and keep line breaks.
+      let safeInsights = escapeHtml(insights || fallbackInsights);
+      safeInsights = safeInsights.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      const insightsHtml = safeInsights.replace(/\n/g, "<br/>");
       // Show home page for signed-in users
       const email = await getSignedInEmail(req);
       res.end(`
@@ -25,6 +39,16 @@ export default function registerHomeRoutes(app) {
                   <div class="card">
                   <h2>Welcome to WhatsApp Agent</h2>
                   <p>Manage your WhatsApp business conversations and automate customer interactions.</p>
+                  
+                  <div class="card" style="margin-top:16px; padding:20px; display:flex; gap:16px; align-items:flex-start;">
+                    <div style="flex-shrink:0; width:40px; height:40px; border-radius:999px; background:#eff6ff; display:flex; align-items:center; justify-content:center; font-size:22px;">🤖</div>
+                    <div style="flex:1; max-height:320px; overflow-y:auto; padding-right:4px;">
+                      <div class="small" style="text-transform:uppercase; letter-spacing:.08em; color:#64748b; font-weight:600; margin-bottom:4px;">AI Recap</div>
+                      <h3 style="margin:0 0 4px 0;">How your WhatsApp agent is doing</h3>
+                      <p class="small" style="margin:0 0 8px 0; color:#64748b;">Insights based on recent message volumes and plan limits.</p>
+                      <div style="font-size:14px; line-height:1.6; color:#111827; white-space:pre-line;">${insightsHtml}</div>
+                    </div>
+                  </div>
                   
                   <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 24px;">
                     <div class="card" style="text-align: center; padding: 24px;">

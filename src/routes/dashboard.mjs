@@ -519,8 +519,9 @@ export default function registerDashboardRoutes(app) {
     ` : '';
 
     // Create metrics dashboard HTML
+    // Make this section scrollable so deeper content (like integrations) is reachable even on smaller screens.
     const metricsHtml = `
-      <div style="padding: 16px;">
+      <div style="padding: 16px; overflow-y: auto;">
         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
           <h3 style="margin: 0;">Live Metrics</h3>
           <div style="display: flex; gap: 8px; align-items: center;">

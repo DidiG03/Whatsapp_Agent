@@ -1664,8 +1664,8 @@ export default function registerInboxRoutes(app) {
               // Update UI immediately
               const img = handoffBtn.querySelector('img');
               if (img) {
-                img.src = newHumanMode ? '/raise-hand-icon.svg' : '/bot-icon.svg';
-                img.alt = newHumanMode ? 'Human handling' : 'AI handling';
+              img.src = newHumanMode ? '/raise-hand-icon.svg' : '/bot-icon.svg';
+              img.alt = newHumanMode ? 'Human handling' : 'AI handling';
               }
               handoffBtn.setAttribute('data-is-human', newHumanMode);
               
@@ -1673,7 +1673,7 @@ export default function registerInboxRoutes(app) {
               const form = handoffBtn.closest('form');
               const hiddenInput = form && form.querySelector('input[name="is_human"]');
               if (hiddenInput) {
-                hiddenInput.value = newHumanMode ? '1' : '';
+              hiddenInput.value = newHumanMode ? '1' : '';
               }
 
               // Update composer controls immediately so the agent doesn't need to refresh
@@ -1720,19 +1720,19 @@ export default function registerInboxRoutes(app) {
               
               // Submit the form with authentication (AuthManager will call form.submit on success)
               if (form && typeof checkAuthThenSubmit === 'function') {
-                checkAuthThenSubmit(form).then(valid => {
+              checkAuthThenSubmit(form).then(valid => {
                   if (!valid) {
-                    // Revert UI on auth failure
+                  // Revert UI on auth failure
                     if (img) {
-                      img.src = isCurrentlyHuman ? '/raise-hand-icon.svg' : '/bot-icon.svg';
-                      img.alt = isCurrentlyHuman ? 'Human handling' : 'AI handling';
+                  img.src = isCurrentlyHuman ? '/raise-hand-icon.svg' : '/bot-icon.svg';
+                  img.alt = isCurrentlyHuman ? 'Human handling' : 'AI handling';
                     }
-                    handoffBtn.setAttribute('data-is-human', isCurrentlyHuman);
+                  handoffBtn.setAttribute('data-is-human', isCurrentlyHuman);
                     if (hiddenInput) hiddenInput.value = isCurrentlyHuman ? '1' : '';
                     try {
                       if (typeof updateSendButtonState === 'function') {
                         updateSendButtonState();
-                      }
+                }
                     } catch(_) {}
                   }
                 }).catch(() => {
