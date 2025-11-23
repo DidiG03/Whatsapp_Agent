@@ -288,14 +288,26 @@ export async function createInboxPaymentRequest({ userId, contactId, amount, cur
     cancel_url: `${PUBLIC_BASE_URL}/payments/thank-you?status=cancelled`
   });
 
-  await PaymentRequest.findByIdAndUpdate(requestDoc._id, {
-    $set: {
-      checkout_session_id: session.id,
-      payment_intent_id: session.payment_intent || null,
-      payment_link_url: session.url,
-      expires_at: session.expires_at || expiresAt
-    }
-  });
+  // Normalize existing docs: remove null payment_intent_id so unique sparse index works as intended
+  try {
+    await PaymentRequest.updateMany(
+      { payment_intent_id: null },
+      { $unset: { payment_intent_id: "" } }
+    );
+  } catch (e) {
+    console.error("Failed to normalize payment_intent_id nulls:", e?.message || e);
+  }
+
+  const updateSet = {
+    checkout_session_id: session.id,
+    payment_link_url: session.url,
+    expires_at: session.expires_at || expiresAt
+  };
+  if (session.payment_intent) {
+    updateSet.payment_intent_id = session.payment_intent;
+  }
+
+  await PaymentRequest.findByIdAndUpdate(requestDoc._id, { $set: updateSet });
 
   let messageId = null;
   try {
