@@ -459,7 +459,9 @@ export default function registerInboxRoutes(app) {
     const list = contacts.map(c => {
       const lastTs = Number(c.last_ts||0);
       const ts = formatTimestampForDisplay(lastTs);
-      const preview = (c.last_text || "").slice(0, 60).replace(/</g,'&lt;');
+      const rawPreview = (c.last_text || "").toString();
+      const shortened = rawPreview.length > 60 ? rawPreview.slice(0, 57) + "..." : rawPreview;
+      const preview = shortened.replace(/</g,'&lt;');
       const initials = String(c.contact||'').slice(-2);
       const displayDefault = c.contact ? `+${String(c.contact).replace(/^\+/, '')}` : '';
       const displayName = customerNameByContact.get(String(c.contact)) || displayDefault;
