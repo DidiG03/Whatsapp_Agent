@@ -2624,7 +2624,8 @@ export default function registerInboxRoutes(app) {
                           ${isHuman ? ('Human' + (remain ? ' • <span id="exp_remain"></span> left' : '')) : 'AI'}
                         </div>
                     </div>
-                    <form method="post" action="/handoff/${phone}" onsubmit="event.preventDefault(); toggleHandoffMode(); return false;">
+                    <!-- Use GET for handoff so Clerk's session refresh/handshake can treat it as a normal navigation -->
+                    <form method="get" action="/handoff/${phone}" onsubmit="event.preventDefault(); toggleHandoffMode(); return false;">
                       <input type="hidden" name="is_human" value="${isHuman ? '' : '1'}"/>
                       <button type="submit" class="btn-ghost handoff-toggle-btn" id="handoffToggleBtn" data-is-human="${isHuman}">
                         <img 
@@ -3091,10 +3092,12 @@ export default function registerInboxRoutes(app) {
     `);
   });
 
-  app.post("/handoff/:phone", ensureAuthed, async (req, res) => {
+  async function handleHandoff(req, res) {
     const phone = req.params.phone;
     const userId = getCurrentUserId(req);
-    const isHuman = req.body?.is_human ? 1 : 0;
+    // Support both POST body and GET query param so we can use GET from the UI
+    const source = req.method === 'GET' ? (req.query || {}) : (req.body || {});
+    const isHuman = source?.is_human ? 1 : 0;
     const now = Math.floor(Date.now()/1000);
     const exp = isHuman ? (now + 5*60) : 0;
     try {
@@ -3173,7 +3176,9 @@ export default function registerInboxRoutes(app) {
       }
     } catch {}
     return res.redirect(`/inbox/${encodeURIComponent(phone)}`);
-  });
+  }
+  app.post("/handoff/:phone", ensureAuthed, handleHandoff);
+  app.get("/handoff/:phone", ensureAuthed, handleHandoff);
 
   // Simulate message status updates (for demo purposes)
   app.post("/inbox/:phone/simulate-status", ensureAuthed, (req, res) => {
