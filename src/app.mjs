@@ -87,9 +87,23 @@ export async function createApp() {
   app.use(metricsMiddleware());
   // Warm up outbound queue once at boot (falls back to direct send if unavailable)
   try {
-    const queueReady = await initOutboundQueue();
-    if (!queueReady) {
-      console.warn('[Queue] Outbound queue not ready; falling back to direct sends until Redis is available.');
+    // On serverless (Vercel), don't block cold start on Redis/queue initialization.
+    // Fire-and-forget; message-sending paths already fall back to direct sends.
+    if (process.env.VERCEL) {
+      initOutboundQueue()
+        .then((queueReady) => {
+          if (!queueReady) {
+            console.warn('[Queue] Outbound queue not ready; falling back to direct sends until Redis is available.');
+          }
+        })
+        .catch((error) => {
+          console.error('[Queue] Failed to initialize outbound queue (async):', error?.message || error);
+        });
+    } else {
+      const queueReady = await initOutboundQueue();
+      if (!queueReady) {
+        console.warn('[Queue] Outbound queue not ready; falling back to direct sends until Redis is available.');
+      }
     }
   } catch (error) {
     console.error('[Queue] Failed to initialize outbound queue:', error?.message || error);
