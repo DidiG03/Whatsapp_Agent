@@ -95,7 +95,8 @@ export default function registerCampaignRoutes(app) {
                     <div style="display:flex; gap:8px;">
                       <button id="openCreateCampaign" class="meta-primary" type="button">Create Campaign</button>
                       <button id="openSubmitTemplate" class="meta-ghost" type="button">Submit Template</button>
-                      <form method="post" action="/campaigns/templates/sync" style="margin:0;">
+                      <!-- Use GET for sync so auth/session refresh flows (Clerk handshake) are eligible and play nicer with redirects -->
+                      <form method="get" action="/campaigns/templates/sync" style="margin:0;">
                         <button class="meta-ghost" type="submit" title="Pull approved templates from Meta">Sync from Meta</button>
                       </form>
                     </div>
@@ -284,7 +285,7 @@ export default function registerCampaignRoutes(app) {
   });
 
   // Sync approved templates from Meta (WhatsApp Cloud API)
-  app.post("/campaigns/templates/sync", ensureAuthed, async (req, res) => {
+  async function handleTemplatesSync(req, res) {
     try {
       const userId = getCurrentUserId(req);
       const db = getDB();
@@ -391,7 +392,9 @@ export default function registerCampaignRoutes(app) {
       const errMsg = e?.message ? `Sync failed: ${e.message}` : 'Sync failed';
       return res.redirect('/campaigns?toast=' + encodeURIComponent(errMsg) + '&type=error');
     }
-  });
+  }
+  app.post("/campaigns/templates/sync", ensureAuthed, handleTemplatesSync);
+  app.get("/campaigns/templates/sync", ensureAuthed, handleTemplatesSync);
 
   // Send/schedule campaign
   app.post("/campaigns/send", ensureAuthed, async (req, res) => {
