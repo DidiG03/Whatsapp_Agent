@@ -36,7 +36,7 @@ export default function registerHomeRoutes(app) {
             ${renderSidebar('home', { isUpgraded })}
               <main class="main">
                 <div class="main-content">
-                  <div class="card">
+                  <div>
                   <h2>Welcome to WhatsApp Agent</h2>
                   <p>Manage your WhatsApp business conversations and automate customer interactions.</p>
                   

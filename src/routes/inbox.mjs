@@ -1288,6 +1288,18 @@ export default function registerInboxRoutes(app) {
     const expTs = Number(status?.human_expires_ts || 0);
     const nowSec = Math.floor(Date.now()/1000);
     const remain = expTs > nowSec ? (expTs - nowSec) : 0;
+    // Compute last inbound message timestamp to enforce 24h window rules
+    let lastInboundTs = 0;
+    try {
+      for (const m of msgs) {
+        if (m?.direction === 'inbound') {
+          const ts = Number(m?.ts || 0);
+          if (ts > lastInboundTs) lastInboundTs = ts;
+        }
+      }
+    } catch {}
+    const over24h = lastInboundTs && (nowSec - lastInboundTs) > 24*3600;
+
     // Normalize expired human mode back to AI by default
     if (isHuman && remain <= 0) {
       isHuman = false;
@@ -2620,21 +2632,32 @@ export default function registerInboxRoutes(app) {
                     <div class="wa-avatar">${String(phone).slice(-2)}</div>
                       <div style="flex:1;">
                         <div class="wa-name">${headerName}</div>
-                        <div class="small">
+                    <div class="small">
                           ${isHuman ? ('Human' + (remain ? ' • <span id="exp_remain"></span> left' : '')) : 'AI'}
+                          ${over24h ? ' • 24h window expired' : ''}
                         </div>
                     </div>
                     <!-- Use GET for handoff so Clerk's session refresh/handshake can treat it as a normal navigation -->
-                    <form method="get" action="/handoff/${phone}" onsubmit="event.preventDefault(); toggleHandoffMode(); return false;">
-                      <input type="hidden" name="is_human" value="${isHuman ? '' : '1'}"/>
-                      <button type="submit" class="btn-ghost handoff-toggle-btn" id="handoffToggleBtn" data-is-human="${isHuman}">
+                    ${over24h ? `
+                      <button type="button" class="btn-ghost handoff-toggle-btn" id="handoffToggleBtn" title="Live mode disabled after 24h" style="opacity:0.6; cursor:not-allowed;">
                         <img 
                           src="${isHuman ? '/raise-hand-icon.svg' : '/bot-icon.svg'}"
-                          alt="${isHuman ? 'Human handling' : 'AI handling'}" 
-                          style="width:26px;height:26px;vertical-align:middle;margin-right:6px; cursor:pointer;"
+                          alt="Live mode disabled after 24h" 
+                          style="width:26px;height:26px;vertical-align:middle;margin-right:6px; cursor:not-allowed;"
                         />
                       </button>
-                    </form>
+                    ` : `
+                      <form method="get" action="/handoff/${phone}" onsubmit="event.preventDefault(); toggleHandoffMode(); return false;">
+                        <input type="hidden" name="is_human" value="${isHuman ? '' : '1'}"/>
+                        <button type="submit" class="btn-ghost handoff-toggle-btn" id="handoffToggleBtn" data-is-human="${isHuman}">
+                          <img 
+                            src="${isHuman ? '/raise-hand-icon.svg' : '/bot-icon.svg'}"
+                            alt="${isHuman ? 'Human handling' : 'AI handling'}" 
+                            style="width:26px;height:26px;vertical-align:middle;margin-right:6px; cursor:pointer;"
+                          />
+                        </button>
+                      </form>
+                    `}
                     ${isHuman ? `<form method="post" action="/inbox/${phone}/renew" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
                       <button type="submit" class="btn-ghost" title="Renew 5 minutes"><img src="/restart-onboarding.svg" alt="Renew" style="width:20px;height:20px;vertical-align:middle;"/></button>
                     </form>` : ''}
@@ -2684,21 +2707,9 @@ export default function registerInboxRoutes(app) {
                     </div>
                   </div>
                   ${(() => {
-                    try{
-                      const lastInbound = (msgs||[]).filter(x=>x.direction==='inbound').map(x=>Number(x.ts||0)).sort((a,b)=>b-a)[0]||0;
-                      const over24 = lastInbound && (Math.floor(Date.now()/1000)-lastInbound) > 24*3600;
-                      if (over24) {
-                        return `
-                          <div class="small" style="margin:8px 0; padding:8px; background:#fff8e1; border:1px solid #fde68a; border-radius:8px;">Session expired (>24h). Send template to reopen window.
-                            <form method="post" action="/inbox/${phone}/send-template" data-auth-enhanced style="display:flex; gap:6px; align-items:center; margin-top:6px;">
-                              <input class="settings-field" name="var1" placeholder="{{1}} (optional)" style="height:32px;"/>
-                              <input class="settings-field" name="var2" placeholder="{{2}} (optional)" style="height:32px;"/>
-                              <button class="btn-ghost" type="submit">Send Template</button>
-                            </form>
-                          </div>
-                        `;
-                      }
-                    }catch(_){ }
+                    // Template-based reopening is temporarily disabled while the logic is being redesigned.
+                    // Previously, this block rendered a "Session expired (>24h). Send template to reopen window." banner
+                    // with a form that submitted to /inbox/:phone/send-template.
                     return '';
                   })()}
                   <div class="chat-thread">
@@ -3102,6 +3113,18 @@ export default function registerInboxRoutes(app) {
     const exp = isHuman ? (now + 5*60) : 0;
     try {
       if (isHuman) {
+        // Disallow enabling live mode when the last inbound message is older than 24h
+        try {
+          const dbNative = getDB();
+          const row = dbNative.prepare(`SELECT MAX(timestamp) AS ts FROM messages WHERE user_id = ? AND from_id = ? AND direction = 'inbound'`).get(userId, phone) || {};
+          const lastInbound = Number(row.ts || 0);
+          const over24h = lastInbound && (now - lastInbound) > 24*3600;
+          if (over24h) {
+            const msg = encodeURIComponent('Live mode is disabled because the last customer message is older than 24 hours.');
+            return res.redirect(`/inbox/${encodeURIComponent(phone)}?toast=${msg}&type=error`);
+          }
+        } catch {}
+
         const cfg = await getSettingsForUser(userId);
         const agentName = String(cfg?.name || '').trim();
         if (!agentName) {
@@ -3228,14 +3251,8 @@ export default function registerInboxRoutes(app) {
         try {
           const cfg = await getSettingsForUser(userId);
           if (cfg?.whatsapp_token && cfg?.phone_number_id) {
-            // Respect 24h window: if session expired, send a template instead of interactive/text
-            let over24h = false;
-            try {
-              const lastInbound = db.prepare(`SELECT MAX(timestamp) AS ts FROM messages WHERE user_id = ? AND from_id = ? AND direction = 'inbound'`).get(userId, phone)?.ts || 0;
-              const now = Math.floor(Date.now()/1000);
-              over24h = lastInbound && (now - Number(lastInbound)) > 24*3600;
-            } catch {}
-
+            // Template-based CSAT behavior is temporarily disabled; always send the interactive list instead.
+            const over24h = false;
             if (over24h) {
               try {
                 const tname = cfg.wa_template_name || 'hello_world';
@@ -3549,23 +3566,33 @@ export default function registerInboxRoutes(app) {
     const cfg = await getSettingsForUser(userId);
     const text = (req.body?.text || "").toString().trim();
     if (!text) return respondError('Message cannot be empty.', 400);
-    // Enforce 24h window: if last inbound >24h ago, attempt a template instead
+
+    // Enforce 24h window: if last inbound >24h ago, send the configured reopen template instead.
     try {
-      const lastInbound = db.prepare(`SELECT MAX(timestamp) AS ts FROM messages WHERE user_id = ? AND from_id = ? AND direction = 'inbound'`).get(userId, to)?.ts || 0;
-      const now = Math.floor(Date.now()/1000);
-      const over24h = lastInbound && (now - Number(lastInbound)) > 24*3600;
+      let over24h = false;
+      try {
+        const row = db.prepare(`SELECT MAX(timestamp) AS ts FROM messages WHERE user_id = ? AND from_id = ? AND direction = 'inbound'`).get(userId, to) || {};
+        const lastInbound = Number(row.ts || 0);
+        const now = Math.floor(Date.now()/1000);
+        over24h = lastInbound && (now - lastInbound) > 24*3600;
+      } catch {}
+
       if (over24h) {
+        const tname = (cfg.wa_template_name || '').toString().trim();
+        const tlang = (cfg.wa_template_language || 'en_US').toString().trim() || 'en_US';
+        if (!tname) {
+          return respondError('Conversation is older than 24h. Please choose a default template on the Campaigns page before replying.', 400, { requireTemplate: true });
+        }
         try {
-          await sendWhatsAppTemplate(to, 'hello_world', 'en_US', [], cfg);
-          // Optionally queue the freeform reply AFTER user responds to the template
+          await sendWhatsAppTemplate(to, tname, tlang, [], cfg);
+          // Do not send the freeform text; wait for customer to respond to template.
           return respondSuccess({ templateSent: true });
         } catch (e) {
-          console.error('Template send failed, falling back to text within 24h only:', e?.message || e);
-          return respondError('Template required before messaging. Please try again after customer responds.', 400);
+          console.error('24h reopen template send failed:', e?.message || e);
+          return respondError('Session expired and the configured template failed to send. Please try again later.', 502);
         }
       }
-    } catch {}
-    try {
+
       // Get the original message ID if this is a reply
       let originalMessageId = null;
       const replyTo = req.body?.replyTo;
@@ -3815,23 +3842,30 @@ export default function registerInboxRoutes(app) {
     if (process.env.DEBUG_LOGS === '1') console.log('Image upload - Using ngrok:', isNgrok);
     if (process.env.DEBUG_LOGS === '1') console.log('Image upload - Note: WhatsApp needs this URL to be publicly accessible');
 
-    // Enforce 24h window: if last inbound >24h ago, attempt a template instead
+    // Enforce 24h window for media as well: send reopen template instead of image when expired.
     try {
-      const lastInbound = db.prepare(`SELECT MAX(timestamp) AS ts FROM messages WHERE user_id = ? AND from_id = ? AND direction = 'inbound'`).get(userId, to)?.ts || 0;
-      const now = Math.floor(Date.now()/1000);
-      const over24h = lastInbound && (now - Number(lastInbound)) > 24*3600;
-      if (over24h) {
-        try {
-          await sendWhatsAppTemplate(to, 'hello_world', 'en_US', [], cfg);
-          return res.redirect(`/inbox/${encodeURIComponent(to)}`);
-        } catch (e) {
-          console.error('Template send failed, falling back to image within 24h only:', e?.message || e);
-          return res.redirect(`/inbox/${encodeURIComponent(to)}`);
-        }
-      }
-    } catch {}
+      let over24h = false;
+      try {
+        const row = db.prepare(`SELECT MAX(timestamp) AS ts FROM messages WHERE user_id = ? AND from_id = ? AND direction = 'inbound'`).get(userId, to) || {};
+        const lastInbound = Number(row.ts || 0);
+        const now = Math.floor(Date.now()/1000);
+        over24h = lastInbound && (now - lastInbound) > 24*3600;
+      } catch {}
 
-    try {
+      if (over24h) {
+        const tname = (cfg.wa_template_name || '').toString().trim();
+        const tlang = (cfg.wa_template_language || 'en_US').toString().trim() || 'en_US';
+        if (!tname) {
+          return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Conversation is older than 24h. Set a default template on the Campaigns page before sending media.')}&type=error`);
+        }
+        try {
+          await sendWhatsAppTemplate(to, tname, tlang, [], cfg);
+        } catch (e) {
+          console.error('24h reopen template send failed (image):', e?.message || e);
+        }
+        return res.redirect(`/inbox/${encodeURIComponent(to)}`);
+      }
+
       // Get the original message ID if this is a reply
       let originalMessageId = null;
       const replyTo = req.body?.replyTo;
@@ -3921,23 +3955,30 @@ export default function registerInboxRoutes(app) {
     if (process.env.DEBUG_LOGS === '1') console.log('Document upload - Generated URL:', documentUrl);
     if (process.env.DEBUG_LOGS === '1') console.log('Document upload - File:', req.file.filename);
 
-    // Enforce 24h window: if last inbound >24h ago, attempt a template instead
+    // Enforce 24h window for documents as well: send reopen template instead of document when expired.
     try {
-      const lastInbound = db.prepare(`SELECT MAX(timestamp) AS ts FROM messages WHERE user_id = ? AND from_id = ? AND direction = 'inbound'`).get(userId, to)?.ts || 0;
-      const now = Math.floor(Date.now()/1000);
-      const over24h = lastInbound && (now - Number(lastInbound)) > 24*3600;
-      if (over24h) {
-        try {
-          await sendWhatsAppTemplate(to, 'hello_world', 'en_US', [], cfg);
-          return res.redirect(`/inbox/${encodeURIComponent(to)}`);
-        } catch (e) {
-          console.error('Template send failed, falling back to document within 24h only:', e?.message || e);
-          return res.redirect(`/inbox/${encodeURIComponent(to)}`);
-        }
-      }
-    } catch {}
+      let over24h = false;
+      try {
+        const row = db.prepare(`SELECT MAX(timestamp) AS ts FROM messages WHERE user_id = ? AND from_id = ? AND direction = 'inbound'`).get(userId, to) || {};
+        const lastInbound = Number(row.ts || 0);
+        const now = Math.floor(Date.now()/1000);
+        over24h = lastInbound && (now - lastInbound) > 24*3600;
+      } catch {}
 
-    try {
+      if (over24h) {
+        const tname = (cfg.wa_template_name || '').toString().trim();
+        const tlang = (cfg.wa_template_language || 'en_US').toString().trim() || 'en_US';
+        if (!tname) {
+          return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Conversation is older than 24h. Set a default template on the Campaigns page before sending documents.')}&type=error`);
+        }
+        try {
+          await sendWhatsAppTemplate(to, tname, tlang, [], cfg);
+        } catch (e) {
+          console.error('24h reopen template send failed (document):', e?.message || e);
+        }
+        return res.redirect(`/inbox/${encodeURIComponent(to)}`);
+      }
+
       // Get the original message ID if this is a reply
       let originalMessageId = null;
       const replyTo = req.body?.replyTo;
@@ -4016,25 +4057,9 @@ export default function registerInboxRoutes(app) {
   });
 
   app.post("/inbox/:phone/send-template", ensureAuthed, async (req, res) => {
+    // Template-based reopen logic is temporarily disabled.
     const to = req.params.phone;
-    const userId = getCurrentUserId(req);
-    const cfg = await getSettingsForUser(userId);
-    const tname = cfg.wa_template_name || 'hello_world';
-    const tlang = cfg.wa_template_language || 'en_US';
-    const components = [];
-    const var1 = (req.body?.var1 || '').toString().trim();
-    const var2 = (req.body?.var2 || '').toString().trim();
-    const bodyParams = [];
-    if (var1) bodyParams.push({ type: 'text', text: var1 });
-    if (var2) bodyParams.push({ type: 'text', text: var2 });
-    if (bodyParams.length) components.push({ type: 'body', parameters: bodyParams });
-    try { 
-      await sendWhatsAppTemplate(to, tname, tlang, components, cfg);
-      return res.redirect(`/inbox/${encodeURIComponent(to)}`);
-    } catch (e) { 
-      console.error('Template send error:', e?.message || e);
-      return res.redirect(`/inbox/${encodeURIComponent(to)}`);
-    }
+    return res.redirect(`/inbox/${encodeURIComponent(to)}`);
   });
 
   app.post("/inbox/:phone/nameCustomer", ensureAuthed, (req, res) => {

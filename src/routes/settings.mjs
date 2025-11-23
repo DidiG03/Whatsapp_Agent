@@ -241,19 +241,6 @@ export default function registerSettingsRoutes(app, options = {}) {
                     </label>
                   </div>
 
-                  <div class="section" id="templates">
-                    <h3>WhatsApp Templates</h3>
-                    <div class="grid-2">
-                      <label>Template Name
-                        <input placeholder="welcome_back" class="settings-field" name="wa_template_name" value="${s.wa_template_name || ''}"/>
-                      </label>
-                      <label>Template Language
-                        <input placeholder="en_US" class="settings-field" name="wa_template_language" value="${s.wa_template_language || 'en_US'}"/>
-                      </label>
-                    </div>
-                    <div class="small">Used when last user message is older than 24h.</div>
-                  </div>
-
                   <div class="section" id="ai">
                     <h3>AI Preferences</h3>
                     <div class="grid-2">

@@ -1,7 +1,7 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
 import { renderSidebar, renderTopbar, escapeHtml } from "../utils.mjs";
 import { getDB } from "../db-mongodb.mjs";
-import { getSettingsForUser } from "../services/settings.mjs";
+import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
 import { getPlanStatus } from "../services/usage.mjs";
 import { enqueueOutboundMessage } from "../jobs/outboundQueue.mjs";
 import { sendTemplateStatusEmail } from "../services/email.mjs";
@@ -13,18 +13,40 @@ export default function registerCampaignRoutes(app) {
     const userId = getCurrentUserId(req);
     const email = await getSignedInEmail(req);
 
-    // Fetch recent templates/campaigns for sidebar preview
     const db = getDB();
-    const templates = await db.collection('wa_templates').find({ user_id: String(userId) }).sort({ createdAt: -1 }).limit(10).toArray();
-    const campaigns = await db.collection('wa_campaigns').find({ user_id: String(userId) }).sort({ createdAt: -1 }).limit(10).toArray();
+    // Fetch settings, recent templates, and recent campaigns
+    const [settings, { isUpgraded }, templates, campaigns] = await Promise.all([
+      getSettingsForUser(userId),
+      getPlanStatus(userId),
+      db.collection('wa_templates').find({ user_id: String(userId) }).sort({ createdAt: -1 }).limit(10).toArray(),
+      db.collection('wa_campaigns').find({ user_id: String(userId) }).sort({ createdAt: -1 }).limit(10).toArray()
+    ]);
 
-    const tplRows = (templates || []).map(t => `
+    const defaultTemplateName = String(settings?.wa_template_name || '').trim();
+    const defaultTemplateLang = String(settings?.wa_template_language || '').trim() || 'en_US';
+
+    const tplRows = (templates || []).map(t => {
+      const name = String(t.name || '(unnamed)');
+      const lang = String(t.language || 'en_US');
+      const isDefault = defaultTemplateName && defaultTemplateName === name && defaultTemplateLang === lang;
+      const status = String(t.status || 'submitted');
+      const submittedAt = new Date(t.createdAt || Date.now()).toLocaleString();
+      const actionCell = isDefault
+        ? '<span class="small muted">24h reopen default</span>'
+        : `<form method="post" action="/campaigns/templates/default" style="margin:0;">
+             <input type="hidden" name="name" value="${escapeHtml(name)}"/>
+             <input type="hidden" name="language" value="${escapeHtml(lang)}"/>
+             <button class="meta-ghost" type="submit" style="font-size:12px;padding:4px 8px;">Use for 24h reopen</button>
+           </form>`;
+      return `
       <tr>
-        <td>${escapeHtml(t.name || '(unnamed)')}</td>
-        <td class="small">${escapeHtml(t.language || 'en_US')}</td>
-        <td><span class="badge ${t.status || 'submitted'}">${escapeHtml(t.status || 'submitted')}</span></td>
-        <td class="small">${new Date(t.createdAt || Date.now()).toLocaleString()}</td>
-      </tr>`).join("");
+        <td>${escapeHtml(name)}</td>
+        <td class="small">${escapeHtml(lang)}</td>
+        <td><span class="badge ${status}">${escapeHtml(status)}</span></td>
+        <td class="small">${submittedAt}</td>
+        <td class="small">${actionCell}</td>
+      </tr>`;
+    }).join("");
 
     const campRows = (campaigns || []).map(c => `
       <tr>
@@ -34,11 +56,6 @@ export default function registerCampaignRoutes(app) {
         <td class="small">${c.scheduled_at ? new Date(c.scheduled_at * 1000).toLocaleString() : '-'}</td>
         <td><span class="badge ${escapeHtml(c.status || 'draft')}">${escapeHtml(c.status || 'draft')}</span></td>
       </tr>`).join("");
-
-    const [settings, { isUpgraded }] = await Promise.all([
-      getSettingsForUser(userId),
-      getPlanStatus(userId)
-    ]);
 
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.end(`
@@ -185,8 +202,22 @@ export default function registerCampaignRoutes(app) {
 
                 <div class="meta-card" style="margin-top:12px;">
                   <h3 style="margin:0 0 10px 0;">Templates</h3>
+                  <p class="small muted" style="margin:0 0 8px 0;">
+                    Choose which approved template should be used to reopen conversations that are older than 24 hours.
+                  </p>
                   <div style="overflow:auto;">
-                    <table class="meta-table"><thead><tr><th>Name</th><th>Lang</th><th>Status</th><th>Submitted</th></tr></thead><tbody>${tplRows || '<tr><td colspan="4" class="small">No templates yet</td></tr>'}</tbody></table>
+                    <table class="meta-table">
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Lang</th>
+                          <th>Status</th>
+                          <th>Submitted</th>
+                          <th>24h Reopen</th>
+                        </tr>
+                      </thead>
+                      <tbody>${tplRows || '<tr><td colspan="5" class="small">No templates yet</td></tr>'}</tbody>
+                    </table>
                   </div>
                 </div>
               </div>
@@ -195,6 +226,26 @@ export default function registerCampaignRoutes(app) {
         </div>
       </body></html>
     `);
+  });
+
+  // Mark a template as the default 24h reopen template
+  app.post("/campaigns/templates/default", ensureAuthed, async (req, res) => {
+    try {
+      const userId = getCurrentUserId(req);
+      const rawName = String(req.body?.name || '').trim();
+      const language = String(req.body?.language || 'en_US').trim();
+      if (!rawName || !language) {
+        return res.redirect('/campaigns?toast=' + encodeURIComponent('Missing template name or language.') + '&type=error');
+      }
+      await upsertSettingsForUser(userId, {
+        wa_template_name: rawName,
+        wa_template_language: language
+      });
+      return res.redirect('/campaigns?toast=' + encodeURIComponent(`Default 24h reopen template set to "${rawName}" (${language}).`) + '&type=success');
+    } catch (e) {
+      console.error('Set default template error:', e?.message || e);
+      return res.redirect('/campaigns?toast=' + encodeURIComponent('Failed to update default 24h reopen template.') + '&type=error');
+    }
   });
 
   // Submit template for approval: create on Meta (Cloud API) then store locally
