@@ -17,6 +17,29 @@ function safeRedirectPath(input) {
 }
 
 export default function registerPaymentRoutes(app) {
+  // Public short redirect for payment requests
+  app.get("/pay/:id", async (req, res) => {
+    try {
+      const rawId = (req.params.id || "").toString().trim();
+      if (!rawId) {
+        return res.status(400).send("Missing payment id");
+      }
+      const { PaymentRequest } = await import("../schemas/mongodb.mjs");
+      const doc = await PaymentRequest.findById(rawId).lean();
+      if (!doc || !doc.payment_link_url) {
+        return res.status(404).send("Payment link not found");
+      }
+      // Optional: block obviously expired/finished states from redirecting
+      if (['expired', 'canceled'].includes(String(doc.status || '').toLowerCase())) {
+        return res.status(410).send("This payment link is no longer active.");
+      }
+      return res.redirect(doc.payment_link_url);
+    } catch (err) {
+      console.error("Payment redirect error:", err?.message || err);
+      return res.status(500).send("Unable to open payment link right now.");
+    }
+  });
+
   // Public thank-you page for payment completion
   app.get("/payments/thank-you", (req, res) => {
     const status = (req.query.status || '').toString().toLowerCase();

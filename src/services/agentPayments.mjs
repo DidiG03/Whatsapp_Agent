@@ -179,7 +179,7 @@ function humanCurrency(amount, currency) {
   }
 }
 
-async function sendPaymentLinkMessage({ userId, contactId, sessionUrl, amount, currency, description }) {
+async function sendPaymentLinkMessage({ userId, contactId, publicUrl, amount, currency, description }) {
   const cfg = await getSettingsForUser(userId);
   if (!cfg?.whatsapp_token || !cfg?.phone_number_id) {
     throw new Error('WhatsApp configuration missing. Add WhatsApp token to send payment links.');
@@ -187,8 +187,10 @@ async function sendPaymentLinkMessage({ userId, contactId, sessionUrl, amount, c
   cfg.user_id = userId;
   const prettyAmount = humanCurrency(amount, currency);
   const lines = [
-    `Here is your secure payment link for ${prettyAmount}${description ? ` (${description})` : ''}:`,
-    sessionUrl,
+    `Here is your secure payment link for ${prettyAmount}${description ? ` (${description})` : ''}.`,
+    '',
+    `Tap to pay: ${publicUrl}`,
+    '',
     'Let us know once it is paid—thank you!'
   ];
   const body = lines.join('\n');
@@ -297,10 +299,11 @@ export async function createInboxPaymentRequest({ userId, contactId, amount, cur
 
   let messageId = null;
   try {
+    const publicUrl = `${PUBLIC_BASE_URL}/pay/${encodeURIComponent(String(requestDoc._id))}`;
     messageId = await sendPaymentLinkMessage({
       userId,
       contactId,
-      sessionUrl: session.url,
+      publicUrl,
       amount: safeAmount,
       currency: safeCurrency,
       description: desc
