@@ -1651,37 +1651,99 @@ export default function registerInboxRoutes(app) {
             }
             function toggleHandoffMode() {
               const handoffBtn = document.getElementById('handoffToggleBtn');
+              if (!handoffBtn) return;
               const isCurrentlyHuman = handoffBtn.getAttribute('data-is-human') === 'true';
               const newHumanMode = !isCurrentlyHuman;
               
               // Update UI immediately
               const img = handoffBtn.querySelector('img');
-              img.src = newHumanMode ? '/raise-hand-icon.svg' : '/bot-icon.svg';
-              img.alt = newHumanMode ? 'Human handling' : 'AI handling';
+              if (img) {
+                img.src = newHumanMode ? '/raise-hand-icon.svg' : '/bot-icon.svg';
+                img.alt = newHumanMode ? 'Human handling' : 'AI handling';
+              }
               handoffBtn.setAttribute('data-is-human', newHumanMode);
               
               // Update the hidden input
-              const hiddenInput = handoffBtn.closest('form').querySelector('input[name="is_human"]');
-              hiddenInput.value = newHumanMode ? '1' : '';
+              const form = handoffBtn.closest('form');
+              const hiddenInput = form && form.querySelector('input[name="is_human"]');
+              if (hiddenInput) {
+                hiddenInput.value = newHumanMode ? '1' : '';
+              }
+
+              // Update composer controls immediately so the agent doesn't need to refresh
+              try {
+                const sendButton = document.getElementById('sendButton');
+                const messageInput = document.getElementById('messageInput');
+                const attachBtn = document.querySelector('.wa-attach-btn');
+                const emojiBtn = document.querySelector('.wa-emoji-btn');
+                const paymentBtn = document.getElementById('paymentRequestBtn');
+
+                if (sendButton) {
+                  if (newHumanMode) {
+                    sendButton.setAttribute('data-original-disabled', 'false');
+                  } else {
+                    sendButton.setAttribute('data-original-disabled', 'true');
+                    sendButton.disabled = true;
+                  }
+                }
+                if (messageInput) {
+                  messageInput.disabled = !newHumanMode;
+                }
+                if (attachBtn) {
+                  attachBtn.disabled = !newHumanMode;
+                }
+                if (emojiBtn) {
+                  emojiBtn.disabled = !newHumanMode;
+                }
+                if (paymentBtn) {
+                  paymentBtn.setAttribute('data-human', newHumanMode ? '1' : '0');
+                  // paymentsAvailable is resolved asynchronously; here we just respect human/AI state
+                  if (!newHumanMode) {
+                    paymentBtn.disabled = true;
+                  }
+                }
+                if (typeof updateSendButtonState === 'function') {
+                  updateSendButtonState();
+                }
+              } catch(_) {}
               
               // Send via real-time if available
               if (realtimeManager && realtimeManager.isConnected) {
                 realtimeManager.toggleLiveMode(phoneDigits, newHumanMode);
               }
               
-              // Submit the form with authentication
-              const form = handoffBtn.closest('form');
-              checkAuthThenSubmit(form).then(valid => {
-                if (valid) {
-                  form.submit();
-                } else {
-                  // Revert UI on auth failure
-                  img.src = isCurrentlyHuman ? '/raise-hand-icon.svg' : '/bot-icon.svg';
-                  img.alt = isCurrentlyHuman ? 'Human handling' : 'AI handling';
+              // Submit the form with authentication (AuthManager will call form.submit on success)
+              if (form && typeof checkAuthThenSubmit === 'function') {
+                checkAuthThenSubmit(form).then(valid => {
+                  if (!valid) {
+                    // Revert UI on auth failure
+                    if (img) {
+                      img.src = isCurrentlyHuman ? '/raise-hand-icon.svg' : '/bot-icon.svg';
+                      img.alt = isCurrentlyHuman ? 'Human handling' : 'AI handling';
+                    }
+                    handoffBtn.setAttribute('data-is-human', isCurrentlyHuman);
+                    if (hiddenInput) hiddenInput.value = isCurrentlyHuman ? '1' : '';
+                    try {
+                      if (typeof updateSendButtonState === 'function') {
+                        updateSendButtonState();
+                      }
+                    } catch(_) {}
+                  }
+                }).catch(() => {
+                  // On unexpected error, also revert the UI
+                  if (img) {
+                    img.src = isCurrentlyHuman ? '/raise-hand-icon.svg' : '/bot-icon.svg';
+                    img.alt = isCurrentlyHuman ? 'Human handling' : 'AI handling';
+                  }
                   handoffBtn.setAttribute('data-is-human', isCurrentlyHuman);
-                  hiddenInput.value = isCurrentlyHuman ? '1' : '';
-                }
-              });
+                  if (hiddenInput) hiddenInput.value = isCurrentlyHuman ? '1' : '';
+                  try {
+                    if (typeof updateSendButtonState === 'function') {
+                      updateSendButtonState();
+                    }
+                  } catch(_) {}
+                });
+              }
             }
             function setupComposer(){
               const ta=document.querySelector('#messageInput');

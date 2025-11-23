@@ -293,6 +293,12 @@ export default function registerCampaignRoutes(app) {
         return res.redirect('/campaigns?toast=' + encodeURIComponent('Missing WhatsApp configuration (token or phone number ID).') + '&type=error');
       }
       const fetch = (await import('node-fetch')).default;
+      // Guardrails so the sync stays within Vercel's 30s function timeout
+      const SYNC_HARD_LIMIT = 500;           // Max templates to process per request
+      const SYNC_TIME_BUDGET_MS = 20000;     // Soft time budget to avoid 504s
+      const startedAt = Date.now();
+      let reachedLimit = false;
+      let hitTimeBudget = false;
       // Step 1: derive WABA ID from settings or via phone lookup
       let wabaId = cfg?.waba_id || null;
       if (!wabaId) {
@@ -312,6 +318,12 @@ export default function registerCampaignRoutes(app) {
       let url = `https://graph.facebook.com/v20.0/${encodeURIComponent(String(wabaId))}/message_templates?limit=100`;
       let count = 0;
       while (url) {
+        // Respect a soft time budget so we don't hit Vercel's hard timeout
+        if (Date.now() - startedAt > SYNC_TIME_BUDGET_MS) {
+          hitTimeBudget = true;
+          break;
+        }
+
         const r = await fetch(url, { headers: { Authorization: `Bearer ${cfg.whatsapp_token}` } });
         if (!r.ok) throw new Error(`Templates fetch failed ${r.status}`);
         const j = await r.json();
@@ -345,10 +357,28 @@ export default function registerCampaignRoutes(app) {
             }
           }
           count++;
+
+          if (count >= SYNC_HARD_LIMIT) {
+            reachedLimit = true;
+            break;
+          }
+
+          if (Date.now() - startedAt > SYNC_TIME_BUDGET_MS) {
+            hitTimeBudget = true;
+            break;
+          }
         }
+        if (reachedLimit || hitTimeBudget) break;
         url = j?.paging?.next || null;
       }
-      const msg = count ? `Synced ${count} template${count===1?'':'s'} from Meta` : 'No template changes found';
+      let msg;
+      if (!count) {
+        msg = 'No template changes found';
+      } else if (reachedLimit || hitTimeBudget) {
+        msg = `Synced ${count} template${count===1?'':'s'} from Meta (partial sync; run again to continue)`;
+      } else {
+        msg = `Synced ${count} template${count===1?'':'s'} from Meta`;
+      }
       return res.redirect('/campaigns?toast=' + encodeURIComponent(msg) + '&type=success');
     } catch (e) {
       console.error('Templates sync error:', e?.message || e);
