@@ -17,10 +17,60 @@ import {
 } from '../services/conversationStatus.mjs';
 import { Message, AIRequest, Handoff, SettingsMulti } from '../schemas/mongodb.mjs';
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+const RANGE_PRESETS = {
+  today: { label: 'Today', compareLabel: 'Previous day', days: 1, mode: 'current' },
+  yesterday: { label: 'Yesterday', compareLabel: 'Day before', days: 1, mode: 'previous' },
+  last7: { label: 'Last 7 days', compareLabel: 'Previous 7 days', days: 7, mode: 'current' },
+  last30: { label: 'Last 30 days', compareLabel: 'Previous 30 days', days: 30, mode: 'current' }
+};
+
+function startOfDay(date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function resolveRangeWindow(rangeKey = 'today') {
+  const now = new Date();
+  const normalizedKey = RANGE_PRESETS[rangeKey] ? rangeKey : 'today';
+  const preset = RANGE_PRESETS[normalizedKey];
+  const todayStart = startOfDay(now);
+  let startDate;
+  let endDate;
+
+  if (normalizedKey === 'yesterday') {
+    endDate = todayStart;
+    startDate = new Date(endDate.getTime() - DAY_MS);
+  } else {
+    const offsetDays = Math.max(0, (preset.days || 1) - 1);
+    startDate = new Date(todayStart.getTime() - offsetDays * DAY_MS);
+    endDate = preset.mode === 'current' ? now : todayStart;
+  }
+
+  // Ensure end is always after start
+  if (endDate <= startDate) {
+    endDate = new Date(startDate.getTime() + DAY_MS);
+  }
+
+  const durationMs = Math.max(DAY_MS, endDate.getTime() - startDate.getTime());
+  const compareEnd = new Date(startDate.getTime());
+  const compareStart = new Date(compareEnd.getTime() - durationMs);
+
+  return {
+    key: normalizedKey,
+    label: preset.label,
+    compareLabel: preset.compareLabel,
+    startDate,
+    endDate,
+    compareStart,
+    compareEnd,
+    durationMs
+  };
+}
+
 export default function registerMetricsRoutes(app) {
   
   // Store active dashboard users for real-time updates
-  const activeDashboardUsers = new Set();
+  const activeDashboardUsers = new Map();
   
   // Periodic metrics broadcasting (every 30 seconds)
   setInterval(async () => {
@@ -28,8 +78,8 @@ export default function registerMetricsRoutes(app) {
     
     try {
       // Get fresh metrics for all active users
-      for (const userId of activeDashboardUsers) {
-        const metrics = await getDashboardMetricsForUser(userId);
+      for (const [userId, rangeKey] of activeDashboardUsers.entries()) {
+        const metrics = await getDashboardMetricsForUser(userId, { rangeKey });
         broadcastMetricsUpdate(userId, metrics);
       }
     } catch (error) {
@@ -38,24 +88,36 @@ export default function registerMetricsRoutes(app) {
   }, 30000);
   
   // Helper function to get dashboard metrics for a specific user
-  async function getDashboardMetricsForUser(userId) {
+  async function getDashboardMetricsForUser(userId, options = {}) {
     const metrics = getAllMetrics();
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+    const rangeKey = (options.rangeKey || 'today').toLowerCase();
+    const rangeWindow = resolveRangeWindow(rangeKey);
+    const rangeStartDate = rangeWindow.startDate;
+    const rangeEndDate = rangeWindow.endDate;
+    const compareStartDate = rangeWindow.compareStart;
+    const compareEndDate = rangeWindow.compareEnd;
+    const rangeMeta = {
+      key: rangeWindow.key,
+      label: rangeWindow.label,
+      compareLabel: rangeWindow.compareLabel,
+      start: rangeStartDate.toISOString(),
+      end: rangeEndDate.toISOString(),
+      duration_days: Math.max(1, Math.round(rangeWindow.durationMs / DAY_MS))
+    };
     
     // NOTE: messages.timestamp is stored in SECONDS. Use seconds for comparisons.
-    const nowSec = Math.floor(now.getTime() / 1000);
-    const todaySec = Math.floor(today.getTime() / 1000);
-    const yesterdaySec = Math.floor(yesterday.getTime() / 1000);
+    const rangeStartSec = Math.floor(rangeStartDate.getTime() / 1000);
+    const rangeEndSec = Math.floor(rangeEndDate.getTime() / 1000);
+    const compareStartSec = Math.floor(compareStartDate.getTime() / 1000);
+    const compareEndSec = Math.floor(compareEndDate.getTime() / 1000);
     
     try {
-      // Get message counts for today and yesterday using MongoDB aggregation
+      // Get message counts for current range and previous range using MongoDB aggregation
       const todayMessages = await Message.aggregate([
         {
           $match: {
             user_id: userId,
-            timestamp: { $gte: todaySec }
+            timestamp: { $gte: rangeStartSec, $lt: rangeEndSec }
           }
         },
         {
@@ -75,7 +137,7 @@ export default function registerMetricsRoutes(app) {
         {
           $match: {
             user_id: userId,
-            timestamp: { $gte: yesterdaySec, $lt: todaySec }
+            timestamp: { $gte: compareStartSec, $lt: rangeStartSec }
           }
         },
         {
@@ -96,7 +158,7 @@ export default function registerMetricsRoutes(app) {
         {
           $match: {
             user_id: userId,
-            timestamp: { $gte: nowSec - 24 * 60 * 60 }
+            timestamp: { $gte: rangeStartSec, $lt: rangeEndSec }
           }
         },
         {
@@ -114,7 +176,7 @@ export default function registerMetricsRoutes(app) {
         {
           $match: {
             user_id: userId,
-            timestamp: { $gte: nowSec - 7 * 24 * 60 * 60 }
+            timestamp: { $gte: rangeStartSec, $lt: rangeEndSec }
           }
         },
         { $sort: { from_digits: 1, timestamp: 1 } },
@@ -151,7 +213,7 @@ export default function registerMetricsRoutes(app) {
           {
             $match: {
               user_id: userId,
-              createdAt: { $gte: new Date(now.getTime() - 24 * 60 * 60 * 1000) }
+              createdAt: { $gte: rangeStartDate, $lt: rangeEndDate }
             }
           },
           {
@@ -181,17 +243,17 @@ export default function registerMetricsRoutes(app) {
             $match: {
               user_id: userId,
               type: 'template',
-              timestamp: { $gte: yesterdaySec }
+              timestamp: { $gte: compareStartSec, $lt: rangeEndSec }
             }
           },
           {
             $group: {
               _id: null,
               template_messages_today: {
-                $sum: { $cond: [{ $gte: ['$timestamp', todaySec] }, 1, 0] }
+                $sum: { $cond: [{ $gte: ['$timestamp', rangeStartSec] }, 1, 0] }
               },
               template_messages_yesterday: {
-                $sum: { $cond: [{ $lt: ['$timestamp', todaySec] }, 1, 0] }
+                $sum: { $cond: [{ $lt: ['$timestamp', rangeStartSec] }, 1, 0] }
               }
             }
           }
@@ -210,26 +272,26 @@ export default function registerMetricsRoutes(app) {
       // Get tickets created today and yesterday
       const ticketsCreatedToday = await Handoff.countDocuments({
         user_id: userId,
-        updatedAt: { $gte: today },
+        updatedAt: { $gte: rangeStartDate, $lt: rangeEndDate },
         conversation_status: CONVERSATION_STATUSES.NEW
       });
       
       const ticketsCreatedYesterday = await Handoff.countDocuments({
         user_id: userId,
-        updatedAt: { $gte: yesterday, $lt: today },
+        updatedAt: { $gte: compareStartDate, $lt: compareEndDate },
         conversation_status: CONVERSATION_STATUSES.NEW
       });
       
-      // Get tickets resolved today and yesterday
+      // Get tickets resolved for current and previous ranges
       const ticketsResolvedToday = await Handoff.countDocuments({
         user_id: userId,
-        updatedAt: { $gte: today },
+        updatedAt: { $gte: rangeStartDate, $lt: rangeEndDate },
         conversation_status: CONVERSATION_STATUSES.RESOLVED
       });
       
       const ticketsResolvedYesterday = await Handoff.countDocuments({
         user_id: userId,
-        updatedAt: { $gte: yesterday, $lt: today },
+        updatedAt: { $gte: compareStartDate, $lt: compareEndDate },
         conversation_status: CONVERSATION_STATUSES.RESOLVED
       });
       
@@ -238,15 +300,18 @@ export default function registerMetricsRoutes(app) {
         {
           $match: {
             user_id: userId,
-            escalation_reason: { $exists: true, $ne: null }
+            escalation_reason: { $exists: true, $ne: null },
+            updatedAt: { $gte: compareStartDate, $lt: rangeEndDate }
           }
         },
         {
           $group: {
             _id: null,
-            total_escalations: { $sum: 1 },
-            escalations_today: {
-              $sum: { $cond: [{ $gte: ['$updatedAt', today] }, 1, 0] }
+            current_escalations: {
+              $sum: { $cond: [{ $gte: ['$updatedAt', rangeStartDate] }, 1, 0] }
+            },
+            previous_escalations: {
+              $sum: { $cond: [{ $lt: ['$updatedAt', rangeStartDate] }, 1, 0] }
             }
           }
         }
@@ -257,7 +322,8 @@ export default function registerMetricsRoutes(app) {
         {
           $match: {
             user_id: userId,
-            conversation_status: CONVERSATION_STATUSES.RESOLVED
+            conversation_status: CONVERSATION_STATUSES.RESOLVED,
+            updatedAt: { $gte: rangeStartDate, $lt: rangeEndDate }
           }
         },
         {
@@ -285,7 +351,7 @@ export default function registerMetricsRoutes(app) {
       const yesterdayMsgData = yesterdayMessages[0] || { sent_yesterday: 0, received_yesterday: 0 };
       const activeConvData = activeConversations[0] || { active_count: 0 };
       const responseTimeDataResult = responseTimeData[0] || { avg_response_time: 0 };
-      const escalationStatsResult = escalationStats[0] || { total_escalations: 0, escalations_today: 0 };
+      const escalationStatsResult = escalationStats[0] || { current_escalations: 0, previous_escalations: 0 };
       const resolutionTimeDataResult = resolutionTimeData[0] || { avg_resolution_time: 0 };
       
       // Calculate trends
@@ -295,6 +361,7 @@ export default function registerMetricsRoutes(app) {
       const ticketsResolvedTrend = calculateTrend(ticketsResolvedToday || 0, ticketsResolvedYesterday || 0);
     
       return {
+        range: rangeMeta,
         messages: {
           sent_today: todayMsgData.sent_today || 0,
           received_today: todayMsgData.received_today || 0,
@@ -330,8 +397,9 @@ export default function registerMetricsRoutes(app) {
           resolved_today: ticketsResolvedToday || 0,
           resolved_yesterday: ticketsResolvedYesterday || 0,
           resolved_trend: ticketsResolvedTrend,
-          total_escalations: escalationStatsResult.total_escalations || 0,
-          escalations_today: escalationStatsResult.escalations_today || 0,
+          total_escalations: (escalationStatsResult.current_escalations || 0) + (escalationStatsResult.previous_escalations || 0),
+          escalations_today: escalationStatsResult.current_escalations || 0,
+          escalations_previous: escalationStatsResult.previous_escalations || 0,
           avg_resolution_time: Math.round(resolutionTimeDataResult.avg_resolution_time || 0),
           resolution_rate: ticketStats.resolved > 0 ? Math.round((ticketStats.resolved / (ticketStats.new + ticketStats.in_progress + ticketStats.resolved)) * 100) : 0
         },
@@ -341,12 +409,13 @@ export default function registerMetricsRoutes(app) {
       logHelpers.logError(error, { component: 'dashboard_metrics', userId });
       // Return default values in case of error
       return {
+        range: rangeMeta,
         messages: { sent_today: 0, received_today: 0, sent_yesterday: 0, received_yesterday: 0, sent_trend: 0, received_trend: 0 },
         conversations: { active: 0 },
         performance: { avg_response_time: 0, ai_success_rate: 0, ai_avg_response_time: 0 },
         templates: { used_today: 0, used_yesterday: 0 },
         system: { uptime: Math.floor(process.uptime()), memory_usage: 0, error_rate: 0 },
-        tickets: { status_counts: {}, created_today: 0, created_yesterday: 0, created_trend: 0, resolved_today: 0, resolved_yesterday: 0, resolved_trend: 0, total_escalations: 0, escalations_today: 0, avg_resolution_time: 0, resolution_rate: 0 },
+        tickets: { status_counts: {}, created_today: 0, created_yesterday: 0, created_trend: 0, resolved_today: 0, resolved_yesterday: 0, resolved_trend: 0, total_escalations: 0, escalations_today: 0, escalations_previous: 0, avg_resolution_time: 0, resolution_rate: 0 },
         timestamp: new Date().toISOString()
       };
     }
@@ -355,66 +424,108 @@ export default function registerMetricsRoutes(app) {
   // Get dashboard metrics for current user
   app.get('/api/metrics/dashboard', ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
+    const requestedRange = String(req.query.range || 'today').toLowerCase();
     
     try {
-      // Add user to active dashboard users for real-time updates
-      activeDashboardUsers.add(userId);
+      // Track the preferred range for realtime pushes
+      activeDashboardUsers.set(userId, requestedRange);
       
       // Get dashboard metrics using helper function
-      const dashboardMetrics = await getDashboardMetricsForUser(userId);
+      const dashboardMetrics = await getDashboardMetricsForUser(userId, { rangeKey: requestedRange });
+      const fallbackRange = resolveRangeWindow(requestedRange);
+      const rangeInfo = dashboardMetrics.range || fallbackRange;
+      const rangeStart = rangeInfo?.start ? new Date(rangeInfo.start) : fallbackRange.startDate;
+      const rangeEnd = rangeInfo?.end ? new Date(rangeInfo.end) : fallbackRange.endDate;
+      const rangeDurationDays = Math.max(1, Math.ceil((rangeEnd - rangeStart) / DAY_MS));
+      const rangeStartSec = Math.floor(rangeStart.getTime() / 1000);
+      const rangeEndSec = Math.floor(rangeEnd.getTime() / 1000);
       
-      // Add hourly chart data
-      const now = new Date();
-      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      const todaySec = Math.floor(today.getTime() / 1000);
+      let chartInterval = 'hour';
+      let chartData = [];
       
-      const hourlyData = await Message.aggregate([
-        {
-          $match: {
-            user_id: userId,
-            timestamp: { $gte: todaySec }
-          }
-        },
-        {
-          $addFields: {
-            hour: {
-              $substr: [
-                { $dateToString: { date: { $toDate: { $multiply: ['$timestamp', 1000] } }, format: '%H' } },
-                0,
-                2
-              ]
+      if (rangeDurationDays <= 1) {
+        // Hourly view for single-day ranges
+        const hourlyData = await Message.aggregate([
+          {
+            $match: {
+              user_id: userId,
+              timestamp: { $gte: rangeStartSec, $lt: rangeEndSec }
             }
-          }
-        },
-        {
-          $group: {
-            _id: '$hour',
-            received: {
-              $sum: { $cond: [{ $eq: ['$direction', 'inbound'] }, 1, 0] }
-            },
-            sent: {
-              $sum: { $cond: [{ $eq: ['$direction', 'outbound'] }, 1, 0] }
+          },
+          {
+            $addFields: {
+              hour: {
+                $substr: [
+                  { $dateToString: { date: { $toDate: { $multiply: ['$timestamp', 1000] } }, format: '%H' } },
+                  0,
+                  2
+                ]
+              }
             }
-          }
-        },
-        {
-          $sort: { _id: 1 }
+          },
+          {
+            $group: {
+              _id: '$hour',
+              received: { $sum: { $cond: [{ $eq: ['$direction', 'inbound'] }, 1, 0] } },
+              sent: { $sum: { $cond: [{ $eq: ['$direction', 'outbound'] }, 1, 0] } }
+            }
+          },
+          { $sort: { _id: 1 } }
+        ]);
+        
+        chartData = Array.from({ length: 24 }, (_, i) => {
+          const hourKey = String(i).padStart(2, '0');
+          const bucket = hourlyData.find(h => h._id === hourKey);
+          return {
+            label: `${hourKey}:00`,
+            received: bucket?.received || 0,
+            sent: bucket?.sent || 0
+          };
+        });
+      } else {
+        // Daily view for multi-day ranges
+        chartInterval = 'day';
+        const dailyData = await Message.aggregate([
+          {
+            $match: {
+              user_id: userId,
+              timestamp: { $gte: rangeStartSec, $lt: rangeEndSec }
+            }
+          },
+          {
+            $addFields: {
+              day: {
+                $dateToString: {
+                  date: { $toDate: { $multiply: ['$timestamp', 1000] } },
+                  format: '%Y-%m-%d'
+                }
+              }
+            }
+          },
+          {
+            $group: {
+              _id: '$day',
+              received: { $sum: { $cond: [{ $eq: ['$direction', 'inbound'] }, 1, 0] } },
+              sent: { $sum: { $cond: [{ $eq: ['$direction', 'outbound'] }, 1, 0] } }
+            }
+          },
+          { $sort: { _id: 1 } }
+        ]);
+        const dayMap = new Map(dailyData.map(d => [d._id, d]));
+        for (let cursor = new Date(rangeStart); cursor < rangeEnd; cursor = new Date(cursor.getTime() + DAY_MS)) {
+          const key = cursor.toISOString().slice(0, 10);
+          const bucket = dayMap.get(key);
+          chartData.push({
+            label: key,
+            received: bucket?.received || 0,
+            sent: bucket?.sent || 0
+          });
         }
-      ]);
-      
-      // Format hourly data for chart
-      const hourlyChartData = Array.from({ length: 24 }, (_, i) => {
-        const hour = String(i).padStart(2, '0');
-        const hourData = hourlyData.find(h => h._id === hour);
-        return {
-          hour: `${hour}:00`,
-          received: hourData?.received || 0,
-          sent: hourData?.sent || 0
-        };
-      });
+      }
       
       dashboardMetrics.charts = {
-        hourly_messages: hourlyChartData
+        interval: chartInterval,
+        data: chartData
       };
       
       res.json(dashboardMetrics);

@@ -1,5 +1,6 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
 import { createCheckoutSession, getCheckoutSession, handleSuccessfulPayment, handleSubscriptionCanceled, isStripeEnabled } from "../services/stripe.mjs";
+import { handleCheckoutSessionEvent as handleAgentCheckoutSessionEvent, handlePaymentIntentEvent as handleAgentPaymentIntentEvent } from "../services/agentPayments.mjs";
 import { updateUserPlan } from "../services/usage.mjs";
 import { renderSidebar, renderTopbar } from "../utils.mjs";
 import Stripe from 'stripe';
@@ -100,9 +101,17 @@ export default function registerStripeRoutes(app) {
     switch (event.type) {
       case 'checkout.session.completed':
         const session = event.data.object;
-        if (session.mode === 'subscription') {
+        if (session.metadata?.payment_request_id) {
+          try { await handleAgentCheckoutSessionEvent(session, 'completed'); } catch (err) { console.error('Agent payment complete handler failed:', err?.message || err); }
+        } else if (session.mode === 'subscription') {
           await handleSuccessfulPayment(session);
         }
+        break;
+      case 'checkout.session.expired':
+        try { await handleAgentCheckoutSessionEvent(event.data.object, 'expired'); } catch (err) { console.error('Agent payment expired handler failed:', err?.message || err); }
+        break;
+      case 'checkout.session.async_payment_failed':
+        try { await handleAgentCheckoutSessionEvent(event.data.object, 'async_payment_failed'); } catch (err) { console.error('Agent payment async failure handler failed:', err?.message || err); }
         break;
         
       case 'customer.subscription.updated':
@@ -139,6 +148,12 @@ export default function registerStripeRoutes(app) {
         } catch (e) {
           console.error('Failed to handle invoice.payment_failed:', e?.message || e);
         }
+        break;
+      case 'payment_intent.succeeded':
+        try { await handleAgentPaymentIntentEvent(event.data.object, 'succeeded'); } catch (err) { console.error('Agent payment intent success handler failed:', err?.message || err); }
+        break;
+      case 'payment_intent.payment_failed':
+        try { await handleAgentPaymentIntentEvent(event.data.object, 'payment_failed'); } catch (err) { console.error('Agent payment intent failure handler failed:', err?.message || err); }
         break;
         
       default:

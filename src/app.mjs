@@ -39,6 +39,7 @@ import registerGuideRoutes from "./routes/guide.mjs";
 import registerNotificationRoutes from "./routes/notifications.mjs";
 import registerPlanRoutes from "./routes/plan.mjs";
 import registerStripeRoutes from "./routes/stripe.mjs";
+import registerPaymentRoutes from "./routes/payments.mjs";
 import registerRealtimeRoutes from "./routes/realtime.mjs";
 import registerMonitoringRoutes from "./routes/monitoring.mjs";
 import { signMediaPath } from "./utils.mjs";
@@ -282,6 +283,7 @@ export async function createApp() {
   registerNotificationRoutes(app);
   registerPlanRoutes(app);
   registerStripeRoutes(app);
+  registerPaymentRoutes(app);
   registerRealtimeRoutes(app);
   registerMonitoringRoutes(app);
   registerMetricsRoutes(app);

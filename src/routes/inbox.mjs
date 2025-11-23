@@ -762,6 +762,36 @@ export default function registerInboxRoutes(app) {
                     </div>
                   </div>
                 </div>
+                <div id="paymentModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:1150; align-items:center; justify-content:center;">
+                  <div class="card" style="width:420px; max-width:95vw;">
+                    <div class="small" style="margin-bottom:8px;">Request payment</div>
+                    <form id="paymentForm" onsubmit="submitPaymentRequest(event)" style="display:grid; gap:10px;">
+                      <label class="small" style="display:flex; flex-direction:column; gap:4px;">
+                        Amount
+                        <input type="number" name="amount" min="1" step="0.01" required class="settings-field" placeholder="49.00"/>
+                      </label>
+                      <label class="small" style="display:flex; flex-direction:column; gap:4px;">
+                        Currency
+                        <select name="currency" class="settings-field">
+                          <option value="usd">USD</option>
+                          <option value="eur">EUR</option>
+                          <option value="gbp">GBP</option>
+                          <option value="cad">CAD</option>
+                          <option value="aud">AUD</option>
+                        </select>
+                      </label>
+                      <label class="small" style="display:flex; flex-direction:column; gap:4px;">
+                        Description <span class="small" style="color:#94a3b8;">Optional</span>
+                        <input type="text" name="description" maxlength="120" class="settings-field" placeholder="Deposit, invoice, etc."/>
+                      </label>
+                      <div class="small" style="color:#64748b;">The customer receives a secure Stripe Checkout link inside WhatsApp.</div>
+                      <div style="display:flex; gap:8px; justify-content:flex-end;">
+                        <button type="button" class="btn-ghost" onclick="closePaymentModal()">Cancel</button>
+                        <button type="submit" class="btn-primary" id="paymentSubmitBtn">Send link</button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
               </div>
               <script>
                 function openNameModal(contactId){
@@ -2673,6 +2703,20 @@ export default function registerInboxRoutes(app) {
                           <path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/>
                         </svg>
                       </button>
+                      <button type="button"
+                        id="paymentRequestBtn"
+                        data-human="${isHuman ? '1' : '0'}"
+                        class="wa-payment-btn"
+                        title="Request payment"
+                        ${!isHuman ? 'disabled data-original-disabled="true"' : ''}
+                        onclick="openPaymentModal()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                          <rect x="3" y="5" width="18" height="14" rx="2" ry="2"></rect>
+                          <line x1="3" y1="10" x2="21" y2="10"></line>
+                          <circle cx="8" cy="15" r="1"></circle>
+                          <circle cx="12" cy="15" r="1"></circle>
+                        </svg>
+                      </button>
                       
                       <div class="wa-input-wrapper">
                         <textarea ${!isHuman ? 'disabled' : ''} rows="1" name="text" placeholder="Type a message" id="messageInput"></textarea>
@@ -2710,10 +2754,148 @@ export default function registerInboxRoutes(app) {
                     </div>
                   </div>
                   ` : ''}
+                  <div id="paymentRequestsPanel" class="card" style="margin-top:16px; display:none;">
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+                      <div class="small" style="font-weight:600;">Payment requests</div>
+                    </div>
+                    <div id="paymentRequestsList" class="payment-requests-list small"></div>
+                  </div>
                 </div>
               </main>
             </div>  
           </div>
+        <script>
+          (function(){
+            const phone = '${phone}'.split('?')[0];
+            const paymentBtn = document.getElementById('paymentRequestBtn');
+            const panel = document.getElementById('paymentRequestsPanel');
+            const listEl = document.getElementById('paymentRequestsList');
+            let paymentsAvailable = false;
+
+            function escapeHtmlText(str){
+              return String(str || '').replace(/[&<>"]/g, function(c){
+                return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]) || c;
+              });
+            }
+
+            function humanCurrency(amount, currency){
+              try {
+                return new Intl.NumberFormat('en', { style: 'currency', currency: (currency || 'usd').toUpperCase() }).format(Number(amount || 0));
+              } catch {
+                return (currency || 'USD').toUpperCase() + ' ' + Number(amount || 0).toFixed(2);
+              }
+            }
+
+            function statusLabel(status){
+              switch(status){
+                case 'paid': return 'Paid';
+                case 'failed': return 'Failed';
+                case 'expired': return 'Expired';
+                case 'canceled': return 'Canceled';
+                default: return 'Pending';
+              }
+            }
+
+            function updatePaymentButton(){
+              if (!paymentBtn) return;
+              const humanEnabled = paymentBtn.getAttribute('data-human') === '1';
+              paymentBtn.disabled = !(paymentsAvailable && humanEnabled);
+              if (!paymentsAvailable) {
+                paymentBtn.title = 'Connect Stripe in Dashboard to request payments';
+              } else if (!humanEnabled) {
+                paymentBtn.title = 'Switch to Live mode to request payments';
+              } else {
+                paymentBtn.title = 'Request payment';
+              }
+            }
+
+            async function loadStripeStatus(){
+              try {
+                const resp = await fetch('/api/payments/stripe/status', { headers: { 'Accept':'application/json' } });
+                const data = await resp.json();
+                paymentsAvailable = data.success && !!data.connected;
+              } catch {
+                paymentsAvailable = false;
+              }
+              updatePaymentButton();
+            }
+
+            async function loadPaymentRequestsPanel(){
+              if (!panel || !listEl) return;
+              try {
+                const resp = await fetch('/api/payments/requests?contact=' + encodeURIComponent(phone), { headers: { 'Accept':'application/json' } });
+                const data = await resp.json();
+                if (!data.success || !Array.isArray(data.requests) || !data.requests.length) {
+                  panel.style.display = 'none';
+                  listEl.innerHTML = '';
+                  return;
+                }
+                panel.style.display = 'block';
+                listEl.innerHTML = data.requests.map(req => {
+                  const amount = humanCurrency(req.amount, req.currency);
+                  const desc = req.description ? ' • ' + escapeHtmlText(req.description) : '';
+                  const ts = req.created_at ? new Date(req.created_at).toLocaleString() : '';
+                  const meta = statusLabel(req.status) + (ts ? ' · ' + escapeHtmlText(ts) : '');
+                  return '<div class="payment-request-row">'
+                    + '<div><strong>' + amount + '</strong>' + desc + '</div>'
+                    + '<div class="payment-request-meta">' + meta + '</div>'
+                    + '</div>';
+                }).join('');
+              } catch (err) {
+                console.error('Failed to load payment requests', err);
+              }
+            }
+
+            window.openPaymentModal = function(){
+              if (!paymentsAvailable) {
+                if (window.Toast?.error) window.Toast.error('Connect Stripe in the dashboard first.');
+                return;
+              }
+              const modal = document.getElementById('paymentModal');
+              if (modal) modal.style.display = 'flex';
+            };
+
+            window.closePaymentModal = function(){
+              const modal = document.getElementById('paymentModal');
+              if (modal) modal.style.display = 'none';
+            };
+
+            window.submitPaymentRequest = async function(event){
+              event.preventDefault();
+              const form = event.target;
+              const submitBtn = document.getElementById('paymentSubmitBtn');
+              if (submitBtn) submitBtn.disabled = true;
+              try {
+                const payload = {
+                  contact: phone,
+                  amount: form.amount.value,
+                  currency: form.currency.value,
+                  description: form.description.value
+                };
+                const resp = await fetch('/api/payments/request', {
+                  method: 'POST',
+                  headers: { 'Content-Type':'application/json', 'Accept':'application/json' },
+                  credentials: 'include',
+                  body: JSON.stringify(payload)
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok || !data.success) throw new Error(data?.error || 'Failed to send payment link');
+                if (window.Toast?.success) window.Toast.success('Payment link sent to the customer.');
+                form.reset();
+                window.closePaymentModal();
+                loadPaymentRequestsPanel();
+              } catch (err) {
+                const msg = err?.message || 'Failed to send payment link';
+                if (window.Toast?.error) window.Toast.error(msg); else alert(msg);
+              } finally {
+                if (submitBtn) submitBtn.disabled = false;
+              }
+            };
+
+            loadStripeStatus();
+            loadPaymentRequestsPanel();
+          })();
+        </script>
         </body>
       </html>
     `);

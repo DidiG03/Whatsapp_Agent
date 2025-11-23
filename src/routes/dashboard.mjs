@@ -527,6 +527,15 @@ export default function registerDashboardRoutes(app) {
             <button id="customize-metrics" class="btn-ghost" style="font-size: 14px;">Customize</button>
             <button id="export-metrics" class="btn-ghost" style="font-size: 14px;">Export</button>
             <div style="display: flex; align-items: center; gap: 4px;">
+              <span style="font-size: 12px; color: #6b7280;">Range:</span>
+              <select id="metrics-range" style="font-size: 12px; padding: 2px 4px;">
+                <option value="today">Today</option>
+                <option value="yesterday">Yesterday</option>
+                <option value="last7">Last 7 days</option>
+                <option value="last30">Last 30 days</option>
+              </select>
+            </div>
+            <div style="display: flex; align-items: center; gap: 4px;">
               <span style="font-size: 12px; color: #6b7280;">Auto-refresh:</span>
               <select id="refresh-interval" style="font-size: 12px; padding: 2px 4px;">
                 <option value="10">10s</option>
@@ -546,7 +555,7 @@ export default function registerDashboardRoutes(app) {
         
         <!-- Hourly Chart -->
         <div id="hourly-chart-container" style="margin-top: 16px;">
-          <h4 style="margin: 0 0 12px 0; color: #374151;">Message Activity (Today)</h4>
+          <h4 id="chart-title" style="margin: 0 0 12px 0; color: #374151;">Message Activity</h4>
           <div id="hourly-chart" style="height: 200px; background: #f9fafb; border-radius: 8px; padding: 16px; position: relative;">
             <canvas id="chart-canvas" width="100%" height="100%"></canvas>
           </div>
@@ -574,6 +583,66 @@ export default function registerDashboardRoutes(app) {
           </div>
         </div>
       </div>
+    `;
+    
+    const paymentsHtml = `
+      <div style="padding:0 16px 24px 16px; margin-top:24px;">
+        <div class="card" id="paymentsCard">
+          <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between;">
+            <div>
+              <h3 style="margin:0 0 4px 0; display:flex; align-items:center; gap:8px;">
+                <img src="/stripe-icon.svg" alt="Stripe" width="20" height="20" style="display:inline-block;">
+                Stripe payments
+              </h3>
+              <div class="small" id="stripeStatusCaption">Connect Stripe to request payments from the inbox.</div>
+            </div>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <a class="btn" id="stripeConnectBtn" href="/stripe/connect/start?redirect=/dashboard">Connect Stripe</a>
+              <button class="btn-ghost" id="stripeDisconnectBtn" style="display:none;">Disconnect</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <script>
+        (function(){
+          const card = document.getElementById('paymentsCard');
+          if (!card) return;
+          const caption = document.getElementById('stripeStatusCaption');
+          const connectBtn = document.getElementById('stripeConnectBtn');
+          const disconnectBtn = document.getElementById('stripeDisconnectBtn');
+          async function fetchStatus(){
+            try {
+              const resp = await fetch('/api/payments/stripe/status', { headers: { 'Accept':'application/json' } });
+              const data = await resp.json();
+              if (!data.success) throw new Error('Failed to load status');
+              const connected = !!data.connected;
+              connectBtn.style.display = connected ? 'none' : 'inline-flex';
+              disconnectBtn.style.display = connected ? 'inline-flex' : 'none';
+              if (connected) {
+                const acc = data.account || {};
+                caption.textContent = acc.charges_enabled ? 'Payments ready to use in the inbox.' : 'Connected. Finish onboarding inside Stripe to start requesting payments.';
+              } else {
+                caption.textContent = data.available ? 'Connect to send payment links directly from conversations.' : 'Stripe Connect is not configured yet.';
+              }
+            } catch (err) {
+              console.error('Stripe status load failed', err);
+            }
+          }
+          disconnectBtn?.addEventListener('click', async () => {
+            disconnectBtn.disabled = true;
+            try {
+              const resp = await fetch('/api/payments/stripe/disconnect', { method: 'POST' });
+              if (!resp.ok) throw new Error('Disconnect failed');
+              await fetchStatus();
+            } catch (err) {
+              console.error('Stripe disconnect failed', err);
+            } finally {
+              disconnectBtn.disabled = false;
+            }
+          });
+          fetchStatus();
+        })();
+      </script>
     `;
     
     let apptHtml = '';
@@ -782,11 +851,16 @@ export default function registerDashboardRoutes(app) {
           let metricsData = {};
           let userPreferences = {};
           let refreshInterval = null;
+          let currentRange = 'today';
+          try {
+            const storedRange = window.localStorage.getItem('wa_metrics_range');
+            if (storedRange) currentRange = storedRange;
+          } catch (_) {}
           
           // Available metrics configuration
           const availableMetrics = {
-            'messages_sent_today': { label: 'Messages Sent Today', icon: '📤', color: '#10b981' },
-            'messages_received_today': { label: 'Messages Received Today', icon: '📥', color: '#3b82f6' },
+            'messages_sent_today': { label: 'Messages Sent', icon: '📤', color: '#10b981' },
+            'messages_received_today': { label: 'Messages Received', icon: '📥', color: '#3b82f6' },
             'messages_trend': { label: 'Message Trends', icon: '📈', color: '#8b5cf6' },
             'active_conversations': { label: 'Active Conversations', icon: '💬', color: '#f59e0b' },
             'response_time': { label: 'Avg Response Time', icon: '⏱️', color: '#ef4444' },
@@ -796,8 +870,8 @@ export default function registerDashboardRoutes(app) {
             'tickets_new': { label: 'New Tickets', icon: '🎫', color: '#3b82f6' },
             'tickets_in_progress': { label: 'Tickets In Progress', icon: '🔄', color: '#f59e0b' },
             'tickets_resolved': { label: 'Tickets Resolved', icon: '✅', color: '#10b981' },
-            'tickets_created_today': { label: 'Tickets Created Today', icon: '📝', color: '#8b5cf6' },
-            'tickets_resolved_today': { label: 'Tickets Resolved Today', icon: '🎯', color: '#06b6d4' },
+            'tickets_created_today': { label: 'Tickets Created', icon: '📝', color: '#8b5cf6' },
+            'tickets_resolved_today': { label: 'Tickets Resolved', icon: '🎯', color: '#06b6d4' },
             'ticket_resolution_time': { label: 'Avg Resolution Time', icon: '⏰', color: '#ef4444' },
             'escalation_rate': { label: 'Escalation Rate', icon: '🚨', color: '#dc2626' },
             // New CSAT metrics
@@ -836,13 +910,21 @@ export default function registerDashboardRoutes(app) {
           // Load metrics data
           async function loadMetrics() {
             try {
-              const response = await fetch('/api/metrics/dashboard', {
+              const response = await fetch('/api/metrics/dashboard?range=' + encodeURIComponent(currentRange), {
                 headers: {
                   'Accept': 'application/json',
                   'Content-Type': 'application/json'
                 }
               });
               metricsData = await response.json();
+              if (metricsData?.range?.key) {
+                currentRange = metricsData.range.key;
+                try { window.localStorage.setItem('wa_metrics_range', currentRange); } catch (_) {}
+              }
+              const rangeSelect = document.getElementById('metrics-range');
+              if (rangeSelect) {
+                rangeSelect.value = currentRange;
+              }
               // Load CSAT metrics and merge
               try {
                 const csr = await fetch('/api/metrics/csat', { headers: { 'Accept': 'application/json' } });
@@ -859,10 +941,23 @@ export default function registerDashboardRoutes(app) {
             }
           }
           
+          function getRangeContext() {
+            return {
+              label: metricsData?.range?.label || 'Today',
+              compareLabel: metricsData?.range?.compareLabel || 'Previous period'
+            };
+          }
+          
           // Render metrics cards
           function renderMetrics() {
             const grid = document.getElementById('metrics-grid');
             if (!grid) return;
+            
+            const rangeCtx = getRangeContext();
+            const chartTitle = document.getElementById('chart-title');
+            if (chartTitle) {
+              chartTitle.textContent = 'Message Activity (' + rangeCtx.label + ')';
+            }
             
             grid.innerHTML = '';
             
@@ -924,17 +1019,18 @@ export default function registerDashboardRoutes(app) {
 
             let rawValue = '--';
             let subtitle = '';
-            let trend = '';
+            let trend = undefined;
+            const { label: rangeLabel, compareLabel } = getRangeContext();
 
             switch (key) {
               case 'messages_sent_today':
                 rawValue = metricsData.messages?.sent_today || 0;
-                subtitle = 'Sent today';
+                subtitle = 'Sent (' + rangeLabel + ')';
                 trend = metricsData.messages?.sent_trend;
                 break;
               case 'messages_received_today':
                 rawValue = metricsData.messages?.received_today || 0;
-                subtitle = 'Received today';
+                subtitle = 'Received (' + rangeLabel + ')';
                 trend = metricsData.messages?.received_trend;
                 break;
               case 'active_conversations':
@@ -943,15 +1039,15 @@ export default function registerDashboardRoutes(app) {
                 break;
               case 'response_time':
                 rawValue = metricsData.performance?.avg_response_time || 0;
-                subtitle = 'Avg response time';
+                subtitle = 'Avg response time (' + rangeLabel + ')';
                 break;
               case 'ai_success_rate':
                 rawValue = metricsData.performance?.ai_success_rate || 0;
-                subtitle = 'Success rate';
+                subtitle = 'Success rate (' + rangeLabel + ')';
                 break;
               case 'template_usage':
                 rawValue = metricsData.templates?.used_today || 0;
-                subtitle = 'Templates used';
+                subtitle = 'Templates (' + rangeLabel + ')';
                 break;
               case 'system_health':
                 rawValue = metricsData.system?.uptime || 0;
@@ -971,12 +1067,12 @@ export default function registerDashboardRoutes(app) {
                 break;
               case 'tickets_created_today':
                 rawValue = metricsData.tickets?.created_today || 0;
-                subtitle = 'Created today';
+                subtitle = 'Created (' + rangeLabel + ')';
                 trend = metricsData.tickets?.created_trend;
                 break;
               case 'tickets_resolved_today':
                 rawValue = metricsData.tickets?.resolved_today || 0;
-                subtitle = 'Resolved today';
+                subtitle = 'Resolved (' + rangeLabel + ')';
                 trend = metricsData.tickets?.resolved_trend;
                 break;
               case 'ticket_resolution_time':
@@ -1002,9 +1098,10 @@ export default function registerDashboardRoutes(app) {
             }
             const value = formatValueByKey(key, rawValue);
 
-            const trendHtml = trend !== undefined ? \`
+            const hasTrend = trend !== undefined && trend !== null;
+            const trendHtml = hasTrend ? \`
               <div style="font-size: 12px; color: \${trend >= 0 ? '#10b981' : '#ef4444'}; margin-top: 4px;">
-                \${trend >= 0 ? '↗' : '↘'} \${Math.abs(trend)}%
+                \${trend >= 0 ? '↗' : '↘'} \${Math.abs(trend)}%\${compareLabel ? \` vs \${compareLabel}\` : ''}
               </div>
             \` : '';
 
@@ -1021,47 +1118,69 @@ export default function registerDashboardRoutes(app) {
             return card;
           }
           
-          // Render hourly chart
+          // Render range-aware chart
           function renderChart() {
             const canvas = document.getElementById('chart-canvas');
-            if (!canvas || !metricsData.charts?.hourly_messages) return;
-            
+            if (!canvas) return;
             const ctx = canvas.getContext('2d');
-            const data = metricsData.charts.hourly_messages;
-            
-            // Simple chart rendering (you could use Chart.js for better charts)
+            const chartInfo = metricsData.charts;
             const width = canvas.width = canvas.offsetWidth;
             const height = canvas.height = canvas.offsetHeight;
-            
             ctx.clearRect(0, 0, width, height);
             
-            const maxValue = Math.max(...data.map(d => Math.max(d.received, d.sent)));
-            const stepX = width / 24;
-            const stepY = height / maxValue;
+            if (!chartInfo || !Array.isArray(chartInfo.data) || chartInfo.data.length === 0) {
+              ctx.fillStyle = '#9ca3af';
+              ctx.font = '14px Inter, sans-serif';
+              ctx.fillText('No message activity for selected range', 12, height / 2);
+              return;
+            }
             
-            // Draw received messages (blue)
+            const data = chartInfo.data;
+            const maxValue = Math.max(1, ...data.map(d => Math.max(d.received || 0, d.sent || 0)));
+            const stepX = data.length > 1 ? width / (data.length - 1) : width;
+            const padding = 24;
+            const usableHeight = height - padding * 2;
+            
+            // Axis baseline
+            ctx.strokeStyle = '#e5e7eb';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(0, height - padding);
+            ctx.lineTo(width, height - padding);
+            ctx.stroke();
+            
+            // Received (blue)
             ctx.strokeStyle = '#3b82f6';
             ctx.lineWidth = 2;
             ctx.beginPath();
-            data.forEach((d, i) => {
-              const x = i * stepX;
-              const y = height - (d.received * stepY);
-              if (i === 0) ctx.moveTo(x, y);
+            data.forEach((point, idx) => {
+              const x = idx * stepX;
+              const y = height - padding - ((point.received || 0) / maxValue) * usableHeight;
+              if (idx === 0) ctx.moveTo(x, y);
               else ctx.lineTo(x, y);
             });
             ctx.stroke();
             
-            // Draw sent messages (green)
+            // Sent (green)
             ctx.strokeStyle = '#10b981';
-            ctx.lineWidth = 2;
             ctx.beginPath();
-            data.forEach((d, i) => {
-              const x = i * stepX;
-              const y = height - (d.sent * stepY);
-              if (i === 0) ctx.moveTo(x, y);
+            data.forEach((point, idx) => {
+              const x = idx * stepX;
+              const y = height - padding - ((point.sent || 0) / maxValue) * usableHeight;
+              if (idx === 0) ctx.moveTo(x, y);
               else ctx.lineTo(x, y);
             });
             ctx.stroke();
+            
+            // Labels
+            ctx.fillStyle = '#9ca3af';
+            ctx.font = '10px Inter, sans-serif';
+            const labelStep = data.length <= 10 ? 1 : Math.ceil(data.length / 5);
+            data.forEach((point, idx) => {
+              if (idx % labelStep !== 0 && idx !== data.length - 1) return;
+              const x = idx * stepX;
+              ctx.fillText(point.label || '', x - 12, height - 6);
+            });
           }
           
           // Setup customization modal
@@ -1160,6 +1279,17 @@ export default function registerDashboardRoutes(app) {
             }
           }
           
+          function setupRangeSelector() {
+            const rangeSelect = document.getElementById('metrics-range');
+            if (!rangeSelect) return;
+            rangeSelect.value = currentRange;
+            rangeSelect.addEventListener('change', () => {
+              currentRange = rangeSelect.value;
+              try { window.localStorage.setItem('wa_metrics_range', currentRange); } catch (_) {}
+              loadMetrics();
+            });
+          }
+          
           // Setup auto-refresh
           function setupAutoRefresh() {
             const select = document.getElementById('refresh-interval');
@@ -1223,6 +1353,9 @@ export default function registerDashboardRoutes(app) {
                 rm.socket.on('metrics_update', (data) => {
                   console.log('📊 Received real-time metrics update:', data);
                   if (data && String(data.userId) === String(userId)) {
+                    if (data.data?.range?.key && data.data.range.key !== currentRange) {
+                      return;
+                    }
                     metricsData = data.data;
                     renderMetrics();
                     renderChart();
@@ -1239,6 +1372,7 @@ export default function registerDashboardRoutes(app) {
           async function initMetricsDashboard() {
             await loadPreferences();
             await loadMetrics();
+            setupRangeSelector();
             setupCustomization();
             setupAutoRefresh();
             setupExport();
@@ -1256,6 +1390,7 @@ export default function registerDashboardRoutes(app) {
                 ${metricsHtml}
                 ${apptHtml}
                 ${intakeHtml}
+                ${paymentsHtml}
               <div id="mini-onboard" class="card" style="position:fixed; right:24px; bottom:92px; width:400px; display:none; padding:0; overflow:hidden; z-index:1000;">
                 <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-bottom:1px solid #eee;">
                   <div class="small">KB Assistant</div>

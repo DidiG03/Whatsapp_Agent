@@ -4578,3 +4578,48 @@ button:hover { filter: brightness(0.95); }
   .split-section.reverse .split-copy { order: 1; }
   .split-section.reverse .split-media { order: 2; }
 }
+
+.wa-payment-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #475569;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.wa-payment-btn:hover:not(:disabled) {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.wa-payment-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.payment-requests-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.payment-request-row {
+  padding: 6px 0;
+  border-top: 1px solid #e2e8f0;
+}
+
+.payment-request-row:first-child {
+  border-top: none;
+}
+
+.payment-request-meta {
+  color: #64748b;
+  font-size: 12px;
+  margin-top: 2px;
+}
