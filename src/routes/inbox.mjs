@@ -2760,6 +2760,36 @@ export default function registerInboxRoutes(app) {
                     </div>
                     <div id="paymentRequestsList" class="payment-requests-list small"></div>
                   </div>
+                  <div id="paymentModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:1150; align-items:center; justify-content:center;">
+                    <div class="card" style="width:420px; max-width:95vw;">
+                      <div class="small" style="margin-bottom:8px;">Request payment</div>
+                      <form id="paymentForm" onsubmit="submitPaymentRequest(event)" style="display:grid; gap:10px;">
+                        <label class="small" style="display:flex; flex-direction:column; gap:4px;">
+                          Amount
+                          <input type="number" name="amount" min="1" step="0.01" required class="settings-field" placeholder="49.00"/>
+                        </label>
+                        <label class="small" style="display:flex; flex-direction:column; gap:4px;">
+                          Currency
+                          <select name="currency" class="settings-field">
+                            <option value="usd">USD</option>
+                            <option value="eur">EUR</option>
+                            <option value="gbp">GBP</option>
+                            <option value="cad">CAD</option>
+                            <option value="aud">AUD</option>
+                          </select>
+                        </label>
+                        <label class="small" style="display:flex; flex-direction:column; gap:4px;">
+                          Description <span class="small" style="color:#94a3b8;">Optional</span>
+                          <input type="text" name="description" maxlength="120" class="settings-field" placeholder="Deposit, invoice, etc."/>
+                        </label>
+                        <div class="small" style="color:#64748b;">The customer receives a secure Stripe Checkout link inside WhatsApp.</div>
+                        <div style="display:flex; gap:8px; justify-content:flex-end;">
+                          <button type="button" class="btn-ghost" onclick="closePaymentModal()">Cancel</button>
+                          <button type="submit" class="btn-primary" id="paymentSubmitBtn">Send link</button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
                 </div>
               </main>
             </div>  
