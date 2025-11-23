@@ -2599,6 +2599,18 @@ export default function registerInboxRoutes(app) {
                         }).join('')}
                       </div>
                     </div>
+                    <!-- Payments dropdown -->
+                    <div class="payment-dropdown" style="position:relative; margin-left:8px; margin-bottom:8px;">
+                      <button type="button" class="btn-ghost" onclick="togglePaymentDropdown()" id="paymentDropdownBtn" style="padding:4px 8px; border-radius:6px; display:flex; align-items:center; gap:6px;">
+                        <span style="font-size:14px;">💳</span>
+                        <span class="small">Payments</span>
+                        <span style="font-size:12px; color:#666;">▼</span>
+                      </button>
+                      <div id="paymentDropdownMenu" style="position:absolute; right:0; top:32px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:8px; min-width:220px; max-width:260px; display:none; box-shadow:0 6px 20px rgba(0,0,0,0.12); z-index:15;">
+                        <div class="small" style="margin-bottom:6px; padding-bottom:4px; border-bottom:1px solid #eee;">Payment requests</div>
+                        <div id="paymentDropdownList" class="payment-requests-list small"></div>
+                      </div>
+                    </div>
                   </div>
                   ${(() => {
                     try{
@@ -2851,30 +2863,70 @@ export default function registerInboxRoutes(app) {
             }
 
             async function loadPaymentRequestsPanel(){
-              if (!panel || !listEl) return;
+              const dropdownList = document.getElementById('paymentDropdownList');
+              const dropdownBtn = document.getElementById('paymentDropdownBtn');
               try {
                 const resp = await fetch('/api/payments/requests?contact=' + encodeURIComponent(phone), { headers: { 'Accept':'application/json' } });
                 const data = await resp.json();
-                if (!data.success || !Array.isArray(data.requests) || !data.requests.length) {
+                const hasData = data.success && Array.isArray(data.requests) && data.requests.length > 0;
+
+                // Old panel (kept hidden) – keep list synced but never show panel
+                if (panel && listEl) {
                   panel.style.display = 'none';
-                  listEl.innerHTML = '';
-                  return;
+                  listEl.innerHTML = hasData ? data.requests.map(req => {
+                    const amount = humanCurrency(req.amount, req.currency);
+                    const desc = req.description ? ' • ' + escapeHtmlText(req.description) : '';
+                    const ts = req.created_at ? new Date(req.created_at).toLocaleString() : '';
+                    const meta = statusLabel(req.status) + (ts ? ' · ' + escapeHtmlText(ts) : '');
+                    return '<div class="payment-request-row">'
+                      + '<div><strong>' + amount + '</strong>' + desc + '</div>'
+                      + '<div class="payment-request-meta">' + meta + '</div>'
+                      + '</div>';
+                  }).join('') : '';
                 }
-                panel.style.display = 'block';
-                listEl.innerHTML = data.requests.map(req => {
-                  const amount = humanCurrency(req.amount, req.currency);
-                  const desc = req.description ? ' • ' + escapeHtmlText(req.description) : '';
-                  const ts = req.created_at ? new Date(req.created_at).toLocaleString() : '';
-                  const meta = statusLabel(req.status) + (ts ? ' · ' + escapeHtmlText(ts) : '');
-                  return '<div class="payment-request-row">'
-                    + '<div><strong>' + amount + '</strong>' + desc + '</div>'
-                    + '<div class="payment-request-meta">' + meta + '</div>'
-                    + '</div>';
-                }).join('');
+
+                // New navbar dropdown
+                if (dropdownList) {
+                  if (!hasData) {
+                    dropdownList.innerHTML = '<div class="small" style="color:#6b7280;">No payment requests yet.</div>';
+                  } else {
+                    dropdownList.innerHTML = data.requests.map(req => {
+                      const amount = humanCurrency(req.amount, req.currency);
+                      const desc = req.description ? ' • ' + escapeHtmlText(req.description) : '';
+                      const ts = req.created_at ? new Date(req.created_at).toLocaleString() : '';
+                      const meta = statusLabel(req.status) + (ts ? ' · ' + escapeHtmlText(ts) : '');
+                      return '<div class="payment-request-row">'
+                        + '<div><strong>' + amount + '</strong>' + desc + '</div>'
+                        + '<div class="payment-request-meta">' + meta + '</div>'
+                        + '</div>';
+                    }).join('');
+                  }
+                }
+
+                if (dropdownBtn) {
+                  dropdownBtn.style.opacity = hasData ? '1' : '0.6';
+                }
               } catch (err) {
                 console.error('Failed to load payment requests', err);
               }
             }
+
+            window.togglePaymentDropdown = function() {
+              const menu = document.getElementById('paymentDropdownMenu');
+              if (!menu) return;
+              const isOpen = menu.style.display === 'block';
+              menu.style.display = isOpen ? 'none' : 'block';
+            };
+
+            // Close payments dropdown when clicking outside
+            document.addEventListener('click', function(e) {
+              const menu = document.getElementById('paymentDropdownMenu');
+              const btn = document.getElementById('paymentDropdownBtn');
+              if (!menu || !btn) return;
+              if (!menu.contains(e.target) && !btn.contains(e.target)) {
+                menu.style.display = 'none';
+              }
+            });
 
             window.openPaymentModal = function(){
               // Check if button is disabled
