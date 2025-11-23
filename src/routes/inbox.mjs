@@ -2847,12 +2847,36 @@ export default function registerInboxRoutes(app) {
             }
 
             window.openPaymentModal = function(){
-              if (!paymentsAvailable) {
-                if (window.Toast?.error) window.Toast.error('Connect Stripe in the dashboard first.');
+              // Check if button is disabled
+              const btn = document.getElementById('paymentRequestBtn');
+              if (btn && btn.disabled) {
+                const title = btn.getAttribute('title') || 'Button disabled';
+                if (window.Toast?.error) {
+                  window.Toast.error(title);
+                } else {
+                  alert(title);
+                }
                 return;
               }
+              
+              if (!paymentsAvailable) {
+                const msg = 'Connect Stripe in the dashboard first.';
+                if (window.Toast?.error) {
+                  window.Toast.error(msg);
+                } else {
+                  alert(msg);
+                }
+                return;
+              }
+              
               const modal = document.getElementById('paymentModal');
-              if (modal) modal.style.display = 'flex';
+              if (!modal) {
+                console.error('Payment modal not found');
+                alert('Payment modal not found. Please refresh the page.');
+                return;
+              }
+              
+              modal.style.display = 'flex';
             };
 
             window.closePaymentModal = function(){
@@ -2892,6 +2916,20 @@ export default function registerInboxRoutes(app) {
               }
             };
 
+            // Attach event listener to button as backup
+            if (paymentBtn) {
+              paymentBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (window.openPaymentModal) {
+                  window.openPaymentModal();
+                } else {
+                  console.error('openPaymentModal function not defined');
+                  alert('Payment feature not ready. Please refresh the page.');
+                }
+              });
+            }
+            
             loadStripeStatus();
             loadPaymentRequestsPanel();
           })();
