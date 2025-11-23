@@ -33,7 +33,7 @@ export default function registerCampaignRoutes(app) {
       const submittedAt = new Date(t.createdAt || Date.now()).toLocaleString();
       const actionCell = isDefault
         ? '<span class="small muted">24h reopen default</span>'
-        : `<form method="post" action="/campaigns/templates/default" style="margin:0;">
+        : `<form method="get" action="/campaigns/templates/default" style="margin:0;">
              <input type="hidden" name="name" value="${escapeHtml(name)}"/>
              <input type="hidden" name="language" value="${escapeHtml(lang)}"/>
              <button class="meta-ghost" type="submit" style="font-size:12px;padding:4px 8px;">Use for 24h reopen</button>
@@ -229,7 +229,8 @@ export default function registerCampaignRoutes(app) {
   });
 
   // Mark a template as the default 24h reopen template
-  app.post("/campaigns/templates/default", ensureAuthed, async (req, res) => {
+  // Use GET so auth/session refresh (Clerk handshake) behaves like a normal navigation.
+  app.get("/campaigns/templates/default", ensureAuthed, async (req, res) => {
     try {
       const userId = getCurrentUserId(req);
       const rawName = String(req.body?.name || '').trim();

@@ -2707,10 +2707,26 @@ export default function registerInboxRoutes(app) {
                     </div>
                   </div>
                   ${(() => {
-                    // Template-based reopening is temporarily disabled while the logic is being redesigned.
-                    // Previously, this block rendered a "Session expired (>24h). Send template to reopen window." banner
-                    // with a form that submitted to /inbox/:phone/send-template.
-                    return '';
+                    if (!over24h) return '';
+                    const tname = (sidebarSettings?.wa_template_name || '').toString().trim();
+                    const tlang = (sidebarSettings?.wa_template_language || 'en_US').toString().trim() || 'en_US';
+                    if (!tname) {
+                      return `
+                        <div class="small" style="margin:8px 0; padding:8px; background:#fff8e1; border:1px solid #fde68a; border-radius:8px;">
+                          24h window expired. Configure a default template on the <a href="/campaigns" style="font-weight:500; color:#92400e; text-decoration:underline;">Campaigns</a> page to reopen this conversation.
+                        </div>
+                      `;
+                    }
+                    return `
+                      <div class="small" style="margin:8px 0; padding:8px; background:#fff8e1; border:1px solid #fde68a; border-radius:8px;">
+                        24h window expired. Send your approved template <strong>${escapeHtml(tname)}</strong> to reopen this conversation.
+                        <form method="post" action="/inbox/${phone}/send-template" data-auth-enhanced style="display:flex; gap:6px; align-items:center; margin-top:6px; flex-wrap:wrap;">
+                          <input class="settings-field" name="var1" placeholder="{{1}} (optional)" style="height:32px; flex:1; min-width:120px;"/>
+                          <input class="settings-field" name="var2" placeholder="{{2}} (optional)" style="height:32px; flex:1; min-width:120px;"/>
+                          <button class="btn-ghost" type="submit">Send Template</button>
+                        </form>
+                      </div>
+                    `;
                   })()}
                   <div class="chat-thread">
                     ${items || '<div class="small" style="text-align:center;padding:16px;">No messages</div>'}
@@ -4057,9 +4073,31 @@ export default function registerInboxRoutes(app) {
   });
 
   app.post("/inbox/:phone/send-template", ensureAuthed, async (req, res) => {
-    // Template-based reopen logic is temporarily disabled.
     const to = req.params.phone;
-    return res.redirect(`/inbox/${encodeURIComponent(to)}`);
+    const userId = getCurrentUserId(req);
+    const cfg = await getSettingsForUser(userId);
+    const tname = (cfg.wa_template_name || '').toString().trim();
+    const tlang = (cfg.wa_template_language || 'en_US').toString().trim() || 'en_US';
+    if (!tname) {
+      const msg = encodeURIComponent('No default template configured. Pick one on the Campaigns page first.');
+      return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${msg}&type=error`);
+    }
+    const components = [];
+    const var1 = (req.body?.var1 || '').toString().trim();
+    const var2 = (req.body?.var2 || '').toString().trim();
+    const bodyParams = [];
+    if (var1) bodyParams.push({ type: 'text', text: var1 });
+    if (var2) bodyParams.push({ type: 'text', text: var2 });
+    if (bodyParams.length) components.push({ type: 'body', parameters: bodyParams });
+    try {
+      await sendWhatsAppTemplate(to, tname, tlang, components, cfg);
+      const msg = encodeURIComponent(`Template "${tname}" sent.`);
+      return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${msg}&type=success`);
+    } catch (e) {
+      console.error('Template send error:', e?.message || e);
+      const msg = encodeURIComponent('Failed to send template. Please try again.');
+      return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${msg}&type=error`);
+    }
   });
 
   app.post("/inbox/:phone/nameCustomer", ensureAuthed, (req, res) => {
