@@ -80,6 +80,13 @@ export async function initMongoDB() {
     });
 
     console.log('MongoDB connected successfully');
+
+    // On serverless platforms like Vercel we want to keep cold-start time minimal.
+    // Assume indexes are managed via migrations and skip index bootstrapping by default there.
+    if (!process.env.MONGODB_BOOTSTRAP_INDEXES && process.env.VERCEL) {
+      return { client, db: mongoDb };
+    }
+
     // Ensure critical indexes for common query patterns (best-effort)
     try {
       await Promise.all([
