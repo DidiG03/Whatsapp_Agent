@@ -1228,6 +1228,7 @@ export default function registerInboxRoutes(app) {
     const cust = await Customer.findOne({ user_id: userId, contact_id: phone }).select('display_name');
     const headerName = cust?.display_name || ('+' + String(phone).replace(/^\+/, ''));
     // Fetch richer message data using Mongo aggregation
+    // Limit to the most recent 400 messages to keep the view fast and avoid serverless timeouts
     let msgs = await Message.aggregate([
       {
         $match: {
@@ -1239,6 +1240,11 @@ export default function registerInboxRoutes(app) {
         }
       },
       { $sort: { timestamp: 1 } },
+      // Keep only the last 400 messages by re-sorting in-memory order after limiting
+      { $group: { _id: null, items: { $push: '$$ROOT' } } },
+      { $project: { items: { $slice: ['$items', -400] } } },
+      { $unwind: '$items' },
+      { $replaceRoot: { newRoot: '$items' } },
       {
         $lookup: {
           from: 'message_statuses',

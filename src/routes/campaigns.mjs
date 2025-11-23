@@ -353,7 +353,13 @@ export default function registerCampaignRoutes(app) {
           if (newStatus && newStatus !== oldStatus) {
             const up = newStatus.toUpperCase();
             if (up === 'APPROVED' || up.startsWith('REJECTED')) {
-              try { await sendTemplateStatusEmail(userId, { ...key, ...setDoc }, oldStatus); } catch {}
+              // Fire-and-forget email to avoid blocking the sync and hitting Vercel timeouts
+              try {
+                const p = sendTemplateStatusEmail(userId, { ...key, ...setDoc }, oldStatus);
+                if (p && typeof p.catch === 'function') {
+                  p.catch(()=>{});
+                }
+              } catch {}
             }
           }
           count++;
