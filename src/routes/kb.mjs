@@ -113,8 +113,12 @@ export default function registerKbRoutes(app) {
       try {
         const mime = (req.file.mimetype || '').toLowerCase();
         if (/^text\//.test(mime) || /csv|markdown|md/.test(mime)) {
-          if (req.file.buffer) extracted = req.file.buffer.toString('utf8');
-          else extracted = fs.readFileSync(req.file.path, 'utf8');
+          if (req.file.buffer) {
+            extracted = req.file.buffer.toString('utf8');
+          } else if (req.file.path) {
+            // Use non-blocking async read to avoid blocking the event loop on large files
+            extracted = await fs.promises.readFile(req.file.path, 'utf8');
+          }
         } else if (/pdf/.test(mime)) {
           try {
             const mod = await import('pdf-parse').catch(()=>null);

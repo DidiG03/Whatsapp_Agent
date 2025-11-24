@@ -464,11 +464,8 @@ export default function registerInboxRoutes(app) {
       const preview = shortened.replace(/</g,'&lt;');
       const initials = String(c.contact||'').slice(-2);
       const displayDefault = c.contact ? `+${String(c.contact).replace(/^\+/, '')}` : '';
-      const savedName = customerNameByContact.get(String(c.contact)) || null;
-      const displayName = savedName || displayDefault;
-      const displayLine = savedName && displayDefault
-        ? `${escapeHtml(savedName)} · <span class="small" style="color:#6b7280;">${escapeHtml(displayDefault)}</span>`
-        : escapeHtml(displayName || '');
+      // For the inbox list, always show the phone number, even if a name is saved.
+      const displayName = displayDefault;
       const seenTs = lastSeenByContact.get(String(c.contact)) || 0;
       const hasNew = lastTs > seenTs;
       const hasEscalation = escalationByContact.has(String(c.contact));
@@ -519,7 +516,7 @@ export default function registerInboxRoutes(app) {
               <div class="wa-avatar">${initials}</div>
               <div class="wa-col">
                 <div class="wa-name">
-                  ${displayLine}
+                  ${escapeHtml(displayName || '')}
                   ${unreadCount > 0 ? `<span class="badge-count" style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;background:#22c55e;color:#fff;border-radius:999px;font-size:10px;font-weight:600;vertical-align:middle;">${unreadCount>99?'99+':unreadCount}</span>` : (hasNew ? '<span class="badge-dot"></span>' : '')}
                   ${hasEscalation ? '<span class="live-chip">live</span>' : ''}
                   ${hasEscalation ? '<span class="escalation-chip">Agent Escalation</span>' : ''}
@@ -1219,6 +1216,42 @@ export default function registerInboxRoutes(app) {
       getSettingsForUser(userId),
       getPlanStatus(userId)
     ]);
+    const defaultTemplateName = (sidebarSettings?.wa_template_name || '').toString().trim();
+    const defaultTemplateLang = (sidebarSettings?.wa_template_language || 'en_US').toString().trim() || 'en_US';
+    let templateBody = '';
+    let templateVars = [];
+    if (defaultTemplateName) {
+      try {
+        const dbNative = getDB();
+        const tplDoc = await dbNative
+          .collection('wa_templates')
+          .findOne({ user_id: String(userId), name: defaultTemplateName, language: defaultTemplateLang });
+        let bodyText = '';
+        if (typeof tplDoc?.body === 'string' && tplDoc.body.trim()) {
+          bodyText = tplDoc.body;
+        } else if (Array.isArray(tplDoc?.components)) {
+          const bodyComp = tplDoc.components.find(
+            (c) => String(c.type || '').toUpperCase() === 'BODY' && typeof c.text === 'string'
+          );
+          if (bodyComp?.text) bodyText = bodyComp.text;
+        }
+        templateBody = bodyText || '';
+        const matches = templateBody.match(/{{\d+}}/g);
+        if (matches) {
+          const indices = [...new Set(
+            matches
+              .map((m) => {
+                const n = Number((m.match(/\d+/) || [])[0]);
+                return Number.isFinite(n) ? n : null;
+              })
+              .filter((n) => n && n > 0)
+          )].sort((a, b) => a - b);
+          templateVars = indices;
+        }
+      } catch (e) {
+        console.warn('[Inbox][TemplateBanner] Failed to load template details:', e?.message || e);
+      }
+    }
     const phoneDigits = normalizePhone(phone);
     // Mark as seen (Mongo)
     try {
@@ -2712,25 +2745,65 @@ export default function registerInboxRoutes(app) {
                   </div>
                   ${(() => {
                     if (!over24h) return '';
-                    const tname = (sidebarSettings?.wa_template_name || '').toString().trim();
-                    const tlang = (sidebarSettings?.wa_template_language || 'en_US').toString().trim() || 'en_US';
+                    const tname = defaultTemplateName;
+                    const tlang = defaultTemplateLang;
                     if (!tname) {
                       return `
-                        <div class="small" style="margin:8px 0; padding:8px; background:#fff8e1; border:1px solid #fde68a; border-radius:8px;">
-                          24h window expired. Configure a default template on the <a href="/campaigns" style="font-weight:500; color:#92400e; text-decoration:underline;">Campaigns</a> page to reopen this conversation.
+                        <div style="margin:12px 0; padding:14px 16px; background:#e0f2fe; border:1px solid #bfdbfe; border-radius:12px; display:flex; gap:12px; align-items:flex-start;">
+                          <div style="flex-shrink:0; width:28px; height:28px; border-radius:999px; background:#bfdbfe; display:flex; align-items:center; justify-content:center; font-size:16px; color:#1d4ed8;">⏰</div>
+                          <div style="flex:1; font-size:13px; color:#1e3a8a;">
+                            <div style="font-weight:600; margin-bottom:4px;">24h window expired</div>
+                            <div style="font-size:12px; color:#1d4ed8;">
+                              To message this customer again, configure a default WhatsApp template on the 
+                              <a href="/campaigns" style="font-weight:600; color:#1d4ed8; text-decoration:underline;">Campaigns</a> page</a> and then refresh.
+                            </div>
+                          </div>
                         </div>
                       `;
                     }
+                    const hasVars = Array.isArray(templateVars) && templateVars.length > 0;
+                    const safeBody = templateBody ? escapeHtml(templateBody).replace(/\\n/g, '<br/>') : '';
+                    const previewBody = safeBody ? (safeBody.length > 260 ? safeBody.slice(0, 260) + '…' : safeBody) : '';
+                    const inputsHtml = hasVars
+                      ? `<div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">
+                          ${templateVars.map((idx) => `
+                            <input class="settings-field"
+                                   name="var${idx}"
+                                   placeholder="{{${idx}} (optional)}"
+                                   style="height:34px; flex:1 1 140px; min-width:120px;" />
+                          `).join('')}
+                        </div>`
+                      : '';
+                    const hintHtml = hasVars
+                      ? `<div class="small" style="margin-top:4px; color:#1d4ed8;">
+                           You can optionally personalize this message by filling in the highlighted placeholders (e.g. {{1}}, {{2}}). Leave them blank to send the default text.
+                         </div>`
+                      : '';
+                    const bodySection = previewBody
+                      ? `<div style="margin-top:8px; padding:10px 12px; border-radius:10px; background:#eff6ff; border:1px dashed #bfdbfe; font-size:12px; color:#1e3a8a;">
+                           <div style="font-weight:600; margin-bottom:4px;">Preview</div>
+                           <div>${previewBody || ''}</div>
+                         </div>`
+                      : '';
                     return `
-                      <div class="small" style="margin:8px 0; padding:8px; background:#fff8e1; border:1px solid #fde68a; border-radius:8px;">
-                        24h window expired. Send your approved template <strong>${escapeHtml(tname)}</strong> to reopen this conversation.
-                        <form method="post" action="/inbox/${phone}/send-template" data-auth-enhanced style="display:flex; gap:6px; align-items:center; margin-top:6px; flex-wrap:wrap;">
-                          <input class="settings-field" name="var1" placeholder="{{1}} (optional)" style="height:32px; flex:1; min-width:120px;"/>
-                          <input class="settings-field" name="var2" placeholder="{{2}} (optional)" style="height:32px; flex:1; min-width:120px;"/>
-                          <button class="btn-ghost" type="submit">Send Template</button>
-                        </form>
+                      <div style="margin:12px 0; padding:14px 16px; background:#e0f2fe; border:1px solid #bfdbfe; border-radius:12px;">
+                        <div style="display:flex; align-items:flex-start; gap:10px;">
+                          <div style="flex-shrink:0; width:28px; height:28px; border-radius:999px; background:#bfdbfe; display:flex; align-items:center; justify-content:center; font-size:16px; color:#1d4ed8;">⏰</div>
+                          <div style="flex:1;">
+                            <div style="font-size:13px; font-weight:600; color:#1e3a8a; margin-bottom:4px;">
+                              24h window expired – use your approved template <span style="text-decoration:underline;">${escapeHtml(tname)}</span> to reopen this conversation.
+                            </div>
+                            ${bodySection}
+                            ${hasVars ? `<form method="post" action="/inbox/${phone}/send-template" data-auth-enhanced style="margin-top:10px;">${inputsitation_placeholder}</form>` : `
+                              <form method="post" action="/inbox/${phone}/send-template" data-auth-enhanced style="margin-top:10px;">
+                                <button class="btn-primary" type="submit" style="padding:6px 16px;">Send template</button>
+                              </form>
+                            `}
+                            ${hintHtml}
+                          </div>
+                        </div>
                       </div>
-                    `;
+                    `.replace('inputsitation_placeholder', inputsHtml + '<div style="margin-top:8px;"><button class="btn-primary" type="submit">Send template</button></div>');
                   })()}
                   <div class="chat-thread">
                     ${items || '<div class="small" style="text-align:center;padding:16px;">No messages</div>'}
@@ -4086,13 +4159,25 @@ export default function registerInboxRoutes(app) {
       const msg = encodeURIComponent('No default template configured. Pick one on the Campaigns page first.');
       return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${msg}&type=error`);
     }
+
+    // Collect any provided {{n}} variables (var1, var2, …) in numeric order
     const components = [];
-    const var1 = (req.body?.var1 || '').toString().trim();
-    const var2 = (req.body?.var2 || '').toString().trim();
     const bodyParams = [];
-    if (var1) bodyParams.push({ type: 'text', text: var1 });
-    if (var2) bodyParams.push({ type: 'text', text: var2 });
-    if (bodyParams.length) components.push({ type: 'body', parameters: bodyParams });
+    try {
+      const keys = Object.keys(req.body || {}).filter((k) => /^var\d+$/.test(k));
+      keys
+        .sort((a, b) => Number(a.slice(3)) - Number(b.slice(3)))
+        .forEach((key) => {
+          const value = (req.body[key] || '').toString().trim();
+          if (value) {
+            bodyParams.push({ type: 'text', text: value });
+          }
+        });
+    } catch (_) {}
+    if (bodyParams.length) {
+      components.push({ type: 'body', parameters: bodyParams });
+    }
+
     try {
       const resp = await sendWhatsAppTemplate(to, tname, tlang, components, cfg);
       const outboundId = resp?.messages?.[0]?.id;

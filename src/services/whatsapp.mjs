@@ -295,8 +295,8 @@ export async function sendWhatsappImage(to, imageUrl, caption, cfg, replyToMessa
 
 export async function sendWhatsappImageBase64(to, imagePath, caption, cfg) {
   try {
-    // Read the image file
-    const imageBuffer = fs.readFileSync(imagePath);
+    // Read the image file (non-blocking)
+    const imageBuffer = await fs.promises.readFile(imagePath);
     
     // Get file extension to determine MIME type
     const ext = path.extname(imagePath).toLowerCase();
@@ -452,8 +452,8 @@ export async function sendWhatsappDocument(to, documentUrl, filename, caption, c
  */
 export async function sendWhatsappDocumentBase64(to, documentPath, filename, caption, cfg) {
   try {
-    // Read the document file
-    const documentBuffer = fs.readFileSync(documentPath);
+    // Read the document file (non-blocking)
+    const documentBuffer = await fs.promises.readFile(documentPath);
     
     // Get file extension to determine MIME type
     const ext = path.extname(documentPath).toLowerCase();

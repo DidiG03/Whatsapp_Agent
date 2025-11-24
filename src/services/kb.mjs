@@ -196,8 +196,8 @@ export async function buildKbSuggestions(userId, question, max = 3) {
   // 1) Try semantic matches when there is a meaningful question
   const q = String(question || '').trim();
   if (q && q.length > 1 && q.toLowerCase() !== 'hello') {
-    const matched = retrieveKbMatches(q, 6, userId, '');
-    for(const m of matched) push(m.title || "");
+    const matched = await retrieveKbMatches(q, 6, userId, '');
+    for (const m of matched) push(m.title || "");
   }
 
   // 2) Fill from user's own KB titles that are marked show_in_menu (most recent first)
