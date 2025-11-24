@@ -153,7 +153,7 @@ export default function registerMetricsRoutes(app) {
         }
       ]);
       
-      // Get active conversations
+      // Get active conversations (distinct contacts with any message in range)
       const activeConversations = await Message.aggregate([
         {
           $match: {
@@ -162,8 +162,23 @@ export default function registerMetricsRoutes(app) {
           }
         },
         {
+          // Normalize contact id regardless of direction:
+          // - inbound: customer digits are in from_digits
+          // - outbound: customer digits are in to_digits
+          $addFields: {
+            contact: {
+              $cond: [
+                { $eq: ['$direction', 'inbound'] },
+                '$from_digits',
+                '$to_digits'
+              ]
+            }
+          }
+        },
+        { $match: { contact: { $ne: null } } },
+        {
           $group: {
-            _id: '$from_digits'
+            _id: '$contact'
           }
         },
         {
@@ -172,6 +187,8 @@ export default function registerMetricsRoutes(app) {
       ]);
       
       // Get response time data using window functions (MongoDB 5.0+)
+      // Response time = time between an inbound message from a contact
+      // and the next outbound reply to the same contact.
       const responseTimeData = await Message.aggregate([
         {
           $match: {
@@ -179,10 +196,22 @@ export default function registerMetricsRoutes(app) {
             timestamp: { $gte: rangeStartSec, $lt: rangeEndSec }
           }
         },
-        { $sort: { from_digits: 1, timestamp: 1 } },
+        {
+          $addFields: {
+            contact: {
+              $cond: [
+                { $eq: ['$direction', 'inbound'] },
+                '$from_digits',
+                '$to_digits'
+              ]
+            }
+          }
+        },
+        { $match: { contact: { $ne: null } } },
+        { $sort: { contact: 1, timestamp: 1 } },
         {
           $setWindowFields: {
-            partitionBy: '$from_digits',
+            partitionBy: '$contact',
             sortBy: { timestamp: 1 },
             output: {
               prevDirection: { $shift: { output: '$direction', by: 1 } },

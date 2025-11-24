@@ -1,6 +1,7 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
 import { renderSidebar, renderTopbar, escapeHtml } from "../utils.mjs";
 import { getDB } from "../db-mongodb.mjs";
+import { Message, MessageStatus } from "../schemas/mongodb.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
 import { getPlanStatus } from "../services/usage.mjs";
 import { enqueueOutboundMessage } from "../jobs/outboundQueue.mjs";
@@ -25,12 +26,108 @@ export default function registerCampaignRoutes(app) {
     const defaultTemplateName = String(settings?.wa_template_name || '').trim();
     const defaultTemplateLang = String(settings?.wa_template_language || '').trim() || 'en_US';
 
+    // Aggregate per-template performance stats from message + status collections
+    const userKey = String(userId);
+    let sentByKey = new Map();
+    let openedByKey = new Map();
+    try {
+      const sentAgg = await Message.aggregate([
+        { $match: { user_id: userKey, type: 'template' } },
+        {
+          $group: {
+            _id: {
+              name: '$raw.template.name',
+              // Support both Meta payload (language.code) and our own shape (language or language.code)
+              lang: {
+                $ifNull: [
+                  '$raw.template.language.code',
+                  '$raw.template.language'
+                ]
+              }
+            },
+            sent: { $sum: 1 }
+          }
+        }
+      ]);
+      sentByKey = new Map(
+        sentAgg
+          .filter(r => r?._id?.name)
+          .map(r => {
+            const name = String(r._id.name);
+            const lang = String(r._id.lang || 'en_US');
+            return [`${name}::${lang}`, Number(r.sent || 0)];
+          })
+      );
+    } catch (e) {
+      console.warn('[Templates][Stats] sent aggregation failed:', e?.message || e);
+    }
+
+    try {
+      const openedAgg = await MessageStatus.aggregate([
+        { $match: { user_id: userKey, status: 'read' } },
+        {
+          $lookup: {
+            from: 'messages',
+            localField: 'message_id',
+            foreignField: 'id',
+            as: 'msg'
+          }
+        },
+        { $unwind: '$msg' },
+        { $match: { 'msg.user_id': userKey, 'msg.type': 'template' } },
+        {
+          $group: {
+            _id: {
+              name: '$msg.raw.template.name',
+              lang: {
+                $ifNull: [
+                  '$msg.raw.template.language.code',
+                  '$msg.raw.template.language'
+                ]
+              }
+            },
+            opened: { $sum: 1 }
+          }
+        }
+      ]);
+      openedByKey = new Map(
+        openedAgg
+          .filter(r => r?._id?.name)
+          .map(r => {
+            const name = String(r._id.name);
+            const lang = String(r._id.lang || 'en_US');
+            return [`${name}::${lang}`, Number(r.opened || 0)];
+          })
+      );
+    } catch (e) {
+      console.warn('[Templates][Stats] opened aggregation failed:', e?.message || e);
+    }
+
     const tplRows = (templates || []).map(t => {
       const name = String(t.name || '(unnamed)');
       const lang = String(t.language || 'en_US');
       const isDefault = defaultTemplateName && defaultTemplateName === name && defaultTemplateLang === lang;
       const status = String(t.status || 'submitted');
       const submittedAt = new Date(t.createdAt || Date.now()).toLocaleString();
+      const quality = (t.quality_score || '').toString();
+      const category = (t.category || '').toString();
+
+      const statsKey = `${name}::${lang}`;
+      const sentCount = sentByKey.get(statsKey) || 0;
+      const openedCount = openedByKey.get(statsKey) || 0;
+
+      // Derive preview body from stored body or Meta components (BODY part)
+      let previewBody = '';
+      try {
+        if (typeof t.body === 'string' && t.body.trim()) {
+          previewBody = t.body;
+        } else if (Array.isArray(t.components)) {
+          const bodyComp = t.components.find(c => String(c.type || '').toUpperCase() === 'BODY');
+          if (bodyComp && typeof bodyComp.text === 'string') {
+            previewBody = bodyComp.text;
+          }
+        }
+      } catch {}
       const actionCell = isDefault
         ? '<span class="small muted">24h reopen default</span>'
         : `<form method="get" action="/campaigns/templates/default" style="margin:0;">
@@ -38,9 +135,24 @@ export default function registerCampaignRoutes(app) {
              <input type="hidden" name="language" value="${escapeHtml(lang)}"/>
              <button class="meta-ghost" type="submit" style="font-size:12px;padding:4px 8px;">Use for 24h reopen</button>
            </form>`;
+      const nameCell = `
+        <button type="button"
+                class="js-template-preview"
+                data-name="${escapeHtml(name)}"
+                data-lang="${escapeHtml(lang)}"
+                data-body="${escapeHtml(previewBody || '')}"
+                data-sent="${sentCount}"
+                data-opened="${openedCount}"
+                data-quality="${escapeHtml(quality || '')}"
+                data-status="${escapeHtml(status || '')}"
+                data-category="${escapeHtml(category || '')}"
+                style="background:none;border:none;padding:0;margin:0;color:#2563eb;cursor:pointer;font:inherit;text-align:left;">
+          ${escapeHtml(name)}
+        </button>`;
+
       return `
       <tr>
-        <td>${escapeHtml(name)}</td>
+        <td>${nameCell}</td>
         <td class="small">${escapeHtml(lang)}</td>
         <td><span class="badge ${status}">${escapeHtml(status)}</span></td>
         <td class="small">${submittedAt}</td>
@@ -175,21 +287,134 @@ export default function registerCampaignRoutes(app) {
                   </div>
                 </div>
 
+                <div id="modalTemplatePreview" class="day-modal">
+                  <div class="day-modal-overlay" data-close="modalTemplatePreview"></div>
+                  <div class="day-modal-content" style="max-width: 520px;">
+                    <div class="day-modal-header">
+                      <strong>Template Preview</strong>
+                      <button class="day-modal-close" data-close="modalTemplatePreview">×</button>
+                    </div>
+                    <div class="day-modal-body">
+                      <div class="small muted" style="margin-bottom:8px;">
+                        <span id="tplPreviewName" style="font-weight:600;"></span>
+                        <span id="tplPreviewLang" style="margin-left:6px; color:#6b7280;"></span>
+                      </div>
+                      <div style="display:flex; gap:16px; margin-bottom:12px; flex-wrap:wrap;">
+                        <div style="flex:1; min-width:140px;">
+                          <div class="small muted" style="font-size:11px; text-transform:uppercase; letter-spacing:.03em;">Messages sent</div>
+                          <div id="tplPreviewSent" style="font-size:16px; font-weight:600; margin-top:2px;">--</div>
+                        </div>
+                        <div style="flex:1; min-width:140px;">
+                          <div class="small muted" style="font-size:11px; text-transform:uppercase; letter-spacing:.03em;">Messages opened</div>
+                          <div id="tplPreviewOpened" style="font-size:16px; font-weight:600; margin-top:2px;">--</div>
+                        </div>
+                      </div>
+                      <div style="background:#e5ddd5; padding:18px; border-radius:12px; display:flex; justify-content:flex-start;">
+                        <div style="max-width:360px; background:#ffffff; border-radius:8px; padding:10px 12px; box-shadow:0 1px 1px rgba(0,0,0,0.15); font-size:14px; line-height:1.4;">
+                          <div class="small muted" style="font-size:11px; text-transform:uppercase; letter-spacing:.03em; margin-bottom:4px;">Your template</div>
+                          <div id="tplPreviewBody" style="white-space:pre-wrap; color:#111b21;"></div>
+                        </div>
+                      </div>
+                      <div style="margin-top:10px; font-size:12px; color:#6b7280;">
+                        <div>Quality: <span id="tplPreviewQuality">--</span></div>
+                        <div>Status: <span id="tplPreviewStatus">--</span></div>
+                      </div>
+                      <div style="margin-top:14px; display:flex; justify-content:flex-end; gap:8px;">
+                        <button type="button" class="meta-ghost" id="tplPreviewEditBtn">Edit &amp; resubmit</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <script>
                   (function(){
                     var openCreate = document.getElementById('openCreateCampaign');
                     var openTemplate = document.getElementById('openSubmitTemplate');
                     var modalCreate = document.getElementById('modalCreate');
                     var modalTemplate = document.getElementById('modalTemplate');
+                    var modalPreview = document.getElementById('modalTemplatePreview');
+                    var previewName = document.getElementById('tplPreviewName');
+                    var previewLang = document.getElementById('tplPreviewLang');
+                    var previewBody = document.getElementById('tplPreviewBody');
+                    var previewSent = document.getElementById('tplPreviewSent');
+                    var previewOpened = document.getElementById('tplPreviewOpened');
+                    var previewQuality = document.getElementById('tplPreviewQuality');
+                    var previewStatus = document.getElementById('tplPreviewStatus');
+                    var previewEditBtn = document.getElementById('tplPreviewEditBtn');
+                    var currentTemplateData = null;
                     function show(el){ if(el) el.classList.add('show'); }
                     function hide(el){ if(el) el.classList.remove('show'); }
                     if(openCreate){ openCreate.addEventListener('click', function(){ show(modalCreate); }); }
                     if(openTemplate){ openTemplate.addEventListener('click', function(){ show(modalTemplate); }); }
+                    // Template preview handlers (event delegation for robustness)
+                    document.addEventListener('click', function(e){
+                      try {
+                        var target = e.target || e.srcElement;
+                        if (!target) return;
+                        // If the click is on an inner span, walk up to the button
+                        while (target && target !== document.body && !(target.classList && target.classList.contains('js-template-preview'))) {
+                          target = target.parentNode;
+                        }
+                        if (!target || !target.classList || !target.classList.contains('js-template-preview')) return;
+                        if (!modalPreview) return;
+                        if (previewName) previewName.textContent = target.getAttribute('data-name') || '';
+                        if (previewLang) {
+                          var lang = target.getAttribute('data-lang') || '';
+                          previewLang.textContent = lang ? '(' + lang + ')' : '';
+                        }
+                        if (previewBody) {
+                          previewBody.textContent = target.getAttribute('data-body') || '';
+                        }
+                        if (previewSent) {
+                          var sent = target.getAttribute('data-sent');
+                          previewSent.textContent = sent != null && sent !== '' ? sent : '--';
+                        }
+                        if (previewOpened) {
+                          var opened = target.getAttribute('data-opened');
+                          previewOpened.textContent = opened != null && opened !== '' ? opened : '--';
+                        }
+                        if (previewQuality) {
+                          var q = target.getAttribute('data-quality') || '';
+                          previewQuality.textContent = q || '—';
+                        }
+                        if (previewStatus) {
+                          var st = target.getAttribute('data-status') || '';
+                          previewStatus.textContent = st || '—';
+                        }
+                        currentTemplateData = {
+                          name: target.getAttribute('data-name') || '',
+                          lang: target.getAttribute('data-lang') || '',
+                          body: target.getAttribute('data-body') || '',
+                          category: target.getAttribute('data-category') || ''
+                        };
+                        show(modalPreview);
+                      } catch(_){}
+                    });
+                    if (previewEditBtn) {
+                      previewEditBtn.addEventListener('click', function(){
+                        try {
+                          if (!currentTemplateData) return;
+                          hide(modalPreview);
+                          if (!modalTemplate) return;
+                          var form = document.querySelector('form[action="/campaigns/templates/submit"]');
+                          if (!form) return;
+                          var nameInput = form.querySelector('input[name="name"]');
+                          var langInput = form.querySelector('input[name="language"]');
+                          var categoryInput = form.querySelector('input[name="category"]');
+                          var bodyInput = form.querySelector('textarea[name="body"]');
+                          if (nameInput && !nameInput.value) nameInput.value = currentTemplateData.name;
+                          if (langInput && !langInput.value) langInput.value = currentTemplateData.lang || 'en_US';
+                          if (categoryInput && !categoryInput.value) categoryInput.value = currentTemplateData.category || 'MARKETING';
+                          if (bodyInput && !bodyInput.value) bodyInput.value = currentTemplateData.body || '';
+                          show(modalTemplate);
+                        } catch(_){}
+                      });
+                    }
                     document.addEventListener('click', function(e){
                       var closeId = e.target && e.target.getAttribute && e.target.getAttribute('data-close');
                       if(closeId){ var el = document.getElementById(closeId); hide(el); }
                     });
-                    document.addEventListener('keydown', function(e){ if(e.key==='Escape'){ hide(modalCreate); hide(modalTemplate); } });
+                    document.addEventListener('keydown', function(e){ if(e.key==='Escape'){ hide(modalCreate); hide(modalTemplate); hide(modalPreview); } });
                   })();
                 </script>
 
@@ -504,7 +729,23 @@ export default function registerCampaignRoutes(app) {
           try {
             if (kind === 'template') {
               // Try template send; if fails, skip silently
-              try { await sendWhatsAppTemplate(phone, templateName || 'hello_world', templateLang || 'en_US', [], cfg); } catch {}
+              try {
+                const resp = await sendWhatsAppTemplate(phone, templateName || 'hello_world', templateLang || 'en_US', [], cfg);
+                const outboundId = resp?.messages?.[0]?.id;
+                if (outboundId) {
+                  try {
+                    await recordOutboundMessage({
+                      messageId: outboundId,
+                      userId,
+                      cfg,
+                      to: phone,
+                      type: 'template',
+                      text: null,
+                      raw: { to: phone, template: { name: templateName || 'hello_world', language: { code: templateLang || 'en_US' } } }
+                    });
+                  } catch {}
+                }
+              } catch {}
             } else {
               const jobId = await enqueueOutboundMessage({
                 userId,

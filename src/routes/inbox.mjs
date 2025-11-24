@@ -464,7 +464,11 @@ export default function registerInboxRoutes(app) {
       const preview = shortened.replace(/</g,'&lt;');
       const initials = String(c.contact||'').slice(-2);
       const displayDefault = c.contact ? `+${String(c.contact).replace(/^\+/, '')}` : '';
-      const displayName = customerNameByContact.get(String(c.contact)) || displayDefault;
+      const savedName = customerNameByContact.get(String(c.contact)) || null;
+      const displayName = savedName || displayDefault;
+      const displayLine = savedName && displayDefault
+        ? `${escapeHtml(savedName)} · <span class="small" style="color:#6b7280;">${escapeHtml(displayDefault)}</span>`
+        : escapeHtml(displayName || '');
       const seenTs = lastSeenByContact.get(String(c.contact)) || 0;
       const hasNew = lastTs > seenTs;
       const hasEscalation = escalationByContact.has(String(c.contact));
@@ -515,7 +519,7 @@ export default function registerInboxRoutes(app) {
               <div class="wa-avatar">${initials}</div>
               <div class="wa-col">
                 <div class="wa-name">
-                  ${displayName}
+                  ${displayLine}
                   ${unreadCount > 0 ? `<span class="badge-count" style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;background:#22c55e;color:#fff;border-radius:999px;font-size:10px;font-weight:600;vertical-align:middle;">${unreadCount>99?'99+':unreadCount}</span>` : (hasNew ? '<span class="badge-dot"></span>' : '')}
                   ${hasEscalation ? '<span class="live-chip">live</span>' : ''}
                   ${hasEscalation ? '<span class="escalation-chip">Agent Escalation</span>' : ''}
@@ -4090,7 +4094,21 @@ export default function registerInboxRoutes(app) {
     if (var2) bodyParams.push({ type: 'text', text: var2 });
     if (bodyParams.length) components.push({ type: 'body', parameters: bodyParams });
     try {
-      await sendWhatsAppTemplate(to, tname, tlang, components, cfg);
+      const resp = await sendWhatsAppTemplate(to, tname, tlang, components, cfg);
+      const outboundId = resp?.messages?.[0]?.id;
+      if (outboundId) {
+        try {
+          await recordOutboundMessage({
+            messageId: outboundId,
+            userId,
+            cfg,
+            to,
+            type: 'template',
+            text: null,
+            raw: { to, template: { name: tname, language: { code: tlang } }, components }
+          });
+        } catch {}
+      }
       const msg = encodeURIComponent(`Template "${tname}" sent.`);
       return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${msg}&type=success`);
     } catch (e) {
