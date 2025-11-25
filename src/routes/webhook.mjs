@@ -17,7 +17,7 @@ import { listMessagesForThread } from "../services/conversations.mjs";
 import { listAvailability, createBooking, rescheduleBooking, cancelBooking, buildDayRows, buildTimeRows } from "../services/booking.mjs";
 import { recordOutboundMessage, recordInboundMessage } from "../services/messages.mjs";
 import { sendEscalationNotification, sendBookingNotification } from "../services/email.mjs";
-import { incrementUsage, getUserPlan } from "../services/usage.mjs";
+import { incrementUsage, getUserPlan, isUsageExceeded } from "../services/usage.mjs";
 import { addReaction, removeReaction } from "../services/reactions.mjs";
 import { broadcastNewMessage, broadcastReaction, broadcastMessageStatus } from "./realtime.mjs";
 import { updateMessageDeliveryStatus, updateMessageReadStatus, READ_STATUS, MESSAGE_STATUS } from "../services/messageStatus.mjs";
@@ -2320,6 +2320,15 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       if (humanActive) {
         return res.sendStatus(200);
       }
+
+      // Enforce plan usage limits: when exceeded, the bot must stay silent
+      try {
+        const overLimit = await isUsageExceeded(tenantUserId);
+        if (overLimit) {
+          // Do not send any replies when over the monthly limit
+          return res.sendStatus(200);
+        }
+      } catch {}
 
       if (cfg.conversation_mode === 'escalation') {
         const handledEscalation = await handleSimpleEscalationFlow({ tenantUserId, from, text, cfg });

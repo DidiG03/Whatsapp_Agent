@@ -459,7 +459,7 @@ export async function sendPaymentReceiptEmail(userId, data) {
           <p>We've received your payment of <strong>${currency} ${amount}</strong>${plan}.</p>
           ${data?.invoiceUrl ? `<p>You can view your invoice here: <a href="${data.invoiceUrl}">${data.invoiceUrl}</a></p>` : ''}
           <p>Thanks for being a customer of ${businessName}.</p>
-          <p style="margin-top:24px;font-size:12px;color:#6b7280;">This message was sent automatically by WhatsApp Agent.</p>
+          <p style="margin-top:24px;font-size:12px;color:#6b7280;">This message was sent automatically by Code Orbit.</p>
         </div>
       </body></html>`;
 

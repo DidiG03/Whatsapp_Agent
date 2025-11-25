@@ -617,7 +617,7 @@ class RealtimeManager {
       isLive: !!isLive
     };
     try {
-      await fetch('/api/realtime/live-mode', {
+      const resp = await fetch('/api/realtime/live-mode', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -626,8 +626,17 @@ class RealtimeManager {
         credentials: 'include',
         body: JSON.stringify(payload)
       });
+      let data = null;
+      try { data = await resp.json(); } catch {}
+      if (!resp.ok || data?.error) {
+        const msg = data?.error || 'Failed to update live mode';
+        this.showToast(msg, 'error');
+        return;
+      }
     } catch (error) {
       console.warn('Live mode API call failed:', error?.message || error);
+      this.showToast('Failed to update live mode', 'error');
+      return;
     }
     this.publishChatEvent('live_mode_changed', {
       userId: this.userId,

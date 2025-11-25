@@ -1,5 +1,6 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
 import { createCheckoutSession, getCheckoutSession, handleSuccessfulPayment, handleSubscriptionCanceled, isStripeEnabled } from "../services/stripe.mjs";
+import { getUserPlan } from "../services/usage.mjs";
 import { handleCheckoutSessionEvent as handleAgentCheckoutSessionEvent, handlePaymentIntentEvent as handleAgentPaymentIntentEvent } from "../services/agentPayments.mjs";
 import { updateUserPlan } from "../services/usage.mjs";
 import { renderSidebar, renderTopbar } from "../utils.mjs";
@@ -12,7 +13,7 @@ export default function registerStripeRoutes(app) {
   // Create checkout session for plan upgrade
   app.post("/stripe/create-checkout", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
-    const { plan_name, price_id } = req.body;
+    const { plan_name, price_id, promo_code } = req.body;
     const email = await getSignedInEmail(req);
     
     if (!plan_name || !['free', 'starter'].includes(plan_name)) {
@@ -20,7 +21,26 @@ export default function registerStripeRoutes(app) {
     }
     
     try {
-      const result = await createCheckoutSession(userId, plan_name, email, price_id);
+      // Prevent starting a new paid subscription while an active one exists
+      const currentPlan = await getUserPlan(userId);
+      const subId = currentPlan?.stripe_subscription_id;
+      if (subId && stripe) {
+        try {
+          const sub = await stripe.subscriptions.retrieve(subId);
+          const status = String(sub?.status || '');
+          if (status === 'active' || status === 'trialing' || status === 'past_due' || status === 'unpaid') {
+            return res.status(409).json({
+              error: 'You already have an active subscription. You can change plans after the current period ends.',
+              current_period_end: sub?.current_period_end || null,
+              cancel_at_period_end: !!sub?.cancel_at_period_end
+            });
+          }
+        } catch (e) {
+          // If retrieval fails, proceed; Stripe will enforce constraints server-side
+        }
+      }
+
+      const result = await createCheckoutSession(userId, plan_name, email, price_id, promo_code);
       
       if (plan_name === 'free') {
         // Handle free plan upgrade immediately
@@ -42,6 +62,160 @@ export default function registerStripeRoutes(app) {
     } catch (error) {
       console.error('Checkout session creation failed:', error);
       return res.status(500).json({ error: 'Failed to create checkout session' });
+    }
+  });
+
+  // Cancel/remove scheduled plan change (keep current plan cycle as-is)
+  app.post("/stripe/cancel-scheduled-change", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
+    if (!stripe || !isStripeEnabled()) {
+      return res.status(500).json({ error: 'Stripe not configured' });
+    }
+    try {
+      const currentPlan = await getUserPlan(userId);
+      const subId = currentPlan?.stripe_subscription_id;
+      if (!subId) return res.status(400).json({ error: 'No active subscription found' });
+      const sub = await stripe.subscriptions.retrieve(subId, { expand: ['schedule'] });
+      let scheduleId = null;
+      try { scheduleId = (sub?.schedule && (typeof sub.schedule === 'string' ? sub.schedule : sub.schedule?.id)) || null; } catch {}
+      if (!scheduleId) {
+        const list = await stripe.subscriptionSchedules.list({ subscription: subId, limit: 1 });
+        scheduleId = list?.data?.[0]?.id || null;
+      }
+      if (!scheduleId) {
+        return res.json({ success: true, message: 'No schedule found' });
+      }
+      const schedule = await stripe.subscriptionSchedules.retrieve(scheduleId, { expand: ['phases.items.price'] });
+      const nowTs = Math.floor(Date.now() / 1000);
+      const existingPhases = Array.isArray(schedule.phases) ? schedule.phases : [];
+      const currentPhase = existingPhases.find(p => !p.end_date || Number(p.end_date) > nowTs) || existingPhases[0];
+      if (!currentPhase) {
+        // Nothing to preserve; release the schedule
+        try { await stripe.subscriptionSchedules.release(scheduleId); } catch {}
+        return res.json({ success: true, released: true });
+      }
+      // If there is only a single phase, release schedule (no future change)
+      const hasFuture = existingPhases.some(p => Number(p.start_date || 0) > nowTs);
+      if (!hasFuture) {
+        try { await stripe.subscriptionSchedules.release(scheduleId); } catch {}
+        return res.json({ success: true, released: true });
+      }
+      // Update schedule to only preserve current phase and release afterwards
+      const preserved = {
+        items: (currentPhase.items || []).map(it => ({ price: (typeof it.price === 'string' ? it.price : it.price?.id), quantity: Number(it.quantity || 1) || 1 })),
+        start_date: currentPhase.start_date,
+        end_date: currentPhase.end_date || sub?.current_period_end || undefined
+      };
+      const upd = await stripe.subscriptionSchedules.update(scheduleId, { phases: [preserved], end_behavior: 'release' });
+      return res.json({ success: true, message: 'Scheduled change canceled', schedule_id: upd?.id || scheduleId });
+    } catch (error) {
+      console.error('Failed to cancel scheduled change:', error);
+      return res.status(500).json({ error: 'Failed to cancel scheduled change' });
+    }
+  });
+
+  // Schedule a plan interval change to take effect next billing period (no immediate charge)
+  app.post("/stripe/schedule-plan-change", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
+    const { target_interval, plan_name } = req.body || {};
+    if (!stripe || !isStripeEnabled()) {
+      return res.status(500).json({ error: 'Stripe not configured' });
+    }
+    if (!target_interval || !['month','year'].includes(String(target_interval))) {
+      return res.status(400).json({ error: 'Invalid target interval' });
+    }
+    const targetInterval = String(target_interval);
+    const planName = String(plan_name || 'starter');
+    if (!['starter'].includes(planName)) {
+      return res.status(400).json({ error: 'Unsupported plan for scheduled changes' });
+    }
+    try {
+      const currentPlan = await getUserPlan(userId);
+      const subId = currentPlan?.stripe_subscription_id;
+      if (!subId) {
+        return res.status(400).json({ error: 'No active subscription found' });
+      }
+      const sub = await stripe.subscriptions.retrieve(subId, { expand: ['items.data.price'] });
+      const currentItem = sub?.items?.data?.[0];
+      const currentPriceId = currentItem?.price?.id;
+      const currentInterval = currentItem?.price?.recurring?.interval || null;
+      if (!currentPriceId || !currentInterval) {
+        return res.status(400).json({ error: 'Could not determine current subscription price' });
+      }
+      if (currentInterval === targetInterval) {
+        return res.status(400).json({ error: 'Already on requested interval' });
+      }
+      // Resolve target price id from env
+      function sanitize(v){ return String(v || '').trim().replace(/^['"]|['"]$/g,''); }
+      const monthlyPrice = sanitize(process.env.STRIPE_PRICE_ID_STARTER_MONTHLY || process.env.STRIPE_PRICE_ID_STARTER || process.env.STRIPE_PRICE_ID || '');
+      const yearlyPrice = sanitize(process.env.STRIPE_PRICE_ID_STARTER_YEARLY || process.env.STRIPE_PRICE_ID_STARTER_ANNUAL || process.env.STRIPE_PRICE_ID_STARTER_YEAR || '');
+      const targetPriceId = targetInterval === 'year' ? yearlyPrice : monthlyPrice;
+      if (!targetPriceId) {
+        return res.status(500).json({ error: 'Target price is not configured in environment' });
+      }
+      // If a schedule already exists, update it; else create then update with phases
+      let schedule = null;
+      // Prefer schedule id from subscription to avoid "already attached" error
+      let scheduleId = null;
+      try {
+        scheduleId = (sub?.schedule && (typeof sub.schedule === 'string' ? sub.schedule : sub.schedule?.id)) || null;
+      } catch {}
+      if (!scheduleId) {
+        try {
+          const existing = await stripe.subscriptionSchedules.list({ subscription: subId, limit: 1 });
+          scheduleId = existing?.data?.[0]?.id || null;
+          schedule = existing?.data?.[0] || null;
+        } catch {}
+      } else {
+        try { schedule = await stripe.subscriptionSchedules.retrieve(scheduleId); } catch {}
+      }
+      const nowTs = Math.floor(Date.now() / 1000);
+      let phases;
+      if (schedule) {
+        // Preserve current phase start_date; do not modify it
+        const existingPhases = Array.isArray(schedule.phases) ? schedule.phases : [];
+        const currentPhase = existingPhases.find(p => !p.end_date || Number(p.end_date) > nowTs) || existingPhases[existingPhases.length - 1];
+        const preserved = currentPhase ? {
+          // Map existing items to their price ids
+          items: (currentPhase.items || []).map(it => ({ price: (typeof it.price === 'string' ? it.price : it.price?.id), quantity: Number(it.quantity || 1) || 1 })),
+          start_date: currentPhase.start_date,
+          end_date: currentPhase.end_date || sub?.current_period_end || undefined
+        } : {
+          items: [ { price: currentPriceId, quantity: 1 } ],
+          start_date: nowTs,
+          end_date: sub?.current_period_end || undefined
+        };
+        phases = [
+          preserved,
+          { items: [ { price: targetPriceId, quantity: 1 } ] }
+        ];
+      } else {
+        // No existing schedule: set phase from now to period end, then target
+        let currentEnd = Number(sub?.current_period_end || 0) || nowTs;
+        if (currentEnd <= nowTs) currentEnd = nowTs + 1; // ensure length >= 1s
+        phases = [
+          { items: [ { price: currentPriceId, quantity: 1 } ], start_date: nowTs, end_date: currentEnd },
+          { items: [ { price: targetPriceId, quantity: 1 } ] }
+        ];
+      }
+      if (!scheduleId) {
+        // Create first without phases per Stripe API, then update with phases
+        schedule = await stripe.subscriptionSchedules.create({ from_subscription: subId });
+        scheduleId = schedule?.id;
+      }
+      // Now set phases
+      schedule = await stripe.subscriptionSchedules.update(scheduleId, { phases });
+      return res.json({
+        success: true,
+        message: 'Plan change scheduled for next billing period',
+        current_interval: currentInterval,
+        target_interval: targetInterval,
+        current_period_end: sub?.current_period_end || null,
+        schedule_id: schedule?.id || null
+      });
+    } catch (error) {
+      console.error('Failed to schedule plan change:', error);
+      return res.status(500).json({ error: 'Failed to schedule plan change' });
     }
   });
 
@@ -71,6 +245,41 @@ export default function registerStripeRoutes(app) {
   // Handle canceled checkout
   app.get("/stripe/cancel", ensureAuthed, async (req, res) => {
     return res.redirect('/plan?canceled=true');
+  });
+
+  // Create Stripe Billing Portal session for managing payment methods
+  app.post("/stripe/customer-portal", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
+    if (!isStripeEnabled() || !stripe) {
+      return res.status(500).json({ error: 'Stripe not configured' });
+    }
+    try {
+      // Resolve Stripe customer id
+      const { getUserPlan, updateUserPlan } = await import("../services/usage.mjs");
+      const plan = await getUserPlan(userId);
+      let customerId = plan?.stripe_customer_id || null;
+      if (!customerId && plan?.stripe_subscription_id) {
+        try {
+          const sub = await stripe.subscriptions.retrieve(plan.stripe_subscription_id);
+          customerId = sub?.customer || null;
+          if (customerId) {
+            try { await updateUserPlan(userId, { stripe_customer_id: String(customerId) }); } catch {}
+          }
+        } catch {}
+      }
+      if (!customerId) {
+        return res.status(400).json({ error: 'No Stripe customer found for this account' });
+      }
+      const returnUrl = `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/plan`;
+      const session = await stripe.billingPortal.sessions.create({
+        customer: String(customerId),
+        return_url: returnUrl
+      });
+      return res.json({ success: true, url: session?.url || null });
+    } catch (error) {
+      console.error('Failed to create billing portal session:', error?.message || error);
+      return res.status(500).json({ error: 'Failed to create billing portal session' });
+    }
   });
 
   // Stripe webhook endpoint
@@ -176,22 +385,91 @@ export default function registerStripeRoutes(app) {
       if (!stripe) {
         return res.status(500).json({ error: 'Stripe not configured' });
       }
-      
-      await stripe.subscriptions.cancel(subscription_id);
-      
-      // Update user plan to free
-      updateUserPlan(userId, {
-        plan_name: 'free',
-        monthly_limit: 100,
-        whatsapp_numbers: 1,
-        billing_cycle_start: Math.floor(Date.now() / 1000),
-        stripe_subscription_id: null
-      });
-      
-      return res.json({ success: true, message: 'Subscription canceled successfully' });
+      // If the subscription is managed by a schedule, modify the schedule instead of the subscription
+      const sub = await stripe.subscriptions.retrieve(subscription_id, { expand: ['schedule'] });
+      let scheduleId = null;
+      try { scheduleId = (sub?.schedule && (typeof sub.schedule === 'string' ? sub.schedule : sub.schedule?.id)) || null; } catch {}
+      if (!scheduleId) {
+        const list = await stripe.subscriptionSchedules.list({ subscription: subscription_id, limit: 1 });
+        scheduleId = list?.data?.[0]?.id || null;
+      }
+      if (scheduleId) {
+        // Modify schedule so it ends at current period end and cancels
+        const schedule = await stripe.subscriptionSchedules.retrieve(scheduleId, { expand: ['phases.items.price'] });
+        const nowTs = Math.floor(Date.now()/1000);
+        const existingPhases = Array.isArray(schedule.phases) ? schedule.phases : [];
+        const currentPhase = existingPhases.find(p => !p.end_date || Number(p.end_date) > nowTs) || existingPhases[0];
+        const preserved = {
+          items: (currentPhase?.items || []).map(it => ({ price: (typeof it.price === 'string' ? it.price : it.price?.id), quantity: Number(it.quantity || 1) || 1 })),
+          start_date: currentPhase?.start_date || nowTs,
+          end_date: (currentPhase?.end_date || sub?.current_period_end || (nowTs + 1))
+        };
+        await stripe.subscriptionSchedules.update(scheduleId, { phases: [preserved], end_behavior: 'cancel' });
+        return res.json({
+          success: true,
+          message: 'Your subscription will not renew. You will keep access until the period ends.',
+          cancel_at_period_end: true,
+          current_period_end: sub?.current_period_end || preserved.end_date || null
+        });
+      } else {
+        // No schedule — use cancel_at_period_end on the subscription
+        const updated = await stripe.subscriptions.update(subscription_id, { cancel_at_period_end: true });
+        try {
+          updateUserPlan(userId, {
+            status: 'active',
+            stripe_subscription_id: updated?.id || subscription_id
+          });
+        } catch {}
+        return res.json({ 
+          success: true, 
+          message: 'Your subscription will not renew. You will keep access until the period ends.',
+          cancel_at_period_end: !!updated?.cancel_at_period_end,
+          current_period_end: updated?.current_period_end || null
+        });
+      }
     } catch (error) {
       console.error('Failed to cancel subscription:', error);
       return res.status(500).json({ error: 'Failed to cancel subscription' });
+    }
+  });
+
+  // Resume (undo cancel-at-period-end) endpoint
+  app.post("/stripe/resume-subscription", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
+    const { subscription_id } = req.body || {};
+    if (!subscription_id) {
+      return res.status(400).json({ error: 'Subscription ID required' });
+    }
+    try {
+      if (!stripe) {
+        return res.status(500).json({ error: 'Stripe not configured' });
+      }
+      // If a schedule manages it, switch end_behavior to 'release' (continue billing)
+      const sub = await stripe.subscriptions.retrieve(subscription_id, { expand: ['schedule'] });
+      let scheduleId = null;
+      try { scheduleId = (sub?.schedule && (typeof sub.schedule === 'string' ? sub.schedule : sub.schedule?.id)) || null; } catch {}
+      if (!scheduleId) {
+        const list = await stripe.subscriptionSchedules.list({ subscription: subscription_id, limit: 1 });
+        scheduleId = list?.data?.[0]?.id || null;
+      }
+      if (scheduleId) {
+        const updatedSchedule = await stripe.subscriptionSchedules.update(scheduleId, { end_behavior: 'release' });
+        return res.json({
+          success: true,
+          message: 'Subscription will continue after the current period.',
+          current_period_end: sub?.current_period_end || null
+        });
+      } else {
+        const updated = await stripe.subscriptions.update(subscription_id, { cancel_at_period_end: false });
+        return res.json({
+          success: true,
+          message: 'Subscription will continue after the current period.',
+          current_period_end: updated?.current_period_end || null
+        });
+      }
+    } catch (error) {
+      console.error('Failed to resume subscription:', error);
+      return res.status(500).json({ error: 'Failed to resume subscription' });
     }
   });
 }

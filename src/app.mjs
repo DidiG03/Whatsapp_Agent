@@ -45,6 +45,7 @@ import registerMonitoringRoutes from "./routes/monitoring.mjs";
 import { signMediaPath } from "./utils.mjs";
 import registerMetricsRoutes from "./routes/metrics.mjs";
 import registerGoogleRoutes from "./routes/google.mjs";
+import registerUsageRoutes from "./routes/usage.mjs";
 import { initOutboundQueue } from "./jobs/outboundQueue.mjs";
 /**
  * Create and configure an Express app instance.
@@ -302,6 +303,7 @@ export async function createApp() {
   registerMonitoringRoutes(app);
   registerMetricsRoutes(app);
   registerGoogleRoutes(app);
+  registerUsageRoutes(app);
   registerWebhookRoutes(app);
   registerMiscRoutes(app);
   

@@ -21,9 +21,37 @@ export function getStripePublishableKey() {
 }
 
 /**
+ * Ensure only one active subscription exists for a customer.
+ * Any other active/trialing/past_due/unpaid subscriptions (except keepId) are set to cancel at period end.
+ * Incomplete or incomplete_expired subs are canceled immediately to avoid clutter.
+ */
+async function ensureSingleActiveSubscription(customerId, keepId = null) {
+  if (!isStripeEnabled() || !stripe || !customerId) return;
+  try {
+    const list = await stripe.subscriptions.list({
+      customer: String(customerId),
+      status: 'all',
+      limit: 100
+    });
+    const subs = Array.isArray(list?.data) ? list.data : [];
+    for (const s of subs) {
+      if (keepId && s.id === keepId) continue;
+      const st = String(s.status || '');
+      if (st === 'active' || st === 'trialing' || st === 'past_due' || st === 'unpaid') {
+        try { await stripe.subscriptions.update(s.id, { cancel_at_period_end: true }); } catch {}
+      } else if (st === 'incomplete' || st === 'incomplete_expired') {
+        try { await stripe.subscriptions.cancel(s.id); } catch {}
+      }
+    }
+  } catch (e) {
+    console.warn('ensureSingleActiveSubscription failed:', e?.message || e);
+  }
+}
+
+/**
  * Create a Stripe checkout session for plan subscription
  */
-export async function createCheckoutSession(userId, planName, customerEmail = null, priceId = null) {
+export async function createCheckoutSession(userId, planName, customerEmail = null, priceId = null, promoCode = null) {
   if (!isStripeEnabled() || !stripe) {
     throw new Error('Stripe is not configured');
   }
@@ -40,23 +68,19 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
   }
 
   try {
-    // Create or retrieve Stripe customer
-    let customerId;
-    if (customerEmail) {
-      const customers = await stripe.customers.list({
-        email: customerEmail,
-        limit: 1
-      });
-      
+    // Create or retrieve Stripe customer (prefer stored customer id when available)
+    let customerId = null;
+    try {
+      const { UserPlan } = await import('../schemas/mongodb.mjs');
+      const up = await UserPlan.findOne({ user_id: String(userId) }).select('stripe_customer_id').lean();
+      if (up?.stripe_customer_id) customerId = String(up.stripe_customer_id);
+    } catch {}
+    if (!customerId && customerEmail) {
+      const customers = await stripe.customers.list({ email: customerEmail, limit: 1 });
       if (customers.data.length > 0) {
         customerId = customers.data[0].id;
       } else {
-        const customer = await stripe.customers.create({
-          email: customerEmail,
-          metadata: {
-            user_id: userId
-          }
-        });
+        const customer = await stripe.customers.create({ email: customerEmail, metadata: { user_id: userId } });
         customerId = customer.id;
       }
     }
@@ -72,6 +96,23 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
     // If a specific price_id is provided, try to validate it in the current account/mode.
     // If not found, fall back to inline price_data so checkout can still proceed.
     let currency = String(process.env.STRIPE_CURRENCY || 'usd').toLowerCase();
+    // Prepare optional discounts from a promotion code
+    let discountsArray = undefined;
+    if (promoCode) {
+      try {
+        const list = await stripe.promotionCodes.list({ code: String(promoCode).trim(), limit: 1 });
+        const pc = list?.data?.[0];
+        if (pc?.id && !pc?.expired && pc?.active !== false) {
+          discountsArray = [{ promotion_code: pc.id }];
+        } else {
+          // If code is invalid, we still allow checkout but without discount
+          console.warn('Promotion code not applicable or not found:', promoCode);
+        }
+      } catch (e) {
+        console.warn('Promotion code lookup failed:', e?.message || e);
+      }
+    }
+
     if (priceId) {
       try {
         const priceObj = await stripe.prices.retrieve(priceId);
@@ -82,10 +123,12 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
             payment_method_types: ['card'],
             line_items: [ { price: priceObj.id, quantity: 1 } ],
             mode: 'subscription',
+            allow_promotion_codes: true,
+            ...(discountsArray ? { discounts: discountsArray } : {}),
             success_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/stripe/success?session_id={CHECKOUT_SESSION_ID}`,
             cancel_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/plan?canceled=true`,
             metadata: { user_id: userId, plan_name: planName, price_id: priceObj.id }
-          });
+          }, { idempotencyKey: `cs_${userId}_${Date.now()}` });
           return { url: session.url, sessionId: session.id, planName };
         }
       } catch (e) {
@@ -125,13 +168,15 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
         },
       ],
       mode: 'subscription',
+      allow_promotion_codes: true,
+      ...(discountsArray ? { discounts: discountsArray } : {}),
       success_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/stripe/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/plan?canceled=true`,
       metadata: {
         user_id: userId,
         plan_name: planName
       }
-    });
+    }, { idempotencyKey: `cs_${userId}_${Date.now()}` });
 
     return { url: session.url, sessionId: session.id, planName };
   } catch (error) {
@@ -185,6 +230,30 @@ export async function getSubscription(subscriptionId) {
   } catch (error) {
     console.error('Failed to retrieve subscription:', error);
     throw new Error('Failed to retrieve subscription');
+  }
+}
+
+/**
+ * Get subscription schedule (expanded with price objects) for a subscription.
+ */
+export async function getSubscriptionScheduleForSubscription(subscriptionId) {
+  if (!isStripeEnabled() || !stripe) {
+    return null;
+  }
+  try {
+    const sub = await stripe.subscriptions.retrieve(subscriptionId, { expand: ['schedule'] });
+    let scheduleId = null;
+    try { scheduleId = (sub?.schedule && (typeof sub.schedule === 'string' ? sub.schedule : sub.schedule?.id)) || null; } catch {}
+    if (!scheduleId) {
+      const list = await stripe.subscriptionSchedules.list({ subscription: subscriptionId, limit: 1 });
+      scheduleId = list?.data?.[0]?.id || null;
+    }
+    if (!scheduleId) return null;
+    const schedule = await stripe.subscriptionSchedules.retrieve(scheduleId, { expand: ['phases.items.price'] });
+    return schedule || null;
+  } catch (e) {
+    console.warn('Failed to load subscription schedule:', e?.message || e);
+    return null;
   }
 }
 
@@ -248,10 +317,14 @@ export async function handleSuccessfulPayment(session) {
       monthly_limit: planDetails.monthly_limit,
       whatsapp_numbers: planDetails.whatsapp_numbers,
       billing_cycle_start: Math.floor(Date.now() / 1000),
-      stripe_subscription_id: session.subscription || null
+      stripe_subscription_id: session.subscription || null,
+      stripe_customer_id: session.customer || null
     });
     
     console.log(`User ${userId} successfully subscribed to ${planName} plan`);
+
+    // Ensure only one active subscription remains for this customer
+    try { await ensureSingleActiveSubscription(session.customer, session.subscription); } catch (e) { console.warn('Single sub enforcement failed:', e?.message || e); }
 
     // Send receipt email (best-effort)
     try {

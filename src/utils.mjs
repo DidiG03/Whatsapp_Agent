@@ -317,6 +317,9 @@ export function renderTopbar(crumbs, email) {
     <div class="card topbar">
       <div class="crumbs">${crumbs}</div>
       <div style="display: flex; align-items: center; gap: 16px;">
+        <div id="usage-limit-pill" class="usage-limit-pill" style="display:none;" title="You have exceeded your monthly message limit">
+          Limit exceeded
+        </div>
         <div id="notification-bell" class="notification-bell" onclick="toggleNotifications(event)" style="position:relative; z-index:10000;">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
@@ -337,6 +340,25 @@ export function renderTopbar(crumbs, email) {
     <script src="/toast.js"></script>
     <script src="/realtime.js"></script>
     <script src="/notifications.js"></script>
+    <script>
+      (function checkUsageLimit(){
+        try {
+          fetch('/api/usage/status', { credentials: 'include' })
+            .then(function(r){ return r.ok ? r.json() : null; })
+            .then(function(d){
+              if (!d) return;
+              var pill = document.getElementById('usage-limit-pill');
+              if (!pill) return;
+              if (d.overLimit) {
+                pill.style.display = 'inline-flex';
+              } else {
+                pill.style.display = 'none';
+              }
+            })
+            .catch(function(){});
+        } catch(e) {}
+      })();
+    </script>
   `;
 }
 
