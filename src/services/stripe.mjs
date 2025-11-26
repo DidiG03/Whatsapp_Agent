@@ -179,8 +179,7 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
             payment_method_types: ['card'],
             line_items: [ { price: priceObj.id, quantity: 1 } ],
             mode: 'subscription',
-            allow_promotion_codes: true,
-            ...(discountsArray ? { discounts: discountsArray } : {}),
+            ...(discountsArray ? { discounts: discountsArray } : { allow_promotion_codes: true }),
             success_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/stripe/success?session_id={CHECKOUT_SESSION_ID}`,
             cancel_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/plan?canceled=true`,
             metadata: { user_id: userId, plan_name: planName, price_id: priceObj.id }
@@ -235,8 +234,7 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
         },
       ],
       mode: 'subscription',
-      allow_promotion_codes: true,
-      ...(discountsArray ? { discounts: discountsArray } : {}),
+      ...(discountsArray ? { discounts: discountsArray } : { allow_promotion_codes: true }),
       success_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/stripe/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/plan?canceled=true`,
       metadata: {
