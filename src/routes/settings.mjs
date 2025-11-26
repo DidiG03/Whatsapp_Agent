@@ -40,6 +40,9 @@ export default function registerSettingsRoutes(app, options = {}) {
     const ob = await getOnboarding(userId);
     const email = await getSignedInEmail(req);
     const q = req.query || {};
+    // Precompute business categories input value
+    const businessCategories = (() => { try { return JSON.parse(s.business_categories_json || '[]'); } catch { return []; } })();
+    const businessCategoriesValue = Array.isArray(businessCategories) ? businessCategories.join(', ') : '';
     const calendars = await Calendar.find({ user_id: userId }).select('_id display_name account_email calendar_id').sort({ _id: 1 }).lean();
     const staff = await Staff.find({ user_id: userId }).select('_id name timezone slot_minutes calendar_id working_hours_json').sort({ _id: -1 }).limit(50).lean();
     const staffToEdit = (q.edit_staff ? await Staff.findOne({ _id: String(q.edit_staff), user_id: userId }).lean().catch(() => null) : null);
@@ -147,7 +150,7 @@ export default function registerSettingsRoutes(app, options = {}) {
         <div class="container">
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Settings`, email)}
           <div class="layout">
-            ${renderSidebar('settings', { showBookings: !!(s?.bookings_enabled), isUpgraded })}
+            ${renderSidebar('settings', { showBookings: !!isUpgraded, isUpgraded })}
             <main class="main">
             <div class="main-content">
               <div id="settings-nav" style="position:sticky; top:0; z-index:5; padding:8px; margin-bottom:12px;">
@@ -195,6 +198,27 @@ export default function registerSettingsRoutes(app, options = {}) {
                       </div>
                       <label>Business Name
                         <input placeholder="My Business" class="settings-field" name="business_name" value="${s.business_name || ''}"/>
+                      </label>
+                    </div>
+                    <div class="grid-2" style="margin-top:8px;">
+                      <label>Business Type
+                        <select name="business_type" class="settings-field">
+                          <option value="" ${(s.business_type||'')===''?'selected':''}></option>
+                          <option value="Restaurant / Food" ${(s.business_type||'')==='Restaurant / Food'?'selected':''}>Restaurant / Food</option>
+                          <option value="Retail / Ecommerce" ${(s.business_type||'')==='Retail / Ecommerce'?'selected':''}>Retail / Ecommerce</option>
+                          <option value="Health / Wellness" ${(s.business_type||'')==='Health / Wellness'?'selected':''}>Health / Wellness</option>
+                          <option value="Professional Services" ${(s.business_type||'')==='Professional Services'?'selected':''}>Professional Services</option>
+                          <option value="Education" ${(s.business_type||'')==='Education'?'selected':''}>Education</option>
+                          <option value="Real Estate" ${(s.business_type||'')==='Real Estate'?'selected':''}>Real Estate</option>
+                          <option value="Automotive" ${(s.business_type||'')==='Automotive'?'selected':''}>Automotive</option>
+                          <option value="Beauty / Salon" ${(s.business_type||'')==='Beauty / Salon'?'selected':''}>Beauty / Salon</option>
+                          <option value="Nonprofit" ${(s.business_type||'')==='Nonprofit'?'selected':''}>Nonprofit</option>
+                          <option value="Other" ${(s.business_type||'')==='Other'?'selected':''}>Other</option>
+                        </select>
+                      </label>
+                      <label>Categories
+                        <input placeholder="e.g., Italian, Takeout, Family-friendly" class="settings-field" name="business_categories" value="${businessCategoriesValue}"/>
+                        <div class="small" style="color:#64748b; margin-top:4px;">Comma-separated; up to 20 categories.</div>
                       </label>
                     </div>
                   <div class="section" id="whatsapp">

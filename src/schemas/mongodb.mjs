@@ -127,6 +127,10 @@ const settingsMultiSchema = new mongoose.Schema({
   app_secret: String,
   business_phone: String,
   business_name: String,
+  // High-level business classification (e.g., restaurant, retail, healthcare)
+  business_type: String,
+  // JSON string of categories/tags for the business (array of strings)
+  business_categories_json: String,
   website_url: String,
   terms_url: String,
   ai_tone: String,
@@ -381,7 +385,10 @@ const usageStatsSchema = new mongoose.Schema({
   month_year: { type: String, required: true },
   inbound_messages: { type: Number, default: 0 },
   outbound_messages: { type: Number, default: 0 },
-  template_messages: { type: Number, default: 0 }
+  template_messages: { type: Number, default: 0 },
+  // PAYG tracking for the month to avoid double-charging
+  payg_charged_units: { type: Number, default: 0 },
+  payg_charged_cents: { type: Number, default: 0 }
 }, {
   timestamps: true,
   collection: 'usage_stats'
@@ -396,7 +403,16 @@ const userPlanSchema = new mongoose.Schema({
   whatsapp_numbers: { type: Number, default: 1 },
   billing_cycle_start: Number,
   stripe_customer_id: String,
-  stripe_subscription_id: String
+  stripe_subscription_id: String,
+  // Pay-as-you-go (PAYG) configuration
+  payg_enabled: { type: Boolean, default: false },
+  // Charge rate in the smallest currency unit (e.g., cents)
+  payg_rate_cents: { type: Number, default: function() {
+    try { return Number(process.env.PAYG_RATE_CENTS || 5); } catch { return 5; }
+  } },
+  payg_currency: { type: String, default: function() {
+    return String(process.env.PAYG_CURRENCY || 'usd').toLowerCase();
+  } }
 }, {
   timestamps: true,
   collection: 'user_plans'

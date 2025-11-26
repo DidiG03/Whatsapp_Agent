@@ -314,6 +314,13 @@ export default function registerStripeRoutes(app) {
           try { await handleAgentCheckoutSessionEvent(session, 'completed'); } catch (err) { console.error('Agent payment complete handler failed:', err?.message || err); }
         } else if (session.mode === 'subscription') {
           await handleSuccessfulPayment(session);
+        } else if (session.mode === 'setup' && session.metadata?.purpose === 'payg_setup') {
+          try {
+            const { handlePayAsYouGoSetupCompleted } = await import('../services/stripe.mjs');
+            await handlePayAsYouGoSetupCompleted(session);
+          } catch (e) {
+            console.error('PAYG setup completion handler failed:', e?.message || e);
+          }
         }
         break;
       case 'checkout.session.expired':

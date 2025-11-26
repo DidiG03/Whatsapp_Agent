@@ -7,6 +7,62 @@ import Stripe from 'stripe';
 const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
 
 /**
+ * Ensure a Stripe customer exists for this user. Stores the id on the user plan if created/found.
+ */
+export async function ensureCustomerForUser(userId, customerEmail = null) {
+  if (!isStripeEnabled() || !stripe || !userId) return null;
+  try {
+    const { UserPlan } = await import('../schemas/mongodb.mjs');
+    const { updateUserPlan } = await import('./usage.mjs');
+    let plan = await UserPlan.findOne({ user_id: String(userId) }).lean();
+    if (plan?.stripe_customer_id) {
+      return String(plan.stripe_customer_id);
+    }
+    let customerId = null;
+    if (customerEmail) {
+      try {
+        const list = await stripe.customers.list({ email: customerEmail, limit: 1 });
+        if (Array.isArray(list?.data) && list.data.length > 0) {
+          customerId = list.data[0].id;
+        }
+      } catch {}
+    }
+    if (!customerId) {
+      const created = await stripe.customers.create({
+        email: customerEmail || undefined,
+        metadata: { user_id: String(userId) }
+      });
+      customerId = created.id;
+    }
+    try { await updateUserPlan(userId, { stripe_customer_id: String(customerId) }); } catch {}
+    return customerId;
+  } catch (e) {
+    console.error('ensureCustomerForUser failed:', e?.message || e);
+    return null;
+  }
+}
+
+/**
+ * Return true if the customer has a default payment method (card) set.
+ */
+export async function hasDefaultPaymentMethod(customerId) {
+  if (!isStripeEnabled() || !stripe || !customerId) return false;
+  try {
+    const customer = await stripe.customers.retrieve(String(customerId), { expand: ['invoice_settings.default_payment_method'] });
+    const dpm = customer?.invoice_settings?.default_payment_method;
+    if (dpm && (typeof dpm === 'string' ? dpm : dpm?.id)) return true;
+    const pms = await stripe.paymentMethods.list({ customer: String(customerId), type: 'card', limit: 1 });
+    if (Array.isArray(pms?.data) && pms.data.length > 0) {
+      try { await stripe.customers.update(String(customerId), { invoice_settings: { default_payment_method: pms.data[0].id } }); } catch {}
+      return true;
+    }
+  } catch (e) {
+    console.warn('hasDefaultPaymentMethod check failed:', e?.message || e);
+  }
+  return false;
+}
+
+/**
  * Check if Stripe is properly configured
  */
 export function isStripeEnabled() {
@@ -186,6 +242,84 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
 }
 
 /**
+ * Create a Checkout session in "setup" mode to collect a default payment method
+ * for future off-session PAYG charges.
+ */
+export async function createPayAsYouGoSetupSession(userId, customerEmail = null) {
+  if (!isStripeEnabled() || !stripe) {
+    throw new Error('Stripe is not configured');
+  }
+  try {
+    const customerId = await ensureCustomerForUser(userId, customerEmail);
+    if (!customerId) throw new Error('Failed to create Stripe customer');
+    const session = await stripe.checkout.sessions.create({
+      customer: customerId,
+      mode: 'setup',
+      payment_method_types: ['card'],
+      // Collect a new default payment method
+      payment_method_collection: 'always',
+      success_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/plan?success=true`,
+      cancel_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/plan?canceled=true`,
+      metadata: { user_id: String(userId), purpose: 'payg_setup' }
+    });
+    return { url: session?.url || null, sessionId: session?.id || null };
+  } catch (e) {
+    console.error('Failed to create PAYG setup session:', e?.message || e);
+    throw new Error('Failed to create setup session');
+  }
+}
+
+/**
+ * Charge PAYG amount for one or more usage units (e.g., messages) off-session.
+ * Will be a no-op if PAYG not enabled or no payment method is available.
+ */
+export async function chargePayAsYouGo(userId, units = 1, opts = {}) {
+  if (!isStripeEnabled() || !stripe) return { charged: false, reason: 'stripe_disabled' };
+  try {
+    const { UserPlan } = await import('../schemas/mongodb.mjs');
+    const plan = await UserPlan.findOne({ user_id: String(userId) }).lean();
+    if (!plan || !plan.payg_enabled) {
+      return { charged: false, reason: 'payg_disabled' };
+    }
+    const customerId = plan.stripe_customer_id || await ensureCustomerForUser(userId, opts?.email || null);
+    if (!customerId) {
+      return { charged: false, reason: 'no_customer' };
+    }
+    const amountCents = Math.max(1, Math.floor((plan.payg_rate_cents || Number(process.env.PAYG_RATE_CENTS || 5)) * (units || 1)));
+    let currency = String(plan.payg_currency || process.env.PAYG_CURRENCY || 'usd').toLowerCase();
+    try {
+      const test = (currency || 'usd').toUpperCase();
+      if (!/^[A-Z]{3}$/.test(test)) currency = 'usd';
+      else currency = test.toLowerCase();
+    } catch { currency = 'usd'; }
+    try {
+      const intent = await stripe.paymentIntents.create({
+        customer: customerId,
+        amount: amountCents,
+        currency,
+        confirm: true,
+        off_session: true,
+        automatic_payment_methods: { enabled: true },
+        description: `Pay-as-you-go usage charge (${units} unit${units === 1 ? '' : 's'})`,
+        metadata: {
+          user_id: String(userId),
+          type: 'payg_usage',
+          units: String(units)
+        }
+      }, opts?.idempotencyKey ? { idempotencyKey: String(opts.idempotencyKey) } : undefined);
+      return { charged: true, payment_intent_id: intent?.id || null };
+    } catch (e) {
+      // Card might require authentication or be missing; do not block usage here
+      console.warn('PAYG charge failed:', e?.message || e);
+      return { charged: false, reason: 'payment_failed' };
+    }
+  } catch (e) {
+    console.error('chargePayAsYouGo error:', e?.message || e);
+    return { charged: false, reason: 'internal_error' };
+  }
+}
+
+/**
  * Retrieve a checkout session
  */
 export async function getCheckoutSession(sessionId) {
@@ -198,6 +332,46 @@ export async function getCheckoutSession(sessionId) {
   } catch (error) {
     console.error('Failed to retrieve checkout session:', error);
     throw new Error('Failed to retrieve checkout session');
+  }
+}
+
+/**
+ * When a setup-mode Checkout session completes for PAYG, ensure the payment method
+ * is set as default and enable PAYG on the user plan.
+ */
+export async function handlePayAsYouGoSetupCompleted(session) {
+  if (!isStripeEnabled() || !stripe) return;
+  try {
+    const userId = session?.metadata?.user_id;
+    const purpose = session?.metadata?.purpose || '';
+    if (!userId || purpose !== 'payg_setup') return;
+    const customerId = session?.customer ? String(session.customer) : null;
+    const setupIntentId = session?.setup_intent ? String(session.setup_intent) : null;
+    let paymentMethodId = null;
+    if (setupIntentId) {
+      try {
+        const si = await stripe.setupIntents.retrieve(setupIntentId);
+        paymentMethodId = (typeof si?.payment_method === 'string' ? si.payment_method : si?.payment_method?.id) || null;
+      } catch (e) {
+        console.warn('Failed to retrieve setup intent:', e?.message || e);
+      }
+    }
+    if (customerId && paymentMethodId) {
+      try {
+        await stripe.customers.update(customerId, {
+          invoice_settings: { default_payment_method: paymentMethodId }
+        });
+      } catch (e) {
+        console.warn('Failed to set default payment method:', e?.message || e);
+      }
+    }
+    const { updateUserPlan } = await import('./usage.mjs');
+    await updateUserPlan(userId, {
+      payg_enabled: true,
+      ...(customerId ? { stripe_customer_id: customerId } : {})
+    });
+  } catch (e) {
+    console.error('handlePayAsYouGoSetupCompleted error:', e?.message || e);
   }
 }
 

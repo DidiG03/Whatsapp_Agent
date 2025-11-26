@@ -25,6 +25,7 @@ export async function upsertSettingsForUser(userId, values) {
   const merged = {
     user_id: userId,
     name: values.name ?? current.name ?? null,
+    business_type: values.business_type ?? current.business_type ?? null,
     phone_number_id: values.phone_number_id ?? current.phone_number_id ?? null,
     waba_id: values.waba_id ?? current.waba_id ?? null,
     whatsapp_token: values.whatsapp_token ?? current.whatsapp_token ?? null,
@@ -32,6 +33,7 @@ export async function upsertSettingsForUser(userId, values) {
     app_secret: values.app_secret ?? current.app_secret ?? null,
     business_phone: values.business_phone ?? current.business_phone ?? null,
     business_name: values.business_name ?? current.business_name ?? null,
+    business_categories_json: values.business_categories_json ?? current.business_categories_json ?? null,
     website_url: values.website_url ?? current.website_url ?? null,
     terms_url: values.terms_url ?? current.terms_url ?? null,
     ai_tone: values.ai_tone ?? current.ai_tone ?? null,

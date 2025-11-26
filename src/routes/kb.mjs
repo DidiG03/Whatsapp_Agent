@@ -492,7 +492,7 @@ export default function registerKbRoutes(app) {
         <div class="container">
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / KB`, email)}
           <div class="layout">
-            ${renderSidebar('kb', { showBookings: !!(settings?.bookings_enabled), showKb: true })}
+            ${renderSidebar('kb', { showBookings: true, showKb: true })}
             <main class="main">
               <div class="main-content">
                 <div style="margin-bottom:12px;">

@@ -1093,7 +1093,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         } catch (e) {
           console.error('[Webhook] Failed to advance to ask_reason:', e?.message || e);
         }
-        await sendTextTracked(from, "Hello, and what’s the reason for contacting a human today?", cfg);
+        await sendTextTracked(from, "Hello, and what’s the reason for contacting us today?", cfg);
       } else {
         await promptForEscalationName(from, cfg);
       }
@@ -1823,7 +1823,9 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       const aiReply = await generateAiReply(text, kbMatches, {
         tone: tenant?.ai_tone,
         style: tenant?.ai_style,
-        blockedTopics: tenant?.ai_blocked_topics
+        blockedTopics: tenant?.ai_blocked_topics,
+        businessType: cfg?.business_type || '',
+        businessCategories: (() => { try { const arr = JSON.parse(cfg?.business_categories_json || '[]'); return Array.isArray(arr) ? arr : []; } catch { return []; } })()
       });
       try { businessMetrics.trackAIRequest(true, Date.now() - aiStart); } catch {}
       if (DEBUG_LOGS) console.log("AI Reply:", aiReply);
@@ -3123,11 +3125,15 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
             style: tenant?.ai_style,
             blockedTopics: tenant?.ai_blocked_topics,
             historyMessages,
+            businessType: cfg?.business_type || '',
+            businessCategories: (() => { try { const arr = JSON.parse(cfg?.business_categories_json || '[]'); return Array.isArray(arr) ? arr : []; } catch { return []; } })(),
             features: {
               bookings_enabled: !!cfg?.bookings_enabled,
               reminders_enabled: !!cfg?.reminders_enabled,
               services: (() => { try { const s = JSON.parse(cfg?.services_json || '[]'); return Array.isArray(s) ? s : []; } catch { return []; } })(),
               conversation_mode: cfg?.conversation_mode || '',
+              business_type: cfg?.business_type || '',
+              business_categories: (() => { try { const arr = JSON.parse(cfg?.business_categories_json || '[]'); return Array.isArray(arr) ? arr : []; } catch { return []; } })(),
               escalation_questions: (() => {
                 let arr = [];
                 try { arr = JSON.parse(cfg?.escalation_questions_json || '[]'); } catch {}

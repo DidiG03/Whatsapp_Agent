@@ -1,8 +1,8 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
 import { renderSidebar, renderTopbar, escapeHtml } from "../utils.mjs";
 import { getSettingsForUser } from "../services/settings.mjs";
-import { getCurrentUsage, getUserPlan, getUsageHistory, getPlanPricing, updateUserPlan, isPlanUpgraded } from "../services/usage.mjs";
-import { isStripeEnabled, getStripePublishableKey, getSubscription, getSubscriptionScheduleForSubscription } from "../services/stripe.mjs";
+import { getCurrentUsage, getUserPlan, getUsageHistory, getPlanPricing, updateUserPlan, isPlanUpgraded, getCurrentMonthPaygOutstanding, recordPaygCharge } from "../services/usage.mjs";
+import { isStripeEnabled, getStripePublishableKey, getSubscription, getSubscriptionScheduleForSubscription, ensureCustomerForUser, createPayAsYouGoSetupSession, hasDefaultPaymentMethod, chargePayAsYouGo } from "../services/stripe.mjs";
 
 export default function registerPlanRoutes(app) {
   app.get("/plan", ensureAuthed, async (req, res) => {
@@ -27,6 +27,19 @@ export default function registerPlanRoutes(app) {
     const currentPlanDetails = pricing[plan.plan_name] || pricing.free;
     const stripeEnabled = isStripeEnabled();
     const stripePublishableKey = getStripePublishableKey();
+    const paygEnabled = !!plan?.payg_enabled;
+    const paygRateCents = Number(plan?.payg_rate_cents ?? (process.env.PAYG_RATE_CENTS || 5));
+    const paygCurrency = String(plan?.payg_currency || process.env.PAYG_CURRENCY || 'usd').toLowerCase();
+    // Prepare a safe currency code and formatted PAYG price text for display
+    let paygCurrencyCode = 'USD';
+    try {
+      const c = (paygCurrency || 'usd').toUpperCase();
+      if (/^[A-Z]{3}$/.test(c)) paygCurrencyCode = c;
+    } catch {}
+    let paygPriceText = `$${(paygRateCents/100).toFixed(2)}`;
+    try {
+      paygPriceText = new Intl.NumberFormat('en-US', { style: 'currency', currency: paygCurrencyCode }).format(paygRateCents / 100);
+    } catch {}
     let currentPaidInterval = null;
     let scheduledTargetInterval = null;
     let scheduledStartTs = null;
@@ -86,6 +99,15 @@ export default function registerPlanRoutes(app) {
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     const STARTER_YEARLY_PRICE_ID = (process.env.STRIPE_PRICE_ID_STARTER_YEARLY || process.env.STRIPE_PRICE_ID_STARTER_ANNUAL || process.env.STRIPE_PRICE_ID_STARTER_YEAR || '').toString();
+    // PAYG outstanding and progress vs plan cost
+    const paygSummary = await getCurrentMonthPaygOutstanding(userId).catch(()=>({ overageUnits:0, overageCents:0, chargedUnits:0, chargedCents:0, outstandingUnits:0, outstandingCents:0 }));
+    const paygTotalCents = Number(paygSummary?.overageCents || 0);
+    const paygChargedCents = Number(paygSummary?.chargedCents || 0);
+    const paygOutstandingCents = Math.max(0, paygTotalCents - paygChargedCents);
+    const planMonthlyPriceDollars = Number((currentPlanDetails?.price || 0));
+    const paygPercentOfPlan = planMonthlyPriceDollars > 0 ? Math.min(100, Math.round((paygTotalCents / (planMonthlyPriceDollars * 100)) * 100)) : 0;
+    const paygTotalFormatted = (()=>{ try { return new Intl.NumberFormat('en-US',{style:'currency', currency: paygCurrencyCode}).format(paygTotalCents/100); } catch { return `$${(paygTotalCents/100).toFixed(2)}`; } })();
+    const paygOutstandingFormatted = (()=>{ try { return new Intl.NumberFormat('en-US',{style:'currency', currency: paygCurrencyCode}).format(paygOutstandingCents/100); } catch { return `$${(paygOutstandingCents/100).toFixed(2)}`; } })();
     res.end(`
       <html><head><title>WhatsApp Agent - Plan & Usage</title><link rel="stylesheet" href="/styles.css"></head><body>
         <script>
@@ -97,7 +119,7 @@ export default function registerPlanRoutes(app) {
         <div class="container">
           ${renderTopbar('Plan & Usage', email)}
           <div class="layout">
-            ${renderSidebar('plan', { showBookings: !!(settings?.bookings_enabled), isUpgraded })}
+            ${renderSidebar('plan', { showBookings: !!isUpgraded, isUpgraded })}
             <main class="main">
               <div class="main-content">
                 <div id="appModal" class="day-modal" style="display:flex;">
@@ -139,6 +161,46 @@ export default function registerPlanRoutes(app) {
                     <div class="alert alert-warning" style="margin-top:12px;">
                       <strong>Usage Warning</strong>
                       <div>You've used ${usagePercentage}% of your monthly limit. Consider upgrading to avoid interruptions.</div>
+                    </div>
+                  ` : ''}
+                </section>
+                <hr style="opacity:0.3;" />
+                <section class="card" style="margin-top:12px;">
+                  <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+                    <div>
+                      <h3 style="margin:0;">Pay-as-you-go</h3>
+                      <div class="small" style="color:#6b7280; margin-top:4px;">
+                        Continue sending/receiving after your monthly limit of ${plan.monthly_limit} messages.
+                        ${stripeEnabled ? `Charges are ${escapeHtml(paygPriceText)} per message over the limit.` : `Stripe is not configured on this deployment.`}
+                      </div>
+                      <div style="margin-top:8px;">
+                        <div class="small" style="color:#374151;">This month: ${escapeHtml(paygTotalFormatted)} total (${paygPercentOfPlan}% of your monthly fee)</div>
+                        <div class="plan-progress" style="margin-top:6px;">
+                          <div class="plan-progress-bar ${paygPercentOfPlan > 90 ? 'danger' : paygPercentOfPlan > 75 ? 'warning' : 'success'}" style="width:${paygPercentOfPlan}%"></div>
+                        </div>
+                        ${paygOutstandingCents > 0 ? `
+                          <div class="small" style="margin-top:6px; color:#92400e; background:#fef3c7; display:inline-block; padding:2px 8px; border-radius:9999px; border:1px solid #fcd34d;">
+                            Outstanding not yet charged: ${escapeHtml(paygOutstandingFormatted)}
+                          </div>
+                        ` : ``}
+                      </div>
+                    </div>
+                    <div>
+                      <label style="display:inline-flex; align-items:center; gap:8px; cursor:pointer;">
+                        <span style="font-size:12px; color:#374151;">${paygEnabled ? 'Enabled' : 'Disabled'}</span>
+                        <input id="paygToggle" type="checkbox" ${paygEnabled ? 'checked' : ''} ${stripeEnabled ? '' : 'disabled'} style="width:36px; height:20px; accent-color:#111827;" />
+                      </label>
+                    </div>
+                  </div>
+                  ${(!paygEnabled && usagePercentage >= 100) ? `
+                    <div class="alert alert-warning" style="margin-top:12px;">
+                      <strong>You reached the Free plan limit.</strong>
+                      <div>Enable pay-as-you-go to continue service without upgrading plans.</div>
+                    </div>
+                  ` : ''}
+                  ${paygEnabled ? `
+                    <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
+                      <button class="btn-ghost" onclick="managePaygPaymentMethod()">Manage payment method</button>
                     </div>
                   ` : ''}
                 </section>
@@ -297,6 +359,8 @@ export default function registerPlanRoutes(app) {
           const CURRENT_INTERVAL = '${escapeHtml(currentPaidInterval || '')}';
           const SCHEDULED_TARGET_INTERVAL = '${escapeHtml(scheduledTargetInterval || '')}';
           const SCHEDULED_START_TS = ${scheduledStartTs ? Number(scheduledStartTs) : 'null'};
+          const PAYG_ENABLED = ${paygEnabled ? 'true' : 'false'};
+          const STRIPE_ENABLED = ${stripeEnabled ? 'true' : 'false'};
           
           // Lightweight modal helper
           const Modal = (function(){
@@ -398,6 +462,84 @@ export default function registerPlanRoutes(app) {
             setMode(saved === 'yearly' ? 'yearly' : 'monthly');
           })();
           
+          // PAYG toggle logic
+          (function initPaygToggle(){
+            var toggle = document.getElementById('paygToggle');
+            if (!toggle) return;
+            toggle.addEventListener('change', async function(){
+              var enabled = !!toggle.checked;
+              try {
+                const r = await fetch('/plan/payg', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ enabled })
+                });
+                const j = await r.json().catch(()=>({}));
+                if (!r.ok || !j?.success) {
+                  await Modal.alert({ title: 'Error', message: j?.error || 'Failed to update PAYG setting' });
+                  toggle.checked = !enabled;
+                  return;
+                }
+                if (enabled && STRIPE_ENABLED && j?.needs_setup) {
+                  const ok = await Modal.confirm({
+                    title: 'Add Payment Method',
+                    message: 'To charge per usage, please add a payment method now.',
+                    okText: 'Continue'
+                  });
+                  if (ok) {
+                    try {
+                      const r2 = await fetch('/plan/payg/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+                      const j2 = await r2.json().catch(()=>({}));
+                      if (j2?.url) { window.location.href = j2.url; return; }
+                      await Modal.alert({ title: 'Setup Failed', message: j2?.error || 'Unable to start payment method setup.' });
+                    } catch (e) {
+                      await Modal.alert({ title: 'Error', message: e?.message || String(e) });
+                    }
+                  }
+                  // Keep toggle OFF until setup completes
+                  toggle.checked = false;
+                  return;
+                }
+                // Reflect server's final state
+                if (j?.enabled === true) {
+                  toggle.checked = true;
+                  await Modal.alert({ title: 'PAYG Enabled', message: 'Pay-as-you-go has been enabled.' });
+                } else {
+                  toggle.checked = false;
+                  await Modal.alert({ title: 'PAYG Disabled', message: 'Pay-as-you-go has been disabled.' });
+                }
+                try { location.reload(); } catch {}
+              } catch (e) {
+                await Modal.alert({ title: 'Error', message: e?.message || String(e) });
+                toggle.checked = !enabled;
+              }
+            });
+          })();
+
+          async function managePaygPaymentMethod() {
+            try {
+              const r = await fetch('/stripe/customer-portal', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+              const j = await r.json().catch(()=>({}));
+              if (r.ok && j?.url) {
+                window.location.href = j.url; return;
+              }
+              // If no customer exists, fall back to setup flow
+              const ok = await Modal.confirm({
+                title: 'Add Payment Method',
+                message: (j?.error || 'No payment method found.') + '<br/>Add one now to enable PAYG charges.',
+                okText: 'Continue'
+              });
+              if (ok) {
+                const s = await fetch('/plan/payg/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+                const sj = await s.json().catch(()=>({}));
+                if (sj?.url) { window.location.href = sj.url; return; }
+                await Modal.alert({ title: 'Setup Failed', message: sj?.error || 'Unable to start payment method setup.' });
+              }
+            } catch (e) {
+              await Modal.alert({ title: 'Error', message: e?.message || String(e) });
+            }
+          }
+
           async function upgradePlan(planName) {
             const ok = await Modal.confirm({ 
               title: (planName === 'free' ? 'Confirm Downgrade' : 'Confirm Upgrade'),
@@ -724,6 +866,89 @@ export default function registerPlanRoutes(app) {
     } catch (error) {
       console.error('Plan update error:', error);
       res.status(500).json({ error: 'Failed to update plan' });
+    }
+  });
+
+  // Toggle PAYG
+  app.post("/plan/payg", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
+    const { enabled } = req.body || {};
+    try {
+      const enabledBool = !!enabled;
+      const email = await getSignedInEmail(req).catch(()=>null);
+      let customerCreated = false;
+      let needsSetup = false;
+      if (enabledBool) {
+        if (!isStripeEnabled()) {
+          return res.status(500).json({ error: 'Stripe not configured' });
+        }
+        try {
+          const cid = await ensureCustomerForUser(userId, email);
+          customerCreated = !!cid;
+        } catch (e) {
+          console.error('PAYG ensureCustomer failed:', e?.message || e);
+        }
+        // Verify a default payment method exists; if not, require setup
+        try {
+          const planNow = await getUserPlan(userId);
+          const cidEff = planNow?.stripe_customer_id || null;
+          const ok = await hasDefaultPaymentMethod(cidEff);
+          if (!ok) needsSetup = true;
+        } catch (e) {
+          console.error('PAYG payment method check failed:', e?.message || e);
+          needsSetup = true;
+        }
+      } else {
+        // Disabling: charge any outstanding overage now; if charge fails, don't disable
+        try {
+          const { getCurrentMonthPaygOutstanding } = await import('../services/usage.mjs');
+          const out = await getCurrentMonthPaygOutstanding(userId);
+          if (out?.outstandingUnits > 0 && isStripeEnabled()) {
+            const chargedUnits = Number(out.chargedUnits || 0);
+            const monthYear = (await getCurrentUsage(userId))?.month_year || '';
+            const idKey = `payg_${String(userId)}_${monthYear}_${chargedUnits + Number(out.outstandingUnits)}`;
+            const result = await chargePayAsYouGo(userId, Number(out.outstandingUnits), { idempotencyKey: idKey });
+            if (!result?.charged) {
+              return res.status(402).json({ error: 'Outstanding PAYG charges could not be collected. Please update payment method and try again.' });
+            }
+            try { await recordPaygCharge(userId, Number(out.outstandingUnits), Number(out.outstandingCents)); } catch {}
+          }
+        } catch (e) {
+          console.error('PAYG charge-on-disable failed:', e?.message || e);
+          return res.status(500).json({ error: 'Failed to settle outstanding PAYG before disabling. Please try again.' });
+        }
+      }
+      const finalEnabled = enabledBool && !needsSetup;
+      try {
+        await updateUserPlan(userId, {
+          payg_enabled: finalEnabled,
+          payg_rate_cents: Number(process.env.PAYG_RATE_CENTS || 5),
+          payg_currency: String(process.env.PAYG_CURRENCY || 'usd').toLowerCase()
+        });
+      } catch (e) {
+        console.error('PAYG updateUserPlan failed:', e?.message || e);
+        return res.status(500).json({ error: 'Failed to persist PAYG setting' });
+      }
+      return res.json({ success: true, customer_created: customerCreated, needs_setup: enabledBool && needsSetup, enabled: finalEnabled });
+    } catch (e) {
+      console.error('Failed to toggle PAYG:', e?.message || e);
+      return res.status(500).json({ error: 'Failed to update PAYG setting', details: e?.message || String(e) });
+    }
+  });
+
+  // Start payment method setup for PAYG
+  app.post("/plan/payg/setup", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
+    if (!isStripeEnabled()) {
+      return res.status(500).json({ error: 'Stripe not configured' });
+    }
+    try {
+      const email = await getSignedInEmail(req).catch(()=>null);
+      const result = await createPayAsYouGoSetupSession(userId, email);
+      return res.json({ success: true, url: result?.url || null, session_id: result?.sessionId || null });
+    } catch (e) {
+      console.error('Failed to start PAYG setup session:', e?.message || e);
+      return res.status(500).json({ error: 'Failed to start setup session' });
     }
   });
 }

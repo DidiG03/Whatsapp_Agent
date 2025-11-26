@@ -686,7 +686,7 @@ export default function registerInboxRoutes(app) {
         <div class="container page-transition">
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Inbox`, email)}
           <div class="layout">
-            ${renderSidebar('inbox', { showBookings: !!(s?.bookings_enabled), isUpgraded })}
+            ${renderSidebar('inbox', { showBookings: !!isUpgraded, isUpgraded })}
             <main class="main">
               <div class="main-content">
                   <form method="get" action="/inbox" class="search-form">
@@ -1119,7 +1119,7 @@ export default function registerInboxRoutes(app) {
         <div class="container">
           ${renderTopbar(`<a href="/dashboard">Dashboard</a> / <a href="/inbox">Inbox</a> / Search Results`, email)}
           <div class="layout">
-            ${renderSidebar('inbox', { showBookings: !!(sidebarSettings?.bookings_enabled), isUpgraded })}
+            ${renderSidebar('inbox', { showBookings: !!isUpgraded, isUpgraded })}
             <main class="main">
               <div class="search-container">
                 <form method="get" action="/search" class="search-form">
@@ -2659,7 +2659,7 @@ export default function registerInboxRoutes(app) {
           <div class="container page-transition">
             ${renderTopbar(`<a href="/dashboard">Dashboard</a> / <a href="/inbox">Inbox</a> / +${String(phone).replace(/^\+/, '')}`, email)}
             <div class="layout">
-              ${renderSidebar('inbox', { showBookings: !!(sidebarSettings?.bookings_enabled), isUpgraded })}
+              ${renderSidebar('inbox', { showBookings: !!isUpgraded, isUpgraded })}
               <main class="main">
                 <div class="main-content chat-view">
                   <div class="wa-chat-header">

@@ -11,6 +11,7 @@ const HolidayRuleSchema = z.object({
 
 const SettingsSchema = z.object({
   name: nullableString(120),
+  business_type: nullableString(80),
   phone_number_id: nullableDigits(6, 32),
   waba_id: nullableDigits(6, 32),
   whatsapp_token: nullableString(512),
@@ -18,6 +19,7 @@ const SettingsSchema = z.object({
   app_secret: nullableString(256),
   business_phone: nullableString(32),
   business_name: nullableString(160),
+  business_categories: z.array(z.string().trim().max(50)).max(20),
   website_url: nullableUrl(),
   terms_url: nullableUrl(),
   ai_tone: nullableString(160),
@@ -124,6 +126,23 @@ function parseEscalationQuestions(raw) {
     .filter((line) => line.length);
 }
 
+function parseCategories(raw) {
+  // Accept comma-separated, newline-separated, array of strings, or empty.
+  if (Array.isArray(raw)) {
+    return raw
+      .map((s) => String(s || "").trim())
+      .filter(Boolean)
+      .slice(0, 20);
+  }
+  const text = typeof raw === "string" ? raw : "";
+  if (!text.trim()) return [];
+  return text
+    .split(/,|\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 20);
+}
+
 function parseClosedDates(raw) {
   const text = typeof raw === "string" ? raw.trim() : "";
   if (!text) return [];
@@ -166,6 +185,7 @@ function parseHolidayRules(body) {
 function normalizePayload(raw = {}) {
   return {
     name: raw.name,
+    business_type: raw.business_type,
     phone_number_id: raw.phone_number_id,
     waba_id: raw.waba_id,
     whatsapp_token: raw.whatsapp_token,
@@ -173,6 +193,7 @@ function normalizePayload(raw = {}) {
     app_secret: raw.app_secret,
     business_phone: raw.business_phone,
     business_name: raw.business_name,
+    business_categories: parseCategories(raw.business_categories),
     website_url: raw.website_url,
     terms_url: raw.terms_url,
     ai_tone: raw.ai_tone,
@@ -215,6 +236,7 @@ export function validateSettingsPayload(rawBody = {}) {
 
   const payload = {
     name: data.name,
+    business_type: data.business_type,
     phone_number_id: data.phone_number_id,
     waba_id: data.waba_id,
     whatsapp_token: data.whatsapp_token,
@@ -222,6 +244,7 @@ export function validateSettingsPayload(rawBody = {}) {
     app_secret: data.app_secret,
     business_phone: data.business_phone,
     business_name: data.business_name,
+    business_categories_json: data.business_categories.length ? JSON.stringify(data.business_categories) : null,
     website_url: data.website_url,
     terms_url: data.terms_url,
     ai_tone: data.ai_tone,

@@ -212,7 +212,7 @@ export default function registerCampaignRoutes(app) {
         <div class="container">
         ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Campaigns`, email)}
           <div class="layout">
-            ${renderSidebar('campaigns', { showBookings: !!(settings?.bookings_enabled), isUpgraded })}
+            ${renderSidebar('campaigns', { showBookings: !!isUpgraded, isUpgraded })}
             <main class="main">
               <div class="main-content">
                 <div class="meta-card" style="margin-bottom:12px;">

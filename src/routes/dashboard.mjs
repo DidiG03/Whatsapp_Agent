@@ -1386,7 +1386,7 @@ export default function registerDashboardRoutes(app) {
         <div class="container">
       ${renderTopbar('Dashboard', email)}
           <div class="layout">
-      ${renderSidebar('dashboard', { showBookings: !!(s?.bookings_enabled), showKb: (plan?.plan_name || 'free') !== 'free' })}
+      ${renderSidebar('dashboard', { showBookings: (plan?.plan_name || 'free') !== 'free', showKb: (plan?.plan_name || 'free') !== 'free' })}
             <main class="main">
                 ${metricsHtml}
                 ${apptHtml}

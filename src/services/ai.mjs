@@ -267,9 +267,18 @@ export async function generateAiReply(userMessage, contextSnippets, options = {}
   const style = (options.style || "clear and concise").trim();
   const blockedTopics = String(options.blockedTopics || "").trim();
   const historyMessages = Array.isArray(options.historyMessages) ? options.historyMessages : [];
+  const bizType = String(options.businessType || "").trim();
+  const bizCats = Array.isArray(options.businessCategories) ? options.businessCategories.map(s => String(s || "").trim()).filter(Boolean).slice(0, 20) : [];
 
   const blockedLine = blockedTopics
     ? `Refuse questions about these topics: ${blockedTopics}. If asked, briefly refuse and suggest contacting support.`
+    : "";
+
+  const businessProfileLine = (bizType || bizCats.length)
+    ? `Business profile: ${bizType ? `type: ${bizType}. ` : ""}${bizCats.length ? `categories: ${bizCats.join(", ")}.` : ""}`
+    : "";
+  const mismatchGuidance = (bizType || bizCats.length)
+    ? "If the user appears to be asking about a different company/industry than this business, politely clarify what this business does and guide them accordingly (do not pretend to offer unrelated services)."
     : "";
 
   const OUT_OF_SCOPE_PHRASE = "That seems outside my scope. Try choosing one of these topics";
@@ -283,6 +292,8 @@ export async function generateAiReply(userMessage, contextSnippets, options = {}
     "Interpret typos, slang, and paraphrases.",
     blockedLine ? blockedLine : "",
     "Tone: " + tone + ". Style: " + style + ".",
+    businessProfileLine ? businessProfileLine : "",
+    mismatchGuidance ? mismatchGuidance : "",
     "Booking guidance (no pickers): If intent to book without BOTH date and time, ask for a preferred date/time in one short sentence (e.g., 'Nov 3 at 3pm').",
     "Availability: if asked without a date range, ask for a range (e.g., 'tomorrow', 'Nov 3–5').",
   ].filter(Boolean).join("\n");
@@ -433,6 +444,10 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
   const blockedTopics = String(options.blockedTopics || '').trim();
   const historyMessages = Array.isArray(options.historyMessages) ? options.historyMessages : [];
   const features = options.features || {};
+  const bizType = String(options.businessType || features.business_type || '').trim();
+  const bizCats = Array.isArray(options.businessCategories || features.business_categories)
+    ? (options.businessCategories || features.business_categories).map(s => String(s || '').trim()).filter(Boolean).slice(0, 20)
+    : [];
 
   const blockedLine = blockedTopics
     ? `Refuse questions about these topics: ${blockedTopics}. If asked, briefly refuse and suggest contacting support.`
@@ -447,6 +462,8 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
     `Tone: ${tone}. Style: ${style}.`,
     "Use ONLY the provided Docs (KB context) for factual answers; never invent facts.",
     blockedLine ? blockedLine : "",
+    (bizType || bizCats.length) ? `Business profile: ${bizType ? `type: ${bizType}. ` : ""}${bizCats.length ? `categories: ${bizCats.join(", ")}.` : ""}` : "",
+    (bizType || bizCats.length) ? "If the user's request clearly targets a different kind of business, briefly clarify what this business does and steer them to relevant options (do not claim unrelated services)." : ""
   ];
 
   if (isEscalationMode) {

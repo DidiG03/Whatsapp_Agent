@@ -26,7 +26,9 @@ export async function getCurrentUsage(userId) {
       month_year: monthYear,
       inbound_messages: 0,
       outbound_messages: 0,
-      template_messages: 0
+      template_messages: 0,
+      payg_charged_units: 0,
+      payg_charged_cents: 0
     });
     usage = {
       user_id: doc.user_id,
@@ -34,6 +36,8 @@ export async function getCurrentUsage(userId) {
       inbound_messages: doc.inbound_messages,
       outbound_messages: doc.outbound_messages,
       template_messages: doc.template_messages,
+      payg_charged_units: doc.payg_charged_units,
+      payg_charged_cents: doc.payg_charged_cents,
       created_at: Math.floor(new Date(doc.createdAt || Date.now()).getTime() / 1000),
       updated_at: Math.floor(new Date(doc.updatedAt || Date.now()).getTime() / 1000)
     };
@@ -55,6 +59,63 @@ export async function incrementUsage(userId, messageType) {
   await UsageStats.updateOne(
     { user_id: userId, month_year: monthYear },
     { $inc: { [messageType]: 1 } },
+    { upsert: true }
+  );
+  // After increment, if PAYG is enabled and the user is over the free limit, attempt to charge per usage
+  try {
+    const plan = await getUserPlan(userId);
+    if (plan?.payg_enabled) {
+      const usage = await getCurrentUsage(userId);
+      const total = (usage?.inbound_messages || 0) + (usage?.outbound_messages || 0) + (usage?.template_messages || 0);
+      if (typeof plan.monthly_limit === 'number' && total > plan.monthly_limit) {
+        try {
+          const { chargePayAsYouGo } = await import('./stripe.mjs');
+          const chargedUnitsSoFar = Number(usage?.payg_charged_units || 0);
+          const idKey = `payg_${String(userId)}_${monthYear}_${chargedUnitsSoFar + 1}`;
+          const res = await chargePayAsYouGo(userId, 1, { idempotencyKey: idKey });
+          if (res?.charged) {
+            const cents = Number(plan.payg_rate_cents || Number(process.env.PAYG_RATE_CENTS || 5));
+            await UsageStats.updateOne(
+              { user_id: userId, month_year: getCurrentMonthYear() },
+              { $inc: { payg_charged_units: 1, payg_charged_cents: Math.max(1, Math.floor(cents)) } }
+            );
+          }
+        } catch (e) {
+          console.warn('PAYG charge attempt failed after usage increment:', e?.message || e);
+        }
+      }
+    }
+  } catch {}
+}
+
+/**
+ * Compute PAYG outstanding for current month: total overage units/cents vs what has been charged so far.
+ */
+export async function getCurrentMonthPaygOutstanding(userId) {
+  const usage = await getCurrentUsage(userId);
+  const plan = await getUserPlan(userId);
+  if (!usage || !plan) {
+    return { overageUnits: 0, overageCents: 0, chargedUnits: 0, chargedCents: 0, outstandingUnits: 0, outstandingCents: 0 };
+  }
+  const totalMessages = (usage.inbound_messages || 0) + (usage.outbound_messages || 0) + (usage.template_messages || 0);
+  const overageUnits = Math.max(0, totalMessages - (Number(plan.monthly_limit) || 0));
+  const rateCents = Number(plan.payg_rate_cents ?? Number(process.env.PAYG_RATE_CENTS || 5));
+  const overageCents = overageUnits * Math.max(1, Math.floor(rateCents));
+  const chargedUnits = Number(usage.payg_charged_units || 0);
+  const chargedCents = Number(usage.payg_charged_cents || 0);
+  const outstandingUnits = Math.max(0, overageUnits - chargedUnits);
+  const outstandingCents = Math.max(0, overageCents - chargedCents);
+  return { overageUnits, overageCents, chargedUnits, chargedCents, outstandingUnits, outstandingCents };
+}
+
+/**
+ * Record a PAYG charge in usage stats (used when charging on disable).
+ */
+export async function recordPaygCharge(userId, units, cents) {
+  if (!userId || !units || !cents) return;
+  await UsageStats.updateOne(
+    { user_id: userId, month_year: getCurrentMonthYear() },
+    { $inc: { payg_charged_units: Math.max(0, Number(units) || 0), payg_charged_cents: Math.max(0, Number(cents) || 0) } },
     { upsert: true }
   );
 }
@@ -99,7 +160,10 @@ export async function updateUserPlan(userId, planData) {
       whatsapp_numbers: updated.whatsapp_numbers,
       billing_cycle_start: updated.billing_cycle_start,
       stripe_customer_id: updated.stripe_customer_id || null,
-      stripe_subscription_id: updated.stripe_subscription_id || null
+      stripe_subscription_id: updated.stripe_subscription_id || null,
+      payg_enabled: !!updated.payg_enabled,
+      payg_rate_cents: typeof updated.payg_rate_cents === 'number' ? updated.payg_rate_cents : (current.payg_rate_cents ?? Number(process.env.PAYG_RATE_CENTS || 5)),
+      payg_currency: (updated.payg_currency || current.payg_currency || String(process.env.PAYG_CURRENCY || 'usd')).toLowerCase()
     } },
     { upsert: true, new: true }
   );
@@ -113,6 +177,8 @@ export async function isUsageExceeded(userId) {
   const usage = await getCurrentUsage(userId);
   const plan = await getUserPlan(userId);
   if (!usage || !plan) return false;
+  // If PAYG is enabled, we don't block on limits (charges applied per usage)
+  if (plan?.payg_enabled) return false;
   const totalMessages = usage.inbound_messages + usage.outbound_messages + usage.template_messages;
   return totalMessages >= plan.monthly_limit;
 }
