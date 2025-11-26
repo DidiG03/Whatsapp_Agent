@@ -211,10 +211,21 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
         {
           price_data: {
             currency,
-            product_data: {
-              name: `${planDetails.name} Plan`,
-              description: planDetails.features.join(', ')
-            },
+            // If a persistent Product is configured, tie price_data to it so
+            // promotion codes restricted to a product/price apply correctly.
+            ...(function(){
+              try {
+                const sanitize = (v) => String(v || '').trim().replace(/^['"]|['"]$/g, '');
+                const productId = sanitize(process.env.STRIPE_PRODUCT_ID_STARTER || process.env.STRIPE_PRODUCT_ID || '');
+                if (productId) return { product: productId };
+              } catch {}
+              return {
+                product_data: {
+                  name: `${planDetails.name} Plan`,
+                  description: planDetails.features.join(', ')
+                }
+              };
+            })(),
             unit_amount: planDetails.price * 100, // Convert to cents
             recurring: {
               interval: 'month'

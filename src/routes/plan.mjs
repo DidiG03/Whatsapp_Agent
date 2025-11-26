@@ -99,6 +99,8 @@ export default function registerPlanRoutes(app) {
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     const STARTER_YEARLY_PRICE_ID = (process.env.STRIPE_PRICE_ID_STARTER_YEARLY || process.env.STRIPE_PRICE_ID_STARTER_ANNUAL || process.env.STRIPE_PRICE_ID_STARTER_YEAR || '').toString();
+    // Prefer real Stripe Price for monthly too so coupons restricted to a product/price can apply
+    const STARTER_MONTHLY_PRICE_ID = (process.env.STRIPE_PRICE_ID_STARTER_MONTHLY || process.env.STRIPE_PRICE_ID_STARTER || process.env.STRIPE_PRICE_ID_STARTER_MONTH || process.env.STRIPE_PRICE_ID || '').toString();
     // PAYG outstanding and progress vs plan cost
     const paygSummary = await getCurrentMonthPaygOutstanding(userId).catch(()=>({ overageUnits:0, overageCents:0, chargedUnits:0, chargedCents:0, outstandingUnits:0, outstandingCents:0 }));
     const paygTotalCents = Number(paygSummary?.overageCents || 0);
@@ -356,6 +358,7 @@ export default function registerPlanRoutes(app) {
         <script>
           ${stripeEnabled ? `const stripe = Stripe('${stripePublishableKey}');` : ''}
           const STARTER_YEARLY_PRICE_ID = '${escapeHtml(STARTER_YEARLY_PRICE_ID)}';
+          const STARTER_MONTHLY_PRICE_ID = '${escapeHtml(STARTER_MONTHLY_PRICE_ID)}';
           const CURRENT_INTERVAL = '${escapeHtml(currentPaidInterval || '')}';
           const SCHEDULED_TARGET_INTERVAL = '${escapeHtml(scheduledTargetInterval || '')}';
           const SCHEDULED_START_TS = ${scheduledStartTs ? Number(scheduledStartTs) : 'null'};
@@ -613,8 +616,13 @@ export default function registerPlanRoutes(app) {
               // Use yearly price when yearly toggle is active and plan is starter
               var mode = null; try { mode = localStorage.getItem('billingMode'); } catch(e) {}
               var price_id = null;
-              if (planName === 'starter' && mode === 'yearly' && STARTER_YEARLY_PRICE_ID) {
-                price_id = STARTER_YEARLY_PRICE_ID;
+              if (planName === 'starter') {
+                if (mode === 'yearly' && STARTER_YEARLY_PRICE_ID) {
+                  price_id = STARTER_YEARLY_PRICE_ID;
+                } else if (STARTER_MONTHLY_PRICE_ID) {
+                  // Prefer a real Price for monthly when available so promo codes restricted by product/price apply
+                  price_id = STARTER_MONTHLY_PRICE_ID;
+                }
               }
               const response = await fetch('/stripe/create-checkout', {
                 method: 'POST',
