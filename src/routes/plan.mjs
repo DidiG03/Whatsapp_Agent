@@ -134,8 +134,8 @@ export default function registerPlanRoutes(app) {
                     <div class="day-modal-body">
                       <div id="modalMessage">Are you sure?</div>
                       <div id="modalButtons" style="margin-top:16px; display:flex; gap:8px; justify-content:flex-end;">
-                        <button id="modalCancel" class="btn-ghost">Cancel</button>
-                        <button id="modalOk" class="btn-primary">OK</button>
+                        <button id="modalCancel" class="btn btn-ghost">Cancel</button>
+                        <button id="modalOk" class="btn btn-primary">OK</button>
                       </div>
                     </div>
                   </div>
@@ -202,7 +202,7 @@ export default function registerPlanRoutes(app) {
                   ` : ''}
                   ${paygEnabled ? `
                     <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
-                      <button class="btn-ghost" onclick="managePaygPaymentMethod()">Manage payment method</button>
+                      <button class="btn btn-ghost" onclick="managePaygPaymentMethod()">Manage payment method</button>
                     </div>
                   ` : ''}
                 </section>
@@ -312,7 +312,7 @@ export default function registerPlanRoutes(app) {
                         <div class="cta-row">
                           ${plan.plan_name !== planKey ? `
                             ${stripeEnabled && planKey !== 'free' ? `
-                              <button class="btn-primary btn-full" onclick="subscribeToPlan('${planKey}')">
+                              <button class="btn btn-primary btn-full" onclick="subscribeToPlan('${planKey}')">
                                 <span class="cta-monthly">Subscribe to ${planDetails.name}</span>
                                 <span class="cta-yearly" style="display:none;">Subscribe to ${planKey === 'starter' ? 'Starter Yearly' : planDetails.name}</span>
                               </button>
@@ -328,15 +328,15 @@ export default function registerPlanRoutes(app) {
                                 ? `<button class="btn-danger btn-full" onclick="cancelScheduledChange()">Cancel Scheduled Change</button>`
                                 : (currentPaidInterval === 'year'
                                     ? `
-                                      <button class="btn-primary btn-full cta-monthly" onclick="schedulePlanChange('starter','month')">Switch to Starter Monthly</button>
+                                      <button class="btn btn-primary btn-full cta-monthly" onclick="schedulePlanChange('starter','month')">Switch to Starter Monthly</button>
                                       ${willCancelAtEnd
-                                        ? `<button class="btn-primary btn-full cta-yearly" style="display:none;" onclick="resumeSubscription()">Resume Subscription</button>`
-                                        : `<button class="btn-danger btn-full cta-yearly" style="display:none;" onclick="cancelSubscription()">Cancel Subscription</button>`}
+                                        ? `<button class="btn btn-primary btn-full cta-yearly" style="display:none;" onclick="resumeSubscription()">Resume Subscription</button>`
+                                        : `<button class="btn btn-danger btn-full cta-yearly" style="display:none;" onclick="cancelSubscription()">Cancel Subscription</button>`}
                                     `
                                     : `
                                       ${willCancelAtEnd
-                                        ? `<button class="btn-primary btn-full cta-monthly" onclick="resumeSubscription()">Resume Subscription</button>`
-                                        : `<button class="btn-danger btn-full cta-monthly" onclick="cancelSubscription()">Cancel Subscription</button>`}
+                                        ? `<button class="btn btn-primary btn-full cta-monthly" onclick="resumeSubscription()">Resume Subscription</button>`
+                                        : `<button class="btn btn-danger btn-full cta-monthly" onclick="cancelSubscription()">Cancel Subscription</button>`}
                                       <button class="btn-primary btn-full cta-yearly" style="display:none;" onclick="schedulePlanChange('starter','year')">Switch to Starter Yearly</button>
                                     `
                                   )

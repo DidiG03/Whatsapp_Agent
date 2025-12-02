@@ -31,8 +31,7 @@ import {
 } from "../services/messageStatus.mjs";
 import { broadcastReaction, broadcastMessageStatus } from "./realtime.mjs";
 import multer from 'multer';
-import path from 'path';
-import fs from 'fs';
+import { selectStorage } from '../services/uploads.mjs';
 
 /** Clean contact ID by removing URL parameters and query strings */
 function cleanContactId(contactId) {
@@ -61,9 +60,6 @@ function cleanContactId(contactId) {
   
   return cleaned;
 }
-
-// Avoid ESM import.meta.url to keep Jest transform simpler; use CWD-based path
-const UPLOADS_BASE_DIR = path.resolve(process.cwd(), 'uploads');
 
 // Format a unix timestamp (seconds) for display:
 // - today: show time only (HH:MM)
@@ -94,21 +90,7 @@ function formatTimestampForDisplay(unixTs){
 }
 
 // Configure multer for file uploads - serverless compatible
-const storage = process.env.VERCEL 
-  ? multer.memoryStorage() // Use memory storage in serverless
-  : multer.diskStorage({
-      destination: (req, file, cb) => {
-        const uploadDir = UPLOADS_BASE_DIR;
-        if (!fs.existsSync(uploadDir)) {
-          fs.mkdirSync(uploadDir, { recursive: true });
-        }
-        cb(null, uploadDir);
-      },
-      filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
-      }
-    });
+const storage = selectStorage('inbox');
 
 // Upload configuration for images
 const uploadImage = multer({ 
@@ -476,33 +458,33 @@ export default function registerInboxRoutes(app) {
           const dropdownId = `menu_${c.contact}`;
           const menu = `
         <div class="dropdown" style="position:relative; overflow:visible;">
-          <button type="button" class="btn-ghost" style="position:relative; z-index:10000;" onclick="return toggleMenu('${dropdownId}', event)">
+          <button type="button" class="btn btn-ghost" style="position:relative; z-index:10000;" onclick="return toggleMenu('${dropdownId}', event)">
             <img src="/menu-icon.svg" alt="Menu" style="width:20px;height:20px;vertical-align:middle;border:none;"/>
           </button>
           <div id="${dropdownId}" class="dropdown-menu" style="position:absolute; right:0; top:36px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:6px; min-width:180px; display:none; box-shadow:0 10px 30px rgba(0,0,0,0.18); z-index:10001;" onclick="event.stopPropagation()">
             ${showArchived ? `
             <form method=\"post\" action=\"/inbox/${encodeURIComponent(c.contact)}/unarchive\" onsubmit=\"event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;\" style=\"margin:0;\">
-              <button type="submit" class="btn-ghost btn-full" style="display:flex; align-items:center; gap:8px; justify-content:flex-start;">
+              <button type="submit" class="btn btn-ghost btn-full" style="display:flex; align-items:center; gap:8px; justify-content:flex-start;">
                 <img src="/archive-icon.svg" alt="Unarchive"/> Unarchive
               </button>
             </form>` : `
             <form method=\"post\" action=\"/inbox/${encodeURIComponent(c.contact)}/archive\" onsubmit=\"event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;\" style=\"margin:0;\">
-              <button type="submit" class="btn-ghost btn-full" style="display:flex; align-items:center; gap:8px; justify-content:flex-start;">
+              <button type="submit" class="btn btn-ghost btn-full" style="display:flex; align-items:center; gap:8px; justify-content:flex-start;">
                 <img src="/archive-icon.svg" alt="Archive"/> Archive
               </button>
             </form>`}
             <form method=\"post\" action=\"/inbox/${encodeURIComponent(c.contact)}/clear\" onsubmit=\"event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;\" style=\"margin:0;\">
-              <button type="submit" class="btn-ghost btn-full" style="display:flex; align-items:center; gap:8px; justify-content:flex-start;">
+              <button type="submit" class="btn btn-ghost btn-full" style="display:flex; align-items:center; gap:8px; justify-content:flex-start;">
                 <img src="/clear-icon.svg" alt="Clear"/> Clear
               </button>
             </form>
             <form method=\"post\" action=\"/inbox/${encodeURIComponent(c.contact)}/delete\" onsubmit=\"event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;\" style=\"margin:0;\">
-              <button type="submit" class="btn-ghost btn-full" style="display:flex; align-items:center; gap:8px; justify-content:flex-start; color:#c00;">
+              <button type="submit" class="btn btn-ghost btn-full" style="display:flex; align-items:center; gap:8px; justify-content:flex-start; color:#c00;">
                 <img src="/delete-icon.svg" alt="Delete"/> Delete
               </button>
             </form>
             <form method=\"post\" action=\"/inbox/${encodeURIComponent(c.contact)}/block24h\" onsubmit=\"event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;\" style=\"margin:0;\">
-              <button type="submit" class="btn-ghost btn-full" style="display:flex; align-items:center; gap:8px; justify-content:flex-start;">
+              <button type="submit" class="btn btn-ghost btn-full" style="display:flex; align-items:center; gap:8px; justify-content:flex-start;">
                 ⛔ Block
               </button>
             </form>
@@ -692,7 +674,7 @@ export default function registerInboxRoutes(app) {
                   <form method="get" action="/inbox" class="search-form">
                   <div class="search-input-group">
                     <input class="search-input" type="text" name="q" placeholder='Search conversations...' value="${q}"/>
-                    <button type="submit" class="search-btn">
+                    <button type="submit" class="btn btn-primary">
                       <img src="/search-icon.svg" alt="Search" width="20" height="20">
                     </button>
                   </div>
@@ -721,17 +703,17 @@ export default function registerInboxRoutes(app) {
                       <input type="date" name="date_to" class="filter-date" value="${req.query.date_to || ''}" placeholder="To"/>
                     </div>
                     <div class="filter-actions">
-                      <button type="button" onclick="clearFilters()" class="btn-ghost">Clear</button>
-                      <button type="submit" class="btn-primary">Search</button>
+                      <button type="button" onclick="clearFilters()" class="btn btn-ghost">Clear</button>
+                      <button type="submit" class="btn btn-primary">Search</button>
                     </div>
                   </div>
                   <div class="search-actions">
                     ${showArchived ? `
-                      <a href="/inbox" class="filter-toggle-btn" title="Back to Inbox" style="display:inline-flex;align-items:center;gap:6px;">
+                      <a href="/inbox" class="btn btn-ghost" title="Back to Inbox" style="display:inline-flex;align-items:center;gap:6px;">
                         <img src="/inbox-icon.svg" alt="Inbox" width="18" height="18"> Inbox
                       </a>
                     ` : `
-                      <a href="/inbox?archived=1" class="filter-toggle-btn" title="View Archived" style="display:inline-flex;align-items:center;gap:6px;">
+                      <a href="/inbox?archived=1" class="btn btn-ghost" title="View Archived" style="display:inline-flex;align-items:center;gap:6px;">
                         <img src="/archive-icon.svg" alt="Archived" width="18" height="18"> 
                       </a>
                     `}
@@ -744,8 +726,8 @@ export default function registerInboxRoutes(app) {
                     <input class="settings-field" type="text" name="display_name" placeholder="Customer name" required />
                     <textarea class="settings-field" name="notes" rows="3" placeholder="Notes (optional)"></textarea>
                     <div style="display:flex; gap:8px; justify-content:flex-end;">
-                      <button type="button" class="btn-ghost" onclick="closeNameModal()">Cancel</button>
-                      <button type="submit" class="btn-primary">Save</button>
+                      <button type="button" class="btn btn-ghost" onclick="closeNameModal()">Cancel</button>
+                      <button type="submit" class="btn btn-primary">Save</button>
                     </div>
                   </form>
                   
@@ -760,8 +742,8 @@ export default function registerInboxRoutes(app) {
                       <input id="waTokenInput" type="password" placeholder="E***************" class="settings-field" />
                     </label>
                     <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:8px;">
-                      <button type="button" class="btn-ghost" onclick="closeWaTokenModal()">Cancel</button>
-                      <button type="button" id="waTokenSave" class="btn-primary" onclick="saveWaToken()">Save Token</button>
+                        <button type="button" class="btn btn-ghost" onclick="closeWaTokenModal()">Cancel</button>
+                        <button type="button" id="waTokenSave" class="btn btn-primary" onclick="saveWaToken()">Save Token</button>
                     </div>
                   </div>
                 </div>
@@ -789,8 +771,8 @@ export default function registerInboxRoutes(app) {
                       </label>
                       <div class="small" style="color:#64748b;">The customer receives a secure Stripe Checkout link inside WhatsApp.</div>
                       <div style="display:flex; gap:8px; justify-content:flex-end;">
-                        <button type="button" class="btn-ghost" onclick="closePaymentModal()">Cancel</button>
-                        <button type="submit" class="btn-primary" id="paymentSubmitBtn">Send link</button>
+                        <button type="button" class="btn btn-ghost" onclick="closePaymentModal()">Cancel</button>
+                        <button type="submit" class="btn btn-primary" id="paymentSubmitBtn">Send link</button>
                       </div>
                     </form>
                   </div>
@@ -1097,9 +1079,9 @@ export default function registerInboxRoutes(app) {
     
     const paginationHtml = searchResults.total > limit ? `
       <div class="pagination">
-        ${page > 1 ? `<a href="/search?${new URLSearchParams({...req.query, page: page - 1})}" class="btn-ghost">← Previous</a>` : ''}
+        ${page > 1 ? `<a href="/search?${new URLSearchParams({...req.query, page: page - 1})}" class="btn btn-ghost">← Previous</a>` : ''}
         <span class="pagination-info">Page ${page} of ${Math.ceil(searchResults.total / limit)}</span>
-        ${searchResults.hasMore ? `<a href="/search?${new URLSearchParams({...req.query, page: page + 1})}" class="btn-ghost">Next →</a>` : ''}
+        ${searchResults.hasMore ? `<a href="/search?${new URLSearchParams({...req.query, page: page + 1})}" class="btn btn-ghost">Next →</a>` : ''}
       </div>
     ` : '';
     
@@ -1125,7 +1107,7 @@ export default function registerInboxRoutes(app) {
                 <form method="get" action="/search" class="search-form">
                   <div class="search-input-group">
                     <input class="search-input" type="text" name="q" placeholder='Search messages...' value="${q}"/>
-                    <button type="submit" class="search-btn">
+                    <button type="submit" class="btn btn-primary">
                       <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
                         <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
                       </svg>
@@ -1160,11 +1142,11 @@ export default function registerInboxRoutes(app) {
                       <input type="date" name="date_to" class="filter-date" value="${dateTo}" placeholder="To"/>
                     </div>
                     <div class="filter-actions">
-                      <button type="button" onclick="clearFilters()" class="btn-ghost">Clear</button>
-                      <button type="submit" class="btn-primary">Search</button>
+                      <button type="button" onclick="clearFilters()" class="btn btn-ghost">Clear</button>
+                      <button type="submit" class="btn btn-primary">Search</button>
                     </div>
                   </div>
-                  <button type="button" onclick="toggleSearchFilters()" class="filter-toggle-btn">
+                  <button type="button" onclick="toggleSearchFilters()" class="btn btn-ghost">
                     <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
                       <path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/>
                     </svg>
@@ -1212,6 +1194,53 @@ export default function registerInboxRoutes(app) {
   app.get("/inbox/:phone", ensureAuthed, async (req, res) => {
     const phone = req.params.phone.split('?')[0]; // Remove any query parameters from phone
     const userId = getCurrentUserId(req);
+    // Guard: show 404 if this contact doesn't exist for this user
+    try {
+      const digits = normalizePhone(phone);
+      const [custRow, handoffRow, msgRow] = await Promise.all([
+        Customer.findOne({ user_id: userId, contact_id: phone }).select('_id'),
+        Handoff.findOne({ user_id: userId, contact_id: phone }).select('_id'),
+        Message.findOne({
+          user_id: userId,
+          $or: [
+            { from_digits: digits },
+            { to_digits: digits },
+            { from_id: phone },
+            { to_id: phone }
+          ]
+        }).select('_id')
+      ]);
+      if (!custRow && !handoffRow && !msgRow) {
+        const email404 = await getSignedInEmail(req);
+        const { isUpgraded: isUpgraded404 } = await getPlanStatus(userId);
+        res.status(404).setHeader("Content-Type", "text/html; charset=utf-8");
+        return res.end(`
+          <html>${getProfessionalHead('Not Found')}<body>
+            <div class="container">
+              ${renderTopbar(`<a href="/dashboard">Dashboard</a> / <a href="/inbox">Inbox</a>`, email404)}
+              <div class="layout">
+                ${renderSidebar('inbox', { showBookings: !!isUpgraded404, isUpgraded: !!isUpgraded404 })}
+                <main class="main">
+                  <div class="main-content">
+                    <div class="card" style="max-width:720px;margin:20px auto;">
+                      <div style="font-size:64px; line-height:1; font-weight:800; color:#111827; letter-spacing:-1px; margin:0 0 10px 0;">404</div>
+                      <h3 style="margin:0 0 6px 0;">Page not found</h3>
+                      <p class="small" style="color:#6b7280; margin:0 0 10px 0;">
+                        We couldn’t find a conversation for <strong>+${String(phone).replace(/^\\+?/, '')}</strong>.
+                      </p>
+                      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                        <a class="btn btn-primary" href="/inbox">Back to Inbox</a>
+                        <a class="btn btn-ghost" href="/dashboard">Go to Dashboard</a>
+                      </div>
+                    </div>
+                  </div>
+                </main>
+              </div>
+            </div>
+          </body></html>
+        `);
+      }
+    } catch {}
     const [sidebarSettings, { isUpgraded }] = await Promise.all([
       getSettingsForUser(userId),
       getPlanStatus(userId)
@@ -1479,7 +1508,7 @@ export default function registerInboxRoutes(app) {
             <div class="message-status-ticks message-status-failed">
               <div class="message-failed-indicator" title="Message failed to send">
                 <span class="failed-icon">!</span>
-                <button class="retry-button" data-message-id="${m.id}" onclick="retryMessage('${m.id}')" title="Retry sending message">
+                <button class="btn btn-danger" data-message-id="${m.id}" onclick="retryMessage('${m.id}')" title="Retry sending message">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
                     <path d="M21 3v5h-5"/>
@@ -2656,6 +2685,10 @@ export default function registerInboxRoutes(app) {
               }catch(_){ }
             })();
           </script>
+        <script>
+          // Expose plan capability so realtime appends can mirror server-rendered actions
+          window.IS_UPGRADED = ${isUpgraded ? 'true' : 'false'};
+        </script>
           <div class="container page-transition">
             ${renderTopbar(`<a href="/dashboard">Dashboard</a> / <a href="/inbox">Inbox</a> / +${String(phone).replace(/^\+/, '')}`, email)}
             <div class="layout">
@@ -2757,6 +2790,9 @@ export default function registerInboxRoutes(app) {
                               To message this customer again, configure a default WhatsApp template on the 
                               <a href="/campaigns" style="font-weight:600; color:#1d4ed8; text-decoration:underline;">Campaigns</a> page</a> and then refresh.
                             </div>
+                            <div style="margin-top:8px;">
+                              <a href="/campaigns" class="btn-ghost" style="display:inline-block;">Change template</a>
+                            </div>
                           </div>
                         </div>
                       `;
@@ -2800,6 +2836,9 @@ export default function registerInboxRoutes(app) {
                               </form>
                             `}
                             ${hintHtml}
+                            <div style="margin-top:8px;">
+                              <a href="/campaigns" class="btn-ghost" style="display:inline-block;">Change template</a>
+                            </div>
                           </div>
                         </div>
                       </div>

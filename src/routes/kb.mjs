@@ -4,26 +4,12 @@ import { getUserPlan, getPlanPricing } from "../services/usage.mjs";
 import { getSettingsForUser } from "../services/settings.mjs";
 import { renderSidebar, escapeHtml, renderTopbar } from "../utils.mjs";
 import multer from 'multer';
-import path from 'path';
-import fs from 'fs';
+import { selectStorage } from '../services/uploads.mjs';
+import { wrapAsync } from "../middleware/errors.mjs";
 
 export default function registerKbRoutes(app) {
-  // Uploads base dir (same pattern as inbox)
-  const UPLOADS_BASE_DIR = path.resolve(process.cwd(), 'uploads');
-  const storage = process.env.VERCEL
-    ? multer.memoryStorage()
-    : multer.diskStorage({
-        destination: (req, file, cb) => {
-          if (!fs.existsSync(UPLOADS_BASE_DIR)) {
-            fs.mkdirSync(UPLOADS_BASE_DIR, { recursive: true });
-          }
-          cb(null, UPLOADS_BASE_DIR);
-        },
-        filename: (req, file, cb) => {
-          const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-          cb(null, 'kb-' + uniqueSuffix + path.extname(file.originalname));
-        }
-      });
+  // Shared storage selection (serverless vs disk)
+  const storage = selectStorage('kb');
   const uploadKb = multer({
     storage,
     limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
@@ -34,7 +20,7 @@ export default function registerKbRoutes(app) {
     }
   });
 
-  app.post("/kb", ensureAuthed, async (req, res) => {
+  app.post("/kb", ensureAuthed, wrapAsync(async (req, res) => {
     const userId = getCurrentUserId(req);
     const { title, content, file_url, file_mime } = req.body || {};
     const show_in_menu = req.body?.show_in_menu ? 1 : 0;
@@ -74,10 +60,10 @@ export default function registerKbRoutes(app) {
       user_id: userId
     });
     return res.json({ id: String(doc._id), title: doc.title, content: doc.content, file_url: doc.file_url, file_mime: doc.file_mime, show_in_menu: doc.show_in_menu, user_id: doc.user_id });
-  });
+  }));
 
   // Upload a document and create a KB item that references it
-  app.post("/kb/upload", ensureAuthed, uploadKb.single('document'), async (req, res) => {
+  app.post("/kb/upload", ensureAuthed, uploadKb.single('document'), wrapAsync(async (req, res) => {
     try {
       const userId = getCurrentUserId(req);
       if (!req.file) return res.status(400).json({ error: 'file_required' });
@@ -151,7 +137,7 @@ export default function registerKbRoutes(app) {
       console.error('KB upload error:', e?.message || e);
       return res.status(500).json({ error: 'kb_upload_failed' });
     }
-  });
+  }));
 
   // Stream a KB file from GridFS by id
   app.get('/kb/file/:id', ensureAuthed, async (req, res) => {
@@ -260,11 +246,11 @@ export default function registerKbRoutes(app) {
                 <input type="checkbox" class="kb-menu-toggle" data-id="${String(r._id)}" ${r.show_in_menu ? 'checked' : ''} style="margin:0;"/>
                 Show in menu
               </label>
-              ${fileUrl ? `<a class="btn-ghost" href="${escapeHtml(fileUrl)}" target="_blank" rel="noopener" style="background:#e0f2fe; color:#0369a1; border:1px solid #bae6fd; padding:6px 12px; border-radius:6px; font-size:12px;">📄 Preview</a>` : ''}
-              <button style="border:none; background:#f3f4f6; padding:8px; border-radius:6px; cursor:pointer;" class="btn-ghost" onclick="editKbItem('${String(r._id)}')" title="Edit">
+              ${fileUrl ? `<a class="btn btn-ghost" href="${escapeHtml(fileUrl)}" target="_blank" rel="noopener" style="background:#e0f2fe; color:#0369a1; border:1px solid #bae6fd; padding:6px 12px; border-radius:6px; font-size:12px;">📄 Preview</a>` : ''}
+              <button style="border:none; background:#f3f4f6; padding:8px; border-radius:6px; cursor:pointer;" class="btn btn-ghost" onclick="editKbItem('${String(r._id)}')" title="Edit">
                 <img src="/pencil-icon.svg" alt="Edit" style="width:16px;height:16px;"/>
               </button>
-              <button style="border:none; background:#fef2f2; padding:8px; border-radius:6px; cursor:pointer;" class="btn-ghost" onclick="deleteKbItem('${String(r._id)}')" title="Delete">
+              <button style="border:none; background:#fef2f2; padding:8px; border-radius:6px; cursor:pointer;" class="btn btn-ghost" onclick="deleteKbItem('${String(r._id)}')" title="Delete">
                 <img src="/delete-icon.svg" alt="Delete" style="width:16px;height:16px;"/>
               </button>
             </div>
@@ -511,8 +497,8 @@ export default function registerKbRoutes(app) {
                         <img src="/menu.svg" alt="Menu" style="width:16px;height:16px;"/>
                       </button>
                       <div id="kb-menu" class="dropdown-menu" style="display:none; position:absolute; right:0; top:100%; margin-top:8px; background:#fff; border:1px solid #e5e7eb; border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,0.12); padding:6px; min-width:160px;">
-                        <button type="button" class="btn-ghost" style="display:block; width:100%; text-align:left; margin:2px 0;" onclick="openKbAddModal()">Add Item</button>
-                        <button type="button" class="btn-ghost" style="display:block; width:100%; text-align:left; margin:2px 0;" onclick="openKbUploadModal()">Upload File</button>
+                      <button type="button" class="btn btn-ghost" style="display:block; width:100%; text-align:left; margin:2px 0;" onclick="openKbAddModal()">Add Item</button>
+                      <button type="button" class="btn btn-ghost" style="display:block; width:100%; text-align:left; margin:2px 0;" onclick="openKbUploadModal()">Upload File</button>
                       </div>
                     </div>
                   </div>
@@ -551,15 +537,15 @@ export default function registerKbRoutes(app) {
               <form method="post" action="/kb/upload" enctype="multipart/form-data" style="display:flex; flex-direction:column; gap:12px;">
                 <div style="display:flex; gap:10px; align-items:center; background:#f9fafb; border:1px solid #e5e7eb; padding:8px 12px; border-radius:10px;">
                   <input id="kbFile2" type="file" name="document" accept=".pdf,.txt,.md,.doc,.docx,.rtf,.odt,.csv,.xls,.xlsx" style="display:none;" />
-                  <label for="kbFile2" class="btn-ghost" style="border:none; background:#eef2ff; color:#3730a3; padding:8px 12px; border-radius:8px; cursor:pointer;">📄 Select file</label>
+                  <label for="kbFile2" class="btn btn-ghost" style="border:none; background:#eef2ff; color:#3730a3; padding:8px 12px; border-radius:8px; cursor:pointer;">📄 Select file</label>
                   <span id="kbFileName2" class="small" style="color:#6b7280; max-width:220px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">No file chosen</span>
                 </div>
                 <input type="text" name="title" class="settings-field" placeholder="Title (optional)" />
                 <input type="text" name="summary" class="settings-field" placeholder="Short summary (optional)" />
                 <label class="small" style="display:flex; align-items:center; gap:6px; color:#374151;"><input type="checkbox" name="show_in_menu"/> Show in menu</label>
                 <div style="display:flex; gap:8px; justify-content:flex-end;">
-                  <button type="button" class="btn-ghost" onclick="closeKbUploadModal()">Cancel</button>
-                  <button type="submit" class="btn">Upload</button>
+                  <button type="button" class="btn btn-ghost" onclick="closeKbUploadModal()">Cancel</button>
+                  <button type="submit" class="btn btn-primary">Upload</button>
                 </div>
               </form>
             </div>
@@ -580,8 +566,8 @@ export default function registerKbRoutes(app) {
                 <input id="kbAddLink" type="url" class="settings-field" placeholder="PDF link (optional)" />
                 <label class="small" style="display:flex; align-items:center; gap:6px; color:#374151;"><input id="kbAddShowMenu" type="checkbox" /> Show in menu</label>
                 <div style="display:flex; gap:8px; justify-content:flex-end;">
-                  <button type="button" class="btn-ghost" onclick="closeKbAddModal()">Cancel</button>
-                  <button type="submit" class="btn">Create</button>
+                  <button type="button" class="btn btn-ghost" onclick="closeKbAddModal()">Cancel</button>
+                  <button type="submit" class="btn btn-primary">Create</button>
                 </div>
               </form>
             </div>

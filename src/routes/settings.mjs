@@ -1,4 +1,5 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail, clerkClient } from "../middleware/auth.mjs";
+import { wrapAsync } from "../middleware/errors.mjs";
 import { getOnboarding } from "../services/onboarding.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
 import { renderSidebar, renderTopbar } from "../utils.mjs";
@@ -156,6 +157,7 @@ export default function registerSettingsRoutes(app, options = {}) {
               <div id="settings-nav" style="position:sticky; top:0; z-index:5; padding:8px; margin-bottom:12px;">
                 <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
                   <a href="#account" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Account</a>
+                  <a href="#business" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Business</a>
                   <a href="#whatsapp" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">WhatsApp</a>
                   <a href="#conversation" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Conversation</a>
                   <a href="#greeting" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Greeting</a>
@@ -196,10 +198,12 @@ export default function registerSettingsRoutes(app, options = {}) {
                         ${q.email_update === 'done' ? `<div class="small" style="color:#065f46; margin-top:6px;">Email updated successfully.</div>` : ''}
                         ${q.email_error ? `<div class="small" style="color:#991b1b; margin-top:6px;">${q.email_error}</div>` : ''}
                       </div>
-                      <label>Business Name
-                        <input placeholder="My Business" class="settings-field" name="business_name" value="${s.business_name || ''}"/>
-                      </label>
                     </div>
+                  <div class="section" id="business">
+                    <h3>Business Information</h3>
+                    <label>Business Name
+                      <input placeholder="My Business" class="settings-field" name="business_name" value="${s.business_name || ''}"/>
+                    </label>
                     <div class="grid-2" style="margin-top:8px;">
                       <label>Business Type
                         <select name="business_type" class="settings-field">
@@ -221,6 +225,10 @@ export default function registerSettingsRoutes(app, options = {}) {
                         <div class="small" style="color:#64748b; margin-top:4px;">Comma-separated; up to 20 categories.</div>
                       </label>
                     </div>
+                    <label style="margin-top:8px;">Website URL
+                      <input placeholder="https://www.example.com" class="settings-field" name="website_url" value="${s.website_url || ''}"/>
+                    </label>
+                  </div>
                   <div class="section" id="whatsapp">
                     <h3>WhatsApp Setup</h3>
                     <div class="grid-2">
@@ -255,15 +263,7 @@ export default function registerSettingsRoutes(app, options = {}) {
                     </label>
                   </div>
 
-                  <div class="section" id="website">
-                    <h3>Website</h3>
-                    <label>Website URL
-                      <input placeholder="https://www.example.com" class="settings-field" name="website_url" value="${s.website_url || ''}"/>
-                    </label>
-                    <label style="margin-top:8px;">Terms of Service URL
-                      <input placeholder="https://www.example.com/terms" class="settings-field" name="terms_url" value="${s.terms_url || ''}"/>
-                    </label>
-                  </div>
+                  <!-- Website section removed (Website URL moved to Business Information) -->
 
                   <div class="section" id="ai">
                     <h3>AI Preferences</h3>
@@ -464,13 +464,7 @@ export default function registerSettingsRoutes(app, options = {}) {
                       <input type="hidden" name="escalation_email_enabled" value="0"/>
                       <input type="checkbox" name="escalation_email_enabled" value="1" ${s.escalation_email_enabled ? 'checked' : ''}/> Send email when customer escalates to support
                     </label>
-                    <div class="small" style="margin-top:8px;">Get notified via email when a customer requests to speak with a human.</div>
-                    <div class="small" style="margin-top:12px;">
-                      Notifications will be sent to your account email (${email || 'not set'}).
-                      To change it, update your email in <strong>Personal Information</strong> above.
-                    </div>
-                    
-                    <div style="margin-top:16px; padding-top:16px;">
+                    <div style="margin-top:8px;">
                       <h4 style="margin:0 0 8px 0;">SMTP Configuration</h4>
                       ${smtpEnvConfigured ? `
                         <div class="small" style="margin-bottom:12px;">
@@ -953,7 +947,7 @@ export default function registerSettingsRoutes(app, options = {}) {
     return JSON.stringify(out);
   }
 
-  app.post("/settings/staff", ensureAuthed, protect, async (req, res) => {
+  app.post("/settings/staff", ensureAuthed, protect, wrapAsync(async (req, res) => {
     const userId = getCurrentUserId(req);
     const name = String(req.body?.name || '').trim();
     if (!name) return res.redirect(303, '/settings');
@@ -970,9 +964,9 @@ export default function registerSettingsRoutes(app, options = {}) {
       }
     } catch {}
     return res.redirect(303, '/settings');
-  });
+  }));
 
-  app.post("/settings/staff/:id", ensureAuthed, protect, async (req, res) => {
+  app.post("/settings/staff/:id", ensureAuthed, protect, wrapAsync(async (req, res) => {
     const userId = getCurrentUserId(req);
     const id = String(req.params.id || '');
     if (!id) return res.redirect(303, '/settings');
@@ -987,17 +981,17 @@ export default function registerSettingsRoutes(app, options = {}) {
       await Staff.findOneAndUpdate({ _id: id, user_id: userId }, { name, calendar_id: calendarId, timezone, slot_minutes: slotMinutes, working_hours_json: workingJson || '{}' }, { new: true });
     } catch {}
     return res.redirect(303, '/settings?edit_staff=');
-  });
+  }));
 
-  app.post("/settings/staff/:id/delete", ensureAuthed, protect, async (req, res) => {
+  app.post("/settings/staff/:id/delete", ensureAuthed, protect, wrapAsync(async (req, res) => {
     const userId = getCurrentUserId(req);
     const id = String(req.params.id || '');
     if (!id) return res.redirect(303, '/settings');
     try { await Staff.findOneAndDelete({ _id: id, user_id: userId }); } catch {}
     return res.redirect(303, '/settings');
-  });
+  }));
 
-  app.post("/danger/wipe", ensureAuthed, protect, async (req, res) => {
+  app.post("/danger/wipe", ensureAuthed, protect, wrapAsync(async (req, res) => {
     const userId = getCurrentUserId(req);
     try {
       await wipeUserData(userId);
@@ -1010,9 +1004,9 @@ export default function registerSettingsRoutes(app, options = {}) {
       console.error('[Wipe] Clerk delete error:', e?.errors?.[0]?.message || e?.message || e);
     }
     return res.redirect(303, '/logout');
-  });
+  }));
 
-  app.post("/settings", ensureAuthed, protect, async (req, res) => {
+  app.post("/settings", ensureAuthed, protect, wrapAsync(async (req, res) => {
     const userId = getCurrentUserId(req);
     const validation = validateSettingsPayload(req.body || {});
     if (!validation.success) {
@@ -1059,7 +1053,7 @@ export default function registerSettingsRoutes(app, options = {}) {
     }
 
     res.redirect(303, "/settings?saved=1");
-  });
+  }));
 
   // WhatsApp token status check (used by Inbox modal)
   app.get("/api/settings/wa-token/status", ensureAuthed, async (req, res) => {

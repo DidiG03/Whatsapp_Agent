@@ -185,6 +185,59 @@ To manage notification settings, visit: ${process.env.PUBLIC_BASE_URL || 'http:/
 }
 
 /**
+ * Send a lightweight escalation ping to the account's email, regardless of the
+ * escalation_email_enabled toggle. Useful for critical alerts (e.g., when we
+ * actually send the “connecting you to a human now” message).
+ */
+export async function sendEscalationPingToAccount(userId, escalationData = {}) {
+  try {
+    const settings = await getSettingsForUser(userId);
+    // Resolve destination from Clerk account primary email
+    let toEmail = null;
+    try {
+      const user = await clerkClient.users.getUser(userId);
+      const primaryId = user.primaryEmailAddressId;
+      toEmail = user.emailAddresses?.find(e => e.id === primaryId)?.emailAddress
+        || user.emailAddresses?.[0]?.emailAddress
+        || null;
+    } catch (e) {
+      console.error('[Email] Clerk lookup failed for escalation ping:', e?.message || e);
+    }
+    if (!toEmail) {
+      console.warn('[Email] No destination email for escalation ping:', userId);
+      return { success: false, reason: 'no_email' };
+    }
+    const transporter = createTransporter(settings);
+    if (!transporter) return { success: false, reason: 'no_smtp_config' };
+    const fromEmail = settings?.smtp_user || process.env.SMTP_USER;
+    const businessName = settings?.business_name || 'Your Business';
+    const { customerName, customerPhone, reason } = escalationData;
+    const subject = `New chat escalation — connecting customer now`;
+    const html = `
+      <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111;">
+        <h2 style="margin:0 0 8px 0;">Connecting a customer to a human</h2>
+        <div style="margin:6px 0;"><strong>Business:</strong> ${businessName}</div>
+        <div style="margin:6px 0;"><strong>Customer:</strong> ${customerName || customerPhone || 'Unknown'}</div>
+        ${customerPhone ? `<div style="margin:6px 0;"><strong>Phone:</strong> ${customerPhone}</div>` : ''}
+        ${reason ? `<div style="margin:6px 0;"><strong>Reason:</strong> ${reason}</div>` : ''}
+        <p style="margin-top:12px;">A customer has been escalated and received the “connecting you to a human now” message.</p>
+        <p style="margin-top:8px;"><a href="${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/inbox" style="color:#4F46E5;">Open Inbox</a></p>
+      </div>
+    `;
+    await transporter.sendMail({
+      from: fromEmail,
+      to: toEmail,
+      subject,
+      html
+    });
+    return { success: true };
+  } catch (e) {
+    console.error('[Email] Escalation ping failed:', e?.message || e);
+    return { success: false, error: e?.message || String(e) };
+  }
+}
+
+/**
  * Send booking confirmation email to account owner
  * @param {string} userId - The Clerk user ID (account owner)
  * @param {Object} bookingData - Data about the booking

@@ -7,7 +7,7 @@ import cookieParser from "cookie-parser";
 import { STATIC_DIR } from "./config.mjs";
 import { initClerk } from "./middleware/auth.mjs";
 import { securityHeaders, createRateLimiters, sanitizeInput } from "./middleware/security.mjs";
-import { errorHandler, requestLogger } from "./middleware/errors.mjs";
+import { errorHandler, requestLogger, notFoundHandler } from "./middleware/errors.mjs";
 import { csrfProtection, attachCsrfToken } from "./middleware/csrf.mjs";
 
 // Monitoring and Logging
@@ -315,6 +315,7 @@ export async function createApp() {
   startMetricsCollection(60000); // Collect metrics every minute (reduced frequency)
   
   // Global error handler (must be last)
+  app.use(notFoundHandler);
   app.use(errorHandler);
 
   // Return configured app

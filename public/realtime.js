@@ -21,13 +21,24 @@ class RealtimeManager {
     this.refreshTimeout = null;
     this.realtimeStatusPromise = null;
     this.realtimeStatusCache = null;
+    this.reconnectIntervalId = null;
     this.socket = {
       on: (eventName, handler) => this.onGlobal(eventName, handler),
       off: (eventName, handler) => this.offGlobal(eventName, handler)
     };
     this.visibilityChangeHandler = this.handleVisibilityChange.bind(this);
+    this.onlineHandler = () => {
+      try { if (!this.isConnected) this.connect(); } catch {}
+    };
+    this.focusHandler = () => {
+      try { if (!document.hidden && !this.isConnected) this.connect(); } catch {}
+    };
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', this.visibilityChangeHandler);
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', this.onlineHandler);
+      window.addEventListener('focus', this.focusHandler);
     }
     console.log('🔌 RealtimeManager initialized (Ably)');
   }
@@ -96,6 +107,7 @@ class RealtimeManager {
           this.ably = client;
           this.isConnected = true;
           this.connectionAttempts = 0;
+          this.stopReconnectLoop();
           this.updateConnectionStatus(true);
           this.setupUserChannel();
           if (this.currentChat) {
@@ -107,6 +119,7 @@ class RealtimeManager {
         client.connection.on('disconnected', () => {
           this.isConnected = false;
           this.updateConnectionStatus(false);
+          this.startReconnectLoop();
         });
 
         client.connection.on('suspended', () => {
@@ -118,6 +131,7 @@ class RealtimeManager {
         client.connection.on('failed', (err) => {
           this.isConnected = false;
           this.updateConnectionStatus(false);
+          try { this.checkAuthAndMaybeRedirect(); } catch {}
           reject(err);
         });
       } catch (error) {
@@ -304,6 +318,7 @@ class RealtimeManager {
     if (this.isDestroyed) return;
     if (this.connectionAttempts >= this.maxConnectionAttempts) {
       console.warn('Max realtime reconnection attempts reached');
+      this.startReconnectLoop();
       return;
     }
     if (this.reconnectTimeout) {
@@ -313,6 +328,24 @@ class RealtimeManager {
     this.reconnectTimeout = setTimeout(() => {
       this.connect();
     }, 2000 * this.connectionAttempts);
+  }
+
+  startReconnectLoop() {
+    if (this.reconnectIntervalId) return;
+    // Try to reconnect every 60s while disconnected
+    this.reconnectIntervalId = setInterval(() => {
+      if (this.isDestroyed) return;
+      if (!this.isConnected) {
+        try { this.connect(); } catch {}
+      }
+    }, 60000);
+  }
+
+  stopReconnectLoop() {
+    if (this.reconnectIntervalId) {
+      clearInterval(this.reconnectIntervalId);
+      this.reconnectIntervalId = null;
+    }
   }
 
   updateConnectionStatus(isConnected) {
@@ -359,6 +392,11 @@ class RealtimeManager {
     if (this.visibilityChangeHandler && typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.visibilityChangeHandler);
     }
+    if (typeof window !== 'undefined') {
+      try { window.removeEventListener('online', this.onlineHandler); } catch {}
+      try { window.removeEventListener('focus', this.focusHandler); } catch {}
+    }
+    this.stopReconnectLoop();
   }
 
   // ===== Methods below are reused from the legacy implementation =====
@@ -426,6 +464,29 @@ class RealtimeManager {
     return data;
   }
 
+  async checkAuthAndMaybeRedirect() {
+    try {
+      const resp = await fetch('/api/realtime/status', {
+        credentials: 'include'
+      });
+      if (resp.status === 401) {
+        this.showToast('Session expired. Please sign in again.', 'error');
+        try { window.authManager?.checkAuthStatus?.(); } catch {}
+        // Redirect to sign-in, preserving return URL
+        setTimeout(() => {
+          try {
+            const target = `/auth/signin?redirect_url=${encodeURIComponent(window.location.href)}`;
+            window.location.href = target;
+          } catch {}
+        }, 1500);
+        return false;
+      }
+    } catch {
+      // Ignore network errors here; reconnect loop will handle retry
+    }
+    return true;
+  }
+
   handleNewMessage(data = {}) {
     const phone =
       data.phone ||
@@ -460,9 +521,18 @@ class RealtimeManager {
       const bubble = document.createElement('div');
       bubble.className = 'bubble';
       const meta = this.formatTimestamp(message?.timestamp);
+      // If the user is upgraded (set by inbox page), render inline action buttons like server-rendered HTML
+      const canActions = (typeof window !== 'undefined' && !!window.IS_UPGRADED && message?.id);
+      const actionsHtml = canActions
+        ? `<div class="message-actions">
+             <button class="action-btn reply-btn" onclick="replyToMessage('${message.id}')" title="Reply to this message">↩️</button>
+             <button class="action-btn reaction-btn" onclick="showReactionPicker('${message.id}')" title="Add reaction">+</button>
+           </div>`
+        : '';
       bubble.innerHTML = `
         <div class="wa-message-body">${this.formatMessageBody(message)}</div>
         <div class="meta">${meta}</div>
+        ${actionsHtml}
       `;
       container.appendChild(bubble);
       const anchor = thread.querySelector('[data-thread-anchor]');

@@ -4,7 +4,7 @@
  */
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
-import { logger } from '../logger.mjs';
+import { logHelpers } from '../monitoring/logger.mjs';
 
 // Rate limiting configurations (increased limits)
 export const createRateLimiters = () => {
@@ -133,12 +133,12 @@ export const validateRequest = (schema) => {
     try {
       const { error } = schema.validate(req.body);
       if (error) {
-        logger.warn({ error: error.details[0].message, path: req.path }, 'Request validation failed');
+        logHelpers.logSecurity('request_validation_failed', { error: error.details[0].message, path: req.path });
         return res.status(400).json({ error: 'Invalid request data' });
       }
       next();
     } catch (err) {
-      logger.error({ err }, 'Request validation error');
+      logHelpers.logError(err, { component: 'request_validation', path: req.path });
       res.status(500).json({ error: 'Internal server error' });
     }
   };
@@ -150,7 +150,7 @@ export const adminWhitelist = (req, res, next) => {
   const clientIP = req.ip || req.connection.remoteAddress;
   
   if (!allowedIPs.includes(clientIP)) {
-    logger.warn({ clientIP, path: req.path }, 'Unauthorized admin access attempt');
+    logHelpers.logSecurity('admin_ip_denied', { clientIP, path: req.path });
     return res.status(403).json({ error: 'Access denied' });
   }
   next();

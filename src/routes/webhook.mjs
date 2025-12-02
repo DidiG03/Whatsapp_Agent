@@ -16,7 +16,7 @@ import { buildCustomerProfileSnippet, rememberService, rememberAgent, rememberAp
 import { listMessagesForThread } from "../services/conversations.mjs";
 import { listAvailability, createBooking, rescheduleBooking, cancelBooking, buildDayRows, buildTimeRows } from "../services/booking.mjs";
 import { recordOutboundMessage, recordInboundMessage } from "../services/messages.mjs";
-import { sendEscalationNotification, sendBookingNotification } from "../services/email.mjs";
+import { sendEscalationNotification, sendBookingNotification, sendEscalationPingToAccount } from "../services/email.mjs";
 import { incrementUsage, getUserPlan, isUsageExceeded } from "../services/usage.mjs";
 import { addReaction, removeReaction } from "../services/reactions.mjs";
 import { broadcastNewMessage, broadcastReaction, broadcastMessageStatus } from "./realtime.mjs";
@@ -1005,6 +1005,20 @@ async function completeEscalationHandoff({ tenantUserId, from, reason, cfg, cust
   }
   const connecting = await generateAssistantNudge('handoff_connecting', {}, { tone: cfg?.ai_tone, style: cfg?.ai_style });
   await sendTextTracked(from, connecting, cfg);
+  // Ensure an alert email is sent to the account owner when this message is sent.
+  // If standard escalation emails are disabled, send a lightweight ping to the
+  // primary email from Personal Information.
+  try {
+    if (!cfg?.escalation_email_enabled) {
+      await sendEscalationPingToAccount(tenantUserId, {
+        customerName: customerName || null,
+        customerPhone: from,
+        reason
+      });
+    }
+  } catch (e) {
+    console.error('[Webhook] Failed to send fallback escalation ping:', e?.message || e);
+  }
 }
 
 async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
@@ -1093,7 +1107,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         } catch (e) {
           console.error('[Webhook] Failed to advance to ask_reason:', e?.message || e);
         }
-        await sendTextTracked(from, "Hello, and what’s the reason for contacting us today?", cfg);
+        await sendTextTracked(from, `Hello, and what’s the reason for contacting ${cfg?.business_name || 'our business'} today?`, cfg);
       } else {
         await promptForEscalationName(from, cfg);
       }

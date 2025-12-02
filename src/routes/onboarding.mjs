@@ -5,6 +5,7 @@ import { upsertKbItem } from "../services/kb.mjs";
 import { upsertSettingsForUser, getSettingsForUser } from "../services/settings.mjs";
 import { onboardingCoachReply } from "../services/ai.mjs";
 import { KBItem } from "../schemas/mongodb.mjs";
+import { parseDirectives, applyDirectives } from "../services/coachDirectives.mjs";
 import { getPlanStatus } from "../services/usage.mjs";
 
 export default function registerOnboardingRoutes(app) {
@@ -93,33 +94,14 @@ export default function registerOnboardingRoutes(app) {
       });
       coach = coach || "Got it.";
 
+      const directives = parseDirectives(coach);
       const lines = coach.split('\n');
       const trimmed = lines.map(l => l.trim());
-      const addLines = trimmed.filter(l => /^ADD_KB\|/.test(l));
       const askLine = trimmed.find(l => /^ASK_MORE\|/.test(l));
       const setLines = trimmed.filter(l => /^SET\|/.test(l));
       const completeLine = trimmed.find(l => /^COMPLETE$/.test(l));
-
-      // Visible part excludes ALL directives (ADD_KB, ASK_MORE, SET, COMPLETE)
-      let visible = lines
-        .filter(l => {
-          const t = l.trim();
-          return !/^ADD_KB\|/.test(t) && !/^ASK_MORE\|/.test(t) && !/^SET\|/.test(t) && t !== 'COMPLETE';
-        })
-        .join('\n')
-        .trim();
-
-      const savedSummaries = [];
-      for (const l of addLines) {
-        const m = /^ADD_KB\|(.*)\|(.*)$/.exec(l);
-        if (!m) continue;
-        const title = (m[1] || '').trim().slice(0, 120) || 'Untitled';
-        const content = (m[2] || '').trim();
-        if (content) {
-          await upsertKbItem(userId, title, content);
-          savedSummaries.push(`Saved “${title}” to KB.`);
-        }
-      }
+      const { summaries: savedSummaries, visible: appliedVisible } = await applyDirectives(userId, directives);
+      let visible = appliedVisible;
 
       // Apply any settings updates returned by the coach (SET|key|value)
       if (setLines.length) {

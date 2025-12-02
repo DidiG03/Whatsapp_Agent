@@ -512,6 +512,35 @@
     new InteractionManager();
     new AnimationManager();
     new ParallaxManager();
+    // Global graceful error UX: fetch wrapper + error listeners
+    try {
+      const originalFetch = window.fetch;
+      window.fetch = async function(input, init) {
+        try {
+          const resp = await originalFetch(input, init);
+          if (!resp.ok && window.Toast) {
+            const status = resp.status;
+            const show = (msg) => Toast.show(msg, status >= 500 ? 'error' : 'warning', 4000);
+            if (status === 401) show('Please sign in to continue.');
+            else if (status === 403) show('Your session expired. Refresh and try again.');
+            else if (status === 404) show('Not found.');
+            else if (status === 413) show('That upload is too large.');
+            else if (status === 429) show('Too many requests. Please slow down.');
+            else if (status >= 500) show('Something went wrong. Please try again.');
+          }
+          return resp;
+        } catch (e) {
+          if (window.Toast) Toast.show('Network error. Check your connection and try again.', 'error', 5000);
+          throw e;
+        }
+      };
+    } catch {}
+    window.addEventListener('error', function() {
+      if (window.Toast) Toast.show('An error occurred. Please try again.', 'error', 4000);
+    });
+    window.addEventListener('unhandledrejection', function() {
+      if (window.Toast) Toast.show('A request failed unexpectedly. Please try again.', 'warning', 4000);
+    });
   });
 
   // Export for potential external use

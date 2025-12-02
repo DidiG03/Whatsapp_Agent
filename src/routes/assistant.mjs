@@ -3,6 +3,7 @@ import { ONBOARD_STEPS, getOnboarding, setOnboarding } from "../services/onboard
 import { renderTranscriptAsBubbles } from "../utils.mjs";
 import { upsertKbItem } from "../services/kb.mjs";
 import { upsertSettingsForUser, getSettingsForUser } from "../services/settings.mjs";
+import { parseDirectives, applyDirectives } from "../services/coachDirectives.mjs";
 import { onboardingCoachReply } from "../services/ai.mjs";
 import { KBItem } from "../schemas/mongodb.mjs";
 
@@ -229,55 +230,14 @@ export default function registerAssistantRoutes(app) {
       });
       coach = coach || "Got it.";
 
+      const directives = parseDirectives(coach);
+      // Preserve askLine and setLines for follow-up logic below
       const lines = coach.split('\n');
       const trimmed = lines.map(l => l.trim());
-      const addLines = trimmed.filter(l => /^ADD_KB\|/.test(l));
       const askLine = trimmed.find(l => /^ASK_MORE\|/.test(l));
       const setLines = trimmed.filter(l => /^SET\|/.test(l));
-
-      let visible = lines
-        .filter(l => { const t = l.trim(); return !/^ADD_KB\|/.test(t) && !/^ASK_MORE\|/.test(t) && !/^SET\|/.test(t) && t !== 'COMPLETE'; })
-        .join('\n')
-        .trim();
-
-      const savedSummaries = [];
-      for (const l of addLines) {
-        const m = /^ADD_KB\|(.*)\|(.*)$/.exec(l);
-        if (!m) continue;
-        const title = (m[1] || '').trim().slice(0, 120) || 'Untitled';
-        const content = (m[2] || '').trim();
-        if (content) {
-          await upsertKbItem(userId, title, content);
-          savedSummaries.push(`Saved “${title}” to KB.`);
-        }
-      }
-
-      if (setLines.length) {
-        const current = getSettingsForUser(userId) || {};
-        const updates = { };
-        let entryGreetingVal = '';
-        for (const l of setLines) {
-          const m = /^SET\|(.*?)\|(.*)$/.exec(l);
-          if (!m) continue;
-          const key = (m[1] || '').trim();
-          const value = (m[2] || '').trim();
-          if (key && value) {
-            updates[key] = value;
-            if (key === 'entry_greeting') entryGreetingVal = value;
-          }
-        }
-        if (Object.keys(updates).length) {
-          upsertSettingsForUser(userId, { ...current, ...updates });
-          try {
-            if (updates.business_name) { await upsertKbItem(userId, 'Business Name', updates.business_name); savedSummaries.push('Saved “Business Name” to KB.'); }
-            if (updates.website_url) { await upsertKbItem(userId, 'Website', updates.website_url); savedSummaries.push('Saved “Website” to KB.'); }
-            if (updates.business_phone) { await upsertKbItem(userId, 'Contact', updates.business_phone); savedSummaries.push('Saved “Contact” to KB.'); }
-          } catch {}
-          if (!visible) {
-            if (entryGreetingVal) visible = entryGreetingVal; else if (updates.business_name) visible = `Saved business name: ${updates.business_name}`; else visible = 'Saved your settings.';
-          }
-        }
-      }
+      const { summaries: savedSummaries, visible: appliedVisible } = await applyDirectives(userId, directives);
+      let visible = appliedVisible;
 
       // Heuristics for common statements
       try {

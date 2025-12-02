@@ -307,7 +307,7 @@ export default function registerHomeRoutes(app) {
                   <li>Basic AI suggestions</li>
                   <li>Community support</li>
                 </ul>
-                <a href="/auth" class="btn btn-primary price-cta" style="margin-top:auto;">Get started</a>
+                <a href="/auth" class="btn btn-primary" style="margin-top:auto;">Get started</a>
               </div>
               <div class="price-card highlighted" style="display:flex; flex-direction:column; min-height: 460px;">
                 <div class="price-card-head">
@@ -322,7 +322,7 @@ export default function registerHomeRoutes(app) {
                   <li>Campaigns & analytics</li>
                   <li>Email support</li>
                 </ul>
-                <a href="/plan" class="btn btn-primary price-cta" style="margin-top:auto;">Upgrade to Starter</a>
+                <a href="/plan" class="btn btn-primary" style="margin-top:auto;">Upgrade to Starter</a>
               </div>
             </div>
           </section>

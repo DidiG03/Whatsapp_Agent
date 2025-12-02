@@ -95,7 +95,6 @@
 *::after {
   box-sizing: border-box;
 }
-
 html {
   scroll-behavior: smooth;
   -webkit-font-smoothing: antialiased;
@@ -117,9 +116,6 @@ body {
   line-height: 1.6;
   font-size: var(--font-size-base);
   overflow-x: hidden;
-  min-height: 100vh;
-  margin: 0;
-  padding: 0;
   width: 100%;
 }
 /* Enhanced Link Styles */
@@ -159,12 +155,7 @@ header h1, header h2 {
   display: flex; 
   align-items: center; 
   justify-content: space-between; 
-  margin-bottom: var(--space-6); 
   padding: var(--space-4);
-  background: var(--neutral-50);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--neutral-200);
-  backdrop-filter: blur(10px);
 }
 
 /* Professional Breadcrumb Navigation */
@@ -190,19 +181,31 @@ header h1, header h2 {
 /* Enhanced Card System */
 .card {
   background: var(--surface); 
-  border: 1px solid var(--border); 
+  border: none;
   border-radius: var(--radius-xl); 
   padding: var(--space-6); 
-  box-shadow: var(--shadow-sm);
   transition: all var(--transition-normal);
   position: relative;
-  overflow: visible; /* allow dropdowns to escape card */
+  overflow: visible;
 }
 
-.card:hover {
-  box-shadow: var(--shadow-lg);
-  transform: translateY(-2px);
-  border-color: var(--primary-200);
+/* Surfaces: unify common card-like blocks */
+.card, .price-card, .integration-card, .feature-card, .showcase-card, .industry-card, .calendar-cell {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-sm);
+}
+
+/* Pills/badges: unify base shape */
+.chip, .kb-title-pill, .badge-current, .live-chip, .escalation-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 12px;
 }
 
 /* Enhanced List Styles */
@@ -229,10 +232,8 @@ header h1, header h2 {
 /* Professional Sidebar Layout - Full Viewport Height */
 .layout { 
   display: flex; 
-  gap: var(--space-3); 
   height: calc(100vh - 80px); 
   width: 100%;
-  padding: var(--space-4) var(--space-6);
   box-sizing: border-box;
   overflow: hidden;
 }
@@ -242,13 +243,10 @@ header h1, header h2 {
   width: 280px; 
   height: 100%; 
   background: var(--surface); 
-  border: 1px solid var(--border); 
-  border-radius: var(--radius-xl); 
+  border: none; 
   padding: var(--space-6); 
   display: flex; 
   flex-direction: column;
-  box-shadow: var(--shadow-lg);
-  backdrop-filter: blur(20px);
   position: relative;
   overflow-y: auto;
 }
@@ -264,9 +262,6 @@ header h1, header h2 {
   padding: var(--space-4) 0;
 }
 
-/* Phone emoji removed from sidebar branding */
-
-/* Enhanced Loading Component Styles */
 /* Simple loading styles */
 .loading-overlay {
   position: fixed;
@@ -454,6 +449,7 @@ header h1, header h2 {
   color: var(--primary-700);
   transform: translateX(4px);
   box-shadow: var(--shadow-sm);
+  cursor: pointer;
 }
 
 .sidebar .nav a.active { 
@@ -461,6 +457,7 @@ header h1, header h2 {
   color: var(--primary-700);
   font-weight: 600;
   box-shadow: var(--shadow-sm);
+  cursor: pointer;
 }
 
 .sidebar .nav a.active::before {
@@ -498,7 +495,7 @@ header h1, header h2 {
   position: relative;
   cursor: pointer;
   padding: 8px;
-  border-radius: 8px;
+  border-radius: 100%;
   transition: background 0.2s;
   display: flex;
   align-items: center;
@@ -775,61 +772,7 @@ h3 {
   line-height: 1.3;
 }
 
-/* Enhanced Button Styles */
-button {
-  background: var(--primary-600);
-  color: white;
-  border: 0;
-  border-radius: var(--radius-lg);
-  padding: var(--space-2) var(--space-4);
-  font-size: var(--font-size-xs);
-  font-weight: 600;
-  cursor: pointer;
-  transition: all var(--transition-normal);
-  position: relative;
-  overflow: hidden;
-  box-shadow: var(--shadow-sm);
-}
-
-button::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: -100%;
-  width: 100%;
-  height: 100%;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
-  transition: left var(--transition-slow);
-}
-
-button:hover {
-  background: var(--primary-700);
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-md);
-}
-
-button:hover::before {
-  left: 100%;
-}
-
-button:active {
-  transform: translateY(0);
-  box-shadow: var(--shadow-sm);
-}
-
-button:disabled {
-  background: var(--neutral-300);
-  color: var(--neutral-500);
-  cursor: not-allowed;
-  transform: none;
-  box-shadow: none;
-}
-
-button:disabled:hover {
-  background: var(--neutral-300);
-  transform: none;
-  box-shadow: none;
-}
+/* (Buttons are unified later; element-level button effects removed) */
 
 /* Enhanced Chat Interface */
 .chat-box { 
@@ -894,13 +837,7 @@ button:disabled:hover {
   transform: translateY(-1px);
 }
 
-/* Ensure inbound/outbound images display properly inside bubbles */
-.bubble img {
-  max-width: 240px;
-  height: auto;
-  border-radius: 8px;
-  display: block;
-}
+/* (chat image sizing unified in .msg .bubble img below) */
 
 .bubble.user { 
   background: linear-gradient(135deg, var(--primary-100) 0%, var(--primary-50) 100%); 
@@ -938,26 +875,10 @@ button:disabled:hover {
 
 
 .msg .bubble {
-  max-width: 62ch;
-  backdrop-filter: saturate(120%);
+  /* merged below in the later .msg .bubble block */
 }
 
-.msg-in .bubble {
-  background: #ffffff;
-  border: 1px solid #e6e8ec;
-}
-.msg-out .bubble {
-  background: #e7f7d9;
-  border: 1px solid #d2efbd;
-}
-
-/* Timestamp and ticks aligned neatly */
-.msg .meta {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: #7a8699;
-}
+/* removed duplicate early definitions; the canonical versions are defined later */
 
 /* Reactions below bubble */
 /* (Consolidated below in Message Reactions section) */
@@ -1033,6 +954,7 @@ button:disabled:hover {
   transition: all var(--transition-normal);
   word-wrap: break-word;
   overflow-wrap: break-word;
+  backdrop-filter: saturate(120%);
 }
 
 .msg .bubble:hover {
@@ -1368,23 +1290,7 @@ button:hover { filter: brightness(0.95); }
   border-color: #25d366;
 }
 
-.search-btn {
-  padding: 0 14px;
-  height: 44px; /* match input */
-  background: #25d366;
-  color: white;
-  border: none;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: background-color 0.2s ease;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.search-btn:hover {
-  background: #20b858;
-}
+/* search button now uses .btn .btn-primary */
 
 .search-filters {
   display: grid;
@@ -1440,25 +1346,7 @@ button:hover { filter: brightness(0.95); }
   border-top: 1px solid #e5e5e5;
 }
 
-.filter-toggle-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 12px;
-  height: 44px; /* same as search */
-  background: #f0f0f0;
-  border: 1px solid #e5e5e5;
-  border-radius: 10px;
-  cursor: pointer;
-  font-size: 12px;
-  color: #667781;
-  transition: all 0.2s ease;
-}
-
-.filter-toggle-btn:hover {
-  background: #e5e5e5;
-  color: #111b21;
-}
+/* filter toggle uses .btn .btn-ghost */
 
 .search-actions {
   display: flex;
@@ -1489,7 +1377,7 @@ button:hover { filter: brightness(0.95); }
   .search-form { flex-direction: column; align-items: stretch; }
   .search-input-group { width: 100%; }
   .search-actions { justify-content: stretch; }
-  .search-actions .btn-primary, .filter-toggle-btn, .search-btn { width: 100%; }
+  .search-actions .btn-primary, .search-actions .btn { width: 100%; }
 }
 
 .search-actions .btn-primary:hover {
@@ -2710,35 +2598,7 @@ button:hover { filter: brightness(0.95); }
   line-height: 1;
 }
 
-.retry-button {
-  background: #dc2626;
-  color: white;
-  border: none;
-  border-radius: 4px;
-  padding: 2px 4px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s ease;
-  opacity: 0.8;
-}
-
-.retry-button:hover {
-  background: #b91c1c;
-  opacity: 1;
-  transform: scale(1.05);
-}
-
-.retry-button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  transform: none;
-}
-
-.retry-button svg {
-  animation: spin 1s linear infinite;
-}
+/* retry-button styles removed (use .btn .btn-danger) */
 
 /* spin animation defined earlier */
 
@@ -2795,25 +2655,7 @@ button:hover { filter: brightness(0.95); }
   color: #16a34a;
 }
 
-.live-mode-btn {
-  background: var(--primary-500);
-  color: white;
-  border: none;
-  padding: 8px 16px;
-  border-radius: 20px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.live-mode-btn:hover {
-  background: var(--primary-600);
-  transform: translateY(-1px);
-}
+/* live-mode button now uses .btn .btn-primary */
 
 /* Enhanced handoff toggle button */
 .handoff-toggle-btn {
@@ -3094,12 +2936,7 @@ button:hover { filter: brightness(0.95); }
 .guide-card-header { font-weight: 800; color: #111827; margin: 18px 0 8px 0; font-size: 22px; letter-spacing: -0.01em; }
 .guide-card-body { font-size: 14px; color: #374151; min-height: 48px; }
 .guide-card-cta { margin-top: 14px; font-size: 14px; color: #111827; font-weight:600; }
-.article{height:89vh;max-width:920px;margin:0 auto; overflow: auto; }
-.article .meta{color:#6b7280;font-size:12px;margin-bottom:8px}
-.article .title{font-size:28px;font-weight:700;margin:0 0 8px 0}
-.article .prose{color:#111827}
-.back{display:inline-flex;align-items:center;gap:6px;color:#374151;text-decoration:none;margin-bottom:12px}
-.back:hover{text-decoration:underline}
+/* deduped: use later .article and .back definitions */
 .toc{background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin:12px 0}
 
 /* Colorful variants using nth-child for variety */
@@ -3144,8 +2981,7 @@ button:hover { filter: brightness(0.95); }
 .guide-cta { text-align:left; background: linear-gradient(135deg, #eef2ff, #ecfeff); border: 1px solid #dbeafe; }
 .guide-cta .cta-title { font-weight: 700; color:#111827; margin-bottom:6px; }
 .guide-cta .cta-sub { color:#374151; margin-bottom:10px; }
-.btn-cta { display:inline-block; background:#111827; color:#fff; padding:8px 12px; border-radius:8px; }
-.btn-cta:hover { filter: brightness(0.95); }
+/* btn-cta removed; use .btn .btn-primary */
 
 @media (max-width: 900px) {
   .guide-extra { grid-template-columns: 1fr; }
@@ -3248,7 +3084,7 @@ button:hover { filter: brightness(0.95); }
 .calendar { padding: 12px; }
 .calendar-grid { display:grid; grid-template-columns: repeat(7, 1fr); gap: 8px; }
 .calendar-dow { font-size:12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; padding: 6px 2px; }
-.calendar-cell { background: #fff; border: 1px solid var(--border); border-radius: 8px; min-height: 100px; padding: 8px; display:flex; flex-direction:column; gap:6px; }
+.calendar-cell { min-height: 100px; padding: 8px; display:flex; flex-direction:column; gap:6px; }
 .calendar-cell.other-month { background: #fafafa; color: #9ca3af; }
 .calendar-cell .day { font-size: 12px; color:#6b7280; align-self:flex-end; }
 .calendar-events { display:flex; flex-direction:column; gap:4px; overflow: hidden; }
@@ -4270,18 +4106,9 @@ button:hover { filter: brightness(0.95); }
   }
   .landing-art { order: -1; }
 }
-/* Unified Button System - Consistent shape, states, and focus across app */
-/* Base button shape applied to common button classes (colors may vary per context) */
-.btn,
-.btn-primary,
-.btn-ghost,
-.btn-cta,
-.search-btn,
-.filter-toggle-btn,
-.toast-action,
-.retry-button,
-.live-mode-btn,
-.pagination a.btn-ghost {
+/* Unified Button System - minimal and consistent */
+/* Base shape applied to all common button classes (anchors or buttons) */
+.btn, .btn-primary, .btn-ghost, .btn-danger, .pagination a.btn-ghost {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -4292,40 +4119,18 @@ button:hover { filter: brightness(0.95); }
   font-size: var(--font-size-xs);
   line-height: 1.2;
   border: 1px solid transparent;
-  transition: all var(--transition-normal);
-  box-shadow: var(--shadow-sm);
+  transition: background-color var(--transition-normal), border-color var(--transition-normal), color var(--transition-normal), transform 120ms ease;
+  text-decoration: none;
+  box-shadow: none;
 }
 
-/* Hover/active interactions (non-destructive) */
-.btn:hover,
-.btn-primary:hover,
-.btn-ghost:hover,
-.btn-cta:hover,
-.search-btn:hover,
-.filter-toggle-btn:hover,
-.toast-action:hover,
-.retry-button:hover,
-.live-mode-btn:hover,
-.pagination a.btn-ghost:hover {
+.btn:hover, .btn-primary:hover, .btn-ghost:hover, .btn-danger:hover, .pagination a.btn-ghost:hover {
   transform: translateY(-1px);
-  box-shadow: var(--shadow-md);
 }
 
-.btn:active,
-.btn-primary:active,
-.btn-ghost:active,
-.btn-cta:active,
-.search-btn:active,
-.filter-toggle-btn:active,
-.toast-action:active,
-.retry-button:active,
-.live-mode-btn:active,
-.pagination a.btn-ghost:active {
+.btn:active, .btn-primary:active, .btn-ghost:active, .btn-danger:active, .pagination a.btn-ghost:active {
   transform: translateY(0);
-  box-shadow: var(--shadow-sm);
 }
-
-/* --- Plan Page -------------------------------------------------------------- */
 .plan-card-shell { padding: 16px; }
 .plan-stats-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .plan-stat { text-align:center; background: var(--surface); }
@@ -4369,12 +4174,7 @@ button:hover { filter: brightness(0.95); }
 .btn:focus-visible,
 .btn-primary:focus-visible,
 .btn-ghost:focus-visible,
-.btn-cta:focus-visible,
-.search-btn:focus-visible,
-.filter-toggle-btn:focus-visible,
 .toast-action:focus-visible,
-.retry-button:focus-visible,
-.live-mode-btn:focus-visible,
 .pagination a.btn-ghost:focus-visible {
   outline: none;
   box-shadow: 0 0 0 4px var(--primary-100), var(--shadow-md);
@@ -4384,12 +4184,6 @@ button:hover { filter: brightness(0.95); }
 .btn:disabled,
 .btn-primary:disabled,
 .btn-ghost:disabled,
-.btn-cta:disabled,
-.search-btn:disabled,
-.filter-toggle-btn:disabled,
-.toast-action:disabled,
-.retry-button:disabled,
-.live-mode-btn:disabled,
 .pagination a.btn-ghost:disabled {
   opacity: 0.6;
   cursor: not-allowed;
@@ -4397,7 +4191,7 @@ button:hover { filter: brightness(0.95); }
   box-shadow: none;
 }
 
-/* Variants (colors) */
+/* Variants (grouped, minimal) */
 .btn-primary {
   background: var(--primary-600);
   color: #fff;
@@ -4405,61 +4199,24 @@ button:hover { filter: brightness(0.95); }
 }
 .btn-primary:hover { background: var(--primary-700); }
 
-.btn-ghost {
+.btn-ghost, .pagination a.btn-ghost {
   background: transparent;
   color: var(--neutral-700);
   border-color: var(--neutral-300);
+  text-decoration: none;
 }
-.btn-ghost:hover {
+.btn-ghost:hover, .pagination a.btn-ghost:hover {
   background: var(--neutral-100);
   color: var(--neutral-900);
   border-color: var(--neutral-400);
 }
 
-/* Danger buttons (e.g., retry/remove) */
-.retry-button {
+.btn-danger {
   background: var(--error-600);
   color: #fff;
   border-color: var(--error-600);
-  padding: var(--space-3) var(--space-5);
-  border-radius: var(--radius-lg);
 }
-.retry-button:hover { background: var(--error-700); }
-
-/* Primary CTAs that are dark/brand neutral */
-.btn-cta {
-  background: var(--neutral-900);
-  color: #fff;
-  border-color: var(--neutral-900);
-}
-.btn-cta:hover { filter: none; }
-
-/* Live mode pill uses primary coloring but unified shape/interactions */
-.live-mode-btn {
-  background: var(--primary-500);
-  color: #fff;
-  border-color: var(--primary-500);
-}
-.live-mode-btn:hover { background: var(--primary-600); }
-
-/* Search + filter actions keep their color but inherit shape & states */
-.search-btn {
-  border-color: transparent; /* keep existing green background */
-}
-.filter-toggle-btn {
-  background: var(--neutral-100);
-  color: var(--neutral-700);
-  border-color: var(--neutral-300);
-}
-.filter-toggle-btn:hover {
-  background: var(--neutral-200);
-  color: var(--neutral-900);
-}
-
-/* Pagination ghost buttons */
-.pagination a.btn-ghost {
-  text-decoration: none;
-}
+.btn-danger:hover { background: var(--error-700); }
 
 /* Size utilities if needed */
 .btn-sm,
@@ -4510,13 +4267,7 @@ button:hover { filter: brightness(0.95); }
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
 }
-.feature-card {
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 18px;
-  padding: 20px;
-  box-shadow: 0 10px 30px -12px rgba(2,6,23,.12);
-}
+.feature-card { padding: 20px; }
 .feature-icon {
   width: 40px; height: 40px; border-radius: 10px;
   display: inline-flex; align-items: center; justify-content: center;
@@ -4549,15 +4300,7 @@ button:hover { filter: brightness(0.95); }
   grid-template-columns: 1fr;
   gap: 18px;
 }
-.showcase-card {
-  
-  gap: 24px;
-  padding: 22px;
-  border: 1px solid #e2e8f0;
-  background: #fff;
-  border-radius: 20px;
-  box-shadow: 0 14px 34px -16px rgba(2,6,23,.14);
-}
+.showcase-card { gap: 24px; padding: 22px; }
 .showcase-copy h3 { margin: 0 0 8px 0; font-size: 22px; color:#0f172a; }
 .showcase-copy p { margin: 0 0 10px 0; color:#475569; line-height:1.7; }
 .ticks { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
@@ -4605,15 +4348,7 @@ button:hover { filter: brightness(0.95); }
   grid-template-columns: repeat(2, minmax(0,1fr));
   gap: 16px;
 }
-.price-card {
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 18px;
-  padding: 20px;
-  box-shadow: 0 12px 34px -18px rgba(2,6,23,.12);
-  display: flex;
-  flex-direction: column;
-}
+.price-card { padding: 20px; display: flex; flex-direction: column; }
 .price-card.highlighted {
   border-color: #6366f1;
   background: #eef2ff !important; /* indigo-100 */
@@ -4627,7 +4362,7 @@ button:hover { filter: brightness(0.95); }
 .price-features { list-style:none; padding:0; margin:12px 0 16px 0; display:grid; gap:6px; }
 .price-features li { padding-left: 18px; position: relative; color:#0f172a; font-size:14px; }
 .price-features li::before { content: '•'; position:absolute; left:0; color:#6366f1; }
-.price-cta { align-self: stretch; text-align: center; }
+/* price-cta removed; use .btn .btn-primary */
 @media (max-width: 900px) {
   .pricing-grid { grid-template-columns: 1fr; }
 }
@@ -4703,13 +4438,9 @@ button:hover { filter: brightness(0.95); }
   grid-template-columns: 56px 1fr;
   gap: 14px;
   align-items: center;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 16px;
   padding: 16px;
   text-decoration: none;
   transition: transform .2s ease, box-shadow .2s ease;
-  box-shadow: 0 12px 28px -18px rgba(2,6,23,.12);
 }
 .integration-card:hover { transform: translateY(-2px); box-shadow: 0 18px 36px -18px rgba(2,6,23,.16); }
 .integration-logo {
@@ -4848,15 +4579,7 @@ button:hover { filter: brightness(0.95); }
   grid-template-columns: repeat(3, minmax(0,1fr));
   gap: 16px;
 }
-.industry-card {
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 16px;
-  box-shadow: 0 16px 36px -22px rgba(2,6,23,.12);
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-}
+.industry-card { padding: 16px; display: flex; flex-direction: column; }
 .industry-accent {
   height: 4px;
   width: 100%;

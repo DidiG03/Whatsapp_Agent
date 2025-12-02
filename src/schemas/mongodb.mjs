@@ -132,7 +132,6 @@ const settingsMultiSchema = new mongoose.Schema({
   // JSON string of categories/tags for the business (array of strings)
   business_categories_json: String,
   website_url: String,
-  terms_url: String,
   ai_tone: String,
   ai_blocked_topics: String,
   ai_style: String,

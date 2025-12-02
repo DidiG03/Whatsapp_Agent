@@ -11,8 +11,10 @@ export default function registerDashboardRoutes(app) {
     const userId = getCurrentUserId(req);
     const s = await getSettingsForUser(userId);
     const onboardingState = await getOnboarding(userId);
-    const usage = getCurrentUsage(userId);
-    const plan = getUserPlan(userId);
+    const [usage, plan] = await Promise.all([
+      getCurrentUsage(userId),
+      getUserPlan(userId)
+    ]);
     const isUpgraded = (plan?.plan_name || 'free') !== 'free';
 
     const kbCompletedSteps = Math.min(onboardingState?.step || 0, ONBOARD_STEPS.length);
@@ -1386,7 +1388,7 @@ export default function registerDashboardRoutes(app) {
         <div class="container">
       ${renderTopbar('Dashboard', email)}
           <div class="layout">
-      ${renderSidebar('dashboard', { showBookings: (plan?.plan_name || 'free') !== 'free', showKb: (plan?.plan_name || 'free') !== 'free' })}
+      ${renderSidebar('dashboard', { showBookings: isUpgraded, isUpgraded })}
             <main class="main">
                 ${metricsHtml}
                 ${apptHtml}

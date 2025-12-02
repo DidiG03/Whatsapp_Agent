@@ -62,7 +62,7 @@ export default function registerGuideRoutes(app) {
                           <div class="guide-cta card">
                             <div class="cta-title">Need help structuring your KB?</div>
                             <div class="cta-sub">Open the Knowledge Base and add Top FAQs to start fast.</div>
-                            <a class="btn-cta" href="/kb/ui">Open Knowledge Base →</a>
+                            <a class="btn btn-primary" href="/kb/ui">Open Knowledge Base →</a>
                           </div>
                         </div>
                         </div>

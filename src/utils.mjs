@@ -314,7 +314,7 @@ export function renderSidebar(activeKey, options = {}) {
 
 export function renderTopbar(crumbs, email) {
   return `
-    <div class="card topbar">
+    <div class="topbar">
       <div class="crumbs">${crumbs}</div>
       <div style="display: flex; align-items: center; gap: 16px;">
         <div id="usage-limit-pill" class="usage-limit-pill" style="display:none;" title="You have exceeded your monthly message limit">
