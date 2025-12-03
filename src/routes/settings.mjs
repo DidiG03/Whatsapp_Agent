@@ -37,7 +37,8 @@ export default function registerSettingsRoutes(app, options = {}) {
     const s = await getSettingsForUser(userId);
     const plan = await getUserPlan(userId);
     const isUpgraded = isPlanUpgraded(plan);
-    const effectiveConversationMode = isUpgraded ? (s.conversation_mode || 'full') : 'escalation';
+    const allowFreeBookings = String(process.env.ALLOW_BOOKINGS_ON_FREE || '').toLowerCase() === 'true';
+    const effectiveConversationMode = (isUpgraded || allowFreeBookings) ? (s.conversation_mode || 'full') : 'escalation';
     const ob = await getOnboarding(userId);
     const email = await getSignedInEmail(req);
     const q = req.query || {};
@@ -428,32 +429,38 @@ export default function registerSettingsRoutes(app, options = {}) {
                       })();
                     </script>
                   </div>
-                  <div class="section" id="bookings_section" style="${s.conversation_mode === 'escalation' ? 'display:none;' : ''}">
+                  <div class="section" id="bookings_section">
                     <h3>Bookings</h3>
+                    ${effectiveConversationMode === 'escalation' ? `
+                      <div class="small" style="margin:8px 0 12px 0; padding:10px 12px; border:1px dashed #fecaca; background:#fff1f2; color:#991b1b; border-radius:8px;">
+                        Bookings are locked in Escalation mode. Upgrade your plan to enable Full conversation mode and unlock bookings.
+                        Go to <a href="/plan">Plan</a> to upgrade.
+                      </div>
+                    ` : ''}
                     <label>
                       <input type="hidden" name="bookings_enabled" value="0"/>
-                      <input type="checkbox" name="bookings_enabled" value="1" ${s.bookings_enabled ? 'checked' : ''}/> Enable bookings via WhatsApp & dashboard
+                      <input type="checkbox" name="bookings_enabled" value="1" ${s.bookings_enabled ? 'checked' : ''} ${effectiveConversationMode === 'escalation' ? 'disabled' : ''}/> Enable bookings via WhatsApp & dashboard
                     </label>
                     <div class="grid-2" style="margin-top:8px;">
                       <label>Reschedule min lead (minutes)
-                        <input class="settings-field" type="number" min="0" step="5" name="reschedule_min_lead_minutes" value="${Number(s.reschedule_min_lead_minutes||60)}"/>
+                        <input class="settings-field" type="number" min="0" step="5" name="reschedule_min_lead_minutes" value="${Number(s.reschedule_min_lead_minutes||60)}" ${effectiveConversationMode === 'escalation' ? 'disabled' : ''}/>
                       </label>
                       <label>Cancel min lead (minutes)
-                        <input class="settings-field" type="number" min="0" step="5" name="cancel_min_lead_minutes" value="${Number(s.cancel_min_lead_minutes||60)}"/>
+                        <input class="settings-field" type="number" min="0" step="5" name="cancel_min_lead_minutes" value="${Number(s.cancel_min_lead_minutes||60)}" ${effectiveConversationMode === 'escalation' ? 'disabled' : ''}/>
                       </label>
                     </div>
                     <div class="section" style="margin-top:8px;">
                       <h4 style="margin:0 0 6px 0;">Reminders</h4>
                       <label>
                         <input type="hidden" name="reminders_enabled" value="0"/>
-                        <input type="checkbox" name="reminders_enabled" value="1" ${s.reminders_enabled && s.bookings_enabled ? 'checked' : ''} ${!s.bookings_enabled ? 'disabled' : ''}/> Enable reminders (requires bookings)
+                        <input type="checkbox" name="reminders_enabled" value="1" ${s.reminders_enabled && s.bookings_enabled ? 'checked' : ''} ${(!s.bookings_enabled || effectiveConversationMode === 'escalation') ? 'disabled' : ''}/> Enable reminders (requires bookings)
                       </label>
                       <div class="small">Choose one or more windows. If booking is the same day and window is 1D, no reminder is sent.</div>
                       <div style="display:flex; gap:12px; margin-top:6px;">
                         ${['2h','4h','1d'].map(w => {
                           const current = (() => { try { return JSON.parse(s.reminder_windows||'[]'); } catch { return []; } })();
                           const on = current.includes(w);
-                          return `<label><input type="checkbox" name="reminder_windows" value="${w}" ${on ? 'checked' : ''} ${!s.bookings_enabled ? 'disabled' : ''}/> ${w.toUpperCase()}</label>`;
+                          return `<label><input type="checkbox" name="reminder_windows" value="${w}" ${on ? 'checked' : ''} ${(!s.bookings_enabled || effectiveConversationMode === 'escalation') ? 'disabled' : ''}/> ${w.toUpperCase()}</label>`;
                         }).join('')}
                       </div>
                     </div>
@@ -856,6 +863,110 @@ export default function registerSettingsRoutes(app, options = {}) {
                     ` : '<div class="small">No quick replies yet. Add your first one above!</div>'}
                   </div>
                 </div>
+                <!-- Integrations Section -->
+                <div class="section" id="integrations" style="margin-top:16px;">
+                  <h3 style="margin-top:0; display:flex; align-items:center; gap:8px;">
+                    🔗 Integrations
+                  </h3>
+                  <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px;">
+                    <!-- Shopify Integration -->
+                    <div style="border:1px solid #e5e7eb; border-radius:12px; padding:20px; background:white;">
+                      <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
+                        <svg width="32" height="32" viewBox="0 0 109 124" fill="#96BF48" xmlns="http://www.w3.org/2000/svg">
+                          <path d="M95.8 23.4c-.1-.6-.6-1-1.1-1-.5 0-9.3-.2-9.3-.2s-7.4-7.2-8.1-7.9c-.8-.8-2.3-.5-2.9-.4-.1 0-1.5.5-4.1 1.3-2.4-7-6.7-13.4-14.2-13.4h-.7c-2.1-2.8-4.8-4-7-4-17.4 0-25.7 21.7-28.3 32.8-6.8 2.1-11.6 3.6-12.2 3.8-3.8 1.2-3.9 1.3-4.4 4.9-.4 2.7-10.3 79.2-10.3 79.2l75.8 14.2 41-8.9S96 24 95.8 23.4z"/>
+                        </svg>
+                        <div>
+                          <h4 style="margin:0; font-size:16px;">Shopify</h4>
+                          <div class="small" style="color:#6b7280;">E-commerce integration</div>
+                        </div>
+                      </div>
+                      <p class="small" style="margin:0 0 16px 0; color:#4b5563;">
+                        Connect your Shopify store to let customers browse products, place orders, and receive updates via WhatsApp.
+                      </p>
+                      <a href="/settings/shopify" class="btn-primary" style="display:inline-block; text-decoration:none; padding:10px 16px; border-radius:6px;">
+                        Configure Shopify →
+                      </a>
+                    </div>
+                    <!-- Google Calendar -->
+                    <div style="border:1px solid #e5e7eb; border-radius:12px; padding:20px; background:white;">
+                      <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
+                        <img src="/google-calendar-icon.png" alt="Google Calendar" style="width:32px; height:32px;" onerror="this.style.display='none'"/>
+                        <div>
+                          <h4 style="margin:0; font-size:16px;">Google Calendar</h4>
+                          <div class="small" style="color:#6b7280;">Calendar sync</div>
+                        </div>
+                      </div>
+                      <p class="small" style="margin:0 0 16px 0; color:#4b5563;">
+                        Sync appointments with Google Calendar for automatic availability management.
+                      </p>
+                      <a href="/google/auth" class="btn-primary" style="display:inline-block; text-decoration:none; padding:10px 16px; border-radius:6px;">
+                        Connect Calendar →
+                      </a>
+                    </div>
+                    <!-- Stripe Payments -->
+                    <div style="border:1px solid #e5e7eb; border-radius:12px; padding:20px; background:white;" id="stripeIntegrationCard">
+                      <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
+                        <img src="/stripe-icon.svg" alt="Stripe" style="width:32px; height:32px;" onerror="this.style.display='none'"/>
+                        <div>
+                          <h4 style="margin:0; font-size:16px;">Stripe Payments</h4>
+                          <div class="small" style="color:#6b7280;" id="stripeStatusText">Payment processing</div>
+                        </div>
+                      </div>
+                      <p class="small" style="margin:0 0 16px 0; color:#4b5563;">
+                        Send payment links directly from conversations. Accept payments via credit cards, Apple Pay, and more.
+                      </p>
+                      <div id="stripeActions">
+                        <a href="/stripe/connect/start?redirect=/settings" class="btn-primary" id="stripeConnectBtn" style="display:inline-block; text-decoration:none; padding:10px 16px; border-radius:6px;">
+                          Connect Stripe →
+                        </a>
+                        <button id="stripeDisconnectBtn" class="btn-ghost" style="display:none; padding:10px 16px;">
+                          Disconnect
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <script>
+                  (function(){
+                    const statusText = document.getElementById('stripeStatusText');
+                    const connectBtn = document.getElementById('stripeConnectBtn');
+                    const disconnectBtn = document.getElementById('stripeDisconnectBtn');
+                    async function fetchStripeStatus(){
+                      try {
+                        const resp = await fetch('/api/payments/stripe/status', { headers: { 'Accept':'application/json' } });
+                        const data = await resp.json();
+                        if (!data.success) throw new Error('Failed to load status');
+                        const connected = !!data.connected;
+                        connectBtn.style.display = connected ? 'none' : 'inline-block';
+                        disconnectBtn.style.display = connected ? 'inline-block' : 'none';
+                        if (connected) {
+                          const acc = data.account || {};
+                          statusText.textContent = acc.charges_enabled ? '✓ Connected & ready' : 'Connected - finish onboarding in Stripe';
+                          statusText.style.color = acc.charges_enabled ? '#059669' : '#d97706';
+                        } else {
+                          statusText.textContent = data.available ? 'Payment processing' : 'Not configured';
+                          statusText.style.color = '#6b7280';
+                        }
+                      } catch (err) {
+                        console.error('Stripe status load failed', err);
+                      }
+                    }
+                    disconnectBtn?.addEventListener('click', async () => {
+                      if (!confirm('Disconnect Stripe? You will not be able to send payment links until you reconnect.')) return;
+                      disconnectBtn.disabled = true;
+                      try {
+                        const resp = await fetch('/api/payments/stripe/disconnect', { method: 'POST' });
+                        if (!resp.ok) throw new Error('Disconnect failed');
+                        await fetchStripeStatus();
+                      } catch (err) {
+                        console.error('Stripe disconnect failed', err);
+                      } finally {
+                        disconnectBtn.disabled = false;
+                      }
+                    });
+                    fetchStripeStatus();
+                  })();
+                </script>
                 <!-- Danger Section -->
                 <div class="section" id="danger" style="margin-top:16px; border:1px solid #fee2e2; background:#fef2f2;">
                   <h3 style="margin-top:0; display:flex; align-items:center; gap:8px; color:#b91c1c;">
@@ -1021,7 +1132,8 @@ export default function registerSettingsRoutes(app, options = {}) {
     } catch {}
 
     const { filtered, deniedFields } = enforceSettingsPolicy(validation.data, { planName });
-    if (planName === "free") {
+    const allowFreeBookings = String(process.env.ALLOW_BOOKINGS_ON_FREE || '').toLowerCase() === 'true';
+    if (planName === "free" && !allowFreeBookings) {
       filtered.conversation_mode = "escalation";
       filtered.bookings_enabled = false;
       filtered.reminders_enabled = false;

@@ -17,6 +17,7 @@ import { listMessagesForThread } from "../services/conversations.mjs";
 import { listAvailability, createBooking, rescheduleBooking, cancelBooking, buildDayRows, buildTimeRows } from "../services/booking.mjs";
 import { recordOutboundMessage, recordInboundMessage } from "../services/messages.mjs";
 import { sendEscalationNotification, sendBookingNotification, sendEscalationPingToAccount } from "../services/email.mjs";
+import { getSettingsForUser } from "../services/settings.mjs";
 import { incrementUsage, getUserPlan, isUsageExceeded } from "../services/usage.mjs";
 import { addReaction, removeReaction } from "../services/reactions.mjs";
 import { broadcastNewMessage, broadcastReaction, broadcastMessageStatus } from "./realtime.mjs";
@@ -3126,6 +3127,39 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         }
       }
 
+      // Check for commerce intents before AI processing
+      const { detectCommerceIntent, generateCommerceAiReply } = await import('../services/ai.mjs');
+      const hasCommerceIntent = detectCommerceIntent(text);
+
+      if (hasCommerceIntent && !humanActive) {
+        try {
+          // Get KB matches for context
+          const kbMatchesCommerce = await cachedRetrieveKbMatches(text, 8, tenantUserId, '', from);
+          const profileSnippet = await buildCustomerProfileSnippet(tenantUserId, from);
+
+          // Generate commerce-aware AI response
+          const commerceReply = await generateCommerceAiReply(text, kbMatchesCommerce, {
+            ...aiOptions,
+            userId: tenantUserId,
+            businessType: cfg?.business_type || '',
+            businessCategories: (() => {
+              try {
+                const arr = JSON.parse(cfg?.business_categories_json || '[]');
+                return Array.isArray(arr) ? arr : [];
+              } catch { return []; }
+            })()
+          });
+
+          if (commerceReply && commerceReply.trim()) {
+            await sendTextTracked(from, commerceReply, cfg);
+            return res.sendStatus(200);
+          }
+        } catch (commerceError) {
+          console.error('Commerce AI processing failed:', commerceError);
+          // Fall through to regular AI processing
+        }
+      }
+
       // AI-first decision mode: let the model craft replies and propose one optional intent to execute
       // Allow AI decision planner in all modes (including simple escalation).
       const preferFullAI = true;
@@ -3382,5 +3416,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       return res.sendStatus(500);
     }
   });
+
 }
 

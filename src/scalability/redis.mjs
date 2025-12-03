@@ -19,6 +19,8 @@ const redisConfig = {
   keepAlive: 30000,
   connectTimeout: 10000,
   commandTimeout: 5000,
+  // TLS is off by default; enable with REDIS_TLS=true when provider requires TLS (e.g., Upstash)
+  ...(String(process.env.REDIS_TLS || '').toLowerCase() === 'true' ? { tls: {} } : {}),
   // Connection pool settings
   family: 4,
   maxmemoryPolicy: 'allkeys-lru'
@@ -31,6 +33,15 @@ let isConnected = false;
 export function initRedis() {
   try {
     redisClient = new Redis(redisConfig);
+    
+    // For serverless or when explicitly enabled, proactively connect so readiness checks pass.
+    try {
+      const shouldConnectEagerly = String(process.env.REDIS_ENABLED || '').toLowerCase() === 'true';
+      if (shouldConnectEagerly && typeof redisClient.connect === 'function') {
+        // Fire-and-forget; events below will reflect readiness
+        redisClient.connect().catch(() => {});
+      }
+    } catch {}
     
     redisClient.on('connect', () => {
       isConnected = true;
@@ -71,6 +82,26 @@ export async function closeRedis() {
   } catch (error) {
     logHelpers.logError(error, { component: 'redis', operation: 'close' });
   }
+}
+
+// Ensure connection is established; wait briefly for 'ready'
+export async function ensureRedisConnected(timeoutMs = 3000) {
+  try {
+    if (!redisClient) {
+      redisClient = initRedis();
+    }
+    if (isRedisConnected()) return true;
+    if (typeof redisClient?.connect === 'function') {
+      try { await redisClient.connect(); } catch {}
+    }
+    if (isRedisConnected()) return true;
+    const start = Date.now();
+    while (Date.now() - start < Math.max(0, timeoutMs)) {
+      if (isRedisConnected()) return true;
+      await new Promise(r => setTimeout(r, 50));
+    }
+  } catch {}
+  return isRedisConnected();
 }
 
 // Get Redis client

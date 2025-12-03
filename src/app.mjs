@@ -46,6 +46,7 @@ import { signMediaPath } from "./utils.mjs";
 import registerMetricsRoutes from "./routes/metrics.mjs";
 import registerGoogleRoutes from "./routes/google.mjs";
 import registerUsageRoutes from "./routes/usage.mjs";
+import registerShopifyRoutes from "./routes/shopify.mjs";
 import { initOutboundQueue } from "./jobs/outboundQueue.mjs";
 /**
  * Create and configure an Express app instance.
@@ -94,7 +95,7 @@ export async function createApp() {
       initOutboundQueue()
         .then((queueReady) => {
           if (!queueReady) {
-            console.warn('[Queue] Outbound queue not ready; falling back to direct sends until Redis is available.');
+            console.info('[Queue] Outbound queue not ready; falling back to direct sends until Redis is available.');
           }
         })
         .catch((error) => {
@@ -103,7 +104,7 @@ export async function createApp() {
     } else {
     const queueReady = await initOutboundQueue();
     if (!queueReady) {
-      console.warn('[Queue] Outbound queue not ready; falling back to direct sends until Redis is available.');
+      console.info('[Queue] Outbound queue not ready; falling back to direct sends until Redis is available.');
       }
     }
   } catch (error) {
@@ -304,6 +305,7 @@ export async function createApp() {
   registerMetricsRoutes(app);
   registerGoogleRoutes(app);
   registerUsageRoutes(app);
+  registerShopifyRoutes(app);
   registerWebhookRoutes(app);
   registerMiscRoutes(app);
   

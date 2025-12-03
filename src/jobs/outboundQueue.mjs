@@ -5,7 +5,7 @@
 
 import crypto from 'node:crypto';
 import { logHelpers } from '../monitoring/logger.mjs';
-import { getRedisClient, isRedisConnected } from '../scalability/redis.mjs';
+import { getRedisClient, isRedisConnected, ensureRedisConnected } from '../scalability/redis.mjs';
 import { sendWhatsAppText } from '../services/whatsapp.mjs';
 import { recordOutboundMessage } from '../services/messages.mjs';
 
@@ -30,6 +30,10 @@ async function loadBullMq() {
 }
 
 export async function initOutboundQueue() {
+  // Try to establish a Redis connection if not yet ready (e.g., serverless lazy connect)
+  // if (!isRedisConnected()) {
+  //   await ensureRedisConnected(2000);
+  // }
   if (!isRedisConnected()) {
     logHelpers.logBusinessEvent('queue_disabled', { reason: 'redis_not_connected' });
     return false;

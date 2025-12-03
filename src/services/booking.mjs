@@ -95,6 +95,7 @@ export async function listAvailability({ userId, staffId, dateISO, days = 1, slo
   }
   const tz = staff.timezone || calendar?.timezone || "UTC";
   const settings = await (async () => { try { return await getSettingsForUser(userId); } catch { return {}; } })();
+
   const minutes = Number(slotMinutes || settings?.booking_display_interval_minutes || staff.slot_minutes || 30);
   let working = (() => { try { return JSON.parse(staff.working_hours_json || '{}'); } catch { return {}; } })();
   // Fallback working hours if none configured: Mon–Fri 09:00–17:00

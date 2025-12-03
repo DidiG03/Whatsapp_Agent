@@ -428,8 +428,20 @@ export async function getSubscriptionScheduleForSubscription(subscriptionId) {
     let scheduleId = null;
     try { scheduleId = (sub?.schedule && (typeof sub.schedule === 'string' ? sub.schedule : sub.schedule?.id)) || null; } catch {}
     if (!scheduleId) {
-      const list = await stripe.subscriptionSchedules.list({ subscription: subscriptionId, limit: 1 });
-      scheduleId = list?.data?.[0]?.id || null;
+      // Stripe's Subscription Schedule list API does not support filtering by 'subscription'.
+      // Fallback: list by customer and pick the schedule associated with this subscription if present.
+      const customerId = (typeof sub?.customer === 'string' ? sub.customer : sub?.customer?.id) || null;
+      if (customerId) {
+        const list = await stripe.subscriptionSchedules.list({ customer: customerId, limit: 10 });
+        const schedules = Array.isArray(list?.data) ? list.data : [];
+        const match = schedules.find((s) => {
+          try {
+            const schedSub = typeof s.subscription === 'string' ? s.subscription : s.subscription?.id;
+            return schedSub === subscriptionId;
+          } catch { return false; }
+        });
+        scheduleId = (match && match.id) || (schedules[0]?.id || null);
+      }
     }
     if (!scheduleId) return null;
     const schedule = await stripe.subscriptionSchedules.retrieve(scheduleId, { expand: ['phases.items.price'] });

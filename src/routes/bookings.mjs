@@ -11,13 +11,8 @@ export default function registerBookingsTab(app) {
     const email = await getSignedInEmail(req);
     const s = await getSettingsForUser(userId);
     const { isUpgraded } = await getPlanStatus(userId);
-    // Gate access when bookings are disabled
-    if (!s?.bookings_enabled) {
-      res.statusCode = 302;
-      res.setHeader('Location', '/settings');
-      res.end('Redirecting to settings...');
-      return;
-    }
+    // If bookings are disabled, render a lightweight page with a helpful prompt instead of redirecting.
+    const bookingsEnabled = !!s?.bookings_enabled;
     const db = getDB();
     // Calendar connection status
     let cal = null;
@@ -106,6 +101,13 @@ export default function registerBookingsTab(app) {
             ${renderSidebar('bookings', { showBookings: true, isUpgraded })}
             <main class="main">
               <div class="main-content">
+                ${!bookingsEnabled ? `
+                  <div class="card" style="margin-bottom:16px; border:1px dashed #f59e0b; background:#fff7ed;">
+                    <h3 style="margin:0 0 8px 0;">Bookings are disabled</h3>
+                    <div class="small" style="margin-bottom:8px;">Turn on Bookings in Settings to manage availability, services, and view appointments.</div>
+                    <a class="btn" href="/settings#bookings_section" style="display:inline-block;">Go to Settings</a>
+                  </div>
+                ` : ''}
                 <div style="margin-bottom:12px;">
                   <h3 style="margin:0 0 8px 0;">Booking Settings</h3>
                   <form method="post" action="/bookings/settings" style="display:grid; gap:16px;" onsubmit="return true;">

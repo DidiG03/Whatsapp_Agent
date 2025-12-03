@@ -223,6 +223,8 @@ const appointmentSchema = new mongoose.Schema({
   start_ts: { type: Number, required: true },
   end_ts: { type: Number, required: true },
   gcal_event_id: String,
+  // Source of truth for the reservation (e.g., 'local', 'google')
+  source: { type: String, default: 'local' },
   status: { type: String, default: 'confirmed' },
   notes: String,
   notify_24h_sent: { type: Boolean, default: false },
@@ -472,6 +474,203 @@ const settingsAuditSchema = new mongoose.Schema({
   collection: 'settings_audit'
 });
 
+// Shopify Store Connection Schema
+const shopifyStoreSchema = new mongoose.Schema({
+  user_id: { type: String, required: true, unique: true },
+  shop_domain: { type: String, required: true },
+  access_token: { type: String, required: true },
+  api_version: { type: String, default: '2024-01' },
+  scopes: [String],
+  is_active: { type: Boolean, default: true },
+  store_info: mongoose.Schema.Types.Mixed, // Cached store information
+  webhook_id: String, // ID of the main webhook for order updates
+  last_sync_ts: { type: Number, default: 0 },
+  sync_enabled: { type: Boolean, default: true },
+  inventory_sync_enabled: { type: Boolean, default: false },
+  abandoned_cart_enabled: { type: Boolean, default: false },
+  order_notifications_enabled: { type: Boolean, default: true }
+}, {
+  timestamps: true,
+  collection: 'shopify_stores'
+});
+
+// Shopify Product Schema (cached from Shopify)
+const shopifyProductSchema = new mongoose.Schema({
+  user_id: { type: String, required: true },
+  shopify_id: { type: String, required: true },
+  title: { type: String, required: true },
+  handle: String,
+  product_type: String,
+  vendor: String,
+  tags: [String],
+  variants: [{
+    id: String,
+    title: String,
+    price: String,
+    compare_at_price: String,
+    inventory_quantity: Number,
+    sku: String,
+    barcode: String,
+    weight: Number,
+    weight_unit: String,
+    option1: String,
+    option2: String,
+    option3: String,
+    taxable: Boolean,
+    requires_shipping: Boolean,
+    inventory_policy: String,
+    inventory_management: String
+  }],
+  images: [{
+    id: String,
+    src: String,
+    alt: String,
+    width: Number,
+    height: Number
+  }],
+  options: [{
+    name: String,
+    values: [String]
+  }],
+  status: { type: String, default: 'active' },
+  published_at: Date,
+  created_at_shopify: Date,
+  updated_at_shopify: Date,
+  body_html: String,
+  metafields: mongoose.Schema.Types.Mixed,
+  last_sync_ts: { type: Number, default: 0 },
+  is_available: { type: Boolean, default: true }
+}, {
+  timestamps: true,
+  collection: 'shopify_products'
+});
+
+// Shopify Order Schema
+const shopifyOrderSchema = new mongoose.Schema({
+  user_id: { type: String, required: true },
+  shopify_id: { type: String, required: true },
+  order_number: { type: Number, required: true },
+  email: String,
+  contact_id: String, // Link to WhatsApp contact if applicable
+  phone: String,
+  customer: mongoose.Schema.Types.Mixed,
+  billing_address: mongoose.Schema.Types.Mixed,
+  shipping_address: mongoose.Schema.Types.Mixed,
+  line_items: [{
+    id: String,
+    variant_id: String,
+    product_id: String,
+    title: String,
+    variant_title: String,
+    quantity: Number,
+    price: String,
+    total_discount: String,
+    sku: String,
+    vendor: String,
+    properties: mongoose.Schema.Types.Mixed
+  }],
+  shipping_lines: [{
+    title: String,
+    price: String,
+    code: String,
+    source: String
+  }],
+  tax_lines: [{
+    title: String,
+    price: String,
+    rate: Number
+  }],
+  discount_codes: [{
+    code: String,
+    amount: String,
+    type: String
+  }],
+  total_price: String,
+  subtotal_price: String,
+  total_tax: String,
+  total_discounts: String,
+  total_shipping_price: String,
+  currency: { type: String, default: 'USD' },
+  financial_status: { type: String, default: 'pending' },
+  fulfillment_status: String,
+  order_status_url: String,
+  tags: [String],
+  note: String,
+  created_at_shopify: Date,
+  updated_at_shopify: Date,
+  processed_at: Date,
+  closed_at: Date,
+  cancelled_at: Date,
+  cancel_reason: String,
+  last_sync_ts: { type: Number, default: 0 },
+  whatsapp_notifications_sent: { type: [String], default: [] }, // Track sent notifications
+  tracking_numbers: [String],
+  tracking_urls: [String]
+}, {
+  timestamps: true,
+  collection: 'shopify_orders'
+});
+
+// Shopify Customer Schema (synced from Shopify)
+const shopifyCustomerSchema = new mongoose.Schema({
+  user_id: { type: String, required: true },
+  shopify_id: { type: String, required: true },
+  email: String,
+  phone: String,
+  first_name: String,
+  last_name: String,
+  contact_id: String, // Link to WhatsApp contact
+  accepts_marketing: { type: Boolean, default: false },
+  accepts_marketing_updated_at: Date,
+  marketing_opt_in_level: String,
+  tax_exempt: { type: Boolean, default: false },
+  verified_email: { type: Boolean, default: true },
+  addresses: mongoose.Schema.Types.Mixed,
+  default_address: mongoose.Schema.Types.Mixed,
+  orders_count: { type: Number, default: 0 },
+  total_spent: String,
+  last_order_id: String,
+  last_order_name: String,
+  tags: [String],
+  note: String,
+  created_at_shopify: Date,
+  updated_at_shopify: Date,
+  last_sync_ts: { type: Number, default: 0 },
+  metafields: mongoose.Schema.Types.Mixed
+}, {
+  timestamps: true,
+  collection: 'shopify_customers'
+});
+
+// Shopify Cart/Checkout Schema (for abandoned cart recovery)
+const shopifyCartSchema = new mongoose.Schema({
+  user_id: { type: String, required: true },
+  contact_id: String,
+  cart_token: { type: String, required: true },
+  line_items: [{
+    variant_id: String,
+    product_id: String,
+    title: String,
+    variant_title: String,
+    quantity: Number,
+    price: String,
+    image_url: String
+  }],
+  total_price: String,
+  currency: { type: String, default: 'USD' },
+  created_at_shopify: Date,
+  updated_at_shopify: Date,
+  abandoned_at: Date,
+  recovered: { type: Boolean, default: false },
+  recovery_attempts: { type: Number, default: 0 },
+  last_recovery_attempt: Date,
+  whatsapp_message_sent: { type: Boolean, default: false },
+  checkout_url: String
+}, {
+  timestamps: true,
+  collection: 'shopify_carts'
+});
+
 // Create indexes for better performance
 const createIndexes = async () => {
   try {
@@ -546,11 +745,42 @@ const createIndexes = async () => {
     // Settings audit indexes
     await SettingsAudit.collection.createIndex({ user_id: 1, createdAt: -1 }, { name: 'settings_audit_user' });
 
+    // Shopify indexes
+    await ShopifyStore.collection.createIndex({ user_id: 1 }, { unique: true, name: 'shopify_store_user' });
+    await ShopifyStore.collection.createIndex({ shop_domain: 1 }, { unique: true, sparse: true, name: 'shopify_store_domain' });
+
+    await ShopifyProduct.collection.createIndex({ user_id: 1, shopify_id: 1 }, { unique: true, name: 'shopify_product_user_id' });
+    await ShopifyProduct.collection.createIndex({ user_id: 1, handle: 1 }, { name: 'shopify_product_user_handle' });
+    await ShopifyProduct.collection.createIndex({ user_id: 1, 'variants.sku': 1 }, { name: 'shopify_product_sku' });
+    await ShopifyProduct.collection.createIndex({ user_id: 1, status: 1, is_available: 1 }, { name: 'shopify_product_status' });
+
+    await ShopifyOrder.collection.createIndex({ user_id: 1, shopify_id: 1 }, { unique: true, name: 'shopify_order_user_id' });
+    await ShopifyOrder.collection.createIndex({ user_id: 1, order_number: 1 }, { unique: true, name: 'shopify_order_user_number' });
+    await ShopifyOrder.collection.createIndex({ user_id: 1, contact_id: 1 }, { name: 'shopify_order_contact' });
+    await ShopifyOrder.collection.createIndex({ user_id: 1, financial_status: 1 }, { name: 'shopify_order_status' });
+    await ShopifyOrder.collection.createIndex({ user_id: 1, created_at_shopify: -1 }, { name: 'shopify_order_created' });
+
+    await ShopifyCustomer.collection.createIndex({ user_id: 1, shopify_id: 1 }, { unique: true, name: 'shopify_customer_user_id' });
+    await ShopifyCustomer.collection.createIndex({ user_id: 1, email: 1 }, { name: 'shopify_customer_email' });
+    await ShopifyCustomer.collection.createIndex({ user_id: 1, phone: 1 }, { name: 'shopify_customer_phone' });
+    await ShopifyCustomer.collection.createIndex({ user_id: 1, contact_id: 1 }, { name: 'shopify_customer_contact' });
+
+    await ShopifyCart.collection.createIndex({ user_id: 1, cart_token: 1 }, { unique: true, name: 'shopify_cart_user_token' });
+    await ShopifyCart.collection.createIndex({ user_id: 1, contact_id: 1 }, { name: 'shopify_cart_contact' });
+    await ShopifyCart.collection.createIndex({ user_id: 1, recovered: 1, createdAt: -1 }, { name: 'shopify_cart_recovery' });
+
     console.log('MongoDB indexes created successfully');
   } catch (error) {
     logHelpers.logError(error, { component: 'mongodb', operation: 'create_indexes' });
   }
 };
+
+// Shopify models
+export const ShopifyStore = mongoose.model('ShopifyStore', shopifyStoreSchema);
+export const ShopifyProduct = mongoose.model('ShopifyProduct', shopifyProductSchema);
+export const ShopifyOrder = mongoose.model('ShopifyOrder', shopifyOrderSchema);
+export const ShopifyCustomer = mongoose.model('ShopifyCustomer', shopifyCustomerSchema);
+export const ShopifyCart = mongoose.model('ShopifyCart', shopifyCartSchema);
 
 // Export models
 export const Message = mongoose.model('Message', messageSchema);
@@ -610,5 +840,10 @@ export default {
   QuickReply,
   Guide,
   Enquiry,
-  SettingsAudit
+  SettingsAudit,
+  ShopifyStore,
+  ShopifyProduct,
+  ShopifyOrder,
+  ShopifyCustomer,
+  ShopifyCart
 };

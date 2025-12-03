@@ -740,6 +740,162 @@ export async function onboardingCoachReply(userMessage, kbItems = [], historyTra
  *
  * @returns {Promise<string>} Human‑readable text with a few sentences of suggestions.
  */
+/**
+ * Generate commerce-aware AI reply with product browsing and ordering capabilities
+ */
+export async function generateCommerceAiReply(userMessage, contextSnippets, options = {}) {
+  const context =
+    (contextSnippets || [])
+      .map((s, i) => `# Doc ${i + 1}: ${s.title || "Untitled"}\n${s.content}`)
+      .join("\n\n") || "(no docs)";
+
+  const tone = (options.tone || "friendly").trim();
+  const style = (options.style || "clear and concise").trim();
+  const blockedTopics = String(options.blockedTopics || "").trim();
+  const historyMessages = Array.isArray(options.historyMessages) ? options.historyMessages : [];
+  const bizType = String(options.businessType || "").trim();
+  const bizCats = Array.isArray(options.businessCategories) ? options.businessCategories.map(s => String(s || "").trim()).filter(Boolean).slice(0, 20) : [];
+
+  // Check if Shopify is enabled and get products
+  let productsContext = "";
+  let hasShopify = false;
+
+  try {
+    const { getStoreConnection, getProductCatalog } = await import('./shopify.mjs');
+    const connection = await getStoreConnection(options.userId);
+
+    if (connection.connected) {
+      hasShopify = true;
+      const products = await getProductCatalog(options.userId, { limit: 20 });
+      productsContext = products.map((p, i) =>
+        `# Product ${i + 1}: ${p.title}\nPrice: $${p.price}\nDescription: ${p.body_html ? p.body_html.replace(/<[^>]*>/g, '').substring(0, 200) + '...' : 'No description'}\nVariants: ${p.variants?.length || 0} options`
+      ).join('\n\n');
+    }
+  } catch (error) {
+    console.warn('Shopify integration not available for commerce AI:', error.message);
+  }
+
+  const blockedLine = blockedTopics
+    ? `Refuse questions about these topics: ${blockedTopics}. If asked, briefly refuse and suggest contacting support.`
+    : "";
+
+  const businessProfileLine = (bizType || bizCats.length)
+    ? `Business profile: ${bizType ? `type: ${bizType}. ` : ""}${bizCats.length ? `categories: ${bizCats.join(", ")}.` : ""}`
+    : "";
+  const mismatchGuidance = (bizType || bizCats.length)
+    ? "If the user appears to be asking about a different company/industry than this business, politely clarify what this business does and guide them accordingly (do not pretend to offer unrelated services)."
+    : "";
+
+  const OUT_OF_SCOPE_PHRASE = "That seems outside my scope. Try choosing one of these topics";
+
+  // Enhanced system policy with commerce capabilities
+  const policy = [
+    "You are a WhatsApp assistant for a business with e-commerce capabilities.",
+    "Use ONLY the provided Docs (KB context). If the KB does not support an answer, reply with EXACTLY: " + OUT_OF_SCOPE_PHRASE + ".",
+    "Exception: For generic pleasantries (e.g., 'how are you', greetings, thanks, apologies, simple emojis), respond briefly and warmly WITHOUT using the out-of-scope phrase.",
+    hasShopify ? "COMMERCE CAPABILITIES: You can help customers browse products, get pricing, and place orders. When customers want to shop, show them relevant products and guide them through ordering." : "",
+    hasShopify ? "PRODUCT BROWSING: If customers ask about products, show them available items with prices. Use the product context provided." : "",
+    hasShopify ? "ORDERING: When customers want to buy, collect necessary information (product choice, quantity, customer details, shipping address) before confirming the order." : "",
+    "Be concise (1–4 sentences). Never invent facts.",
+    "Interpret typos, slang, and paraphrases.",
+    blockedLine ? blockedLine : "",
+    "Tone: " + tone + ". Style: " + style + ".",
+    businessProfileLine ? businessProfileLine : "",
+    mismatchGuidance ? mismatchGuidance : "",
+    "Booking guidance (no pickers): If intent to book without BOTH date and time, ask for a preferred date/time in one short sentence (e.g., 'Nov 3 at 3pm').",
+    "Availability: if asked without a date range, ask for a range (e.g., 'tomorrow', 'Nov 3–5').",
+  ].filter(Boolean).join("\n");
+
+  // Build chat messages with optional conversation history
+  const messages = [
+    { role: "system", content: policy },
+    { role: "system", content: "Docs:\n" + context },
+  ];
+
+  // Add products context if available
+  if (productsContext) {
+    messages.push({ role: "system", content: "Available Products:\n" + productsContext });
+  }
+
+  // Append prior turns if provided: each item should be { role: 'user'|'assistant', content: string }
+  for (const m of historyMessages.slice(-10)) {
+    try {
+      const role = String(m.role || "").toLowerCase().trim();
+      if (role === "user" || role === "assistant") {
+        messages.push({
+          role,
+          content: String(m.content || "").slice(0, MAX_HISTORY_CHARS)
+        });
+      }
+    } catch (_) {}
+  }
+
+  // Add the current user message
+  messages.push({
+    role: "user",
+    content: String(userMessage || "").slice(0, MAX_HISTORY_CHARS)
+  });
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: MODEL,
+      messages,
+      max_tokens: 1024,
+      temperature: 0.7,
+    });
+
+    const reply = String(completion.choices?.[0]?.message?.content || "").trim();
+
+    // Log usage for analytics
+    try {
+      const usage = completion.usage;
+      if (usage) {
+        const { AIRequest } = await import('../schemas/mongodb.mjs');
+        await AIRequest.create({
+          user_id: options.userId,
+          success: true,
+          response_time: completion.response_ms || 0,
+          model: MODEL,
+          tokens_used: usage.total_tokens || 0
+        });
+      }
+    } catch (_) {}
+
+    return reply;
+  } catch (err) {
+    logOpenAiError(err, "Commerce AI reply generation failed");
+
+    // Log failed request
+    try {
+      const { AIRequest } = await import('../schemas/mongodb.mjs');
+      await AIRequest.create({
+        user_id: options.userId,
+        success: false,
+        response_time: 0,
+        model: MODEL,
+        tokens_used: 0
+      });
+    } catch (_) {}
+
+    // Return a fallback response
+    return "I'm sorry, I'm having trouble processing your request right now. Please try again in a moment.";
+  }
+}
+
+/**
+ * Detect if a message contains commerce intent
+ */
+export function detectCommerceIntent(message) {
+  const commerceKeywords = [
+    'buy', 'purchase', 'order', 'shop', 'product', 'price', 'cost',
+    'catalog', 'store', 'cart', 'checkout', 'shipping', 'delivery',
+    'inventory', 'stock', 'available', 'sizes', 'colors', 'variants'
+  ];
+
+  const lowerMessage = message.toLowerCase();
+  return commerceKeywords.some(keyword => lowerMessage.includes(keyword));
+}
+
 export async function generateUsageInsights(params = {}) {
   const { plan, usage, history = [] } = params || {};
 

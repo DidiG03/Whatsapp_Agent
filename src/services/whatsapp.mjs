@@ -547,6 +547,148 @@ export async function sendWhatsappDocumentBase64(to, documentPath, filename, cap
  * @param {Array} components optional components (header/body/buttons)
  * @param {{ user_id?: string }} cfg Tenant configuration
  */
+/**
+ * Send product catalog via WhatsApp
+ */
+export async function sendProductCatalog(to, products, cfg) {
+  if (!Array.isArray(products) || products.length === 0) {
+    return await sendWhatsAppText(to, "No products available at the moment.", cfg);
+  }
+
+  let message = "🛍️ *Our Products*\n\n";
+
+  for (let i = 0; i < Math.min(products.length, 10); i++) {
+    const product = products[i];
+    message += `*${i + 1}. ${product.title}*\n`;
+    message += `💰 Price: $${product.price}\n`;
+
+    if (product.description) {
+      message += `📝 ${product.description.substring(0, 100)}${product.description.length > 100 ? '...' : ''}\n`;
+    }
+
+    message += '\n';
+  }
+
+  message += "Reply with a product number to learn more or place an order!";
+
+  return await sendWhatsAppText(to, message, cfg);
+}
+
+/**
+ * Send product details with options
+ */
+export async function sendProductDetails(to, product, cfg) {
+  let message = `🛍️ *${product.title}*\n\n`;
+
+  if (product.image) {
+    // Send image first
+    await sendWhatsappImage(to, product.image, product.title, cfg);
+  }
+
+  message += `💰 Price: $${product.price}\n`;
+
+  if (product.description) {
+    message += `📝 ${product.description}\n\n`;
+  }
+
+  if (product.variants && product.variants.length > 0) {
+    message += "*Available Options:*\n";
+    product.variants.forEach((variant, index) => {
+      message += `${index + 1}. ${variant.title} - $${variant.price}\n`;
+    });
+    message += '\n';
+  }
+
+  message += "Reply 'BUY' to place an order or ask me any questions!";
+
+  return await sendWhatsAppText(to, message, cfg);
+}
+
+/**
+ * Send order confirmation
+ */
+export async function sendOrderConfirmation(to, order, cfg) {
+  let message = `✅ *Order Confirmed!*\n\n`;
+  message += `📋 Order #${order.order_number}\n`;
+  message += `💰 Total: $${order.total_price}\n\n`;
+
+  if (order.line_items && order.line_items.length > 0) {
+    message += "*Items Ordered:*\n";
+    order.line_items.forEach(item => {
+      message += `• ${item.quantity}x ${item.title} - $${item.price}\n`;
+    });
+    message += '\n';
+  }
+
+  message += `🚚 We'll send you updates on your order status.`;
+  message += `\n\nThank you for shopping with us! 🛍️`;
+
+  return await sendWhatsAppText(to, message, cfg);
+}
+
+/**
+ * Send order status update
+ */
+export async function sendOrderStatusUpdate(to, order, cfg) {
+  let message = `📦 *Order Update*\n\n`;
+  message += `📋 Order #${order.order_number}\n`;
+  message += `📊 Status: ${order.financial_status}\n`;
+
+  if (order.fulfillment_status) {
+    message += `🚚 Fulfillment: ${order.fulfillment_status}\n`;
+  }
+
+  if (order.tracking_numbers && order.tracking_numbers.length > 0) {
+    message += `\n📍 Tracking: ${order.tracking_urls ? order.tracking_urls[0] : order.tracking_numbers[0]}\n`;
+  }
+
+  return await sendWhatsAppText(to, message, cfg);
+}
+
+/**
+ * Send abandoned cart reminder
+ */
+export async function sendAbandonedCartReminder(to, cart, cfg) {
+  let message = `🛒 *Don't forget your cart!*\n\n`;
+  message += `You have ${cart.line_items?.length || 0} item(s) waiting in your cart:\n\n`;
+
+  if (cart.line_items) {
+    cart.line_items.forEach(item => {
+      message += `• ${item.quantity}x ${item.title}\n`;
+    });
+  }
+
+  message += `\n💰 Total: $${cart.total_price}\n\n`;
+  message += `Complete your purchase now or your cart will be cleared soon.\n\n`;
+  message += `Reply 'CHECKOUT' to complete your order!`;
+
+  return await sendWhatsAppText(to, message, cfg);
+}
+
+/**
+ * Send interactive product selection list
+ */
+export async function sendProductSelectionList(to, products, cfg) {
+  if (!Array.isArray(products) || products.length === 0) {
+    return await sendWhatsAppText(to, "No products available.", cfg);
+  }
+
+  const rows = products.slice(0, 10).map((product, index) => ({
+    id: `product_${product.id}`,
+    title: product.title.substring(0, 24),
+    description: `$${product.price}`
+  }));
+
+  return await sendWhatsappList(
+    to,
+    "🛍️ Select a Product",
+    "Choose a product to view details and purchase",
+    "View Products",
+    rows,
+    cfg
+  );
+}
+
 export async function sendWhatsAppTemplate(to, templateName, language, components = [], cfg) {
   const payload = {
     messaging_product: "whatsapp",

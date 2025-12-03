@@ -1,19 +1,21 @@
 const PLAN_WEIGHTS = {
   free: 0,
-  starter: 0,
-  basic: 0,
-  pro: 1,
-  team: 1,
-  business: 2,
-  enterprise: 3
+  starter: 1,
+  basic: 1,
+  pro: 2,
+  team: 2,
+  business: 3,
+  enterprise: 4
 };
 
 const FIELD_POLICIES = {
-  bookings_enabled: { minPlan: "pro" },
-  reminders_enabled: { minPlan: "pro" },
-  reschedule_min_lead_minutes: { minPlan: "pro" },
-  cancel_min_lead_minutes: { minPlan: "pro" },
-  reminder_windows: { minPlan: "pro" },
+  // Bookings and related controls should be available from Starter and up
+  bookings_enabled: { minPlan: "starter" },
+  reminders_enabled: { minPlan: "starter" },
+  reschedule_min_lead_minutes: { minPlan: "starter" },
+  cancel_min_lead_minutes: { minPlan: "starter" },
+  reminder_windows: { minPlan: "starter" },
+  // Messaging template and SMTP customization remain higher-tier
   wa_template_name: { minPlan: "pro" },
   wa_template_language: { minPlan: "pro" },
   smtp_host: { minPlan: "pro" },
