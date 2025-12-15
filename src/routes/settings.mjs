@@ -870,22 +870,27 @@ export default function registerSettingsRoutes(app, options = {}) {
                   </h3>
                   <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px;">
                     <!-- Shopify Integration -->
-                    <div style="border:1px solid #e5e7eb; border-radius:12px; padding:20px; background:white;">
+                    <div style="border:1px solid #e5e7eb; border-radius:12px; padding:20px; background:white;" id="shopifyIntegrationCard">
                       <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
                         <svg width="32" height="32" viewBox="0 0 109 124" fill="#96BF48" xmlns="http://www.w3.org/2000/svg">
                           <path d="M95.8 23.4c-.1-.6-.6-1-1.1-1-.5 0-9.3-.2-9.3-.2s-7.4-7.2-8.1-7.9c-.8-.8-2.3-.5-2.9-.4-.1 0-1.5.5-4.1 1.3-2.4-7-6.7-13.4-14.2-13.4h-.7c-2.1-2.8-4.8-4-7-4-17.4 0-25.7 21.7-28.3 32.8-6.8 2.1-11.6 3.6-12.2 3.8-3.8 1.2-3.9 1.3-4.4 4.9-.4 2.7-10.3 79.2-10.3 79.2l75.8 14.2 41-8.9S96 24 95.8 23.4z"/>
                         </svg>
                         <div>
                           <h4 style="margin:0; font-size:16px;">Shopify</h4>
-                          <div class="small" style="color:#6b7280;">E-commerce integration</div>
+                          <div class="small" style="color:#6b7280;" id="shopifyStatusText">E-commerce integration</div>
                         </div>
                       </div>
                       <p class="small" style="margin:0 0 16px 0; color:#4b5563;">
                         Connect your Shopify store to let customers browse products, place orders, and receive updates via WhatsApp.
                       </p>
-                      <a href="/settings/shopify" class="btn-primary" style="display:inline-block; text-decoration:none; padding:10px 16px; border-radius:6px;">
-                        Configure Shopify →
-                      </a>
+                      <div id="shopifyActions">
+                        <a href="/settings/shopify" class="btn-primary" id="shopifyConnectBtn" style="display:inline-block; text-decoration:none; padding:10px 16px; border-radius:6px;">
+                          Configure Shopify →
+                        </a>
+                        <button id="shopifyDisconnectBtn" class="btn-ghost" style="display:none; padding:10px 16px; background:#fee2e2; color:#b91c1c;">
+                          Uninstall
+                        </button>
+                      </div>
                     </div>
                     <!-- Google Calendar -->
                     <div style="border:1px solid #e5e7eb; border-radius:12px; padding:20px; background:white;">
@@ -899,7 +904,7 @@ export default function registerSettingsRoutes(app, options = {}) {
                       <p class="small" style="margin:0 0 16px 0; color:#4b5563;">
                         Sync appointments with Google Calendar for automatic availability management.
                       </p>
-                      <a href="/google/auth" class="btn-primary" style="display:inline-block; text-decoration:none; padding:10px 16px; border-radius:6px;">
+                      <a href="/google/connect" class="btn-primary" style="display:inline-block; text-decoration:none; padding:10px 16px; border-radius:6px;">
                         Connect Calendar →
                       </a>
                     </div>
@@ -928,6 +933,44 @@ export default function registerSettingsRoutes(app, options = {}) {
                 </div>
                 <script>
                   (function(){
+                    const shopifyStatusText = document.getElementById('shopifyStatusText');
+                    const shopifyConnectBtn = document.getElementById('shopifyConnectBtn');
+                    const shopifyDisconnectBtn = document.getElementById('shopifyDisconnectBtn');
+                    async function fetchShopifyStatus(){
+                      try {
+                        const resp = await fetch('/api/shopify/status', { headers: { 'Accept':'application/json' } });
+                        const data = await resp.json();
+                        const connected = !!data?.connected;
+                        if (shopifyConnectBtn) shopifyConnectBtn.style.display = connected ? 'none' : 'inline-block';
+                        if (shopifyDisconnectBtn) shopifyDisconnectBtn.style.display = connected ? 'inline-block' : 'none';
+                        if (shopifyStatusText) {
+                          if (connected) {
+                            shopifyStatusText.textContent = '✓ Connected (' + (data.shop_domain || 'store') + ')';
+                            shopifyStatusText.style.color = '#059669';
+                          } else {
+                            shopifyStatusText.textContent = 'E-commerce integration';
+                            shopifyStatusText.style.color = '#6b7280';
+                          }
+                        }
+                      } catch (err) {
+                        console.error('Shopify status load failed', err);
+                      }
+                    }
+                    shopifyDisconnectBtn?.addEventListener('click', async () => {
+                      if (!confirm('Uninstall Shopify connection? This will disconnect your store from the app.')) return;
+                      shopifyDisconnectBtn.disabled = true;
+                      try {
+                        const resp = await fetch('/api/shopify/disconnect', { method: 'POST' });
+                        if (!resp.ok) throw new Error('Disconnect failed');
+                        await fetchShopifyStatus();
+                      } catch (err) {
+                        console.error('Shopify disconnect failed', err);
+                      } finally {
+                        shopifyDisconnectBtn.disabled = false;
+                      }
+                    });
+                    fetchShopifyStatus();
+
                     const statusText = document.getElementById('stripeStatusText');
                     const connectBtn = document.getElementById('stripeConnectBtn');
                     const disconnectBtn = document.getElementById('stripeDisconnectBtn');

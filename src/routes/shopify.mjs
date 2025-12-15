@@ -53,7 +53,7 @@ export default function registerShopifyRoutes(app) {
     const { code, shop, state } = req.query;
 
     if (!code || !shop) {
-      return res.redirect('/settings?shopify_error=missing_params');
+      return res.redirect('/settings/shopify?shopify_error=missing_params');
     }
 
     try {
@@ -97,10 +97,10 @@ export default function registerShopifyRoutes(app) {
         // Don't fail the whole setup if webhook registration fails
       }
 
-      res.redirect('/settings?shopify_success=true');
+      res.redirect('/settings/shopify?shopify_success=true');
     } catch (error) {
       console.error('Shopify OAuth callback failed:', error);
-      res.redirect('/settings?shopify_error=auth_failed');
+      res.redirect('/settings/shopify?shopify_error=auth_failed');
     }
   });
 
@@ -471,6 +471,26 @@ export default function registerShopifyRoutes(app) {
       const plan = await getUserPlan(userId);
       const isUpgraded = isPlanUpgraded(plan);
       const email = await getSignedInEmail({ cookies: { get: (name) => req.cookies?.[name] } });
+      const redirectUri = getShopifyRedirectUri();
+      const hasApiKey = Boolean(process.env.SHOPIFY_API_KEY);
+      const hasApiSecret = Boolean(process.env.SHOPIFY_API_SECRET);
+
+      const errorMessage = (() => {
+        switch (String(error || '')) {
+          case 'not_configured':
+            return 'Shopify is not configured on the server. Ask the app owner to set SHOPIFY_API_KEY and SHOPIFY_API_SECRET in the deployment environment.';
+          case 'missing_shop':
+            return 'Please enter your Shopify store domain (e.g. mystore.myshopify.com).';
+          case 'missing_params':
+            return 'Shopify did not return the expected OAuth parameters. Please try connecting again.';
+          case 'oauth_init_failed':
+            return 'Failed to start Shopify OAuth. Double-check your store domain and app configuration.';
+          case 'auth_failed':
+            return 'Shopify authorization failed. Check your app’s redirect URL and that the app is installable for this store.';
+          default:
+            return error ? 'Failed to connect. Please try again.' : '';
+        }
+      })();
 
       const html = `
         <html>${getProfessionalHead('Shopify Integration')}<body>
@@ -658,7 +678,27 @@ export default function registerShopifyRoutes(app) {
             <main class="main">
               <div class="section">
               ${success ? '<div class="alert alert-success">✅ Successfully connected to Shopify!</div>' : ''}
-              ${error ? '<div class="alert alert-error">❌ Failed to connect. Please try again.</div>' : ''}
+              ${errorMessage ? `<div class="alert alert-error">❌ ${errorMessage}</div>` : ''}
+
+              ${(!hasApiKey || !hasApiSecret) ? `
+                <div class="alert" style="background:#fff7ed; color:#9a3412; border:1px solid #fed7aa;">
+                  <div style="font-weight:700; margin-bottom:6px;">Server configuration needed</div>
+                  <div class="small" style="margin-bottom:10px;">
+                    This deployment is missing Shopify credentials. Add these environment variables and redeploy:
+                    <ul style="margin:8px 0 0 18px;">
+                      <li><code>SHOPIFY_API_KEY</code> ${hasApiKey ? '✅' : '❌ missing'}</li>
+                      <li><code>SHOPIFY_API_SECRET</code> ${hasApiSecret ? '✅' : '❌ missing'}</li>
+                      <li><code>PUBLIC_BASE_URL</code> should be your domain (recommended)</li>
+                    </ul>
+                  </div>
+                  <div class="small">
+                    In Shopify Partners → App setup → Allowed redirection URL(s), add:
+                    <div style="margin-top:6px; padding:10px; border:1px dashed #fdba74; border-radius:8px; background:#fff;">
+                      <code>${redirectUri}</code>
+                    </div>
+                  </div>
+                </div>
+              ` : ''}
 
               ${!connection.connected ? `
                 <div class="shopify-hero">
@@ -679,6 +719,9 @@ export default function registerShopifyRoutes(app) {
                     </form>
                     <p style="font-size: 12px; margin-top: 16px; opacity: 0.8;">
                       Enter your Shopify store URL (e.g., mystore.myshopify.com)
+                    </p>
+                    <p style="font-size: 12px; margin-top: 10px; opacity: 0.85;">
+                      Redirect URL used by this app: <code style="background:rgba(255,255,255,0.25); padding:2px 6px; border-radius:6px;">${redirectUri}</code>
                     </p>
                   </div>
                 </div>
