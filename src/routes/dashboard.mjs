@@ -161,9 +161,10 @@ export default function registerDashboardRoutes(app) {
           padding: 18px 18px 16px 18px;
         }
         .setup-guide-card.setup-minimized {
-          top: 24px;
-          left: 24px;
-          transform: none;
+          top: auto;
+          left: 50%;
+          bottom: 24px;
+          transform: translateX(-50%);
           width: 260px;
           max-width: 80vw;
           padding: 12px 14px 10px 14px;

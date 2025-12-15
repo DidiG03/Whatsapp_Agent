@@ -10,13 +10,37 @@ import axios from 'axios';
 const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY;
 const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET;
 const SHOPIFY_SCOPES = process.env.SHOPIFY_SCOPES || 'read_products,write_products,read_orders,write_orders,read_customers,write_customers,read_inventory,write_inventory';
-const SHOPIFY_REDIRECT_URI = process.env.SHOPIFY_REDIRECT_URI;
+
+function normalizeBaseUrl(url) {
+  if (!url) return '';
+  return String(url).trim().replace(/\/+$/, '');
+}
+
+/**
+ * Resolve the OAuth redirect URI.
+ * Prefers explicit SHOPIFY_REDIRECT_URI, otherwise derives from PUBLIC_BASE_URL/NGROK_URL.
+ */
+export function getShopifyRedirectUri() {
+  const explicit = (process.env.SHOPIFY_REDIRECT_URI || '').trim();
+  if (explicit) return explicit;
+
+  const base =
+    normalizeBaseUrl(process.env.PUBLIC_BASE_URL) ||
+    normalizeBaseUrl(process.env.NGROK_URL) ||
+    '';
+
+  if (base) return `${base}/shopify/oauth/callback`;
+
+  const port = process.env.PORT || 3000;
+  return `http://localhost:${port}/shopify/oauth/callback`;
+}
 
 /**
  * Check if Shopify integration is properly configured
  */
 export function isShopifyEnabled() {
-  return !!(SHOPIFY_API_KEY && SHOPIFY_API_SECRET);
+  const redirectUri = getShopifyRedirectUri();
+  return !!(SHOPIFY_API_KEY && SHOPIFY_API_SECRET && redirectUri);
 }
 
 /**
@@ -27,10 +51,11 @@ export function generateOAuthUrl(shopDomain, state = null) {
     throw new Error('Shopify is not configured');
   }
 
+  const redirectUri = getShopifyRedirectUri();
   const params = new URLSearchParams({
     client_id: SHOPIFY_API_KEY,
     scope: SHOPIFY_SCOPES,
-    redirect_uri: SHOPIFY_REDIRECT_URI,
+    redirect_uri: redirectUri,
     state: state || crypto.randomBytes(16).toString('hex')
   });
 
@@ -803,3 +828,5 @@ export async function disconnectStore(userId) {
     throw new Error('Failed to disconnect Shopify store');
   }
 }
+
+

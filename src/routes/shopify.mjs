@@ -15,7 +15,8 @@ import {
   searchProducts,
   createOrder,
   updateOrderFulfillment,
-  registerWebhook
+  registerWebhook,
+  getShopifyRedirectUri
 } from "../services/shopify.mjs";
 import { renderSidebar, renderTopbar, getProfessionalHead } from "../utils.mjs";
 import { getUserPlan, isPlanUpgraded } from "../services/usage.mjs";
@@ -24,22 +25,25 @@ export default function registerShopifyRoutes(app) {
   // Shopify OAuth initiation
   app.get("/shopify/auth", ensureAuthed, (req, res) => {
     if (!isShopifyEnabled()) {
-      return res.status(500).send('Shopify integration is not configured');
+      return res.redirect('/settings/shopify?shopify_error=not_configured');
     }
 
     const userId = getCurrentUserId(req);
-    const shopDomain = req.query.shop;
+    let shopDomain = req.query.shop;
 
     if (!shopDomain) {
-      return res.status(400).send('Shop domain is required');
+      return res.redirect('/settings/shopify?shopify_error=missing_shop');
     }
+
+    shopDomain = String(shopDomain).trim().toLowerCase();
+    shopDomain = shopDomain.replace(/^https?:\/\//, '').replace(/\/+$/, '');
 
     try {
       const authUrl = generateOAuthUrl(shopDomain, userId);
       res.redirect(authUrl);
     } catch (error) {
       console.error('Failed to generate OAuth URL:', error);
-      res.status(500).send('Failed to initiate Shopify authentication');
+      res.redirect('/settings/shopify?shopify_error=oauth_init_failed');
     }
   });
 
@@ -53,6 +57,11 @@ export default function registerShopifyRoutes(app) {
     }
 
     try {
+      // Optional safety: if the redirect URI is misconfigured, surface it early.
+      if (!isShopifyEnabled() || !getShopifyRedirectUri()) {
+        return res.redirect('/settings/shopify?shopify_error=not_configured');
+      }
+
       // Exchange code for access token
       const tokenData = await exchangeCodeForToken(shop, code);
 
