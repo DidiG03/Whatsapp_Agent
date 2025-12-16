@@ -84,11 +84,23 @@ export async function exchangeCodeForToken(shopDomain, code) {
   } catch (error) {
     const status = error?.response?.status;
     const data = error?.response?.data;
-    const oauthError =
+    let oauthError =
       (data && typeof data === 'object' && (data.error_description || data.error)) ? (data.error_description || data.error) :
-      (typeof data === 'string' ? data : '');
+      '';
+
+    // Sometimes Shopify returns an HTML error page (e.g., when shopDomain is wrong).
+    if (!oauthError && typeof data === 'string') {
+      const titleMatch = data.match(/<title>\s*([^<]+?)\s*<\/title>/i);
+      oauthError = titleMatch?.[1] ? `HTML:${titleMatch[1]}` : 'HTML_RESPONSE';
+    }
+
     const detail = oauthError || error?.message || 'unknown_error';
-    console.error('Failed to exchange code for token:', { status, data: data || null, message: error?.message });
+    console.error('Failed to exchange code for token:', {
+      status,
+      shopDomain,
+      message: error?.message,
+      responseType: typeof data,
+    });
     throw new Error(`SHOPIFY_TOKEN_EXCHANGE_FAILED:${detail}`);
   }
 }

@@ -70,10 +70,14 @@ export default function registerShopifyRoutes(app) {
   // Shopify OAuth callback
   app.get("/shopify/oauth/callback", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
-    const { code, shop, state } = req.query;
+    const code = String(req.query.code || '');
+    const shop = normalizeShopDomain(req.query.shop);
 
     if (!code || !shop) {
       return res.redirect('/settings/shopify?shopify_error=missing_params');
+    }
+    if (!shop.endsWith('.myshopify.com')) {
+      return res.redirect('/settings/shopify?shopify_error=invalid_shop');
     }
 
     try {
