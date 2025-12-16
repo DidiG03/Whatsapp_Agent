@@ -701,30 +701,11 @@ export default function registerShopifyRoutes(app) {
               gap: 12px;
               margin-top: 20px;
             }
-            .action-btn {
-              padding: 12px 20px;
-              border-radius: 8px;
-              font-weight: 500;
-              cursor: pointer;
-              transition: all 0.2s;
-              border: none;
-              display: inline-flex;
-              align-items: center;
-              gap: 10px;
-            }
-            .action-btn.primary {
-              background: #96BF48;
-              color: white;
-            }
-            .action-btn.primary:hover {
-              background: #7AB55C;
-            }
-            .action-btn.danger {
-              background: #fee2e2;
-              color: #dc2626;
-            }
-            .action-btn.danger:hover {
-              background: #fecaca;
+            .actions-grid .btn-primary,
+            .actions-grid .btn-ghost,
+            .actions-grid .btn-danger {
+              padding: 10px 14px;
+              border-radius: 10px;
             }
             .features-grid {
               display: grid;
@@ -857,13 +838,14 @@ export default function registerShopifyRoutes(app) {
               ` : `
                 <div class="connected-card">
                   <div class="connected-header">
-                    <svg width="40" height="40" viewBox="0 0 109 124" fill="#96BF48" xmlns="http://www.w3.org/2000/svg">
-                      <path d="M95.8 23.4c-.1-.6-.6-1-1.1-1-.5 0-9.3-.2-9.3-.2s-7.4-7.2-8.1-7.9c-.8-.8-2.3-.5-2.9-.4-.1 0-1.5.5-4.1 1.3-2.4-7-6.7-13.4-14.2-13.4h-.7c-2.1-2.8-4.8-4-7-4-17.4 0-25.7 21.7-28.3 32.8-6.8 2.1-11.6 3.6-12.2 3.8-3.8 1.2-3.9 1.3-4.4 4.9-.4 2.7-10.3 79.2-10.3 79.2l75.8 14.2 41-8.9S96 24 95.8 23.4z"/>
-                    </svg>
+                    <img src="/shopify-icon.png" alt="Shopify" style="width:40px; height:40px;"/>
                     <div>
                       <span class="connected-badge">✓ Connected</span>
                       <div class="store-name">${connection.shop_domain}</div>
                       <div class="shopify-subtle">Manage sync and commerce settings for this store.</div>
+                    </div>
+                    <div style="margin-left:auto; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                      <a href="/dashboard/shopify" class="btn-primary" style="text-decoration:none;">Open Shopify Dashboard</a>
                     </div>
                   </div>
                   
@@ -905,15 +887,15 @@ export default function registerShopifyRoutes(app) {
                         <span>WhatsApp order notifications</span>
                       </label>
                     </div>
-                    <button type="submit" class="action-btn primary" style="margin-top: 16px;">Save Settings</button>
+                    <button type="submit" class="btn-primary" style="margin-top: 16px;">Save Settings</button>
                   </form>
 
                   <h3 style="margin: 24px 0 12px 0;">Actions</h3>
                   <div class="actions-grid">
-                    <button id="syncProducts" class="action-btn primary">Sync Products</button>
-                    <button id="syncOrders" class="action-btn primary">Sync Orders</button>
-                    <button id="syncCustomers" class="action-btn primary">Sync Customers</button>
-                    <button id="disconnectStore" class="action-btn danger">Disconnect Store</button>
+                    <button id="syncProducts" class="btn-primary" type="button">Sync Products</button>
+                    <button id="syncOrders" class="btn-primary" type="button">Sync Orders</button>
+                    <button id="syncCustomers" class="btn-primary" type="button">Sync Customers</button>
+                    <button id="disconnectStore" class="btn-danger" type="button">Disconnect Store</button>
                   </div>
                 </div>
 
