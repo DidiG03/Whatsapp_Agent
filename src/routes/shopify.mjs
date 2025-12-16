@@ -63,30 +63,47 @@ export default function registerShopifyRoutes(app) {
       }
 
       // Exchange code for access token
-      const tokenData = await exchangeCodeForToken(shop, code);
+      let tokenData;
+      try {
+        tokenData = await exchangeCodeForToken(shop, code);
+      } catch (err) {
+        console.error('Shopify token exchange failed:', err?.message || err);
+        return res.redirect('/settings/shopify?shopify_error=auth_failed&stage=token');
+      }
 
       // Get store information
-      const storeInfo = await getStoreInfo(shop, tokenData.access_token);
+      let storeInfo;
+      try {
+        storeInfo = await getStoreInfo(shop, tokenData.access_token);
+      } catch (err) {
+        console.error('Shopify getStoreInfo failed:', err?.message || err);
+        return res.redirect('/settings/shopify?shopify_error=auth_failed&stage=store');
+      }
 
       // Save connection to database
-      const { ShopifyStore } = await import('../schemas/mongodb.mjs');
-      await ShopifyStore.findOneAndUpdate(
-        { user_id: userId },
-        {
-          user_id: userId,
-          shop_domain: shop,
-          access_token: tokenData.access_token,
-          scopes: tokenData.scope.split(','),
-          is_active: true,
-          store_info: storeInfo,
-          last_sync_ts: Date.now(),
-          sync_enabled: true,
-          inventory_sync_enabled: false,
-          abandoned_cart_enabled: false,
-          order_notifications_enabled: true
-        },
-        { upsert: true, new: true }
-      );
+      try {
+        const { ShopifyStore } = await import('../schemas/mongodb.mjs');
+        await ShopifyStore.findOneAndUpdate(
+          { user_id: userId },
+          {
+            user_id: userId,
+            shop_domain: shop,
+            access_token: tokenData.access_token,
+            scopes: tokenData.scope.split(','),
+            is_active: true,
+            store_info: storeInfo,
+            last_sync_ts: Date.now(),
+            sync_enabled: true,
+            inventory_sync_enabled: false,
+            abandoned_cart_enabled: false,
+            order_notifications_enabled: true
+          },
+          { upsert: true, new: true }
+        );
+      } catch (err) {
+        console.error('Shopify DB save failed:', err?.message || err);
+        return res.redirect('/settings/shopify?shopify_error=auth_failed&stage=db');
+      }
 
       // Register webhook for order updates
       try {
@@ -100,7 +117,7 @@ export default function registerShopifyRoutes(app) {
       res.redirect('/settings/shopify?shopify_success=true');
     } catch (error) {
       console.error('Shopify OAuth callback failed:', error);
-      res.redirect('/settings/shopify?shopify_error=auth_failed');
+      res.redirect('/settings/shopify?shopify_error=auth_failed&stage=unknown');
     }
   });
 
@@ -475,6 +492,8 @@ export default function registerShopifyRoutes(app) {
       const hasApiKey = Boolean(process.env.SHOPIFY_API_KEY);
       const hasApiSecret = Boolean(process.env.SHOPIFY_API_SECRET);
 
+      const stage = String(req.query.stage || '');
+      const stageLabel = stage ? ` (stage: ${stage})` : '';
       const errorMessage = (() => {
         switch (String(error || '')) {
           case 'not_configured':
@@ -486,7 +505,7 @@ export default function registerShopifyRoutes(app) {
           case 'oauth_init_failed':
             return 'Failed to start Shopify OAuth. Double-check your store domain and app configuration.';
           case 'auth_failed':
-            return 'Shopify authorization failed. Check your app’s redirect URL and that the app is installable for this store.';
+            return `Shopify authorization failed${stageLabel}. If this is stage "token", verify SHOPIFY_API_KEY/SHOPIFY_API_SECRET match the same app in Shopify Partners.`;
           default:
             return error ? 'Failed to connect. Please try again.' : '';
         }

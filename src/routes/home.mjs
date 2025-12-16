@@ -110,7 +110,8 @@ export default function registerHomeRoutes(app) {
           <header class="m-header">
             <div class="wrap m-header-inner">
               <a class="brand" href="/">
-                <span>Code Orbit</span>
+                <img src="/logo-icon.png" alt="Code Orbit" style="width:20px;height:27px;margin-bottom:8px;"/>
+                <span>Code Orbit Agent</span>
               </a>
               <nav class="m-nav">
                 <a href="#features">Features</a>
