@@ -872,9 +872,7 @@ export default function registerSettingsRoutes(app, options = {}) {
                     <!-- Shopify Integration -->
                     <div style="border:1px solid #e5e7eb; border-radius:12px; padding:20px; background:white;" id="shopifyIntegrationCard">
                       <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
-                        <svg width="32" height="32" viewBox="0 0 109 124" fill="#96BF48" xmlns="http://www.w3.org/2000/svg">
-                          <path d="M95.8 23.4c-.1-.6-.6-1-1.1-1-.5 0-9.3-.2-9.3-.2s-7.4-7.2-8.1-7.9c-.8-.8-2.3-.5-2.9-.4-.1 0-1.5.5-4.1 1.3-2.4-7-6.7-13.4-14.2-13.4h-.7c-2.1-2.8-4.8-4-7-4-17.4 0-25.7 21.7-28.3 32.8-6.8 2.1-11.6 3.6-12.2 3.8-3.8 1.2-3.9 1.3-4.4 4.9-.4 2.7-10.3 79.2-10.3 79.2l75.8 14.2 41-8.9S96 24 95.8 23.4z"/>
-                        </svg>
+                        <img src="/shopify-icon.png" alt="Shopify" style="width:32px; height:32px;"/>
                         <div>
                           <h4 style="margin:0; font-size:16px;">Shopify</h4>
                           <div class="small" style="color:#6b7280;" id="shopifyStatusText">E-commerce integration</div>

@@ -22,6 +22,24 @@ import { renderSidebar, renderTopbar, getProfessionalHead } from "../utils.mjs";
 import { getUserPlan, isPlanUpgraded } from "../services/usage.mjs";
 
 export default function registerShopifyRoutes(app) {
+  function normalizeShopDomain(input) {
+    if (!input) return '';
+    let raw = String(input).trim();
+    if (!raw) return '';
+    raw = raw.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+
+    // If someone pasted an admin URL like admin.shopify.com/store/<slug>/...
+    // try to derive the myshopify domain.
+    const adminMatch = raw.match(/^admin\.shopify\.com\/store\/([^\/\?]+)/i);
+    if (adminMatch?.[1]) {
+      return `${adminMatch[1].toLowerCase()}.myshopify.com`;
+    }
+
+    // If they pasted with a path, keep only host portion
+    const hostOnly = raw.split('/')[0];
+    return hostOnly.toLowerCase();
+  }
+
   // Shopify OAuth initiation
   app.get("/shopify/auth", ensureAuthed, (req, res) => {
     if (!isShopifyEnabled()) {
@@ -29,14 +47,16 @@ export default function registerShopifyRoutes(app) {
     }
 
     const userId = getCurrentUserId(req);
-    let shopDomain = req.query.shop;
+    let shopDomain = normalizeShopDomain(req.query.shop);
 
     if (!shopDomain) {
       return res.redirect('/settings/shopify?shopify_error=missing_shop');
     }
 
-    shopDomain = String(shopDomain).trim().toLowerCase();
-    shopDomain = shopDomain.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+    // Shopify OAuth requires the shop domain to be a myshopify domain.
+    if (!shopDomain.endsWith('.myshopify.com')) {
+      return res.redirect('/settings/shopify?shopify_error=invalid_shop');
+    }
 
     try {
       const authUrl = generateOAuthUrl(shopDomain, userId);
@@ -68,7 +88,8 @@ export default function registerShopifyRoutes(app) {
         tokenData = await exchangeCodeForToken(shop, code);
       } catch (err) {
         console.error('Shopify token exchange failed:', err?.message || err);
-        return res.redirect('/settings/shopify?shopify_error=auth_failed&stage=token');
+        const reason = encodeURIComponent(String(err?.message || 'token_exchange_failed').slice(0, 160));
+        return res.redirect(`/settings/shopify?shopify_error=auth_failed&stage=token&reason=${reason}`);
       }
 
       // Get store information
@@ -494,18 +515,22 @@ export default function registerShopifyRoutes(app) {
 
       const stage = String(req.query.stage || '');
       const stageLabel = stage ? ` (stage: ${stage})` : '';
+      const reasonRaw = String(req.query.reason || '');
+      const reasonLabel = (stage === 'token' && reasonRaw) ? ` — ${reasonRaw}` : '';
       const errorMessage = (() => {
         switch (String(error || '')) {
           case 'not_configured':
             return 'Shopify is not configured on the server. Ask the app owner to set SHOPIFY_API_KEY and SHOPIFY_API_SECRET in the deployment environment.';
           case 'missing_shop':
             return 'Please enter your Shopify store domain (e.g. mystore.myshopify.com).';
+          case 'invalid_shop':
+            return 'Please enter a valid Shopify store domain ending in .myshopify.com (e.g. code-orbit-dev.myshopify.com).';
           case 'missing_params':
             return 'Shopify did not return the expected OAuth parameters. Please try connecting again.';
           case 'oauth_init_failed':
             return 'Failed to start Shopify OAuth. Double-check your store domain and app configuration.';
           case 'auth_failed':
-            return `Shopify authorization failed${stageLabel}. If this is stage "token", verify SHOPIFY_API_KEY/SHOPIFY_API_SECRET match the same app in Shopify Partners.`;
+            return `Shopify authorization failed${stageLabel}${reasonLabel}. If this is stage "token", verify SHOPIFY_API_KEY/SHOPIFY_API_SECRET match the same app in Shopify Partners.`;
           default:
             return error ? 'Failed to connect. Please try again.' : '';
         }

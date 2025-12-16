@@ -82,8 +82,14 @@ export async function exchangeCodeForToken(shopDomain, code) {
       scope: response.data.scope
     };
   } catch (error) {
-    console.error('Failed to exchange code for token:', error.response?.data || error.message);
-    throw new Error('Failed to authenticate with Shopify');
+    const status = error?.response?.status;
+    const data = error?.response?.data;
+    const oauthError =
+      (data && typeof data === 'object' && (data.error_description || data.error)) ? (data.error_description || data.error) :
+      (typeof data === 'string' ? data : '');
+    const detail = oauthError || error?.message || 'unknown_error';
+    console.error('Failed to exchange code for token:', { status, data: data || null, message: error?.message });
+    throw new Error(`SHOPIFY_TOKEN_EXCHANGE_FAILED:${detail}`);
   }
 }
 

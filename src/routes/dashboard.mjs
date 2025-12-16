@@ -1165,6 +1165,7 @@ export default function registerDashboardRoutes(app) {
       ${renderSidebar('dashboard', { showBookings: isUpgraded, isUpgraded })}
             <main class="main">
                 ${metricsHtml}
+              ${isUpgraded ? `
               <div id="mini-onboard" class="card" style="position:fixed; right:24px; bottom:92px; width:400px; display:none; padding:0; overflow:hidden; z-index:1000;">
                 <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-bottom:1px solid #eee;">
                   <div class="small">KB Assistant</div>
@@ -1172,11 +1173,14 @@ export default function registerDashboardRoutes(app) {
                 </div>
                 <iframe src="/assistant?token=${encodeURIComponent(signSessionToken(userId))}" style="width:100%; height:660px; border:0; background:white;" sandbox="allow-forms allow-scripts allow-same-origin"></iframe>
               </div>
+              ` : ''}
             </main>
           </div>
         </div>
+        ${isUpgraded ? `
         <button id="kb-toggle" onclick="toggleMiniOnboard()" style="position:fixed; right:24px; left:auto; bottom:24px; width:56px; height:56px; border-radius:50%; background:#4f46e5; color:#fff; border:none; box-shadow:0 6px 18px rgba(0,0,0,0.15); display:flex; align-items:center; justify-content:center; font-size:28px; line-height:0; cursor:pointer; z-index:1001;" aria-label="Chat" title="Chat">+
         </button>
+        ` : ''}
         ${showSetupGuide ? setupGuideHtml : ''}
       </body></html>
     `);
