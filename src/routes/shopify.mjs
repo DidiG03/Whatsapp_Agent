@@ -724,7 +724,7 @@ export default function registerShopifyRoutes(app) {
           <div class="layout">
             ${renderSidebar('settings', { showBookings: !!isUpgraded, isUpgraded })}
             <main class="main">
-              <div class="section">
+              <div style="margin-left:20px;">
               ${success ? '<div class="alert alert-success">✅ Successfully connected to Shopify!</div>' : ''}
               ${errorMessage ? `<div class="alert alert-error">❌ ${errorMessage}</div>` : ''}
 

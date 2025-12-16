@@ -70,39 +70,54 @@ export async function exchangeCodeForToken(shopDomain, code) {
     throw new Error('Shopify is not configured');
   }
 
-  try {
-    const response = await axios.post(`https://${shopDomain}/admin/oauth/access_token`, {
-      client_id: SHOPIFY_API_KEY,
-      client_secret: SHOPIFY_API_SECRET,
-      code: code
-    });
+  const url = `https://${shopDomain}/admin/oauth/access_token`;
 
+  // Use x-www-form-urlencoded (most compatible) and do NOT follow redirects.
+  // Redirects often indicate a wrong host/shop value and can lead to HTML error pages.
+  const body = new URLSearchParams({
+    client_id: SHOPIFY_API_KEY,
+    client_secret: SHOPIFY_API_SECRET,
+    code: String(code || '')
+  }).toString();
+
+  const response = await axios.post(url, body, {
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Accept': 'application/json'
+    },
+    maxRedirects: 0,
+    validateStatus: () => true,
+    timeout: 30000
+  });
+
+  if (response.status === 200 && response.data?.access_token) {
     return {
       access_token: response.data.access_token,
       scope: response.data.scope
     };
-  } catch (error) {
-    const status = error?.response?.status;
-    const data = error?.response?.data;
-    let oauthError =
-      (data && typeof data === 'object' && (data.error_description || data.error)) ? (data.error_description || data.error) :
-      '';
-
-    // Sometimes Shopify returns an HTML error page (e.g., when shopDomain is wrong).
-    if (!oauthError && typeof data === 'string') {
-      const titleMatch = data.match(/<title>\s*([^<]+?)\s*<\/title>/i);
-      oauthError = titleMatch?.[1] ? `HTML:${titleMatch[1]}` : 'HTML_RESPONSE';
-    }
-
-    const detail = oauthError || error?.message || 'unknown_error';
-    console.error('Failed to exchange code for token:', {
-      status,
-      shopDomain,
-      message: error?.message,
-      responseType: typeof data,
-    });
-    throw new Error(`SHOPIFY_TOKEN_EXCHANGE_FAILED:${detail}`);
   }
+
+  // Try to extract a helpful error.
+  const location = response.headers?.location;
+  let oauthError = '';
+  if (response.data && typeof response.data === 'object') {
+    oauthError = response.data.error_description || response.data.error || '';
+  } else if (typeof response.data === 'string') {
+    const titleMatch = response.data.match(/<title>\s*([^<]+?)\s*<\/title>/i);
+    oauthError = titleMatch?.[1] ? `HTML:${titleMatch[1]}` : 'HTML_RESPONSE';
+  }
+
+  if (response.status >= 300 && response.status < 400 && location) {
+    oauthError = `REDIRECT:${response.status}:${location}`;
+  }
+
+  const detail = oauthError || `HTTP_${response.status}`;
+  console.error('Failed to exchange code for token:', {
+    status: response.status,
+    shopDomain,
+    detail,
+  });
+  throw new Error(`SHOPIFY_TOKEN_EXCHANGE_FAILED:${detail}`);
 }
 
 /**
