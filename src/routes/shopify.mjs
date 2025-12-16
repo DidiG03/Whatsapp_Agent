@@ -542,7 +542,12 @@ export default function registerShopifyRoutes(app) {
 
       const html = `
         <html>${getProfessionalHead('Shopify Integration')}<body>
+        <script src="/toast.js"></script>
         <style>
+            .shopify-wrap {
+              max-width: 1080px;
+              margin: 0 auto;
+            }
             .shopify-hero {
               background: linear-gradient(135deg, #96BF48 0%, #5E8E3E 100%);
               border-radius: 16px;
@@ -609,29 +614,66 @@ export default function registerShopifyRoutes(app) {
             }
             .connected-card {
               background: white;
-              border: 2px solid #96BF48;
+              border: 1px solid #e5e7eb;
               border-radius: 16px;
-              padding: 24px;
+              padding: 22px;
               margin-bottom: 24px;
+              box-shadow: 0 6px 18px rgba(17, 24, 39, 0.06);
             }
             .connected-header {
               display: flex;
               align-items: center;
               gap: 16px;
-              margin-bottom: 20px;
+              margin-bottom: 18px;
             }
             .connected-badge {
-              background: #96BF48;
-              color: white;
-              padding: 6px 12px;
-              border-radius: 20px;
+              background: rgba(150, 191, 72, 0.14);
+              color: #2f6b2f;
+              padding: 6px 10px;
+              border-radius: 999px;
               font-size: 12px;
               font-weight: 600;
+              border: 1px solid rgba(150, 191, 72, 0.28);
+              display: inline-flex;
+              align-items: center;
+              gap: 6px;
             }
             .store-name {
-              font-size: 20px;
+              font-size: 18px;
               font-weight: 600;
               color: #1f2937;
+              margin-top: 6px;
+              word-break: break-word;
+            }
+            .shopify-subtle {
+              color: #6b7280;
+              font-size: 13px;
+              margin-top: 4px;
+            }
+            .shopify-stats {
+              display: grid;
+              grid-template-columns: repeat(3, minmax(0, 1fr));
+              gap: 12px;
+              margin: 14px 0 22px 0;
+            }
+            .shopify-stat {
+              background: #f9fafb;
+              border: 1px solid #eef0f3;
+              border-radius: 12px;
+              padding: 14px 12px;
+              text-align: left;
+            }
+            .shopify-stat .label {
+              font-size: 12px;
+              color: #6b7280;
+              margin-bottom: 6px;
+            }
+            .shopify-stat .value {
+              font-weight: 700;
+              color: #111827;
+              display: flex;
+              gap: 8px;
+              align-items: center;
             }
             .settings-grid {
               display: grid;
@@ -646,6 +688,7 @@ export default function registerShopifyRoutes(app) {
               padding: 16px;
               background: #f9fafb;
               border-radius: 8px;
+              border: 1px solid #eef0f3;
             }
             .setting-item input[type="checkbox"] {
               width: 20px;
@@ -665,6 +708,9 @@ export default function registerShopifyRoutes(app) {
               cursor: pointer;
               transition: all 0.2s;
               border: none;
+              display: inline-flex;
+              align-items: center;
+              gap: 10px;
             }
             .action-btn.primary {
               background: #96BF48;
@@ -724,9 +770,17 @@ export default function registerShopifyRoutes(app) {
           <div class="layout">
             ${renderSidebar('settings', { showBookings: !!isUpgraded, isUpgraded })}
             <main class="main">
-              <div style="margin-left:20px;">
-              ${success ? '<div class="alert alert-success">✅ Successfully connected to Shopify!</div>' : ''}
-              ${errorMessage ? `<div class="alert alert-error">❌ ${errorMessage}</div>` : ''}
+              <div class="shopify-wrap">
+              <script>
+                (function(){
+                  var toastSuccess = ${JSON.stringify(success ? 'Successfully connected to Shopify!' : '')};
+                  var toastError = ${JSON.stringify(errorMessage || '')};
+                  if (window.Toast) {
+                    if (toastSuccess) window.Toast.success(toastSuccess);
+                    if (toastError) window.Toast.error(toastError);
+                  }
+                })();
+              </script>
 
               ${(!hasApiKey || !hasApiSecret) ? `
                 <div class="alert" style="background:#fff7ed; color:#9a3412; border:1px solid #fed7aa;">
@@ -809,27 +863,29 @@ export default function registerShopifyRoutes(app) {
                     <div>
                       <span class="connected-badge">✓ Connected</span>
                       <div class="store-name">${connection.shop_domain}</div>
+                      <div class="shopify-subtle">Manage sync and commerce settings for this store.</div>
                     </div>
                   </div>
                   
-                  <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; text-align: center;">
-                    <div style="background: #f9fafb; padding: 16px; border-radius: 8px;">
-                      <div style="font-size: 12px; color: #6b7280;">Status</div>
-                      <div style="font-weight: 600; color: ${connection.is_active ? '#059669' : '#dc2626'};">
-                        ${connection.is_active ? '🟢 Active' : '🔴 Inactive'}
+                  <div class="shopify-stats">
+                    <div class="shopify-stat">
+                      <div class="label">Status</div>
+                      <div class="value" style="color:${connection.is_active ? '#059669' : '#dc2626'};">
+                        <span>${connection.is_active ? '●' : '●'}</span>
+                        <span>${connection.is_active ? 'Active' : 'Inactive'}</span>
                       </div>
                     </div>
-                    <div style="background: #f9fafb; padding: 16px; border-radius: 8px;">
-                      <div style="font-size: 12px; color: #6b7280;">Last Sync</div>
-                      <div style="font-weight: 600;">${connection.last_sync_ts ? new Date(connection.last_sync_ts).toLocaleDateString() : 'Never'}</div>
+                    <div class="shopify-stat">
+                      <div class="label">Last sync</div>
+                      <div class="value">${connection.last_sync_ts ? new Date(connection.last_sync_ts).toLocaleDateString() : 'Never'}</div>
                     </div>
-                    <div style="background: #f9fafb; padding: 16px; border-radius: 8px;">
-                      <div style="font-size: 12px; color: #6b7280;">Notifications</div>
-                      <div style="font-weight: 600;">${connection.order_notifications_enabled ? '✅ Enabled' : '❌ Disabled'}</div>
+                    <div class="shopify-stat">
+                      <div class="label">Order notifications</div>
+                      <div class="value">${connection.order_notifications_enabled ? 'Enabled' : 'Disabled'}</div>
                     </div>
                   </div>
 
-                  <h3 style="margin: 0 0 16px 0;">⚙️ Settings</h3>
+                  <h3 style="margin: 0 0 12px 0;">Settings</h3>
                   <form id="shopifySettingsForm">
                     <div class="settings-grid">
                       <label class="setting-item">
@@ -852,12 +908,12 @@ export default function registerShopifyRoutes(app) {
                     <button type="submit" class="action-btn primary" style="margin-top: 16px;">Save Settings</button>
                   </form>
 
-                  <h3 style="margin: 24px 0 16px 0;">🔄 Actions</h3>
+                  <h3 style="margin: 24px 0 12px 0;">Actions</h3>
                   <div class="actions-grid">
-                    <button id="syncProducts" class="action-btn primary">📦 Sync Products</button>
-                    <button id="syncOrders" class="action-btn primary">📋 Sync Orders</button>
-                    <button id="syncCustomers" class="action-btn primary">👥 Sync Customers</button>
-                    <button id="disconnectStore" class="action-btn danger">🔌 Disconnect Store</button>
+                    <button id="syncProducts" class="action-btn primary">Sync Products</button>
+                    <button id="syncOrders" class="action-btn primary">Sync Orders</button>
+                    <button id="syncCustomers" class="action-btn primary">Sync Customers</button>
+                    <button id="disconnectStore" class="action-btn danger">Disconnect Store</button>
                   </div>
                 </div>
 
