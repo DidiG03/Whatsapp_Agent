@@ -4,6 +4,8 @@ import { signSessionToken } from "../middleware/auth.mjs";
 import { getVercelWebAnalyticsSnippet } from "../utils.mjs";
 
 export default function registerAuthRoutes(app) {
+  const CLERK_JS_VERSION = (process.env.CLERK_JS_VERSION || '5').toString().trim() || '5';
+
   // Redirect main auth route to signin
   app.get("/auth", (_req, res) => {
     res.redirect("/auth/signin");
@@ -22,7 +24,7 @@ export default function registerAuthRoutes(app) {
         <link rel="stylesheet" href="/styles.css">
         ${getVercelWebAnalyticsSnippet()}
         <link rel="icon" href="/logo-icon.png" type="image/png">
-        <script src="https://unpkg.com/@clerk/clerk-js@latest/dist/clerk.browser.js" data-clerk-publishable-key="${CLERK_PUBLISHABLE}"></script>
+        <script src="https://unpkg.com/@clerk/clerk-js@${CLERK_JS_VERSION}/dist/clerk.browser.js" data-clerk-publishable-key="${CLERK_PUBLISHABLE}"></script>
       </head>
       <body class="auth-aurora auth-dark">
         <div class="auth-shell">
@@ -57,6 +59,19 @@ export default function registerAuthRoutes(app) {
         
         <script>
           const clerkPublishableKey = '${CLERK_PUBLISHABLE}';
+
+          function safeRedirectUrl() {
+            const raw = new URLSearchParams(window.location.search).get('redirect_url') || '';
+            if (!raw) return '/dashboard';
+            try {
+              // Allow relative paths only (prevents open redirects).
+              if (raw.startsWith('/') && !raw.startsWith('//') && !raw.includes('://')) return raw;
+              // Allow absolute URLs only if same-origin.
+              const u = new URL(raw, window.location.origin);
+              if (u.origin === window.location.origin) return u.pathname + u.search + u.hash;
+            } catch {}
+            return '/dashboard';
+          }
           
           if (!clerkPublishableKey || clerkPublishableKey === 'undefined' || clerkPublishableKey === 'null') {
             document.getElementById('signup-component').innerHTML = 
@@ -98,7 +113,7 @@ export default function registerAuthRoutes(app) {
                     },
                     afterSignUpUrl: '/dashboard',
                     signInUrl: '/auth/signin',
-                    redirectUrl: new URLSearchParams(window.location.search).get('redirect_url') || '/dashboard'
+                    redirectUrl: safeRedirectUrl()
                 });
                 }).catch(error => {
                   console.error('Failed to load Clerk:', error);
@@ -139,7 +154,7 @@ export default function registerAuthRoutes(app) {
         <link rel="stylesheet" href="/styles.css">
         ${getVercelWebAnalyticsSnippet()}
         <link rel="icon" href="/logo-icon.png" type="image/png">
-        <script src="https://unpkg.com/@clerk/clerk-js@latest/dist/clerk.browser.js" data-clerk-publishable-key="${CLERK_PUBLISHABLE}"></script>
+        <script src="https://unpkg.com/@clerk/clerk-js@${CLERK_JS_VERSION}/dist/clerk.browser.js" data-clerk-publishable-key="${CLERK_PUBLISHABLE}"></script>
       </head>
       <body class="auth-aurora auth-dark">
         <div class="auth-shell">
@@ -174,6 +189,19 @@ export default function registerAuthRoutes(app) {
         
         <script>
           const clerkPublishableKey = '${CLERK_PUBLISHABLE}';
+
+          function safeRedirectUrl() {
+            const raw = new URLSearchParams(window.location.search).get('redirect_url') || '';
+            if (!raw) return '/dashboard';
+            try {
+              // Allow relative paths only (prevents open redirects).
+              if (raw.startsWith('/') && !raw.startsWith('//') && !raw.includes('://')) return raw;
+              // Allow absolute URLs only if same-origin.
+              const u = new URL(raw, window.location.origin);
+              if (u.origin === window.location.origin) return u.pathname + u.search + u.hash;
+            } catch {}
+            return '/dashboard';
+          }
           
           if (!clerkPublishableKey || clerkPublishableKey === 'undefined' || clerkPublishableKey === 'null') {
             document.getElementById('signin-component').innerHTML = 
@@ -217,7 +245,7 @@ export default function registerAuthRoutes(app) {
                     },
                     afterSignInUrl: '/dashboard',
                     signUpUrl: '/auth/signup',
-                    redirectUrl: new URLSearchParams(window.location.search).get('redirect_url') || '/dashboard'
+                    redirectUrl: safeRedirectUrl()
                   });
                 }).catch(error => {
                   console.error('Failed to load Clerk:', error);

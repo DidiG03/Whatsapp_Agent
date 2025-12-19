@@ -28,15 +28,22 @@ function fallbackUserId() {
   // Provide a safe fallback for local development/tests only.
   // In production, Clerk should always be enabled.
   if (process.env.NODE_ENV === 'test') return 'test-user-id';
+  if (process.env.NODE_ENV === 'production' || process.env.VERCEL_ENV === 'production') return null;
   const devId = (process.env.DEV_USER_ID || '').trim();
   return devId || null;
 }
 
 function fallbackEmail() {
   if (process.env.NODE_ENV === 'test') return 'test@example.com';
+  if (process.env.NODE_ENV === 'production' || process.env.VERCEL_ENV === 'production') return null;
   const devEmail = (process.env.DEV_USER_EMAIL || '').trim();
   return devEmail || null;
 }
+
+// Small in-memory cache to reduce Clerk API calls.
+// (Helps on Vercel where the same lambda instance may serve many requests.)
+const _emailCache = new Map(); // userId -> { email: string|null, expMs: number }
+const EMAIL_CACHE_TTL_MS = Math.max(30_000, Number(process.env.CLERK_EMAIL_CACHE_TTL_MS || 300_000)); // default 5m
 
 /**
  * Initialize Clerk middleware with GET-handshake optimization.
@@ -162,10 +169,16 @@ export async function getSignedInEmail(req) {
   try {
     const { userId } = getAuth(req);
     if (!userId) return null;
+    const cached = _emailCache.get(userId);
+    if (cached && cached.expMs > Date.now()) {
+      return cached.email;
+    }
     const user = await clerkClient.users.getUser(userId);
     const primaryId = user.primaryEmailAddressId;
     const primary = user.emailAddresses?.find(e => e.id === primaryId)?.emailAddress;
-    return primary || user.emailAddresses?.[0]?.emailAddress || null;
+    const email = primary || user.emailAddresses?.[0]?.emailAddress || null;
+    _emailCache.set(userId, { email, expMs: Date.now() + EMAIL_CACHE_TTL_MS });
+    return email;
   } catch {
     return null;
   }
@@ -213,14 +226,14 @@ export function verifySessionToken(token) {
 }
 
 /** Check if the current user is an admin */
-export function ensureAdmin(req, res, next) {
+export async function ensureAdmin(req, res, next) {
   if (!CLERK_ENABLED || !clerkEnabledRuntime()) {
     // In development, allow access if no Clerk is configured
     return next();
   }
   
   try {
-    const { userId } = getAuth(req);
+    const { userId } = getAuth(req) || {};
     if (!userId) {
       return res.status(401).json({ 
         error: 'Authentication required',
@@ -238,28 +251,16 @@ export function ensureAdmin(req, res, next) {
       });
     }
     
-    // Get user email from Clerk
-    clerkClient.users.getUser(userId)
-      .then(user => {
-        const userEmail = user.emailAddresses.find(email => email.id === user.primaryEmailAddressId)?.emailAddress;
-        
-        if (!userEmail || !adminEmails.includes(userEmail)) {
-          return res.status(403).json({ 
-            error: 'Admin access required',
-            code: 'ADMIN_REQUIRED'
-          });
-        }
-        
-        // User is admin, proceed
-        next();
-      })
-      .catch(error => {
-        console.error('Admin check error:', error);
-        return res.status(500).json({ 
-          error: 'Failed to verify admin status',
-          code: 'ADMIN_CHECK_ERROR'
-        });
+    const userEmail = await getSignedInEmail(req);
+    if (!userEmail || !adminEmails.includes(userEmail)) {
+      return res.status(403).json({ 
+        error: 'Admin access required',
+        code: 'ADMIN_REQUIRED'
       });
+    }
+    
+    // User is admin, proceed
+    return next();
       
   } catch (error) {
     console.error('Admin middleware error:', error);

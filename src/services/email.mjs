@@ -7,6 +7,29 @@ import nodemailer from 'nodemailer';
 import { getSettingsForUser } from './settings.mjs';
 import { clerkClient } from '../middleware/auth.mjs';
 
+// Minimize Clerk API calls by caching user primary email briefly.
+// This is especially important on Vercel where a single lambda instance can serve many requests.
+const _clerkEmailCache = new Map(); // userId -> { email: string|null, expMs: number }
+const CLERK_EMAIL_CACHE_TTL_MS = Math.max(30_000, Number(process.env.CLERK_EMAIL_CACHE_TTL_MS || 300_000)); // default 5m
+
+async function getPrimaryEmailFromClerk(userId) {
+  if (!userId) return null;
+  const cached = _clerkEmailCache.get(userId);
+  if (cached && cached.expMs > Date.now()) return cached.email;
+  try {
+    const user = await clerkClient.users.getUser(userId);
+    const primaryId = user.primaryEmailAddressId;
+    const email =
+      user.emailAddresses?.find(e => e.id === primaryId)?.emailAddress ||
+      user.emailAddresses?.[0]?.emailAddress ||
+      null;
+    _clerkEmailCache.set(userId, { email, expMs: Date.now() + CLERK_EMAIL_CACHE_TTL_MS });
+    return email;
+  } catch (e) {
+    return null;
+  }
+}
+
 /**
  * Create a nodemailer transporter based on user settings or environment variables
  * @param {Object} userSettings - User's settings object (optional)
@@ -61,15 +84,9 @@ export async function sendEscalationNotification(userId, escalationData) {
     
     // If no custom email set, try to get from Clerk account
     if (!notificationEmail) {
-      try {
-        const user = await clerkClient.users.getUser(userId);
-        const primaryId = user.primaryEmailAddressId;
-        notificationEmail = user.emailAddresses?.find(e => e.id === primaryId)?.emailAddress;
-        if (!notificationEmail) {
-          notificationEmail = user.emailAddresses?.[0]?.emailAddress;
-        }
-      } catch (e) {
-        console.error('[Email] Failed to retrieve user email from Clerk:', e.message);
+      notificationEmail = await getPrimaryEmailFromClerk(userId);
+      if (!notificationEmail) {
+        console.error('[Email] Failed to retrieve user email from Clerk');
       }
     }
 
@@ -193,16 +210,7 @@ export async function sendEscalationPingToAccount(userId, escalationData = {}) {
   try {
     const settings = await getSettingsForUser(userId);
     // Resolve destination from Clerk account primary email
-    let toEmail = null;
-    try {
-      const user = await clerkClient.users.getUser(userId);
-      const primaryId = user.primaryEmailAddressId;
-      toEmail = user.emailAddresses?.find(e => e.id === primaryId)?.emailAddress
-        || user.emailAddresses?.[0]?.emailAddress
-        || null;
-    } catch (e) {
-      console.error('[Email] Clerk lookup failed for escalation ping:', e?.message || e);
-    }
+    const toEmail = await getPrimaryEmailFromClerk(userId);
     if (!toEmail) {
       console.warn('[Email] No destination email for escalation ping:', userId);
       return { success: false, reason: 'no_email' };
@@ -263,15 +271,9 @@ export async function sendBookingNotification(userId, bookingData) {
     
     // If no custom email set, try to get from Clerk account
     if (!notificationEmail) {
-      try {
-        const user = await clerkClient.users.getUser(userId);
-        const primaryId = user.primaryEmailAddressId;
-        notificationEmail = user.emailAddresses?.find(e => e.id === primaryId)?.emailAddress;
-        if (!notificationEmail) {
-          notificationEmail = user.emailAddresses?.[0]?.emailAddress;
-        }
-      } catch (e) {
-        console.error('[Email] Failed to retrieve user email from Clerk:', e.message);
+      notificationEmail = await getPrimaryEmailFromClerk(userId);
+      if (!notificationEmail) {
+        console.error('[Email] Failed to retrieve user email from Clerk');
       }
     }
 
@@ -420,11 +422,7 @@ export async function sendTemplateStatusEmail(userId, t, oldStatus = null) {
     // Destination email: custom notification email or Clerk primary
     let toEmail = settings?.escalation_email;
     if (!toEmail) {
-      try {
-        const user = await clerkClient.users.getUser(userId);
-        const primaryId = user.primaryEmailAddressId;
-        toEmail = user.emailAddresses?.find(e => e.id === primaryId)?.emailAddress || user.emailAddresses?.[0]?.emailAddress;
-      } catch {}
+      toEmail = await getPrimaryEmailFromClerk(userId);
     }
     if (!toEmail) return { success: false, reason: 'no_email' };
 
@@ -486,11 +484,7 @@ export async function sendPaymentReceiptEmail(userId, data) {
     // Determine email destination: custom notification email or Clerk account email
     let toEmail = settings?.escalation_email;
     if (!toEmail) {
-      try {
-        const user = await clerkClient.users.getUser(userId);
-        const primaryId = user.primaryEmailAddressId;
-        toEmail = user.emailAddresses?.find(e => e.id === primaryId)?.emailAddress || user.emailAddresses?.[0]?.emailAddress;
-      } catch {}
+      toEmail = await getPrimaryEmailFromClerk(userId);
     }
     if (!toEmail) return { success: false, reason: 'no_email' };
 
@@ -545,11 +539,7 @@ export async function sendPaymentFailedEmail(userId, data = {}) {
     const settings = getSettingsForUser(userId) || {};
     let toEmail = settings?.escalation_email;
     if (!toEmail) {
-      try {
-        const user = await clerkClient.users.getUser(userId);
-        const primaryId = user.primaryEmailAddressId;
-        toEmail = user.emailAddresses?.find(e => e.id === primaryId)?.emailAddress || user.emailAddresses?.[0]?.emailAddress;
-      } catch {}
+      toEmail = await getPrimaryEmailFromClerk(userId);
     }
     if (!toEmail) return { success: false, reason: 'no_email' };
 
