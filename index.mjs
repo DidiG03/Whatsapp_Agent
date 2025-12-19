@@ -1,5 +1,6 @@
 /**
  * Server bootstrap: creates the app and starts listening.
+ * Includes initialization of Vercel Web Analytics for monitoring and analytics collection.
  */
 import { createApp } from "./src/app.mjs";
 import { PORT } from "./src/config.mjs";

@@ -15,6 +15,7 @@ import { initSentry } from "./monitoring/sentry.mjs";
 import { loggingMiddleware } from "./monitoring/logger.mjs";
 import { healthCheckMiddleware, startHealthCheckScheduler } from "./monitoring/health.mjs";
 import { metricsMiddleware, startMetricsCollection } from "./monitoring/metrics.mjs";
+import { initVercelAnalytics, createAnalyticsMiddleware } from "./monitoring/analytics.mjs";
 
 // Scalability and Performance
 import { scalabilityManager, createPerformanceMiddleware, scalabilityHealthCheck } from "./scalability/index.mjs";
@@ -73,6 +74,7 @@ export async function createApp() {
   
   // Initialize monitoring systems
   initSentry();
+  initVercelAnalytics();
   
   // Trust proxy for accurate IP addresses
   app.set('trust proxy', 1);
@@ -87,6 +89,7 @@ export async function createApp() {
   // Monitoring middleware (before other middleware)
   app.use(loggingMiddleware());
   app.use(metricsMiddleware());
+  app.use(createAnalyticsMiddleware());
   // Warm up outbound queue once at boot (falls back to direct send if unavailable)
   try {
     // On serverless (Vercel), don't block cold start on Redis/queue initialization.
