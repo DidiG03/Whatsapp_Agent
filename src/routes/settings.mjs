@@ -2,7 +2,7 @@ import { ensureAuthed, getCurrentUserId, getSignedInEmail, clerkClient } from ".
 import { wrapAsync } from "../middleware/errors.mjs";
 import { getOnboarding } from "../services/onboarding.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
-import { renderSidebar, renderTopbar } from "../utils.mjs";
+import { getVercelWebAnalyticsSnippet, renderSidebar, renderTopbar } from "../utils.mjs";
 import { wipeUserData } from "../services/userDeletion.mjs";
 import {
   Calendar,
@@ -60,7 +60,7 @@ export default function registerSettingsRoutes(app, options = {}) {
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     res.end(`
-      <html><head><title>Code Orbit - Settings</title><link rel="stylesheet" href="/styles.css">
+      <html><head><title>Code Orbit - Settings</title><link rel="stylesheet" href="/styles.css">${getVercelWebAnalyticsSnippet()}
         <style>
           /* Lightweight accordion styling, clean white cards with no borders */
           .section { border: none; background:#ffffff; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
@@ -881,9 +881,12 @@ export default function registerSettingsRoutes(app, options = {}) {
                       <p class="small" style="margin:0 0 16px 0; color:#4b5563;">
                         Connect your Shopify store to let customers browse products, place orders, and receive updates via WhatsApp.
                       </p>
-                      <div id="shopifyActions">
+                      <div id="shopifyActions" style="display:flex; gap:10px; flex-wrap:wrap;">
                         <a href="/settings/shopify" class="btn-primary" id="shopifyConnectBtn" style="display:inline-block; text-decoration:none; padding:10px 16px; border-radius:6px;">
                           Configure Shopify →
+                        </a>
+                        <a href="/dashboard/shopify" class="btn-primary" id="shopifyDashboardBtn" style="display:none; text-decoration:none; padding:10px 16px; border-radius:6px;">
+                          Open dashboard →
                         </a>
                         <button id="shopifyDisconnectBtn" class="btn-ghost" style="display:none; padding:10px 16px; background:#fee2e2; color:#b91c1c;">
                           Uninstall
@@ -933,6 +936,7 @@ export default function registerSettingsRoutes(app, options = {}) {
                   (function(){
                     const shopifyStatusText = document.getElementById('shopifyStatusText');
                     const shopifyConnectBtn = document.getElementById('shopifyConnectBtn');
+                    const shopifyDashboardBtn = document.getElementById('shopifyDashboardBtn');
                     const shopifyDisconnectBtn = document.getElementById('shopifyDisconnectBtn');
                     async function fetchShopifyStatus(){
                       try {
@@ -940,6 +944,7 @@ export default function registerSettingsRoutes(app, options = {}) {
                         const data = await resp.json();
                         const connected = !!data?.connected;
                         if (shopifyConnectBtn) shopifyConnectBtn.style.display = connected ? 'none' : 'inline-block';
+                        if (shopifyDashboardBtn) shopifyDashboardBtn.style.display = connected ? 'inline-block' : 'none';
                         if (shopifyDisconnectBtn) shopifyDisconnectBtn.style.display = connected ? 'inline-block' : 'none';
                         if (shopifyStatusText) {
                           if (connected) {
@@ -948,6 +953,13 @@ export default function registerSettingsRoutes(app, options = {}) {
                           } else {
                             shopifyStatusText.textContent = 'E-commerce integration';
                             shopifyStatusText.style.color = '#6b7280';
+                          }
+                        }
+
+                        // If Shopify was uninstalled/revoked on Shopify side, inform the user.
+                        if (!connected && data?.disconnected_reason === 'uninstalled_or_revoked') {
+                          if (window.Toast && typeof window.Toast.warning === 'function') {
+                            window.Toast.warning('Shopify was disconnected (app uninstalled or access revoked). Please reconnect.');
                           }
                         }
                       } catch (err) {

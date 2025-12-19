@@ -1,5 +1,5 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
-import { renderSidebar, renderTopbar, escapeHtml } from "../utils.mjs";
+import { renderSidebar, renderTopbar, escapeHtml, getVercelWebAnalyticsSnippet } from "../utils.mjs";
 import { getDB } from "../db-mongodb.mjs";
 import { Message, MessageStatus } from "../schemas/mongodb.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
@@ -171,7 +171,7 @@ export default function registerCampaignRoutes(app) {
 
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.end(`
-      <html><head><title>Campaigns</title><link rel="stylesheet" href="/styles.css"><script src="/toast.js"></script>
+      <html><head><title>Campaigns</title><link rel="stylesheet" href="/styles.css"><script src="/toast.js"></script>${getVercelWebAnalyticsSnippet()}
         <style>
           /* Meta-like surface + controls */
           .meta-card { background:#ffffff; border:1px solid #e5e7eb; border-radius:10px; padding:16px; }

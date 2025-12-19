@@ -1,6 +1,6 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
 import { ONBOARD_STEPS, getOnboarding, setOnboarding } from "../services/onboarding.mjs";
-import { renderSidebar, renderTranscriptAsBubbles, renderTopbar } from "../utils.mjs";
+import { renderSidebar, renderTranscriptAsBubbles, renderTopbar, getVercelWebAnalyticsSnippet } from "../utils.mjs";
 import { upsertKbItem } from "../services/kb.mjs";
 import { upsertSettingsForUser, getSettingsForUser } from "../services/settings.mjs";
 import { onboardingCoachReply } from "../services/ai.mjs";
@@ -23,7 +23,7 @@ export default function registerOnboardingRoutes(app) {
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     res.end(`
-      <html><head><link rel="stylesheet" href="/styles.css"></head><body>
+      <html><head><link rel="stylesheet" href="/styles.css">${getVercelWebAnalyticsSnippet()}</head><body>
         <script src="/auth-utils.js"></script>
         <script>
           // Enhanced authentication check on page load

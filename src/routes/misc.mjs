@@ -1,5 +1,6 @@
 import { ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
 import { getSettingsForUser } from "../services/settings.mjs";
+import { getVercelWebAnalyticsSnippet } from "../utils.mjs";
 
 export default function registerMiscRoutes(app) {
   app.get("/.well-known/appspecific/com.chrome.devtools.json", (_req, res) => res.sendStatus(204));
@@ -14,6 +15,7 @@ export default function registerMiscRoutes(app) {
         <title>Privacy Policy • Code Orbit Agent</title>
         <link rel="icon" href="/favicon.ico">
         <link rel="stylesheet" href="/styles.css">
+        ${getVercelWebAnalyticsSnippet()}
         <style>
           body { background:#0b1220; color:#e5e7eb; }
           .doc { max-width: 920px; margin: 48px auto; padding: 24px; }
@@ -86,7 +88,7 @@ export default function registerMiscRoutes(app) {
       <!DOCTYPE html><html lang="en"><head>
         <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
         <title>Data Deletion Instructions • Code Orbit Agent</title>
-        <link rel="icon" href="/favicon.ico"><link rel="stylesheet" href="/styles.css">
+        <link rel="icon" href="/favicon.ico"><link rel="stylesheet" href="/styles.css">${getVercelWebAnalyticsSnippet()}
         <style>
           body { background:#0b1220; color:#e5e7eb; }
           .doc { max-width: 920px; margin: 48px auto; padding: 24px; }
@@ -135,7 +137,7 @@ export default function registerMiscRoutes(app) {
       <!DOCTYPE html><html lang="en"><head>
         <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
         <title>Terms of Service • Code Orbit Agent</title>
-        <link rel="icon" href="/favicon.ico"><link rel="stylesheet" href="/styles.css">
+        <link rel="icon" href="/favicon.ico"><link rel="stylesheet" href="/styles.css">${getVercelWebAnalyticsSnippet()}
         <style>
           body { background:#0b1220; color:#e5e7eb; }
           .doc { max-width: 920px; margin: 48px auto; padding: 24px; }

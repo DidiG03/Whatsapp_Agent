@@ -2,7 +2,7 @@ import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/
 import { KBItem } from "../schemas/mongodb.mjs";
 import { getUserPlan, getPlanPricing } from "../services/usage.mjs";
 import { getSettingsForUser } from "../services/settings.mjs";
-import { renderSidebar, escapeHtml, renderTopbar } from "../utils.mjs";
+import { renderSidebar, escapeHtml, renderTopbar, getVercelWebAnalyticsSnippet } from "../utils.mjs";
 import multer from 'multer';
 import { selectStorage } from '../services/uploads.mjs';
 import { wrapAsync } from "../middleware/errors.mjs";
@@ -295,7 +295,7 @@ export default function registerKbRoutes(app) {
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     res.end(`
-      <html><head><title>Code Orbit - KB</title><link rel="stylesheet" href="/styles.css">
+      <html><head><title>Code Orbit - KB</title><link rel="stylesheet" href="/styles.css">${getVercelWebAnalyticsSnippet()}
         <style>
           .kb-item:hover {
             transform: translateY(-2px);

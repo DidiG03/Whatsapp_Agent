@@ -1,5 +1,5 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
-import { renderSidebar, normalizePhone, escapeHtml, renderTopbar, getProfessionalHead } from "../utils.mjs";
+import { renderSidebar, normalizePhone, escapeHtml, renderTopbar, getProfessionalHead, getVercelWebAnalyticsSnippet } from "../utils.mjs";
 import { listContactsForUser, listMessagesForThread } from "../services/conversations.mjs";
 import { db, getDB } from "../db-mongodb.mjs";
 import { Customer, Handoff, Message, MessageStatus } from '../schemas/mongodb.mjs';
@@ -1090,7 +1090,7 @@ export default function registerInboxRoutes(app) {
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     res.end(`
-      <html><head><title>Code Orbit - Search Results</title><link rel="stylesheet" href="/styles.css"></head>
+      <html><head><title>Code Orbit - Search Results</title><link rel="stylesheet" href="/styles.css">${getVercelWebAnalyticsSnippet()}</head>
       <body>
         <script>
           // Check authentication on page load
@@ -1589,7 +1589,7 @@ export default function registerInboxRoutes(app) {
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     res.end(`
-      <html><head><title>Code Orbit - Chat +${String(phone).replace(/^\+/, '')}</title><link rel="stylesheet" href="/styles.css"></head>
+      <html><head><title>Code Orbit - Chat +${String(phone).replace(/^\+/, '')}</title><link rel="stylesheet" href="/styles.css">${getVercelWebAnalyticsSnippet()}</head>
         <body>
           <!-- Loading Overlay -->
           <div id="loadingOverlay" class="loading-overlay">

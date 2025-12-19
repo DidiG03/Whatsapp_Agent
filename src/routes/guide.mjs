@@ -1,4 +1,4 @@
-import { renderSidebar, renderTopbar, escapeHtml } from "../utils.mjs";
+import { renderSidebar, renderTopbar, escapeHtml, getVercelWebAnalyticsSnippet } from "../utils.mjs";
 import { getSignedInEmail, ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
 import { Guide } from "../schemas/mongodb.mjs";
 import { getPlanStatus } from "../services/usage.mjs";
@@ -24,7 +24,7 @@ export default function registerGuideRoutes(app) {
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     res.end(`
-      <html><head><title>Code Orbit - Guide</title><link rel="stylesheet" href="/styles.css"></head>
+      <html><head><title>Code Orbit - Guide</title><link rel="stylesheet" href="/styles.css">${getVercelWebAnalyticsSnippet()}</head>
         <body>
             <script src="/toast.js"></script>
             
@@ -124,7 +124,7 @@ export default function registerGuideRoutes(app) {
     res.setHeader("Expires", "0");
     const { isUpgraded } = await getPlanStatus(userId);
     res.end(`
-      <html><head><link rel="stylesheet" href="/styles.css"><script>
+      <html><head><link rel="stylesheet" href="/styles.css">${getVercelWebAnalyticsSnippet()}<script>
           // Check authentication on page load
           (async function checkAuthOnLoad(){
             try{ const r=await fetch('/auth/status',{credentials:'include'}); const j=await r.json(); if(!j.signedIn){ window.location='/auth'; return; } }catch(e){ window.location='/auth'; }

@@ -1,4 +1,5 @@
 import { ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
+import { getVercelWebAnalyticsSnippet } from "../utils.mjs";
 import {
   buildConnectAuthorizeUrl,
   parseConnectState,
@@ -50,6 +51,7 @@ export default function registerPaymentRoutes(app) {
         <head>
           <title>${isSuccess ? 'Payment received' : 'Payment cancelled'} • WhatsApp Agent</title>
           <link rel="stylesheet" href="/styles.css">
+          ${getVercelWebAnalyticsSnippet()}
         </head>
         <body style="display:flex;align-items:center;justify-content:center;min-height:100vh;background:#f1f5f9;">
           <div class="card" style="max-width:420px;">

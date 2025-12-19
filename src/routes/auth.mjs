@@ -1,6 +1,7 @@
 import { CLERK_ENABLED, CLERK_PUBLISHABLE, CLERK_SIGN_IN_URL, CLERK_SIGN_UP_URL, PUBLIC_BASE_URL } from "../config.mjs";
 import { getAuth, clerkClient } from "@clerk/express";
 import { signSessionToken } from "../middleware/auth.mjs";
+import { getVercelWebAnalyticsSnippet } from "../utils.mjs";
 
 export default function registerAuthRoutes(app) {
   // Redirect main auth route to signin
@@ -19,6 +20,7 @@ export default function registerAuthRoutes(app) {
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Sign Up - WhatsApp Agent</title>
         <link rel="stylesheet" href="/styles.css">
+        ${getVercelWebAnalyticsSnippet()}
         <link rel="icon" href="/logo-icon.png" type="image/png">
         <script src="https://unpkg.com/@clerk/clerk-js@latest/dist/clerk.browser.js" data-clerk-publishable-key="${CLERK_PUBLISHABLE}"></script>
       </head>
@@ -135,6 +137,7 @@ export default function registerAuthRoutes(app) {
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Sign In - WhatsApp Agent</title>
         <link rel="stylesheet" href="/styles.css">
+        ${getVercelWebAnalyticsSnippet()}
         <link rel="icon" href="/logo-icon.png" type="image/png">
         <script src="https://unpkg.com/@clerk/clerk-js@latest/dist/clerk.browser.js" data-clerk-publishable-key="${CLERK_PUBLISHABLE}"></script>
       </head>

@@ -1,6 +1,6 @@
 import { getCurrentUserId, verifySessionToken } from "../middleware/auth.mjs";
 import { ONBOARD_STEPS, getOnboarding, setOnboarding } from "../services/onboarding.mjs";
-import { renderTranscriptAsBubbles } from "../utils.mjs";
+import { renderTranscriptAsBubbles, getVercelWebAnalyticsSnippet } from "../utils.mjs";
 import { upsertKbItem } from "../services/kb.mjs";
 import { upsertSettingsForUser, getSettingsForUser } from "../services/settings.mjs";
 import { parseDirectives, applyDirectives } from "../services/coachDirectives.mjs";
@@ -13,7 +13,7 @@ export default function registerAssistantRoutes(app) {
     const userId = token ? verifySessionToken(token) : (req.query?.uid || getCurrentUserId(req));
     if (!userId) {
       res.setHeader("Content-Type", "text/html; charset=utf-8");
-      return res.end(`<html><head><link rel="stylesheet" href=\"/styles.css\"></head><body><div class=\"small\" style=\"padding:12px;\">Please open the dashboard to sign in.</div></body></html>`);
+      return res.end(`<html><head><link rel="stylesheet" href="/styles.css">${getVercelWebAnalyticsSnippet()}</head><body><div class="small" style="padding:12px;">Please open the dashboard to sign in.</div></body></html>`);
     }
     const state = getOnboarding(userId) || setOnboarding(userId, { step: 0, transcript: '' });
     const chat = renderTranscriptAsBubbles(state.transcript);
@@ -22,6 +22,7 @@ export default function registerAssistantRoutes(app) {
       <html>
         <head>
           <link rel="stylesheet" href="/styles.css">
+          ${getVercelWebAnalyticsSnippet()}
           <style>
             body {
               margin: 0;

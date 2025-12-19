@@ -124,9 +124,12 @@ export async function exchangeCodeForToken(shopDomain, code) {
  * Verify Shopify webhook signature
  */
 export function verifyWebhook(rawBody, signature, secret = process.env.SHOPIFY_WEBHOOK_SECRET) {
-  if (!secret) return false;
+  // Shopify webhook HMAC is typically signed with the app's API secret.
+  // Allow overriding via SHOPIFY_WEBHOOK_SECRET, but fallback to SHOPIFY_API_SECRET.
+  const effectiveSecret = secret || SHOPIFY_API_SECRET;
+  if (!effectiveSecret) return false;
 
-  const hmac = crypto.createHmac('sha256', secret);
+  const hmac = crypto.createHmac('sha256', effectiveSecret);
   hmac.update(rawBody, 'utf8');
   const computedSignature = hmac.digest('base64');
 
@@ -161,9 +164,22 @@ export async function getStoreInfo(shopDomain, accessToken) {
     const response = await client.get('/shop.json');
     return response.data.shop;
   } catch (error) {
-    console.error('Failed to get store info:', error.response?.data || error.message);
-    throw new Error('Failed to retrieve store information');
+    const status = error?.response?.status;
+    console.error('Failed to get store info:', { status, data: error.response?.data || null, message: error.message });
+    // Preserve status for upstream "revoked/uninstalled" detection
+    if (status) throw new Error(`SHOPIFY_STORE_INFO_FAILED:${status}`);
+    throw new Error('SHOPIFY_STORE_INFO_FAILED');
   }
+}
+
+/**
+ * Disconnect store by shop domain (used for app/uninstalled webhook).
+ */
+export async function disconnectStoreByShopDomain(shopDomain) {
+  if (!shopDomain) return { success: false };
+  const { ShopifyStore } = await import('../schemas/mongodb.mjs');
+  await ShopifyStore.findOneAndDelete({ shop_domain: String(shopDomain) });
+  return { success: true };
 }
 
 /**

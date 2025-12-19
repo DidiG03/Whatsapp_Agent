@@ -19,6 +19,21 @@ export function getEnhancementsScript() {
 }
 
 /**
+ * Vercel Web Analytics snippet (no-framework).
+ * Only injected on Vercel to avoid 404s/noise in local dev.
+ * @returns {string} HTML snippet for the <head>
+ */
+export function getVercelWebAnalyticsSnippet() {
+  if (!process.env.VERCEL) return '';
+  return `
+      <script>
+        window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
+      </script>
+      <script defer src="/_vercel/insights/script.js"></script>
+  `;
+}
+
+/**
  * Get the complete head section with all necessary scripts and styles
  * @param {string} title - Page title
  * @returns {string} Complete HTML head section
@@ -35,6 +50,7 @@ export function getProfessionalHead(title) {
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <meta name="theme-color" content="#2563eb">
       ${getEnhancementsScript()}
+      ${getVercelWebAnalyticsSnippet()}
     </head>
   `;
 }

@@ -8,6 +8,7 @@ import {
   handleWebhook,
   getStoreConnection,
   disconnectStore,
+  disconnectStoreByShopDomain,
   syncProducts,
   syncOrders,
   syncCustomers,
@@ -163,6 +164,12 @@ export default function registerShopifyRoutes(app) {
     }
 
     try {
+      // Handle uninstalls explicitly so our DB stays accurate even if Shopify removes the app.
+      if (String(topic) === 'app/uninstalled' && shopDomain) {
+        await disconnectStoreByShopDomain(String(shopDomain));
+        return res.json({ received: true, handled: 'app/uninstalled' });
+      }
+
       await handleWebhook(topic, req.body);
       res.json({ received: true });
     } catch (error) {
@@ -176,8 +183,35 @@ export default function registerShopifyRoutes(app) {
     const userId = getCurrentUserId(req);
 
     try {
-      const status = await getStoreConnection(userId);
-      res.json(status);
+      const { ShopifyStore } = await import('../schemas/mongodb.mjs');
+      const store = await ShopifyStore.findOne({ user_id: userId }).lean();
+
+      if (!store) {
+        return res.json({ connected: false });
+      }
+
+      // Validate that the access token still works. If the app was uninstalled or access revoked,
+      // Shopify will return 401/403 on API calls.
+      try {
+        await getStoreInfo(store.shop_domain, store.access_token);
+      } catch (err) {
+        const msg = String(err?.message || '');
+        if (msg.includes('SHOPIFY_STORE_INFO_FAILED:401') || msg.includes('SHOPIFY_STORE_INFO_FAILED:403')) {
+          await disconnectStore(userId);
+          return res.json({ connected: false, disconnected_reason: 'uninstalled_or_revoked' });
+        }
+      }
+
+      return res.json({
+        connected: true,
+        shop_domain: store.shop_domain,
+        is_active: store.is_active,
+        last_sync_ts: store.last_sync_ts,
+        sync_enabled: store.sync_enabled,
+        inventory_sync_enabled: store.inventory_sync_enabled,
+        abandoned_cart_enabled: store.abandoned_cart_enabled,
+        order_notifications_enabled: store.order_notifications_enabled
+      });
     } catch (error) {
       console.error('Failed to get Shopify status:', error);
       res.status(500).json({ error: 'Failed to get connection status' });
@@ -843,9 +877,6 @@ export default function registerShopifyRoutes(app) {
                       <span class="connected-badge">✓ Connected</span>
                       <div class="store-name">${connection.shop_domain}</div>
                       <div class="shopify-subtle">Manage sync and commerce settings for this store.</div>
-                    </div>
-                    <div style="margin-left:auto; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-                      <a href="/dashboard/shopify" class="btn-primary" style="text-decoration:none;">Open Shopify Dashboard</a>
                     </div>
                   </div>
                   
