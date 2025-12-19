@@ -4,6 +4,7 @@ import { getOnboarding } from "../services/onboarding.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
 import { getVercelWebAnalyticsSnippet, renderSidebar, renderTopbar } from "../utils.mjs";
 import { wipeUserData } from "../services/userDeletion.mjs";
+import { cancelBillingForUserDeletion } from "../services/stripe.mjs";
 import {
   Calendar,
   Staff,
@@ -1157,6 +1158,30 @@ export default function registerSettingsRoutes(app, options = {}) {
 
   app.post("/danger/wipe", ensureAuthed, protect, wrapAsync(async (req, res) => {
     const userId = getCurrentUserId(req);
+
+    try {
+      // Cancel any Stripe billing first to prevent future charges.
+      // If cancellation is attempted and fails, do NOT proceed with deletion.
+      const out = await cancelBillingForUserDeletion(userId);
+      if (out?.attempted && out?.failed > 0) {
+        console.error('[Wipe] Stripe cancellation failed:', out);
+        return res.status(500).send(
+          `Unable to cancel your subscription automatically, so we did not delete your account data. ` +
+          `Please try again, or contact support if the issue persists.`
+        );
+      }
+    } catch (e) {
+      // Be conservative: if Stripe is configured and something goes wrong, block deletion.
+      const stripeConfigured = !!process.env.STRIPE_SECRET_KEY;
+      if (stripeConfigured) {
+        console.error('[Wipe] Stripe cancellation error:', e?.message || e);
+        return res.status(500).send(
+          `Unable to cancel your subscription automatically, so we did not delete your account data. ` +
+          `Please try again, or contact support if the issue persists.`
+        );
+      }
+    }
+
     try {
       await wipeUserData(userId);
     } catch (e) {

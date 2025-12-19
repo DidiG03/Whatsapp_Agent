@@ -8,30 +8,73 @@
  */
 import { clerkMiddleware, getAuth, clerkClient } from "@clerk/express";
 import crypto from "node:crypto";
-import { CLERK_ENABLED, CLERK_PUBLISHABLE, CLERK_SECRET, CLERK_SIGN_IN_URL, CLERK_SIGN_UP_URL, PUBLIC_BASE_URL } from "../config.mjs";
+import { CLERK_AUTHORIZED_PARTIES, CLERK_ENABLED, CLERK_JWT_KEY, CLERK_PUBLISHABLE, CLERK_SECRET, CLERK_SIGN_IN_URL, CLERK_SIGN_UP_URL, PUBLIC_BASE_URL } from "../config.mjs";
 const SESSION_TOKEN_SECRET = process.env.SESSION_TOKEN_SECRET || CLERK_SECRET || "dev-secret-change";
 const WS_TOKEN_TTL_SECONDS = parseInt(process.env.WS_TOKEN_TTL_SECONDS || '7200', 10); // default 2h
+
+function clerkEnabledRuntime() {
+  // Prefer runtime env because module-level config can be cached across tests/processes.
+  // If the secret key is unset, Clerk should be treated as disabled even if publishable keys linger.
+  const secret = (process.env.CLERK_SECRET_KEY || '').trim();
+  if (!secret) return false;
+  const pub =
+    (process.env.CLERK_PUBLISHABLE_KEY || '').trim() ||
+    (process.env.CLERK_PUBLISHABLE || '').trim() ||
+    (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || '').trim();
+  return !!pub;
+}
+
+function fallbackUserId() {
+  // Provide a safe fallback for local development/tests only.
+  // In production, Clerk should always be enabled.
+  if (process.env.NODE_ENV === 'test') return 'test-user-id';
+  const devId = (process.env.DEV_USER_ID || '').trim();
+  return devId || null;
+}
+
+function fallbackEmail() {
+  if (process.env.NODE_ENV === 'test') return 'test@example.com';
+  const devEmail = (process.env.DEV_USER_EMAIL || '').trim();
+  return devEmail || null;
+}
 
 /**
  * Initialize Clerk middleware with GET-handshake optimization.
  * @param {import('express').Express} app
  */
 export function initClerk(app) {
-  if (!CLERK_ENABLED) {
+  if (!CLERK_ENABLED || !clerkEnabledRuntime()) {
     console.warn("[Clerk] Disabled: missing CLERK_PUBLISHABLE_KEY or CLERK_SECRET_KEY");
     return;
   }
-  // Always provide a redirect_url so hosted Clerk pages can return to our app
-  const appendRedirect = (url, baseUrl = PUBLIC_BASE_URL) => {
-    if (!url) return url;
-    return url.includes("redirect_url=") ? url : `${url}${url.includes("?") ? "&" : "?"}redirect_url=${encodeURIComponent(baseUrl)}`;
-  };
-  const signInUrl = appendRedirect(CLERK_SIGN_IN_URL || "/auth/signin");
-  const signUpUrl = appendRedirect(CLERK_SIGN_UP_URL || "/auth/signup");
+  // IMPORTANT:
+  // - Do NOT hardcode a redirect_url here (it can cause cross-domain cookie issues if PUBLIC_BASE_URL differs
+  //   from the domain the user is actually browsing on).
+  // - We add redirect_url dynamically in ensureAuthed() based on the incoming request host instead.
+  const signInUrl = (CLERK_SIGN_IN_URL || "/auth/signin");
+  const signUpUrl = (CLERK_SIGN_UP_URL || "/auth/signup");
+
+  // Prefer local verification (reduces Clerk API calls + avoids transient network flaps).
+  // You can set CLERK_JWT_KEY in Vercel env vars with the Clerk Dashboard "JWT public key" (PEM).
+  const jwtKey = CLERK_JWT_KEY || null;
+
+  // Recommended: validate "authorized parties" to avoid accepting tokens for unexpected origins.
+  // Only enable when explicitly configured via env to avoid surprising mismatches
+  // (e.g. localhost vs 127.0.0.1 in tests, previews, etc).
+  const authorizedParties = (() => {
+    const fromEnv = (CLERK_AUTHORIZED_PARTIES || '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+    if (fromEnv.length) return fromEnv;
+    return undefined;
+  })();
   // Use a single Clerk middleware for all requests to ensure consistent session handling
   const clerkMW = clerkMiddleware({
     publishableKey: CLERK_PUBLISHABLE,
     secretKey: CLERK_SECRET,
+    ...(jwtKey ? { jwtKey } : {}),
+    ...(authorizedParties ? { authorizedParties } : {}),
     signInUrl,
     signUpUrl,
     afterSignInUrl: '/dashboard',
@@ -42,7 +85,7 @@ export function initClerk(app) {
 
 /** Require an authenticated session for protected routes. */
 export function ensureAuthed(req, res, next) {
-  if (!CLERK_ENABLED) return next();
+  if (!CLERK_ENABLED || !clerkEnabledRuntime()) return next();
   try {
     const { userId, sessionId } = getAuth(req);
     if (!userId) {
@@ -103,19 +146,19 @@ export function ensureAuthed(req, res, next) {
 
 /** Return true if the request is from an authenticated user. */
 export function isAuthenticated(req) {
-  if (!CLERK_ENABLED) return false;
+  if (!CLERK_ENABLED || !clerkEnabledRuntime()) return !!fallbackUserId();
   try { return !!getAuth(req)?.userId; } catch { return false; }
 }
 
 /** Get the current user's Clerk ID or null when unauthenticated. */
 export function getCurrentUserId(req) {
-  if (!CLERK_ENABLED) return null;
+  if (!CLERK_ENABLED || !clerkEnabledRuntime()) return fallbackUserId();
   try { return getAuth(req)?.userId || null; } catch { return null; }
 }
 
 /** Resolve the primary email address for the signed-in user. */
 export async function getSignedInEmail(req) {
-  if (!CLERK_ENABLED) return null;
+  if (!CLERK_ENABLED || !clerkEnabledRuntime()) return fallbackEmail();
   try {
     const { userId } = getAuth(req);
     if (!userId) return null;
@@ -171,7 +214,7 @@ export function verifySessionToken(token) {
 
 /** Check if the current user is an admin */
 export function ensureAdmin(req, res, next) {
-  if (!CLERK_ENABLED) {
+  if (!CLERK_ENABLED || !clerkEnabledRuntime()) {
     // In development, allow access if no Clerk is configured
     return next();
   }

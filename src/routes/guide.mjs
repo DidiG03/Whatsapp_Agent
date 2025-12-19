@@ -31,7 +31,14 @@ export default function registerGuideRoutes(app) {
             <script>
               // Check authentication on page load
               (async function checkAuthOnLoad(){
-                try{ const r=await fetch('/auth/status',{credentials:'include'}); const j=await r.json(); if(!j.signedIn){ window.location='/auth'; return; } }catch(e){ window.location='/auth'; }
+                try{
+                  const r=await fetch('/auth/status',{credentials:'include', headers:{'Accept':'application/json'}});
+                  const j=await r.json();
+                  if(j && j.signedIn === false){ window.location='/auth'; return; }
+                }catch(e){
+                  // Don't force a relogin on transient network/auth-status failures.
+                  console.warn('Auth status check failed (non-fatal):', e);
+                }
               })();
             </script>
             <div class="container">
@@ -127,7 +134,14 @@ export default function registerGuideRoutes(app) {
       <html><head><link rel="stylesheet" href="/styles.css">${getVercelWebAnalyticsSnippet()}<script>
           // Check authentication on page load
           (async function checkAuthOnLoad(){
-            try{ const r=await fetch('/auth/status',{credentials:'include'}); const j=await r.json(); if(!j.signedIn){ window.location='/auth'; return; } }catch(e){ window.location='/auth'; }
+            try{
+              const r=await fetch('/auth/status',{credentials:'include', headers:{'Accept':'application/json'}});
+              const j=await r.json();
+              if(j && j.signedIn === false){ window.location='/auth'; return; }
+            }catch(e){
+              // Don't force a relogin on transient network/auth-status failures.
+              console.warn('Auth status check failed (non-fatal):', e);
+            }
           })();
         </script><style>
         .guide-detail{ display:grid; grid-template-columns: minmax(0,1fr) 320px; gap:16px; }

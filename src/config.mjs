@@ -37,6 +37,24 @@ export const CLERK_SECRET = process.env.CLERK_SECRET_KEY || null;
 /** Convenience flag indicating whether Clerk auth is enabled. */
 export const CLERK_ENABLED = Boolean(CLERK_PUBLISHABLE && CLERK_SECRET);
 
+/**
+ * Optional Clerk JWT public key (PEM) used for **local** session verification.
+ * When set, Clerk middleware can validate session tokens without calling Clerk APIs.
+ * See Clerk Dashboard → API Keys → "JWT public key".
+ */
+export const CLERK_JWT_KEY =
+  process.env.CLERK_JWT_KEY ||
+  process.env.CLERK_JWT_PUBLIC_KEY ||
+  process.env.CLERK_JWT_VERIFICATION_KEY ||
+  null;
+
+/**
+ * Optional allowed origins/hostnames (comma-separated) for token "azp" validation.
+ * Recommended when you have multiple domains (e.g. custom domain + Vercel preview).
+ * Example: "https://agent.example.com,https://myapp.vercel.app"
+ */
+export const CLERK_AUTHORIZED_PARTIES = process.env.CLERK_AUTHORIZED_PARTIES || null;
+
 // Ensure Clerk SDK sees keys even if only NEXT_PUBLIC_* was provided
 if (CLERK_PUBLISHABLE) process.env.CLERK_PUBLISHABLE_KEY = CLERK_PUBLISHABLE;
 if (CLERK_SECRET) process.env.CLERK_SECRET_KEY = CLERK_SECRET;

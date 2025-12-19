@@ -401,6 +401,95 @@ export async function cancelSubscription(subscriptionId) {
 }
 
 /**
+ * Cancel any active Stripe billing for a user who is deleting their account.
+ * Best-effort discovery:
+ * - Prefer the subscription id stored on UserPlan
+ * - Otherwise, list subscriptions for the stored customer id and cancel active ones
+ *
+ * IMPORTANT: This attempts to cancel immediately to prevent further charges.
+ *
+ * @param {string} userId
+ * @returns {Promise<{attempted: boolean, canceled: number, failed: number, results: Array<{subscription_id: string, ok: boolean, error?: string}>}>}
+ */
+export async function cancelBillingForUserDeletion(userId) {
+  const uid = String(userId || '').trim();
+  if (!uid) return { attempted: false, canceled: 0, failed: 0, results: [] };
+  // For cancellation we only need the secret key (publishable is not required).
+  if (!stripe || !process.env.STRIPE_SECRET_KEY) return { attempted: false, canceled: 0, failed: 0, results: [] };
+
+  let plan = null;
+  try {
+    const { UserPlan } = await import('../schemas/mongodb.mjs');
+    plan = await UserPlan.findOne({ user_id: uid })
+      .select('stripe_subscription_id stripe_customer_id payg_enabled plan_name')
+      .lean()
+      .catch(() => null);
+  } catch {
+    plan = null;
+  }
+
+  const subIdFromPlan = plan?.stripe_subscription_id ? String(plan.stripe_subscription_id) : null;
+  const customerId = plan?.stripe_customer_id ? String(plan.stripe_customer_id) : null;
+
+  /** @type {string[]} */
+  let subscriptionIds = [];
+  if (subIdFromPlan) subscriptionIds.push(subIdFromPlan);
+
+  // If we don't have a stored subscription id but we have a customer, list subscriptions to be safe.
+  if (!subscriptionIds.length && customerId) {
+    try {
+      const list = await stripe.subscriptions.list({
+        customer: customerId,
+        status: 'all',
+        limit: 100
+      });
+      const subs = Array.isArray(list?.data) ? list.data : [];
+      for (const s of subs) {
+        const st = String(s?.status || '');
+        // Cancel anything that can incur charges or is in-flight.
+        if (['active', 'trialing', 'past_due', 'unpaid', 'incomplete', 'incomplete_expired'].includes(st)) {
+          if (s?.id) subscriptionIds.push(String(s.id));
+        }
+      }
+    } catch (e) {
+      console.warn('[cancelBillingForUserDeletion] list subscriptions failed:', e?.message || e);
+    }
+  }
+
+  // De-dupe
+  subscriptionIds = [...new Set(subscriptionIds.filter(Boolean))];
+  if (!subscriptionIds.length) return { attempted: false, canceled: 0, failed: 0, results: [] };
+
+  /** @type {Array<{subscription_id: string, ok: boolean, error?: string}>} */
+  const results = [];
+
+  for (const subscription_id of subscriptionIds) {
+    try {
+      // If a subscription schedule manages this subscription, cancel the schedule (which cancels the subscription).
+      let scheduleId = null;
+      try {
+        const sub = await stripe.subscriptions.retrieve(subscription_id, { expand: ['schedule'] });
+        scheduleId = (sub?.schedule && (typeof sub.schedule === 'string' ? sub.schedule : sub.schedule?.id)) || null;
+      } catch {}
+
+      if (scheduleId) {
+        await stripe.subscriptionSchedules.cancel(String(scheduleId));
+      } else {
+        // Cancel immediately; avoid proration and immediate invoicing.
+        await stripe.subscriptions.cancel(subscription_id, { prorate: false, invoice_now: false });
+      }
+      results.push({ subscription_id, ok: true });
+    } catch (e) {
+      results.push({ subscription_id, ok: false, error: String(e?.raw?.message || e?.message || e) });
+    }
+  }
+
+  const canceled = results.filter(r => r.ok).length;
+  const failed = results.filter(r => !r.ok).length;
+  return { attempted: true, canceled, failed, results };
+}
+
+/**
  * Get subscription details
  */
 export async function getSubscription(subscriptionId) {

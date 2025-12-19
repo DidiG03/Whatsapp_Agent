@@ -639,14 +639,15 @@ export default function registerInboxRoutes(app) {
           // Check authentication on page load
           (async function checkAuthOnLoad(){
             try{ 
-              const r=await fetch('/auth/status',{credentials:'include'}); 
+              const r=await fetch('/auth/status',{credentials:'include', headers:{'Accept':'application/json'}}); 
               const j=await r.json(); 
               if(!j.signedIn){ 
                 window.location='/auth'; 
                 return; 
               } 
             }catch(e){ 
-              window.location='/auth'; 
+              // Don't force a relogin on transient network/auth-status failures.
+              console.warn('Auth status check failed (non-fatal):', e);
             }
             
             // Auth check complete, show content
@@ -1095,7 +1096,14 @@ export default function registerInboxRoutes(app) {
         <script>
           // Check authentication on page load
           (async function checkAuthOnLoad(){
-            try{ const r=await fetch('/auth/status',{credentials:'include'}); const j=await r.json(); if(!j.signedIn){ window.location='/auth'; return; } }catch(e){ window.location='/auth'; }
+            try{
+              const r=await fetch('/auth/status',{credentials:'include', headers:{'Accept':'application/json'}});
+              const j=await r.json();
+              if(!j.signedIn){ window.location='/auth'; return; }
+            }catch(e){
+              // Don't force a relogin on transient network/auth-status failures.
+              console.warn('Auth status check failed (non-fatal):', e);
+            }
           })();
         </script>
         <div class="container">
@@ -2598,8 +2606,12 @@ export default function registerInboxRoutes(app) {
             }
             
             function updateConversationStatus(status) {
-              // Update UI immediately
+              // Capture previous UI state so we can revert on failure
               const statusChip = document.querySelector('.status-chip');
+              const prevText = statusChip ? statusChip.textContent : null;
+              const prevBg = statusChip ? statusChip.style.backgroundColor : null;
+
+              // Update UI immediately
               const statusDisplay = getStatusDisplayName(status);
               const statusColor = getStatusColor(status);
               
@@ -2612,7 +2624,8 @@ export default function registerInboxRoutes(app) {
               document.getElementById('statusDropdown').style.display = 'none';
               
               // Submit status update via fetch API
-              fetch('/inbox/' + phone + '/status', {
+              const encodedPhone = encodeURIComponent(phone);
+              fetch('/inbox/' + encodedPhone + '/status', {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/x-www-form-urlencoded',
@@ -2622,7 +2635,7 @@ export default function registerInboxRoutes(app) {
               .then(response => {
                 if (response.ok) {
                   // Show success message
-                  window.location.href = '/inbox/' + phone + '?toast=' + encodeURIComponent('Status updated to ' + statusDisplay) + '&type=success';
+                  window.location.href = '/inbox/' + encodedPhone + '?toast=' + encodeURIComponent('Status updated to ' + statusDisplay) + '&type=success';
                 } else {
                   throw new Error('Status update failed');
                 }
@@ -2638,8 +2651,8 @@ export default function registerInboxRoutes(app) {
                 } catch (_) {}
                 // Revert UI changes on error
                 if (statusChip) {
-                  statusChip.textContent = '${statusDisplay}';
-                  statusChip.style.backgroundColor = '${statusColor}';
+                  if (prevText != null) statusChip.textContent = prevText;
+                  if (prevBg != null) statusChip.style.backgroundColor = prevBg;
                 }
               });
             }
@@ -3486,10 +3499,10 @@ export default function registerInboxRoutes(app) {
       
       // Redirect back to conversation with success message
       const statusDisplay = STATUS_DISPLAY_NAMES[status];
-      res.redirect(`/inbox/${phone}`);
+      res.redirect(`/inbox/${encodeURIComponent(phone)}`);
     } catch (error) {
       console.error('Error updating conversation status:', error);
-      res.redirect(`/inbox/${phone}?toast=${encodeURIComponent('Failed to update status')}&type=error`);
+      res.redirect(`/inbox/${encodeURIComponent(phone)}?toast=${encodeURIComponent('Failed to update status')}&type=error`);
     }
   });
 

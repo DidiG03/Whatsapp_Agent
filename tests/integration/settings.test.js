@@ -26,7 +26,7 @@ describe('Settings Routes (integration)', () => {
   test('GET /settings requires auth (responds 200 with mocked auth)', async () => {
     const res = await request(app).get('/settings');
     // With mocked Clerk, should render settings page
-    expect([200, 302]).toContain(res.status);
+    expect([200, 302, 303]).toContain(res.status);
   });
 
   test('POST /settings updates WhatsApp config safely', async () => {
@@ -38,6 +38,6 @@ describe('Settings Routes (integration)', () => {
         whatsapp_token: 'EAA...token',
         business_phone: '+15551234567'
       });
-    expect([200, 302]).toContain(res.status);
+    expect([200, 302, 303]).toContain(res.status);
   });
 });

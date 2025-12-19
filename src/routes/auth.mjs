@@ -251,6 +251,7 @@ export default function registerAuthRoutes(app) {
     try {
       const auth = getAuth(req) || {};
       const { userId, sessionId } = auth;
+      res.setHeader("Cache-Control", "no-store");
       
       // Return detailed auth status including session info
       return res.json({ 
@@ -299,30 +300,15 @@ export default function registerAuthRoutes(app) {
           redirectTo: '/auth'
         });
       }
-
-      // Check if we can refresh the session
-      if (sessionId) {
-        try {
-          // Verify the session is still valid
-          const session = await clerkClient.sessions.getSession(sessionId);
-          if (session && session.status === 'active') {
-            return res.json({ 
-              success: true, 
-              message: 'Session is still valid',
-              userId,
-              sessionId
-            });
-          }
-        } catch (sessionError) {
-          console.log('Session verification failed, may need refresh:', sessionError.message);
-        }
-      }
-
-      // If we get here, the session needs refresh
-      return res.status(401).json({ 
-        success: false, 
-        error: 'Session expired, please sign in again',
-        redirectTo: '/auth'
+      
+      // Clerk session refresh should be handled client-side by Clerk JS.
+      // On the server we simply confirm whether the current request is authed.
+      // (Avoids extra Clerk API calls and prevents "flapping" from forcing logouts.)
+      return res.json({ 
+        success: true, 
+        message: 'Session is active',
+        userId,
+        sessionId: sessionId || null
       });
       
     } catch (error) {

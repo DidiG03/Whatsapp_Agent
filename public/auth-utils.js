@@ -12,7 +12,9 @@ class AuthManager {
       setInterval(async () => {
         try {
           const status = await this.checkAuthStatus();
-          if (!status?.signedIn) {
+          // Only redirect on a **confirmed** signed-out state.
+          // Network/Clerk hiccups should not force the user to re-auth.
+          if (status?.success === true && status?.signedIn === false) {
             // Redirect softly if session expired while idle
             window.location.href = '/auth';
           }
@@ -46,7 +48,8 @@ class AuthManager {
       console.error('Auth status check failed:', error);
       return {
         success: false,
-        signedIn: false,
+        // Treat as "unknown" rather than logged out to avoid redirect loops.
+        signedIn: true,
         error: error.message
       };
     }
@@ -174,7 +177,8 @@ class AuthManager {
     try {
       const authStatus = await this.checkAuthStatus();
       
-      if (!authStatus.success || !authStatus.signedIn) {
+      // Only redirect when we *successfully* checked and know the user is signed out.
+      if (authStatus.success === true && authStatus.signedIn === false) {
         console.log('User not authenticated, redirecting to auth page');
         window.location.href = '/auth';
         return false;
@@ -183,8 +187,8 @@ class AuthManager {
       return true;
     } catch (error) {
       console.error('Auth check on load failed:', error);
-      window.location.href = '/auth';
-      return false;
+      // Do not redirect on transient errors.
+      return true;
     }
   }
 }
