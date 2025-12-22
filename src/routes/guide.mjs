@@ -3,11 +3,114 @@ import { getSignedInEmail, ensureAuthed, getCurrentUserId } from "../middleware/
 import { Guide } from "../schemas/mongodb.mjs";
 import { getPlanStatus } from "../services/usage.mjs";
 
+const DEFAULT_GUIDES = [
+  {
+    slug: "meta-developers-values-whatsapp-setup",
+    title: "How to get Meta (Facebook) Developer values for WhatsApp Setup",
+    summary: "Find Phone Number ID, WABA ID, WhatsApp Token, App Secret, and set your Verify Token + Callback URL.",
+    content: [
+      "# How to get Meta (Facebook) Developer values for WhatsApp Setup",
+      "",
+      "This guide shows where to find the values inside Meta for Developers and exactly where to paste them in Code Orbit → Settings → WhatsApp Setup.",
+      "",
+      "Meta for Developers:",
+      "https://developers.facebook.com",
+      "",
+      "# What you will fill in (Code Orbit → Settings → WhatsApp Setup)",
+      "",
+      "- Phone Number ID → Settings field: Phone Number ID",
+      "- WABA ID → Settings field: WABA ID",
+      "- WhatsApp Token → Settings field: WhatsApp Token",
+      "- App Secret → Settings field: App Secret",
+      "- Verify Token → Settings field: Verify Token",
+      "",
+      "# Step 1 — Create/Select your Meta App and add WhatsApp",
+      "",
+      "- Go to Meta for Developers and open your app (or create a new app).",
+      "- In your app dashboard, add the **WhatsApp** product.",
+      "",
+      "# Step 2 — Get Phone Number ID and WABA ID (from WhatsApp → API Setup)",
+      "",
+      "- Open your Meta App → WhatsApp → **API Setup**.",
+      "- Copy these values and paste them into Code Orbit → Settings → WhatsApp Setup:",
+      "- **Phone Number ID** → paste into **Phone Number ID**",
+      "- **WhatsApp Business Account ID (WABA ID)** → paste into **WABA ID**",
+      "",
+      "# Step 3 — Get a WhatsApp Token (Temporary for testing, Permanent for production)",
+      "",
+      "- In Meta App → WhatsApp → **API Setup**, copy the **Temporary access token** (good for initial testing).",
+      "- Paste it into Code Orbit → Settings → WhatsApp Setup → **WhatsApp Token**.",
+      "",
+      "**Important:** Temporary tokens expire. For production, generate a permanent token (System User / long-lived token) and update the **WhatsApp Token** in Settings.",
+      "",
+      "# Step 4 — Get your App Secret (used to verify webhook signature)",
+      "",
+      "- In Meta App dashboard → **App Settings** → **Basic**.",
+      "- Reveal/copy **App Secret**.",
+      "- Paste it into Code Orbit → Settings → WhatsApp Setup → **App Secret**.",
+      "",
+      "# Step 5 — Choose your Verify Token (you generate this value)",
+      "",
+      "The Verify Token is a secret string you choose. It must match in both places:",
+      "",
+      "- Code Orbit → Settings → WhatsApp Setup → **Verify Token**",
+      "- Meta App → WhatsApp → **Configuration** (Webhooks) → **Verify token**",
+      "",
+      "Recommendation: use a long random string (store it like a password).",
+      "",
+      "# Step 6 — Set Webhook Callback URL in Meta",
+      "",
+      "Your callback URL is your public base domain + `/webhook`.",
+      "",
+      "- Callback URL: `https://YOUR-DOMAIN.com/webhook`",
+      "",
+      "If you are testing locally, use a public tunnel URL (example: your NGROK public URL) + `/webhook`.",
+      "",
+      "# Step 7 — Subscribe to WhatsApp webhook events",
+      "",
+      "- In Meta App → WhatsApp → Configuration, subscribe your webhook to the needed fields (at minimum **messages**).",
+      "",
+      "# Quick checklist (common mistakes)",
+      "",
+      "- **Wrong endpoint**: callback must be `/webhook` (not `/api/...`).",
+      "- **Verify Token mismatch**: Meta Verify Token must equal Code Orbit Verify Token.",
+      "- **Missing App Secret**: required for signature verification in production.",
+      "- **Expired token**: temporary access token expires; replace with a permanent one for production.",
+      "- **Wrong Phone Number ID**: must be the Cloud API phone number id, not the phone number itself.",
+      "",
+      "# Done",
+      "",
+      "Save Settings. Then send a WhatsApp message to your business number — it should appear in your Inbox once Meta is pointing to your `/webhook` endpoint and the token/IDs are correct."
+    ].join("\n")
+  }
+];
+
+async function ensureDefaultGuides() {
+  for (const g of DEFAULT_GUIDES) {
+    if (!g?.slug) continue;
+    const exists = await Guide.findOne({ slug: g.slug }).select("_id").lean();
+    if (exists) continue;
+    try {
+      await Guide.create({
+        slug: g.slug,
+        title: g.title,
+        summary: g.summary,
+        content: g.content
+      });
+    } catch (e) {
+      // Ignore duplicate key errors (race between parallel requests).
+      const msg = String(e?.message || "");
+      if (!/E11000 duplicate key/i.test(msg)) throw e;
+    }
+  }
+}
+
 export default function registerGuideRoutes(app) {
   // Guides index
   app.get("/guide", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const email = await getSignedInEmail(req);
+    await ensureDefaultGuides();
     const guides = await Guide.find({}).select('slug title summary createdAt').sort({ createdAt: -1 }).lean();
     const { isUpgraded } = await getPlanStatus(userId);
     const cards = (guides || []).map(g => `
@@ -87,6 +190,7 @@ export default function registerGuideRoutes(app) {
     const userId = getCurrentUserId(req);
     const email = await getSignedInEmail(req);
     const slug = String(req.params.slug || '').trim();
+    await ensureDefaultGuides();
     const g = await Guide.findOne({ slug }).lean();
     if (!g) return res.redirect('/guide');
     const others = await Guide.find({ slug: { $ne: slug } }).select('slug title summary createdAt').sort({ createdAt: -1 }).limit(6).lean();
@@ -159,20 +263,22 @@ export default function registerGuideRoutes(app) {
             <div class="layout">
               ${renderSidebar("guide", { isUpgraded })}
             <main class="main">
-              <div class="guide-detail">
-                <div class="card article">
-                  <a href="/guide" class="back">← Back to Guides</a>
-                  <div class="title">${escapeHtml(g.title)}</div>
-                  <div class="meta">Published ${new Date(g.createdAt || Date.now()).toLocaleDateString()}</div>
-                  <div class="separator" style="margin:8px 0;"></div>
-                  <div class="prose">${body}</div>
-                </div>
-                <aside class="related">
-                  <div class="card">
-                    <div class="related-heading">More articles</div>
-                    <ul class="related-list">${related || '<div class="small">No other articles yet.</div>'}</ul>
+              <div class="main-content">
+                <div class="guide-detail">
+                  <div class="card article">
+                    <a href="/guide" class="back">← Back to Guides</a>
+                    <div class="title">${escapeHtml(g.title)}</div>
+                    <div class="meta">Published ${new Date(g.createdAt || Date.now()).toLocaleDateString()}</div>
+                    <div class="separator" style="margin:8px 0;"></div>
+                    <div class="prose">${body}</div>
                   </div>
-                </aside>
+                  <aside class="related">
+                    <div class="card">
+                      <div class="related-heading">More articles</div>
+                      <ul class="related-list">${related || '<div class="small">No other articles yet.</div>'}</ul>
+                    </div>
+                  </aside>
+                </div>
               </div>
             </main>
           </div>

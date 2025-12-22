@@ -114,33 +114,32 @@ export default function registerHomeRoutes(app) {
                 <span>Code Orbit Agent</span>
               </a>
               <nav class="m-nav">
+                <a href="#use-cases">Use cases</a>
                 <a href="#features">Features</a>
-                <a href="#integrations">Integrations</a>
                 <a href="#pricing">Pricing</a>
-                <a href="/auth" class="btn btn-primary">Sign in</a>
+                <a href="#contact">Contact</a>
+                <a href="/auth" class="btn btn-primary">Start free</a>
               </nav>
-              <a href="/auth" class="btn btn-primary" id="mobile-cta">Sign in</a>
+              <a href="/auth" class="btn btn-primary" id="mobile-cta">Start free</a>
             </div>
           </header>
 
           <main class="wrap">
             <section class="hero hero-z">
               <div class="hero-center">
-                <div class="eyebrow">WHATSAPP-FIRST CUSTOMER OPS</div>
-                <h1>Run support, bookings, and sales from <span class="headline-accent">WhatsApp</span>.</h1>
-                <p>
-                  One inbox for every chat. AI drafts replies, routes conversations, books appointments,
-                  and shares payment links — with guardrails your team can trust.
+                <div class="eyebrow">WHATSAPP INBOX + AI, FOR SMALL TEAMS</div>
+                <h1>Turn WhatsApp into a <span class="headline-accent">real support & sales channel</span> — not a messy DM inbox.</h1>
+                <p style="text-align:center;">
+                  Shared inbox + AI-drafted replies from your rules and knowledge base — with humans in control.
                 </p>
-                <div class="hero-microcopy">Fast setup. Human control. Built for real businesses.</div>
-                <form class="hero-form" action="/auth" method="get">
-                  <label class="sr-only" for="work-email">Work email</label>
-                  <input id="work-email" name="email" type="email" placeholder="Enter work email" autocomplete="email" />
-                  <button type="submit" class="btn btn-primary">Try it for free</button>
-                </form>
+                <div class="hero-microcopy">Best for teams already getting leads/support on WhatsApp.</div>
                 <div class="hero-actions hero-actions-secondary">
                   <a href="#use-cases" class="btn btn-ghost">See use cases</a>
                   <a href="#pricing" class="btn btn-ghost">Pricing</a>
+                  <a href="#contact" class="btn btn-ghost">Talk to us</a>
+                </div>
+                <div class="hero-microcopy" style="margin-top:10px;">
+                  Questions? <a href="mailto:support@codeorbit.tech">support@codeorbit.tech</a>
                 </div>
               </div>
             </section>
@@ -148,23 +147,23 @@ export default function registerHomeRoutes(app) {
             <section class="ai-globe" aria-label="Conversational AI, multilingual">
               <div class="ai-left">
                 <div class="eyebrow">CONVERSATIONAL AI, FOR BUSINESS</div>
-                <h2>AI that feels natural — at scale</h2>
+                <h2>AI drafts replies — you decide what gets sent</h2>
                 <p class="lead">
-                  Human-like conversations, guided by your policies and knowledge base, so replies stay accurate and on-brand.
+                  Draft replies from your FAQs + policies. Add approvals, guardrails, and an audit trail.
                 </p>
 
                 <div class="ai-points" role="list">
                   <div class="ai-point is-active" role="listitem">
-                    <div class="ai-point-title">Low latency, real flow</div>
-                    <div class="ai-point-copy">Fast replies that keep chats fluid — no robotic pauses.</div>
+                    <div class="ai-point-title">Shared inbox, not personal DMs</div>
+                    <div class="ai-point-copy">Assign, tag, note, and collaborate.</div>
                   </div>
                   <div class="ai-point" role="listitem">
                     <div class="ai-point-title">Multilingual by default</div>
-                    <div class="ai-point-copy">Handle customers in their language with consistent tone and rules.</div>
+                    <div class="ai-point-copy">Reply in their language with consistent tone + rules.</div>
                   </div>
                   <div class="ai-point" role="listitem">
                     <div class="ai-point-title">Guardrails you control</div>
-                    <div class="ai-point-copy">Approve templates, restrict claims, and keep audit-ready history.</div>
+                    <div class="ai-point-copy">Control what’s allowed, when to hand off, and what gets logged.</div>
                   </div>
                 </div>
               </div>
@@ -183,6 +182,9 @@ export default function registerHomeRoutes(app) {
                         <stop offset="55%" stop-color="rgba(79,70,229,.10)"/>
                         <stop offset="100%" stop-color="rgba(79,70,229,.06)"/>
                       </linearGradient>
+                      <clipPath id="globeClip">
+                        <circle cx="260" cy="260" r="210" />
+                      </clipPath>
                     </defs>
 
                     <circle cx="260" cy="260" r="210" fill="url(#sphere)" />
@@ -195,7 +197,7 @@ export default function registerHomeRoutes(app) {
                     <ellipse cx="260" cy="350" rx="210" ry="60" fill="none" stroke="rgba(11,16,32,.10)" stroke-width="2"/>
 
                     <!-- longitude layer (drifts to simulate rotation around vertical axis) -->
-                    <g class="globe-drift">
+                    <g class="globe-drift" clip-path="url(#globeClip)">
                       <ellipse cx="260" cy="260" rx="70" ry="210" fill="none" stroke="rgba(11,16,32,.12)" stroke-width="2"/>
                       <ellipse cx="260" cy="260" rx="140" ry="210" fill="none" stroke="rgba(11,16,32,.10)" stroke-width="2"/>
                       <ellipse cx="260" cy="260" rx="195" ry="210" fill="none" stroke="rgba(11,16,32,.08)" stroke-width="2"/>
@@ -215,19 +217,20 @@ export default function registerHomeRoutes(app) {
                   <div class="lang-chip chip-pt"><span class="flag">🇵🇹</span><span>Portuguese</span></div>
 
                   <div class="lang-panel">
-                    <div class="lang-row"><span class="flag">🇺🇸</span><span>English</span></div>
+                    <div class="lang-row"><span class="flag">🇺🇸</span><span>English (US)</span></div>
+                    <div class="lang-row"><span class="flag">🇬🇧</span><span>English (UK)</span></div>
                     <div class="lang-row"><span class="flag">🇫🇷</span><span>French</span></div>
                     <div class="lang-row"><span class="flag">🇩🇪</span><span>German</span></div>
                     <div class="lang-row"><span class="flag">🇮🇳</span><span>Hindi</span></div>
                     <div class="lang-row"><span class="flag">🇪🇸</span><span>Spanish</span></div>
-                    <div class="lang-row lang-more">View 30+ supported languages</div>
+                    <a class="lang-row lang-more" href="#contact">Ask about supported languages</a>
                   </div>
                 </div>
               </div>
             </section>
 
-            <section class="trust-bar" aria-label="Trusted by">
-              <div class="trust-title">Trusted by teams who sell and support on WhatsApp</div>
+            <section class="trust-bar" aria-label="Built for">
+              <div class="trust-title">Built for teams who already sell and support on WhatsApp</div>
               <div class="trust-logos" aria-hidden="true">
                 <span>Retail</span>
                 <span>Restaurants</span>
@@ -243,7 +246,7 @@ export default function registerHomeRoutes(app) {
                 <div class="eyebrow">OUR PLATFORM</div>
                 <h2>More than replies — a full WhatsApp workflow system.</h2>
                 <p class="lead">
-                  Centralize chats, automate the repetitive parts, and keep the human touch where it matters — with audit-friendly guardrails.
+                  Centralize chats, automate the repetitive parts, keep the human touch — with guardrails.
                 </p>
               </div>
               <div class="proof-badges" aria-hidden="true">
@@ -270,39 +273,60 @@ export default function registerHomeRoutes(app) {
                 <div class="eyebrow">USE CASES</div>
                 <h2>Designed for high-intent WhatsApp conversations</h2>
                 <p class="lead">
-                  Whether you’re handling support, taking bookings, or closing sales — the workflow stays clean.
+                  Real workflows people run every day on WhatsApp.
                 </p>
               </div>
 
               <div class="use-grid">
                 <article class="use-card">
-                  <div class="use-icon">🧭</div>
-                  <h3>Support + triage</h3>
-                  <p>Route chats to the right teammate with context, tags, and AI-drafted replies.</p>
+                  <div class="use-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" role="img" focusable="false" aria-hidden="true">
+                      <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path>
+                      <path d="M8.5 11.5l2 2 5-5"></path>
+                    </svg>
+                  </div>
+                  <h3>Order status + returns (e‑commerce)</h3>
+                  <p>Answer “Where’s my order?” and start returns without hopping tools.</p>
                   <ul>
-                    <li>Assignment + notes</li>
-                    <li>Suggested replies</li>
-                    <li>Knowledge answers</li>
+                    <li>Order lookup + status updates</li>
+                    <li>Return / exchange intake</li>
+                    <li>Escalate to a human when needed</li>
                   </ul>
                 </article>
                 <article class="use-card">
-                  <div class="use-icon">📅</div>
-                  <h3>Bookings + reminders</h3>
-                  <p>Turn “Are you available?” into confirmed appointments with fewer no‑shows.</p>
+                  <div class="use-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" role="img" focusable="false" aria-hidden="true">
+                      <rect x="3" y="4.5" width="18" height="16.5" rx="2"></rect>
+                      <path d="M8 3v3"></path>
+                      <path d="M16 3v3"></path>
+                      <path d="M3 9h18"></path>
+                      <path d="M8 13h3"></path>
+                      <path d="M8 16.5h6"></path>
+                    </svg>
+                  </div>
+                  <h3>Appointments (clinics + services)</h3>
+                  <p>Turn “Are you available?” into booked, confirmed, and reminded visits.</p>
                   <ul>
-                    <li>Calendar-friendly flow</li>
+                    <li>Availability + booking link</li>
                     <li>Automated reminders</li>
-                    <li>Reschedule in chat</li>
+                    <li>Reschedule / cancel in chat</li>
                   </ul>
                 </article>
                 <article class="use-card">
-                  <div class="use-icon">💳</div>
-                  <h3>Sales + payments</h3>
-                  <p>Send quotes, follow up automatically, and share payment links when ready.</p>
+                  <div class="use-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" role="img" focusable="false" aria-hidden="true">
+                      <path d="M6 7h12l-1 14H7L6 7z"></path>
+                      <path d="M9 7a3 3 0 0 1 6 0"></path>
+                      <path d="M8.5 10.5v-1"></path>
+                      <path d="M15.5 10.5v-1"></path>
+                    </svg>
+                  </div>
+                  <h3>Lead qualification + quotes</h3>
+                  <p>Collect details, route to the right person, and close with a link.</p>
                   <ul>
-                    <li>Follow-up templates</li>
-                    <li>Payment links</li>
-                    <li>Conversion tracking</li>
+                    <li>Ask the right questions fast</li>
+                    <li>Send quotes + payment links</li>
+                    <li>Follow-ups that don’t feel spammy</li>
                   </ul>
                 </article>
               </div>
@@ -311,24 +335,22 @@ export default function registerHomeRoutes(app) {
             <section id="features" class="section">
               <div class="section-head">
                 <div class="eyebrow">FEATURES</div>
-                <h2>Everything you need to reply faster and convert more</h2>
+                <h2>Why choose this instead of a helpdesk + “WhatsApp as a channel”?</h2>
                 <p class="lead">
-                  This isn’t “another chatbot”. It’s a WhatsApp workflow system: humans + AI, with guardrails.
+                  WhatsApp‑first: shared inbox + AI drafts + workflows inside the chat.
                 </p>
               </div>
 
               <div class="feature-layout">
                 <div class="feature-text">
                   <p class="feature-paragraph">
-                    Your customers already live in WhatsApp. This gives you a proper inbox, a safe AI assistant,
-                    and the workflows to turn chats into outcomes — without losing control.
+                    Shared inbox + AI co‑pilot trained on your knowledge base — without losing control.
                   </p>
                   <p class="feature-paragraph">
-                    Use AI to draft responses, route conversations, answer from your knowledge base, and follow up
-                    with approved templates. Your team stays in the loop with clear guardrails.
+                    Draft replies, answer from your KB, and follow up with approved templates.
                   </p>
                   <p class="feature-paragraph">
-                    When you’re ready, add bookings + payments so you can close the loop directly in chat.
+                    Add bookings + payments when you’re ready.
                   </p>
                 </div>
 
@@ -347,22 +369,22 @@ export default function registerHomeRoutes(app) {
               </div>
             </section>
 
-            <section class="story" aria-label="Customer story">
+            <section class="story" aria-label="Product preview">
               <div class="story-media">
                 <div class="story-photo">
-                  <img class="story-photo-img" src="/entry-image.png" alt="WhatsApp Agent preview" width="980" height="520" />
+                  <img class="story-photo-img" src="/home_image.png" alt="WhatsApp booking flow preview in chat" width="980" height="520" />
                 </div>
               </div>
               <div class="story-quote">
-                <div class="eyebrow">CUSTOMER STORY</div>
+                <div class="eyebrow">WHAT YOU’LL SEE IN THE APP</div>
                 <blockquote>
-                  “We finally run WhatsApp like a real channel. Faster replies, cleaner handoffs, and more bookings — with control.”
+                  A shared WhatsApp inbox with assignments, tags, and an AI co‑pilot that drafts replies from your knowledge base.
                 </blockquote>
                 <div class="story-byline">
-                  <strong>Operations Lead</strong>
-                  <span>Local services business</span>
+                  <strong>No fake testimonials.</strong>
+                  <span>Want to be a pilot customer? We’ll onboard you personally.</span>
                 </div>
-                <a href="#pricing" class="btn btn-ghost story-cta">See pricing</a>
+                <a href="#contact" class="btn btn-ghost story-cta">Contact us</a>
               </div>
             </section>
 
@@ -375,20 +397,26 @@ export default function registerHomeRoutes(app) {
                 </p>
               </div>
 
-              <ol class="steps">
-                <li>
-                  <div class="step-title">Connect WhatsApp</div>
-                  <div class="step-copy">Add your Cloud API credentials, verify your sender, and start receiving messages.</div>
-                </li>
-                <li>
-                  <div class="step-title">Train the agent</div>
-                  <div class="step-copy">Upload your FAQs and policies so replies stay accurate and on-brand.</div>
-                </li>
-                <li>
-                  <div class="step-title">Operate with control</div>
-                  <div class="step-copy">AI drafts, humans approve, analytics highlight what to improve.</div>
-                </li>
-              </ol>
+              <div class="how-layout">
+                <ol class="steps">
+                  <li>
+                    <div class="step-title">Connect WhatsApp</div>
+                    <div class="step-copy">Add your Cloud API credentials, verify your sender, and start receiving messages.</div>
+                  </li>
+                  <li>
+                    <div class="step-title">Train the agent</div>
+                    <div class="step-copy">Upload your FAQs and policies so replies stay accurate and on-brand.</div>
+                  </li>
+                  <li>
+                    <div class="step-title">Operate with control</div>
+                    <div class="step-copy">AI drafts, humans approve, analytics highlight what to improve.</div>
+                  </li>
+                </ol>
+
+                <div class="how-visual" aria-hidden="true">
+                  <img class="how-visual-img" src="/Flow_Image.png" alt="" width="980" height="520" />
+                </div>
+              </div>
             </section>
 
             <section id="integrations" class="section">
@@ -418,37 +446,23 @@ export default function registerHomeRoutes(app) {
               </ul>
             </section>
 
-            <section class="roi" aria-label="Return on investment">
+            <section class="roi" aria-label="What you can measure">
               <div class="roi-inner">
                 <div class="roi-top">
                   <div class="roi-left">
-                    <div class="eyebrow">RETURN ON TIME</div>
+                    <div class="eyebrow">OPERATIONS, NOT HYPE</div>
                     <h2>Make WhatsApp a predictable channel.</h2>
                     <p class="lead">
-                      Stop losing leads in DMs. Reduce response time, automate the repetitive parts, and keep the human touch where it matters.
+                      Stop losing leads in DMs. Clean handoffs, faster replies, and simple tracking.
                     </p>
                     <a href="/auth" class="btn btn-primary roi-cta">Try it for free</a>
                   </div>
                   <div class="roi-right">
                     <ul class="roi-bullets">
-                      <li><strong>Improve time-to-value</strong><span>Works out of the box with clear setup steps.</span></li>
-                      <li><strong>Reduce effort per conversation</strong><span>AI drafts and knowledge answers cut repetitive replies.</span></li>
-                      <li><strong>Keep ops clean</strong><span>Bookings, payments, and templates keep everything in one place.</span></li>
+                      <li><strong>Track response time</strong><span>Find where chats stall.</span></li>
+                      <li><strong>Reduce repetitive typing</strong><span>AI drafts + KB answers.</span></li>
+                      <li><strong>Clean handoffs</strong><span>Assignments, notes, and tags.</span></li>
                     </ul>
-                  </div>
-                </div>
-                <div class="roi-stats" aria-hidden="true">
-                  <div class="roi-stat">
-                    <div class="roi-number">45%</div>
-                    <div class="roi-label">Faster replies</div>
-                  </div>
-                  <div class="roi-stat">
-                    <div class="roi-number">25%</div>
-                    <div class="roi-label">Fewer no-shows</div>
-                  </div>
-                  <div class="roi-stat">
-                    <div class="roi-number">2×</div>
-                    <div class="roi-label">More conversions</div>
                   </div>
                 </div>
               </div>
@@ -479,8 +493,8 @@ export default function registerHomeRoutes(app) {
                   <ul class="price-features">
                     <li>100 conversations / month</li>
                     <li>Unified inbox</li>
-                    <li>Basic AI suggestions</li>
-                    <li>Community support</li>
+                    <li>AI draft replies (no knowledge base)</li>
+                    <li>Email support (best effort)</li>
                   </ul>
                   <a href="/auth" class="btn btn-primary">Get started</a>
                 </div>
@@ -488,20 +502,36 @@ export default function registerHomeRoutes(app) {
                 <div class="card price-card is-featured">
                   <div class="price-top">
                     <h3>Starter</h3>
-                    <div class="price"><span id="starter-price-number">$29</span> <small id="starter-price-unit">/mo</small></div>
+                    <div class="price"><span id="starter-price-number">$9.99</span> <small id="starter-price-unit">/mo</small></div>
                   </div>
                   <div id="starter-price-discount" class="fineprint" style="display:none;">
-                    Billed yearly: <strong>$299</strong> <span class="price-strike">$348</span>
+                    Billed yearly: <strong>$100</strong> <span class="price-strike">$120</span>
                   </div>
                   <ul class="price-features">
                     <li>5,000 conversations / month</li>
-                    <li>AI co-pilot with knowledge</li>
-                    <li>Bookings & payments</li>
-                    <li>Campaigns & analytics</li>
-                    <li>Email support</li>
+                    <li>AI co-pilot + knowledge base</li>
+                    <li>Bookings + payment links</li>
+                    <li>Campaign templates + analytics</li>
+                    <li>Priority email support</li>
                   </ul>
                   <a href="/plan" class="btn btn-primary">Upgrade to Starter</a>
                 </div>
+              </div>
+            </section>
+
+            <section id="contact" class="section" aria-label="Contact">
+              <div class="section-head">
+                <div class="eyebrow">CONTACT</div>
+                <h2>Want a quick sanity check before you commit?</h2>
+                <p class="lead">
+                  Tell us your business + what you use WhatsApp for. We’ll reply with a straight recommendation.
+                </p>
+              </div>
+              <div class="card" style="padding:18px;">
+                <p style="margin:0;">
+                  Email: <a href="mailto:support@codeorbit.tech">support@codeorbit.tech</a><br/>
+                  Prefer WhatsApp? Start with email and we’ll move you to a WhatsApp thread.
+                </p>
               </div>
             </section>
 
@@ -550,13 +580,13 @@ export default function registerHomeRoutes(app) {
 
               function setBilling(mode) {
                 if (mode === 'yearly') {
-                  if (starterNumber) starterNumber.textContent = '$299';
+                  if (starterNumber) starterNumber.textContent = '$100';
                   if (starterUnit) starterUnit.textContent = '/yr';
                   if (starterDiscount) starterDiscount.style.display = 'block';
                   if (freeNumber) freeNumber.textContent = '$0';
                   if (freeUnit) freeUnit.textContent = '/yr';
                 } else {
-                  if (starterNumber) starterNumber.textContent = '$29';
+                  if (starterNumber) starterNumber.textContent = '$9.99';
                   if (starterUnit) starterUnit.textContent = '/mo';
                   if (starterDiscount) starterDiscount.style.display = 'none';
                   if (freeNumber) freeNumber.textContent = '$0';
