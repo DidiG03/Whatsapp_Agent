@@ -371,7 +371,46 @@ export default function registerPlanRoutes(app) {
           const SCHEDULED_START_TS = ${scheduledStartTs ? Number(scheduledStartTs) : 'null'};
           const PAYG_ENABLED = ${paygEnabled ? 'true' : 'false'};
           const STRIPE_ENABLED = ${stripeEnabled ? 'true' : 'false'};
-          
+
+          // apiFetch: same-origin JSON helper that tolerates HTML responses
+          // (e.g. auth redirect pages or Vercel error pages) instead of
+          // throwing "Unexpected token '<' ... is not valid JSON" from
+          // response.json(). It also explicitly signals JSON/XHR to the
+          // server so auth middleware returns a JSON 401 rather than a
+          // 302 to an HTML sign-in page.
+          async function apiFetch(url, options) {
+            options = options || {};
+            const headers = Object.assign({
+              'Accept': 'application/json',
+              'X-Requested-With': 'XMLHttpRequest'
+            }, options.headers || {});
+            const res = await fetch(url, Object.assign({ credentials: 'same-origin' }, options, { headers }));
+            const text = await res.text();
+            let data = null;
+            try { data = text ? JSON.parse(text) : null; } catch (e) {}
+            if (res.status === 401 && data && (data.code === 'AUTH_REQUIRED' || data.code === 'SESSION_EXPIRED')) {
+              const target = data.redirectTo || '/auth/signin';
+              const back = encodeURIComponent(location.pathname + location.search);
+              window.location.href = target + (target.indexOf('?') >= 0 ? '&' : '?') + 'redirect_url=' + back;
+              return new Promise(function(){});
+            }
+            if (data === null && text && /^\\s*</.test(text)) {
+              const err = new Error('Server returned an HTML response (status ' + res.status + '). Your session may have expired — please refresh and sign in again.');
+              err.status = res.status;
+              err.isHtmlResponse = true;
+              throw err;
+            }
+            return {
+              ok: res.ok,
+              status: res.status,
+              headers: res.headers,
+              url: res.url,
+              redirected: res.redirected,
+              json: async function(){ return data; },
+              text: async function(){ return text; }
+            };
+          }
+
           // Lightweight modal helper
           const Modal = (function(){
             let resolver = null;
@@ -479,7 +518,7 @@ export default function registerPlanRoutes(app) {
             toggle.addEventListener('change', async function(){
               var enabled = !!toggle.checked;
               try {
-                const r = await fetch('/plan/payg', {
+                const r = await apiFetch('/plan/payg', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ enabled })
@@ -498,7 +537,7 @@ export default function registerPlanRoutes(app) {
                   });
                   if (ok) {
                     try {
-                      const r2 = await fetch('/plan/payg/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+                      const r2 = await apiFetch('/plan/payg/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
                       const j2 = await r2.json().catch(()=>({}));
                       if (j2?.url) { window.location.href = j2.url; return; }
                       await Modal.alert({ title: 'Setup Failed', message: j2?.error || 'Unable to start payment method setup.' });
@@ -528,7 +567,7 @@ export default function registerPlanRoutes(app) {
 
           async function managePaygPaymentMethod() {
             try {
-              const r = await fetch('/stripe/customer-portal', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+              const r = await apiFetch('/stripe/customer-portal', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
               const j = await r.json().catch(()=>({}));
               if (r.ok && j?.url) {
                 window.location.href = j.url; return;
@@ -540,7 +579,7 @@ export default function registerPlanRoutes(app) {
                 okText: 'Continue'
               });
               if (ok) {
-                const s = await fetch('/plan/payg/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+                const s = await apiFetch('/plan/payg/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
                 const sj = await s.json().catch(()=>({}));
                 if (sj?.url) { window.location.href = sj.url; return; }
                 await Modal.alert({ title: 'Setup Failed', message: sj?.error || 'Unable to start payment method setup.' });
@@ -559,7 +598,7 @@ export default function registerPlanRoutes(app) {
             if (!ok) return;
             
             try {
-              const response = await fetch('/plan/update', {
+              const response = await apiFetch('/plan/update', {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
@@ -581,7 +620,7 @@ export default function registerPlanRoutes(app) {
                   });
                   if (ok2) {
                     try {
-                      const r2 = await fetch('/stripe/cancel-subscription', {
+                      const r2 = await apiFetch('/stripe/cancel-subscription', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ subscription_id: data.subscription_id })
@@ -631,7 +670,7 @@ export default function registerPlanRoutes(app) {
                   price_id = STARTER_MONTHLY_PRICE_ID;
                 }
               }
-              const response = await fetch('/stripe/create-checkout', {
+              const response = await apiFetch('/stripe/create-checkout', {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
@@ -686,7 +725,7 @@ export default function registerPlanRoutes(app) {
             });
             if (!ok) return;
             try {
-              const resp = await fetch('/stripe/schedule-plan-change', {
+              const resp = await apiFetch('/stripe/schedule-plan-change', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ plan_name: planName, target_interval: targetInterval })
@@ -721,7 +760,7 @@ export default function registerPlanRoutes(app) {
             });
             if (!ok) return;
             try {
-              const resp = await fetch('/stripe/cancel-scheduled-change', {
+              const resp = await apiFetch('/stripe/cancel-scheduled-change', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' }
               });
@@ -739,7 +778,7 @@ export default function registerPlanRoutes(app) {
           
           async function managePaymentMethod() {
             try {
-              const resp = await fetch('/stripe/customer-portal', {
+              const resp = await apiFetch('/stripe/customer-portal', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' }
               });
@@ -771,7 +810,7 @@ export default function registerPlanRoutes(app) {
             }
             
             try {
-              const response = await fetch('/stripe/cancel-subscription', {
+              const response = await apiFetch('/stripe/cancel-subscription', {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
@@ -813,7 +852,7 @@ export default function registerPlanRoutes(app) {
               return;
             }
             try {
-              const resp = await fetch('/stripe/resume-subscription', {
+              const resp = await apiFetch('/stripe/resume-subscription', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ subscription_id: subscriptionId })
