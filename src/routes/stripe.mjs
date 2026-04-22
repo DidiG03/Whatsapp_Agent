@@ -1,3 +1,6 @@
+// Import config first so env-var sanitization runs before any Stripe client
+// is constructed (see src/config.mjs — strips stray surrounding quotes).
+import "../config.mjs";
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
 import { createCheckoutSession, getCheckoutSession, handleSuccessfulPayment, handleSubscriptionCanceled, isStripeEnabled } from "../services/stripe.mjs";
 import { getUserPlan } from "../services/usage.mjs";
@@ -7,7 +10,14 @@ import { renderSidebar, renderTopbar } from "../utils.mjs";
 import Stripe from 'stripe';
 import crypto from 'node:crypto';
 
-const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
+function cleanEnv(v) {
+  if (v === undefined || v === null) return v;
+  let s = String(v).trim();
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) s = s.slice(1, -1).trim();
+  return s;
+}
+const STRIPE_SECRET_KEY = cleanEnv(process.env.STRIPE_SECRET_KEY);
+const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 
 export default function registerStripeRoutes(app) {
   // Create checkout session for plan upgrade

@@ -21,6 +21,30 @@ if (!process.env.VERCEL) {
   console.log('Running in Vercel environment - using environment variables from Vercel');
 }
 
+// Normalize env values: strip surrounding quotes and whitespace. Vercel
+// dashboard / `vercel env add` users often paste values with literal quote
+// characters (e.g. "sk_live_..."), which then get sent verbatim to upstream
+// APIs (Stripe, Clerk, etc.) causing 401s and other signature failures.
+// Doing this once, here, makes every downstream `process.env.X` read safe.
+(() => {
+  const UNQUOTE = /^(['"])([\s\S]*)\1$/;
+  const cleaned = [];
+  for (const k of Object.keys(process.env)) {
+    const v = process.env[k];
+    if (typeof v !== 'string') continue;
+    const trimmed = v.trim();
+    const m = trimmed.match(UNQUOTE);
+    const next = m ? m[2].trim() : trimmed;
+    if (next !== v) {
+      process.env[k] = next;
+      cleaned.push(k);
+    }
+  }
+  if (cleaned.length && process.env.DEBUG_LOGS === '1') {
+    console.log('[config] Sanitized env vars (stripped surrounding quotes/whitespace):', cleaned.join(', '));
+  }
+})();
+
 /** Log verbosity level used by pino logger. */
 export const LOG_LEVEL = process.env.LOG_LEVEL || "info";
 /** Port the HTTP server listens on. */

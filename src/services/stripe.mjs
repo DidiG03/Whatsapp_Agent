@@ -1,10 +1,22 @@
 /**
  * Stripe service for handling payments and subscriptions
  */
+// Ensure env-var sanitization has run before we read STRIPE_* values.
+import "../config.mjs";
 import Stripe from 'stripe';
 
+function cleanEnv(v) {
+  if (v === undefined || v === null) return v;
+  let s = String(v).trim();
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    s = s.slice(1, -1).trim();
+  }
+  return s;
+}
+
+const STRIPE_SECRET_KEY = cleanEnv(process.env.STRIPE_SECRET_KEY);
 // Initialize Stripe (only if API key is provided)
-const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
+const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 
 /**
  * Ensure a Stripe customer exists for this user. Stores the id on the user plan if created/found.
