@@ -3164,6 +3164,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       // Allow AI decision planner in all modes (including simple escalation).
       const preferFullAI = true;
       if (!humanActive && preferFullAI) {
+        console.log('[AI-path] enter', { from: String(from).slice(-6), tenantUserId: String(tenantUserId || ''), textLen: (text || '').length, mode: cfg?.conversation_mode || '' });
         try {
           const kbMatchesAIBase = await cachedRetrieveKbMatches(text, 8, tenantUserId, '', from);
           const profileSnippet = await buildCustomerProfileSnippet(tenantUserId, from);
@@ -3200,8 +3201,16 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
               customer_name: knownCustomerName || ''
             }
           });
+          console.log('[AI-path] decision', { hasText: !!decision?.text, textLen: decision?.text ? String(decision.text).length : 0, intent: decision?.intent?.type || 'none' });
           if (decision?.text) {
             await sendTextTracked(from, String(decision.text).slice(0, 1000), cfg);
+          } else {
+            console.error('[AI-path] empty decision — sending fallback notice to user', { from: String(from).slice(-6) });
+            try {
+              await sendTextTracked(from, "I'm having trouble answering right now. Please try again in a moment.", cfg);
+            } catch (sendErr) {
+              console.error('[AI-path] fallback sendText failed:', sendErr?.message || sendErr);
+            }
           }
           const intentType = String(decision?.intent?.type || 'none').toLowerCase();
           const intentData = decision?.intent?.data || {};
@@ -3353,7 +3362,15 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
             }
           }
           return res.sendStatus(200);
-        } catch {}
+        } catch (aiErr) {
+          console.error('[AI-path] unhandled error:', { message: aiErr?.message || String(aiErr), stack: aiErr?.stack ? String(aiErr.stack).split('\n').slice(0, 3).join(' | ') : null });
+          try {
+            await sendTextTracked(from, "Sorry, something went wrong while preparing your answer. Please try again.", cfg);
+          } catch (sendErr) {
+            console.error('[AI-path] error-notice send failed:', sendErr?.message || sendErr);
+          }
+          return res.sendStatus(200);
+        }
       }
 
       // Retrieve candidate KB matches (expand to 8 for broader context)

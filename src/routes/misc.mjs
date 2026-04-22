@@ -1,6 +1,7 @@
 import { ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
 import { getSettingsForUser } from "../services/settings.mjs";
 import { getVercelWebAnalyticsSnippet } from "../utils.mjs";
+import OpenAI from "openai";
 
 export default function registerMiscRoutes(app) {
   app.get("/.well-known/appspecific/com.chrome.devtools.json", (_req, res) => res.sendStatus(204));
@@ -281,6 +282,54 @@ export default function registerMiscRoutes(app) {
       });
     } catch (e) {
       try { res.sendStatus(500); } catch {}
+    }
+  });
+
+  // Diagnostic: verify OpenAI key works. Secret-gated via ?key=... (DIAG_SECRET or WEBHOOK_VERIFY_TOKEN).
+  app.get('/api/diag/openai', async (req, res) => {
+    try {
+      const provided = String(req.query.key || req.headers['x-diag-key'] || '').trim();
+      const expected = String(process.env.DIAG_SECRET || process.env.WEBHOOK_VERIFY_TOKEN || '').trim();
+      if (!expected || provided !== expected) return res.status(401).json({ error: 'unauthorized' });
+
+      const rawKey = String(process.env.OPENAI_API_KEY || '');
+      const keyMeta = {
+        present: !!rawKey,
+        length: rawKey.length,
+        startsWithSk: rawKey.startsWith('sk-'),
+        startsWithQuote: /^["']/.test(rawKey),
+        endsWithQuote: /["']$/.test(rawKey),
+        hasWhitespace: /\s/.test(rawKey),
+        tail: rawKey.slice(-4)
+      };
+
+      let openaiResult;
+      try {
+        const client = new OpenAI({ apiKey: rawKey });
+        const resp = await client.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [{ role: 'user', content: 'ping' }],
+          max_tokens: 5,
+          temperature: 0
+        });
+        openaiResult = {
+          ok: true,
+          content: resp?.choices?.[0]?.message?.content || '',
+          model: resp?.model || null
+        };
+      } catch (err) {
+        openaiResult = {
+          ok: false,
+          status: err?.status || err?.response?.status || null,
+          code: err?.code || err?.error?.code || null,
+          type: err?.type || err?.error?.type || null,
+          message: err?.message || String(err)
+        };
+      }
+
+      return res.json({ keyMeta, openai: openaiResult });
+    } catch (e) {
+      return res.status(500).json({ error: 'diag_failed', message: e?.message || String(e) });
     }
   });
 }
