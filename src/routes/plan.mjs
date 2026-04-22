@@ -706,9 +706,14 @@ export default function registerPlanRoutes(app) {
                     message: 'Plan change is only allowed after your current period ends.' + (endAt ? '<br/>' + endAt : '')
                   });
                 } else {
+                  const parts = [];
+                  if (data?.error) parts.push(data.error);
+                  if (data?.detail && data.detail !== data.error) parts.push(data.detail);
+                  if (data?.code) parts.push('[' + data.code + ']');
+                  const msg = parts.length ? parts.join(' — ') : 'Unknown error';
                   await Modal.alert({
                     title: 'Checkout Failed',
-                    message: 'Failed to create checkout session: ' + (data.error || 'Unknown error')
+                    message: msg
                   });
                 }
               }

@@ -60,8 +60,28 @@ export default function registerStripeRoutes(app) {
         session_id: result.sessionId 
       });
     } catch (error) {
-      console.error('Checkout session creation failed:', error);
-      return res.status(500).json({ error: 'Failed to create checkout session' });
+      console.error('Checkout session creation failed:', {
+        message: error?.message,
+        type: error?.type,
+        code: error?.code,
+        statusCode: error?.statusCode,
+        raw: error?.raw,
+        stack: error?.stack,
+        userId,
+        plan_name,
+        price_id,
+        has_secret: !!process.env.STRIPE_SECRET_KEY,
+        has_publishable: !!process.env.STRIPE_PUBLISHABLE_KEY,
+        configured_price_env: process.env[`STRIPE_PRICE_ID_${String(plan_name || '').toUpperCase()}`] || process.env.STRIPE_PRICE_ID || null
+      });
+      // Surface a useful message to the client without leaking secrets.
+      const stripeMsg = error?.raw?.message || error?.message || 'Unknown error';
+      const code = error?.code || error?.type || null;
+      return res.status(500).json({
+        error: 'Failed to create checkout session',
+        detail: stripeMsg,
+        code
+      });
     }
   });
 
