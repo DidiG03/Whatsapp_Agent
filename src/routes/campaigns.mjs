@@ -9,13 +9,11 @@ import { sendTemplateStatusEmail } from "../services/email.mjs";
 import { sendWhatsAppText, sendWhatsAppTemplate } from "../services/whatsapp.mjs";
 
 export default function registerCampaignRoutes(app) {
-  // Campaigns landing page
   app.get("/campaigns", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const email = await getSignedInEmail(req);
 
     const db = getDB();
-    // Fetch settings, recent templates, and recent campaigns
     const [settings, { isUpgraded }, templates, campaigns] = await Promise.all([
       getSettingsForUser(userId),
       getPlanStatus(userId),
@@ -25,8 +23,6 @@ export default function registerCampaignRoutes(app) {
 
     const defaultTemplateName = String(settings?.wa_template_name || '').trim();
     const defaultTemplateLang = String(settings?.wa_template_language || '').trim() || 'en_US';
-
-    // Aggregate per-template performance stats from message + status collections
     const userKey = String(userId);
     let sentByKey = new Map();
     let openedByKey = new Map();
@@ -37,7 +33,6 @@ export default function registerCampaignRoutes(app) {
           $group: {
             _id: {
               name: '$raw.template.name',
-              // Support both Meta payload (language.code) and our own shape (language or language.code)
               lang: {
                 $ifNull: [
                   '$raw.template.language.code',
@@ -115,8 +110,6 @@ export default function registerCampaignRoutes(app) {
       const statsKey = `${name}::${lang}`;
       const sentCount = sentByKey.get(statsKey) || 0;
       const openedCount = openedByKey.get(statsKey) || 0;
-
-      // Derive preview body from stored body or Meta components (BODY part)
       let previewBody = '';
       try {
         if (typeof t.body === 'string' && t.body.trim()) {
@@ -452,9 +445,6 @@ export default function registerCampaignRoutes(app) {
       </body></html>
     `);
   });
-
-  // Mark a template as the default 24h reopen template
-  // Use GET so auth/session refresh (Clerk handshake) behaves like a normal navigation.
   app.get("/campaigns/templates/default", ensureAuthed, async (req, res) => {
     try {
       const userId = getCurrentUserId(req);
@@ -473,8 +463,6 @@ export default function registerCampaignRoutes(app) {
       return res.redirect('/campaigns?toast=' + encodeURIComponent('Failed to update default 24h reopen template.') + '&type=error');
     }
   });
-
-  // Submit template for approval: create on Meta (Cloud API) then store locally
   app.post("/campaigns/templates/submit", ensureAuthed, async (req, res) => {
     try {
       const userId = getCurrentUserId(req);
@@ -491,8 +479,6 @@ export default function registerCampaignRoutes(app) {
       if (!cfg?.whatsapp_token || (!cfg?.waba_id && !cfg?.phone_number_id)) {
         return res.redirect('/campaigns?toast=' + encodeURIComponent('Connect WhatsApp in Settings (token + WABA ID or Phone Number ID) before submitting templates.') + '&type=error');
       }
-
-      // Resolve WABA ID if not provided
       let wabaId = cfg?.waba_id || null;
       try {
         if (!wabaId && cfg?.phone_number_id) {
@@ -509,11 +495,7 @@ export default function registerCampaignRoutes(app) {
       if (!wabaId) {
         return res.redirect('/campaigns?toast=' + encodeURIComponent('Could not determine WABA ID from settings. Please set it in Settings.') + '&type=error');
       }
-
-      // Sanitize name to Meta format (lowercase, underscores only)
       const name = rawName.toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 512) || 'template_' + Date.now();
-
-      // Create template on Meta
       let createOk = false; let respStatus = null; let respText = '';
       try {
         const fetch = (await import('node-fetch')).default;
@@ -543,8 +525,6 @@ export default function registerCampaignRoutes(app) {
         console.warn('[Templates][Create] Meta API error', { status: respStatus, text: respText?.slice?.(0,200) });
         return res.redirect('/campaigns?toast=' + encodeURIComponent('Meta template create failed. Check your token/WABA and fields, then try again.') + '&type=error');
       }
-
-      // Store a local record for quick reference
       try {
         await db.collection('wa_templates').updateOne(
           { user_id: String(userId), name, language },
@@ -552,16 +532,12 @@ export default function registerCampaignRoutes(app) {
           { upsert: true }
         );
       } catch {}
-
-      // Redirect with success and encourage sync
       return res.redirect('/campaigns?toast=' + encodeURIComponent('Template submitted to Meta. It may take a few minutes to appear. Use Sync from Meta to refresh.') + '&type=success');
     } catch (e) {
       console.error('Template submit error:', e?.message || e);
       return res.status(500).json({ error: 'submit_failed' });
     }
   });
-
-  // Sync approved templates from Meta (WhatsApp Cloud API)
   async function handleTemplatesSync(req, res) {
     try {
       const userId = getCurrentUserId(req);
@@ -571,13 +547,9 @@ export default function registerCampaignRoutes(app) {
         return res.redirect('/campaigns?toast=' + encodeURIComponent('Missing WhatsApp configuration (token or phone number ID).') + '&type=error');
       }
       const fetch = (await import('node-fetch')).default;
-      // Guardrails so the sync stays within Vercel's 30s function timeout
-      const SYNC_HARD_LIMIT = 500;           // Max templates to process per request
-      const SYNC_TIME_BUDGET_MS = 20000;     // Soft time budget to avoid 504s
-      const startedAt = Date.now();
+      const SYNC_HARD_LIMIT = 500;      const SYNC_TIME_BUDGET_MS = 20000;      const startedAt = Date.now();
       let reachedLimit = false;
       let hitTimeBudget = false;
-      // Step 1: derive WABA ID from settings or via phone lookup
       let wabaId = cfg?.waba_id || null;
       if (!wabaId) {
         const phoneResp = await fetch(`https://graph.facebook.com/v20.0/${encodeURIComponent(String(cfg.phone_number_id))}?fields=whatsapp_business_account`, {
@@ -591,12 +563,9 @@ export default function registerCampaignRoutes(app) {
         wabaId = phoneJson?.whatsapp_business_account?.id;
         if (!wabaId) throw new Error('Could not determine WABA ID');
       }
-
-      // Step 2: list message templates with pagination
       let url = `https://graph.facebook.com/v20.0/${encodeURIComponent(String(wabaId))}/message_templates?limit=100`;
       let count = 0;
       while (url) {
-        // Respect a soft time budget so we don't hit Vercel's hard timeout
         if (Date.now() - startedAt > SYNC_TIME_BUDGET_MS) {
           hitTimeBudget = true;
           break;
@@ -631,7 +600,6 @@ export default function registerCampaignRoutes(app) {
           if (newStatus && newStatus !== oldStatus) {
             const up = newStatus.toUpperCase();
             if (up === 'APPROVED' || up.startsWith('REJECTED')) {
-              // Fire-and-forget email to avoid blocking the sync and hitting Vercel timeouts
               try {
                 const p = sendTemplateStatusEmail(userId, { ...key, ...setDoc }, oldStatus);
                 if (p && typeof p.catch === 'function') {
@@ -672,8 +640,6 @@ export default function registerCampaignRoutes(app) {
   }
   app.post("/campaigns/templates/sync", ensureAuthed, handleTemplatesSync);
   app.get("/campaigns/templates/sync", ensureAuthed, handleTemplatesSync);
-
-  // Send/schedule campaign
   app.post("/campaigns/send", ensureAuthed, async (req, res) => {
     try {
       const userId = getCurrentUserId(req);
@@ -689,8 +655,6 @@ export default function registerCampaignRoutes(app) {
       const templateName = String(req.body?.template_name || '').trim();
       const templateLang = String(req.body?.template_lang || 'en_US').trim();
       const scheduledAt = req.body?.scheduled_at ? Math.floor(new Date(req.body.scheduled_at).getTime()/1000) : null;
-
-      // Resolve audience
       let contacts = [];
       if (segmentType === 'recent' && recentDays > 0) {
         const since = Math.floor(Date.now()/1000) - recentDays*86400;
@@ -703,8 +667,6 @@ export default function registerCampaignRoutes(app) {
         const rows = await db.collection('customers').find({ user_id: String(userId) }, { projection: { contact_id: 1 } }).limit(5000).toArray();
         contacts = rows.map(r => r.contact_id).filter(Boolean);
       }
-
-      // Store campaign record
       const camp = {
         user_id: String(userId),
         name,
@@ -722,13 +684,10 @@ export default function registerCampaignRoutes(app) {
       };
       const { insertedId } = await db.collection('wa_campaigns').insertOne(camp);
       const campaignId = insertedId?.toString?.() || null;
-
-      // If send_now, dispatch
       if (mode === 'send_now') {
         for (const phone of contacts) {
           try {
             if (kind === 'template') {
-              // Try template send; if fails, skip silently
               try {
                 const resp = await sendWhatsAppTemplate(phone, templateName || 'hello_world', templateLang || 'en_US', [], cfg);
                 const outboundId = resp?.messages?.[0]?.id;

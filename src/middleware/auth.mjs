@@ -1,20 +1,10 @@
-/**
- * Clerk authentication middleware and helpers.
- * - initClerk(app): mounts Clerk with GET handshake only for GET requests
- * - ensureAuthed: Express guard to require a signed-in user
- * - isAuthenticated: check if request has a signed-in user
- * - getCurrentUserId: read current Clerk user id
- * - getSignedInEmail: resolve primary email of the signed-in user
- */
+
 import { clerkMiddleware, getAuth, clerkClient } from "@clerk/express";
 import crypto from "node:crypto";
 import { CLERK_AUTHORIZED_PARTIES, CLERK_ENABLED, CLERK_JWT_KEY, CLERK_PUBLISHABLE, CLERK_SECRET, CLERK_SIGN_IN_URL, CLERK_SIGN_UP_URL, PUBLIC_BASE_URL } from "../config.mjs";
 const SESSION_TOKEN_SECRET = process.env.SESSION_TOKEN_SECRET || CLERK_SECRET || "dev-secret-change";
-const WS_TOKEN_TTL_SECONDS = parseInt(process.env.WS_TOKEN_TTL_SECONDS || '7200', 10); // default 2h
-
+const WS_TOKEN_TTL_SECONDS = parseInt(process.env.WS_TOKEN_TTL_SECONDS || '7200', 10);
 function clerkEnabledRuntime() {
-  // Prefer runtime env because module-level config can be cached across tests/processes.
-  // If the secret key is unset, Clerk should be treated as disabled even if publishable keys linger.
   const secret = (process.env.CLERK_SECRET_KEY || '').trim();
   if (!secret) return false;
   const pub =
@@ -25,8 +15,6 @@ function clerkEnabledRuntime() {
 }
 
 function fallbackUserId() {
-  // Provide a safe fallback for local development/tests only.
-  // In production, Clerk should always be enabled.
   if (process.env.NODE_ENV === 'test') return 'test-user-id';
   if (process.env.NODE_ENV === 'production' || process.env.VERCEL_ENV === 'production') return null;
   const devId = (process.env.DEV_USER_ID || '').trim();
@@ -39,35 +27,14 @@ function fallbackEmail() {
   const devEmail = (process.env.DEV_USER_EMAIL || '').trim();
   return devEmail || null;
 }
-
-// Small in-memory cache to reduce Clerk API calls.
-// (Helps on Vercel where the same lambda instance may serve many requests.)
-const _emailCache = new Map(); // userId -> { email: string|null, expMs: number }
-const EMAIL_CACHE_TTL_MS = Math.max(30_000, Number(process.env.CLERK_EMAIL_CACHE_TTL_MS || 300_000)); // default 5m
-
-/**
- * Initialize Clerk middleware with GET-handshake optimization.
- * @param {import('express').Express} app
- */
-export function initClerk(app) {
+const _emailCache = new Map();const EMAIL_CACHE_TTL_MS = Math.max(30_000, Number(process.env.CLERK_EMAIL_CACHE_TTL_MS || 300_000));export function initClerk(app) {
   if (!CLERK_ENABLED || !clerkEnabledRuntime()) {
     console.warn("[Clerk] Disabled: missing CLERK_PUBLISHABLE_KEY or CLERK_SECRET_KEY");
     return;
   }
-  // IMPORTANT:
-  // - Do NOT hardcode a redirect_url here (it can cause cross-domain cookie issues if PUBLIC_BASE_URL differs
-  //   from the domain the user is actually browsing on).
-  // - We add redirect_url dynamically in ensureAuthed() based on the incoming request host instead.
   const signInUrl = (CLERK_SIGN_IN_URL || "/auth/signin");
   const signUpUrl = (CLERK_SIGN_UP_URL || "/auth/signup");
-
-  // Prefer local verification (reduces Clerk API calls + avoids transient network flaps).
-  // You can set CLERK_JWT_KEY in Vercel env vars with the Clerk Dashboard "JWT public key" (PEM).
   const jwtKey = CLERK_JWT_KEY || null;
-
-  // Recommended: validate "authorized parties" to avoid accepting tokens for unexpected origins.
-  // Only enable when explicitly configured via env to avoid surprising mismatches
-  // (e.g. localhost vs 127.0.0.1 in tests, previews, etc).
   const authorizedParties = (() => {
     const fromEnv = (CLERK_AUTHORIZED_PARTIES || '')
       .split(',')
@@ -76,7 +43,6 @@ export function initClerk(app) {
     if (fromEnv.length) return fromEnv;
     return undefined;
   })();
-  // Use a single Clerk middleware for all requests to ensure consistent session handling
   const clerkMW = clerkMiddleware({
     publishableKey: CLERK_PUBLISHABLE,
     secretKey: CLERK_SECRET,
@@ -89,14 +55,11 @@ export function initClerk(app) {
   });
   app.use(clerkMW);
 }
-
-/** Require an authenticated session for protected routes. */
 export function ensureAuthed(req, res, next) {
   if (!CLERK_ENABLED || !clerkEnabledRuntime()) return next();
   try {
     const { userId, sessionId } = getAuth(req);
     if (!userId) {
-      // For AJAX requests, return JSON error instead of redirect
       if (req.xhr || req.headers.accept?.includes('application/json')) {
         return res.status(401).json({ 
           error: 'Authentication required',
@@ -104,18 +67,13 @@ export function ensureAuthed(req, res, next) {
           redirectTo: '/auth'
         });
       }
-      
-      // For form submissions, try to handle gracefully
       if (req.method === 'POST' && req.headers['content-type']?.includes('application/x-www-form-urlencoded')) {
-        // Return a special response that the client can handle
         return res.status(401).json({ 
           error: 'Session expired, please refresh and try again',
           code: 'SESSION_EXPIRED',
           redirectTo: '/auth'
         });
       }
-      
-      // Redirect to our custom signin page
       const currentBaseUrl = `${req.protocol}://${req.get('host')}`;
       const redirectUrl = req.originalUrl ? `${currentBaseUrl}${req.originalUrl}` : currentBaseUrl;
       const signInUrl = `${currentBaseUrl}/auth/signin?redirect_url=${encodeURIComponent(redirectUrl)}`;
@@ -124,8 +82,6 @@ export function ensureAuthed(req, res, next) {
     return next();
   } catch (error) {
     console.error('Auth middleware error:', error);
-    
-    // For AJAX requests, return JSON error instead of redirect
     if (req.xhr || req.headers.accept?.includes('application/json')) {
       return res.status(401).json({ 
         error: 'Authentication check failed',
@@ -133,8 +89,6 @@ export function ensureAuthed(req, res, next) {
         redirectTo: '/auth'
       });
     }
-    
-    // For form submissions, try to handle gracefully
     if (req.method === 'POST' && req.headers['content-type']?.includes('application/x-www-form-urlencoded')) {
       return res.status(401).json({ 
         error: 'Session expired, please refresh and try again',
@@ -142,28 +96,20 @@ export function ensureAuthed(req, res, next) {
         redirectTo: '/auth'
       });
     }
-    
-    // Redirect to our custom signin page
     const currentBaseUrl = `${req.protocol}://${req.get('host')}`;
     const redirectUrl = req.originalUrl ? `${currentBaseUrl}${req.originalUrl}` : currentBaseUrl;
     const signInUrl = `${currentBaseUrl}/auth/signin?redirect_url=${encodeURIComponent(redirectUrl)}`;
     return res.redirect(signInUrl);
   }
 }
-
-/** Return true if the request is from an authenticated user. */
 export function isAuthenticated(req) {
   if (!CLERK_ENABLED || !clerkEnabledRuntime()) return !!fallbackUserId();
   try { return !!getAuth(req)?.userId; } catch { return false; }
 }
-
-/** Get the current user's Clerk ID or null when unauthenticated. */
 export function getCurrentUserId(req) {
   if (!CLERK_ENABLED || !clerkEnabledRuntime()) return fallbackUserId();
   try { return getAuth(req)?.userId || null; } catch { return null; }
 }
-
-/** Resolve the primary email address for the signed-in user. */
 export async function getSignedInEmail(req) {
   if (!CLERK_ENABLED || !clerkEnabledRuntime()) return fallbackEmail();
   try {
@@ -185,8 +131,6 @@ export async function getSignedInEmail(req) {
 }
 
 export { clerkClient };
-
-// --------------------- Signed session token for iframes ---------------------
 function b64u(input) {
   return Buffer.from(input).toString('base64').replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');
 }
@@ -196,8 +140,6 @@ function fromB64u(str){
   while (str.length % 4) str += '=';
   return Buffer.from(str, 'base64').toString('utf8');
 }
-
-/** Sign a short-lived session token carrying user id. */
 export function signSessionToken(userId, ttlSeconds = WS_TOKEN_TTL_SECONDS) {
   const header = { alg: "HS256", typ: "JWT" };
   const payload = { uid: String(userId), exp: Math.floor(Date.now()/1000) + Math.max(60, ttlSeconds) };
@@ -207,8 +149,6 @@ export function signSessionToken(userId, ttlSeconds = WS_TOKEN_TTL_SECONDS) {
   const sig = crypto.createHmac('sha256', SESSION_TOKEN_SECRET).update(data).digest('base64').replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');
   return `${data}.${sig}`;
 }
-
-/** Verify token and return userId (or null). */
 export function verifySessionToken(token) {
   try {
     const parts = String(token||'').split('.');
@@ -224,11 +164,8 @@ export function verifySessionToken(token) {
     return String(payload.uid);
   } catch { return null; }
 }
-
-/** Check if the current user is an admin */
 export async function ensureAdmin(req, res, next) {
   if (!CLERK_ENABLED || !clerkEnabledRuntime()) {
-    // In development, allow access if no Clerk is configured
     return next();
   }
   
@@ -240,11 +177,8 @@ export async function ensureAdmin(req, res, next) {
         code: 'AUTH_REQUIRED'
       });
     }
-    
-    // Check if user email is in admin list
     const adminEmails = process.env.ADMIN_EMAILS?.split(',') || [];
     if (adminEmails.length === 0) {
-      // If no admin emails configured, deny access
       return res.status(403).json({ 
         error: 'Admin access not configured',
         code: 'ADMIN_NOT_CONFIGURED'
@@ -258,8 +192,6 @@ export async function ensureAdmin(req, res, next) {
         code: 'ADMIN_REQUIRED'
       });
     }
-    
-    // User is admin, proceed
     return next();
       
   } catch (error) {

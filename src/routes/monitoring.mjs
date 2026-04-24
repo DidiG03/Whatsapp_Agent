@@ -1,7 +1,4 @@
-/**
- * Monitoring Dashboard
- * Provides a web interface for viewing system metrics, logs, and health status
- */
+
 
 import { ensureAuthed, ensureAdmin, getCurrentUserId, getSignedInEmail } from '../middleware/auth.mjs';
 import { renderSidebar, renderTopbar, getProfessionalHead } from '../utils.mjs';
@@ -11,18 +8,14 @@ import { logHelpers } from '../monitoring/logger.mjs';
 import { getPlanStatus } from '../services/usage.mjs';
 
 export default function registerMonitoringRoutes(app) {
-  // Main monitoring dashboard - Admin only
   app.get('/monitoring', ensureAuthed, ensureAdmin, async (req, res) => {
     const email = await getSignedInEmail(req);
     const userId = getCurrentUserId(req);
     const { isUpgraded } = await getPlanStatus(userId);
     
     try {
-      // Get current metrics and health status
       const metrics = getAllMetrics();
       const health = getHealthStatus() || {};
-      
-      // Format metrics for display
       const formattedMetrics = {
         system: {
           uptime: Math.floor(process.uptime()),
@@ -45,8 +38,6 @@ export default function registerMonitoringRoutes(app) {
           errors: metrics.counters['database_errors'] || 0
         }
       };
-      
-      // Calculate success rates
       const aiSuccessRate = formattedMetrics.ai.requests_total > 0 
         ? Math.round((formattedMetrics.ai.requests_successful / formattedMetrics.ai.requests_total) * 100)
         : 0;
@@ -367,8 +358,6 @@ export default function registerMonitoringRoutes(app) {
       res.status(500).send('Error loading monitoring dashboard');
     }
   });
-  
-  // API endpoint for metrics
   app.get('/monitoring/metrics', ensureAuthed, (req, res) => {
     try {
       const metrics = getAllMetrics();
@@ -378,8 +367,6 @@ export default function registerMonitoringRoutes(app) {
       res.status(500).json({ error: 'Failed to get metrics' });
     }
   });
-  
-  // API endpoint to reset metrics
   app.post('/monitoring/reset', ensureAuthed, async (req, res) => {
     try {
       const { resetMetrics } = await import('../monitoring/metrics.mjs');

@@ -20,4 +20,3 @@ Notes
 - If you have more than five RQs, copy the template row and extend.
 - If you prefer a spreadsheet, this table can be pasted into Google Sheets.
 
-

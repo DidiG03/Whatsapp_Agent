@@ -10,7 +10,6 @@ const USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo";
 const CAL_LIST_URL = "https://www.googleapis.com/calendar/v3/users/me/calendarList";
 
 export default function registerGoogleRoutes(app) {
-  // Start OAuth: redirect to Google
   app.get("/google/connect", ensureAuthed, async (req, res) => {
     if (!CLIENT_ID || !CLIENT_SECRET) {
       return res.status(500).send("Google OAuth not configured. Missing GOOGLE_CLIENT_ID/SECRET.");
@@ -33,8 +32,6 @@ export default function registerGoogleRoutes(app) {
       `&state=${state}`;
     res.redirect(url);
   });
-
-  // OAuth callback: exchange code, store calendar row
   app.get("/google/callback", ensureAuthed, async (req, res) => {
     try {
       const code = String(req.query.code || "");
@@ -60,8 +57,6 @@ export default function registerGoogleRoutes(app) {
       const refreshToken = tokenJson.refresh_token || null;
       const expiresIn = Number(tokenJson.expires_in || 3600);
       const tokenExpiry = Math.floor(Date.now() / 1000) + expiresIn;
-
-      // Fetch user email
       let accountEmail = null;
       if (accessToken) {
         try {
@@ -70,8 +65,6 @@ export default function registerGoogleRoutes(app) {
           accountEmail = info?.email || null;
         } catch {}
       }
-
-      // Prefer the 'primary' calendar id; fallback: first from calendarList
       let calendarId = "primary";
       try {
         const listResp = await fetch(CAL_LIST_URL, { headers: { Authorization: `Bearer ${accessToken}` } });
@@ -86,7 +79,6 @@ export default function registerGoogleRoutes(app) {
 
       const userId = getCurrentUserId(req);
       const db = getDB();
-      // Upsert single calendar row for this user (one account)
       await db.collection("calendars").updateOne(
         { user_id: String(userId) },
         {
@@ -125,5 +117,4 @@ export default function registerGoogleRoutes(app) {
     }
   });
 }
-
 

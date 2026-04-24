@@ -1,6 +1,4 @@
-/**
- * Simple utility tests that don't require complex imports
- */
+
 
 import { describe, test, expect } from '@jest/globals';
 

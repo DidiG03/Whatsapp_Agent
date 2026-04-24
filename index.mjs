@@ -1,7 +1,4 @@
-/**
- * Server bootstrap: creates the app and starts listening.
- * Includes initialization of Vercel Web Analytics for monitoring and analytics collection.
- */
+
 import { createApp } from "./src/app.mjs";
 import { PORT } from "./src/config.mjs";
 import { startNotificationsScheduler } from "./src/jobs/notifications.mjs";
@@ -10,23 +7,13 @@ import { createServer } from "http";
 import { initTelemetry } from "./src/monitoring/otel.mjs";
 import { closeMongoDB } from "./src/db-mongodb.mjs";
 import { closeRedis } from "./src/scalability/redis.mjs";
-
-// Initialize server with scalability features
 async function startServer() {
   try {
     logHelpers.logBusinessEvent('server_startup_initiated');
     await initTelemetry();
-    
-    // Create app with scalability features
     const { app } = await createApp();
-    
-    // Create HTTP server
     const server = createServer(app);
-    
-    // Start notifications scheduler
     const stop = startNotificationsScheduler();
-    
-    // Start server
     server.listen(PORT, () => {
       logHelpers.logBusinessEvent('server_started', { 
         port: PORT,
@@ -38,28 +25,19 @@ async function startServer() {
       console.log(`🏥 Health check: http://localhost:${PORT}/health`);
       console.log(`⚡ Scalability health: http://localhost:${PORT}/health/scalability`);
     });
-    
-    // Store server reference for graceful shutdown
     global.server = server;
-    
-    // Enhanced shutdown handling
     function gracefulShutdown(signal) {
       logHelpers.logBusinessEvent('server_shutdown_initiated', { signal });
       
       console.log(`\n🛑 Received ${signal}, shutting down gracefully...`);
-      
-      // Stop accepting new connections
       server.close(() => {
         logHelpers.logBusinessEvent('server_shutdown_completed');
         console.log('✅ Server closed');
-        
-        // Stop notifications scheduler
         try {
           if (typeof stop === 'function') stop();
         } catch (error) {
           console.error('Error stopping notifications scheduler:', error);
         }
-        // Close external resources
         Promise.allSettled([
           (async () => { try { await closeMongoDB(); } catch {} })(),
           (async () => { try { await closeRedis(); } catch {} })()
@@ -67,8 +45,6 @@ async function startServer() {
           process.exit(0);
         });
       });
-      
-      // Force shutdown after 30 seconds
       setTimeout(() => {
         console.log('⚠️  Forcing shutdown after timeout');
         process.exit(1);
@@ -77,15 +53,11 @@ async function startServer() {
     
     process.on('SIGINT', () => gracefulShutdown('SIGINT'));
     process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-    
-    // Handle uncaught exceptions
     process.on('uncaughtException', (error) => {
       logHelpers.logError(error, { component: 'server', operation: 'uncaught_exception' });
       console.error('💥 Uncaught Exception:', error);
       gracefulShutdown('uncaughtException');
     });
-    
-    // Handle unhandled promise rejections
     process.on('unhandledRejection', (reason, promise) => {
       logHelpers.logError(new Error('Unhandled Promise Rejection'), { 
         component: 'server', 
@@ -103,7 +75,5 @@ async function startServer() {
     process.exit(1);
   }
 }
-
-// Start the server
 startServer();
 

@@ -1,16 +1,11 @@
-// Modern Toast Notification System
-// Global toast utility for the WhatsApp Agent
 
 window.Toast = {
-  // Show a toast notification
   show: function(message, type = 'info', duration = 4000) {
     const container = this.getContainer();
     if (!container) return;
     
     const toast = document.createElement('div');
     toast.className = `toast-notification toast-${type}`;
-    
-    // Toast content
     const icon = this.getIcon(type);
     toast.innerHTML = `
       <div class="toast-content">
@@ -23,11 +18,7 @@ window.Toast = {
     `;
     
     container.appendChild(toast);
-    
-    // Animate in
     setTimeout(() => toast.classList.add('show'), 100);
-    
-    // Auto dismiss
     const progressBar = toast.querySelector('.toast-progress');
     progressBar.style.animation = `toast-progress ${duration}ms linear`;
     
@@ -39,16 +30,12 @@ window.Toast = {
     
     return toast;
   },
-  
-  // Show a toast with action buttons
   showWithActions: function(message, type = 'info', duration = 5000, actions = []) {
     const toast = this.show(message, type, duration);
     if (!toast) return null;
     
     const actionsContainer = toast.querySelector('.toast-actions');
     if (!actionsContainer) return toast;
-    
-    // Clear existing (if any) and render buttons
     actionsContainer.innerHTML = '';
     const validActions = Array.isArray(actions) ? actions.filter(a => a && a.label) : [];
     if (validActions.length > 0) {
@@ -61,7 +48,6 @@ window.Toast = {
           btn.addEventListener('click', (e) => {
             e.stopPropagation();
             try { action.onClick(e); } catch {}
-            // Do not auto-close by default; allow handler to decide
           });
         }
         actionsContainer.appendChild(btn);
@@ -70,8 +56,6 @@ window.Toast = {
     
     return toast;
   },
-  
-  // Get or create toast container
   getContainer: function() {
     let container = document.getElementById('toastContainer');
     if (!container) {
@@ -82,8 +66,6 @@ window.Toast = {
     }
     return container;
   },
-  
-  // Get icon for toast type
   getIcon: function(type) {
     switch(type) {
       case 'success': return '✓';
@@ -93,8 +75,6 @@ window.Toast = {
       default: return 'ℹ';
     }
   },
-  
-  // Close a toast notification
   close: function(button) {
     const toast = button.closest('.toast-notification');
     if (toast) {
@@ -106,8 +86,6 @@ window.Toast = {
       }, 300);
     }
   },
-  
-  // Close all toasts
   closeAll: function() {
     const container = this.getContainer();
     const toasts = container.querySelectorAll('.toast-notification');
@@ -115,29 +93,19 @@ window.Toast = {
       this.close(toast.querySelector('.toast-close'));
     });
   },
-  
-  // Success toast
   success: function(message, duration = 4000) {
     return this.show(message, 'success', duration);
   },
-  
-  // Error toast
   error: function(message, duration = 6000) {
     return this.show(message, 'error', duration);
   },
-  
-  // Warning toast
   warning: function(message, duration = 5000) {
     return this.show(message, 'warning', duration);
   },
-  
-  // Info toast
   info: function(message, duration = 4000) {
     return this.show(message, 'info', duration);
   }
 };
-
-// Auto-show toasts from URL parameters on page load
 document.addEventListener('DOMContentLoaded', function() {
   const urlParams = new URLSearchParams(window.location.search);
   const toastMessage = urlParams.get('toast');
@@ -145,13 +113,10 @@ document.addEventListener('DOMContentLoaded', function() {
   
   if (toastMessage) {
     Toast.show(decodeURIComponent(toastMessage), toastType);
-    // Clean up URL without reloading
     const newUrl = window.location.pathname + window.location.search.replace(/[?&]toast=[^&]*&?/g, '').replace(/[?&]type=[^&]*&?/g, '').replace(/\?$/, '');
     window.history.replaceState({}, document.title, newUrl);
   }
 });
-
-// Export for module systems
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = window.Toast;
 }

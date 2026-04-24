@@ -1,14 +1,9 @@
-/**
- * Enhanced Health Check System
- * Provides comprehensive system health monitoring and status reporting
- */
+
 
 import { getDB, isMongoConnected } from '../db-mongodb.mjs';
 import { logHelpers } from './logger.mjs';
 import { sentryHelpers } from './sentry.mjs';
 import fs from 'fs';
-
-// Health check results
 const healthChecks = {
   database: null,
   external_apis: null,
@@ -16,8 +11,6 @@ const healthChecks = {
   disk_space: null,
   last_check: null
 };
-
-// Database health check
 async function checkDatabase() {
   try {
     const startTime = Date.now();
@@ -26,8 +19,6 @@ async function checkDatabase() {
     const mongoDb = getDB();
     await mongoDb.command({ ping: 1 });
     const duration = Date.now() - startTime;
-
-    // Collection counts (best-effort)
     const tableCounts = {};
     const tables = ['messages', 'customers', 'kb_items', 'settings_multi'];
     let tableErrors = 0;
@@ -68,8 +59,6 @@ async function checkDatabase() {
     return false;
   }
 }
-
-// External APIs health check
 async function checkExternalAPIs() {
   const checks = {
     whatsapp_api: false,
@@ -78,7 +67,6 @@ async function checkExternalAPIs() {
   };
   
   try {
-    // Check WhatsApp API (if configured)
     if (process.env.WHATSAPP_TOKEN) {
       try {
         const response = await fetch(`https://graph.facebook.com/v20.0/${process.env.PHONE_NUMBER_ID}`, {
@@ -91,8 +79,6 @@ async function checkExternalAPIs() {
         checks.whatsapp_api = false;
       }
     }
-    
-    // Check OpenAI API (if configured)
     if (process.env.OPENAI_API_KEY) {
       try {
         const response = await fetch('https://api.openai.com/v1/models', {
@@ -105,8 +91,6 @@ async function checkExternalAPIs() {
         checks.openai_api = false;
       }
     }
-    
-    // Check Stripe API (if configured)
     if (process.env.STRIPE_SECRET_KEY) {
       try {
         const response = await fetch('https://api.stripe.com/v1/account', {
@@ -119,25 +103,19 @@ async function checkExternalAPIs() {
         checks.stripe_api = false;
       }
     }
-    
-    // Check if APIs are configured (have environment variables)
     const configuredAPIs = {
       whatsapp_api: !!(process.env.WHATSAPP_TOKEN && process.env.PHONE_NUMBER_ID),
       openai_api: !!process.env.OPENAI_API_KEY,
       stripe_api: !!process.env.STRIPE_SECRET_KEY
     };
-    
-    // Only consider configured APIs for health status
     const configuredChecks = Object.keys(checks).filter(api => configuredAPIs[api]);
     const configuredHealthy = configuredChecks.every(api => checks[api] === true);
     const anyConfiguredHealthy = configuredChecks.some(api => checks[api] === true);
     
     let status = 'healthy';
     if (configuredChecks.length === 0) {
-      status = 'healthy'; // No APIs configured, that's fine
-    } else if (!configuredHealthy) {
-      status = 'degraded'; // Some configured APIs are failing
-    }
+      status = 'healthy';    } else if (!configuredHealthy) {
+      status = 'degraded';    }
     
     healthChecks.external_apis = {
       status,
@@ -159,8 +137,6 @@ async function checkExternalAPIs() {
     return false;
   }
 }
-
-// Memory health check
 function checkMemory() {
   try {
     const memUsage = process.memoryUsage();
@@ -170,23 +146,14 @@ function checkMemory() {
     const rssMem = memUsage.rss;
     
     const usagePercentage = (usedMem / totalMem) * 100;
-    const isHealthy = usagePercentage < 95; // Relax threshold
-    const isWarning = usagePercentage >= 95 && usagePercentage < 98; // Warning between 95-98%
-    
-    // Force garbage collection if memory usage is very high (only above 95%)
-    if (usagePercentage > 98 && global.gc) {
+    const isHealthy = usagePercentage < 95;    const isWarning = usagePercentage >= 95 && usagePercentage < 98;    if (usagePercentage > 98 && global.gc) {
       global.gc();
-      // Re-check memory after GC
       const newMemUsage = process.memoryUsage();
       const newUsagePercentage = (newMemUsage.heapUsed / newMemUsage.heapTotal) * 100;
       
       healthChecks.memory = {
         status: newUsagePercentage < 95 ? 'healthy' : (newUsagePercentage < 98 ? 'warning' : 'unhealthy'),
-        heap_total: Math.round(newMemUsage.heapTotal / 1024 / 1024), // MB
-        heap_used: Math.round(newMemUsage.heapUsed / 1024 / 1024), // MB
-        heap_external: Math.round(newMemUsage.external / 1024 / 1024), // MB
-        rss: Math.round(newMemUsage.rss / 1024 / 1024), // MB
-        usage_percentage: Math.round(newUsagePercentage * 100) / 100,
+        heap_total: Math.round(newMemUsage.heapTotal / 1024 / 1024),        heap_used: Math.round(newMemUsage.heapUsed / 1024 / 1024),        heap_external: Math.round(newMemUsage.external / 1024 / 1024),        rss: Math.round(newMemUsage.rss / 1024 / 1024),        usage_percentage: Math.round(newUsagePercentage * 100) / 100,
         garbage_collected: true,
         last_check: new Date().toISOString()
       };
@@ -205,11 +172,7 @@ function checkMemory() {
     
     healthChecks.memory = {
       status: isHealthy ? 'healthy' : (isWarning ? 'warning' : 'unhealthy'),
-      heap_total: Math.round(totalMem / 1024 / 1024), // MB
-      heap_used: Math.round(usedMem / 1024 / 1024), // MB
-      heap_external: Math.round(externalMem / 1024 / 1024), // MB
-      rss: Math.round(rssMem / 1024 / 1024), // MB
-      usage_percentage: Math.round(usagePercentage * 100) / 100,
+      heap_total: Math.round(totalMem / 1024 / 1024),      heap_used: Math.round(usedMem / 1024 / 1024),      heap_external: Math.round(externalMem / 1024 / 1024),      rss: Math.round(rssMem / 1024 / 1024),      usage_percentage: Math.round(usagePercentage * 100) / 100,
       last_check: new Date().toISOString()
     };
     
@@ -232,16 +195,11 @@ function checkMemory() {
     return false;
   }
 }
-
-// Disk space health check
 function checkDiskSpace() {
   try {
     const stats = fs.statSync('.');
-    
-    // This is a simplified check - in production you'd use a proper disk space library
     healthChecks.disk_space = {
-      status: 'healthy', // Simplified for now
-      last_check: new Date().toISOString(),
+      status: 'healthy',      last_check: new Date().toISOString(),
       note: 'Disk space check simplified - implement proper disk monitoring'
     };
     
@@ -256,15 +214,11 @@ function checkDiskSpace() {
     return false;
   }
 }
-
-// Run all health checks
 export async function runHealthChecks() {
   const startTime = Date.now();
   
   try {
     logHelpers.logBusinessEvent('health_check_started');
-    
-    // Run checks in parallel
     const [dbHealthy, apisHealthy, memHealthy, diskHealthy] = await Promise.all([
       checkDatabase(),
       checkExternalAPIs(),
@@ -274,14 +228,10 @@ export async function runHealthChecks() {
     
     const overallHealthy = dbHealthy && memHealthy && diskHealthy;
     const duration = Date.now() - startTime;
-    
-    // More nuanced health status calculation
     let overallStatus = 'healthy';
     if (!dbHealthy || !diskHealthy) {
-      overallStatus = 'unhealthy'; // Critical failures
-    } else if (!memHealthy || !apisHealthy) {
-      overallStatus = 'degraded'; // Non-critical issues
-    }
+      overallStatus = 'unhealthy';    } else if (!memHealthy || !apisHealthy) {
+      overallStatus = 'degraded';    }
     
     healthChecks.last_check = new Date().toISOString();
     healthChecks.overall_status = overallStatus;
@@ -306,13 +256,9 @@ export async function runHealthChecks() {
     };
   }
 }
-
-// Get current health status
 export function getHealthStatus() {
   return healthChecks;
 }
-
-// Health check middleware for Express
 export function healthCheckMiddleware() {
   return async (req, res, next) => {
     if (req.path === '/health' || req.path === '/health/detailed') {
@@ -326,7 +272,6 @@ export function healthCheckMiddleware() {
             checks: healthStatus
           });
         } else {
-          // Simple health check
           res.status(healthStatus.overall_status === 'healthy' ? 200 : 503).json({
             status: healthStatus.overall_status,
             timestamp: new Date().toISOString()
@@ -346,19 +291,13 @@ export function healthCheckMiddleware() {
     }
   };
 }
-
-// Start periodic health checks
-export function startHealthCheckScheduler(intervalMs = 300000) { // Default 5 minutes (increased from 1 minute)
-  // Clear any existing interval
-  if (global.healthCheckInterval) {
+export function startHealthCheckScheduler(intervalMs = 300000) {  if (global.healthCheckInterval) {
     clearInterval(global.healthCheckInterval);
   }
   
   global.healthCheckInterval = setInterval(async () => {
     try {
       await runHealthChecks();
-      
-      // Force garbage collection after health checks to prevent memory buildup
       if (global.gc) {
         global.gc();
       }

@@ -1,13 +1,5 @@
 #!/usr/bin/env node
 
-/**
- * MongoDB migration/cleanup script
- * - Merges legacy pluralized collections into their canonical versions
- * - Moves user_settings.dashboard_preferences into settings_multi
- *
- * Safe to run multiple times (idempotent).
- */
-
 import { MongoClient } from 'mongodb';
 
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/whatsapp_agent';
@@ -72,8 +64,6 @@ async function main() {
   const db = client.db(MONGODB_DB_NAME);
 
   log('connected', { db: MONGODB_DB_NAME, dropOld });
-
-  // 1) Merge pluralized legacy collections
   const merges = [
     ['handoffs', 'handoff', (d) => ({ user_id: String(d.user_id), contact_id: String(d.contact_id) })],
     ['contact_states', 'contact_state', (d) => ({ user_id: String(d.user_id), contact_id: String(d.contact_id) })],
@@ -93,8 +83,6 @@ async function main() {
       }
     }
   }
-
-  // 2) Move dashboard preferences into settings_multi
   await migratePreferences(db);
   if (dropOld) {
     try {
@@ -120,5 +108,4 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 }
 
 export default main;
-
 

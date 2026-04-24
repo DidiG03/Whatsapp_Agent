@@ -1,7 +1,4 @@
-/**
- * Dashboard Metrics API
- * Provides customizable metrics for the main dashboard
- */
+
 
 import { ensureAuthed, getCurrentUserId } from '../middleware/auth.mjs';
 import { db } from '../db-mongodb.mjs';
@@ -45,8 +42,6 @@ function resolveRangeWindow(rangeKey = 'today') {
     startDate = new Date(todayStart.getTime() - offsetDays * DAY_MS);
     endDate = preset.mode === 'current' ? now : todayStart;
   }
-
-  // Ensure end is always after start
   if (endDate <= startDate) {
     endDate = new Date(startDate.getTime() + DAY_MS);
   }
@@ -68,16 +63,11 @@ function resolveRangeWindow(rangeKey = 'today') {
 }
 
 export default function registerMetricsRoutes(app) {
-  
-  // Store active dashboard users for real-time updates
   const activeDashboardUsers = new Map();
-  
-  // Periodic metrics broadcasting (every 30 seconds)
   setInterval(async () => {
     if (activeDashboardUsers.size === 0) return;
     
     try {
-      // Get fresh metrics for all active users
       for (const [userId, rangeKey] of activeDashboardUsers.entries()) {
         const metrics = await getDashboardMetricsForUser(userId, { rangeKey });
         broadcastMetricsUpdate(userId, metrics);
@@ -86,8 +76,6 @@ export default function registerMetricsRoutes(app) {
       console.error('Error in periodic metrics broadcast:', error);
     }
   }, 30000);
-  
-  // Helper function to get dashboard metrics for a specific user
   async function getDashboardMetricsForUser(userId, options = {}) {
     const metrics = getAllMetrics();
     const rangeKey = (options.rangeKey || 'today').toLowerCase();
@@ -104,15 +92,12 @@ export default function registerMetricsRoutes(app) {
       end: rangeEndDate.toISOString(),
       duration_days: Math.max(1, Math.round(rangeWindow.durationMs / DAY_MS))
     };
-    
-    // NOTE: messages.timestamp is stored in SECONDS. Use seconds for comparisons.
     const rangeStartSec = Math.floor(rangeStartDate.getTime() / 1000);
     const rangeEndSec = Math.floor(rangeEndDate.getTime() / 1000);
     const compareStartSec = Math.floor(compareStartDate.getTime() / 1000);
     const compareEndSec = Math.floor(compareEndDate.getTime() / 1000);
     
     try {
-      // Get message counts for current range and previous range using MongoDB aggregation
       const todayMessages = await Message.aggregate([
         {
           $match: {
@@ -152,8 +137,6 @@ export default function registerMetricsRoutes(app) {
           }
         }
       ]);
-      
-      // Get active conversations (distinct contacts with any message in range)
       const activeConversations = await Message.aggregate([
         {
           $match: {
@@ -162,9 +145,6 @@ export default function registerMetricsRoutes(app) {
           }
         },
         {
-          // Normalize contact id regardless of direction:
-          // - inbound: customer digits are in from_digits
-          // - outbound: customer digits are in to_digits
           $addFields: {
             contact: {
               $cond: [
@@ -185,10 +165,6 @@ export default function registerMetricsRoutes(app) {
           $count: 'active_count'
         }
       ]);
-      
-      // Get response time data using window functions (MongoDB 5.0+)
-      // Response time = time between an inbound message from a contact
-      // and the next outbound reply to the same contact.
       const responseTimeData = await Message.aggregate([
         {
           $match: {
@@ -234,8 +210,6 @@ export default function registerMetricsRoutes(app) {
           $group: { _id: null, avg_response_time: { $avg: '$responseTime' } }
         }
       ]);
-      
-      // Get AI performance data
       let aiRequests = { total_requests: 0, successful_requests: 0, avg_response_time: 0 };
       try {
         const aiStats = await AIRequest.aggregate([
@@ -263,8 +237,6 @@ export default function registerMetricsRoutes(app) {
       } catch (error) {
         console.log('AI requests query failed:', error.message);
       }
-      
-      // Get template usage
       let templateUsage = { template_messages_today: 0, template_messages_yesterday: 0 };
       try {
         const templateStats = await Message.aggregate([
@@ -294,11 +266,7 @@ export default function registerMetricsRoutes(app) {
       } catch (error) {
         console.log('Template usage query failed:', error.message);
       }
-      
-      // Get ticket metrics
       const ticketStats = await getConversationStatusStats(userId);
-      
-      // Get tickets created today and yesterday
       const ticketsCreatedToday = await Handoff.countDocuments({
         user_id: userId,
         updatedAt: { $gte: rangeStartDate, $lt: rangeEndDate },
@@ -310,8 +278,6 @@ export default function registerMetricsRoutes(app) {
         updatedAt: { $gte: compareStartDate, $lt: compareEndDate },
         conversation_status: CONVERSATION_STATUSES.NEW
       });
-      
-      // Get tickets resolved for current and previous ranges
       const ticketsResolvedToday = await Handoff.countDocuments({
         user_id: userId,
         updatedAt: { $gte: rangeStartDate, $lt: rangeEndDate },
@@ -323,8 +289,6 @@ export default function registerMetricsRoutes(app) {
         updatedAt: { $gte: compareStartDate, $lt: compareEndDate },
         conversation_status: CONVERSATION_STATUSES.RESOLVED
       });
-      
-      // Get escalation metrics
       const escalationStats = await Handoff.aggregate([
         {
           $match: {
@@ -345,8 +309,6 @@ export default function registerMetricsRoutes(app) {
           }
         }
       ]);
-      
-      // Get average resolution time
       const resolutionTimeData = await Handoff.aggregate([
         {
           $match: {
@@ -374,16 +336,12 @@ export default function registerMetricsRoutes(app) {
           }
         }
       ]);
-      
-      // Extract data from aggregation results
       const todayMsgData = todayMessages[0] || { sent_today: 0, received_today: 0 };
       const yesterdayMsgData = yesterdayMessages[0] || { sent_yesterday: 0, received_yesterday: 0 };
       const activeConvData = activeConversations[0] || { active_count: 0 };
       const responseTimeDataResult = responseTimeData[0] || { avg_response_time: 0 };
       const escalationStatsResult = escalationStats[0] || { current_escalations: 0, previous_escalations: 0 };
       const resolutionTimeDataResult = resolutionTimeData[0] || { avg_resolution_time: 0 };
-      
-      // Calculate trends
       const sentTrend = calculateTrend(todayMsgData.sent_today || 0, yesterdayMsgData.sent_yesterday || 0);
       const receivedTrend = calculateTrend(todayMsgData.received_today || 0, yesterdayMsgData.received_yesterday || 0);
       const ticketsCreatedTrend = calculateTrend(ticketsCreatedToday || 0, ticketsCreatedYesterday || 0);
@@ -436,7 +394,6 @@ export default function registerMetricsRoutes(app) {
       };
     } catch (error) {
       logHelpers.logError(error, { component: 'dashboard_metrics', userId });
-      // Return default values in case of error
       return {
         range: rangeMeta,
         messages: { sent_today: 0, received_today: 0, sent_yesterday: 0, received_yesterday: 0, sent_trend: 0, received_trend: 0 },
@@ -449,17 +406,12 @@ export default function registerMetricsRoutes(app) {
       };
     }
   }
-  
-  // Get dashboard metrics for current user
   app.get('/api/metrics/dashboard', ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const requestedRange = String(req.query.range || 'today').toLowerCase();
     
     try {
-      // Track the preferred range for realtime pushes
       activeDashboardUsers.set(userId, requestedRange);
-      
-      // Get dashboard metrics using helper function
       const dashboardMetrics = await getDashboardMetricsForUser(userId, { rangeKey: requestedRange });
       const fallbackRange = resolveRangeWindow(requestedRange);
       const rangeInfo = dashboardMetrics.range || fallbackRange;
@@ -473,7 +425,6 @@ export default function registerMetricsRoutes(app) {
       let chartData = [];
       
       if (rangeDurationDays <= 1) {
-        // Hourly view for single-day ranges
         const hourlyData = await Message.aggregate([
           {
             $match: {
@@ -512,7 +463,6 @@ export default function registerMetricsRoutes(app) {
           };
         });
       } else {
-        // Daily view for multi-day ranges
         chartInterval = 'day';
         const dailyData = await Message.aggregate([
           {
@@ -564,8 +514,6 @@ export default function registerMetricsRoutes(app) {
       res.status(500).json({ error: 'Failed to get dashboard metrics' });
     }
   });
-  
-  // Get user's dashboard preferences
   app.get('/api/metrics/preferences', ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     
@@ -583,8 +531,7 @@ export default function registerMetricsRoutes(app) {
           'tickets_resolved',
           'tickets_created_today'
         ],
-        refreshInterval: 30, // seconds
-        chartType: 'line',
+        refreshInterval: 30,        chartType: 'line',
         theme: 'light'
       };
       
@@ -599,14 +546,11 @@ export default function registerMetricsRoutes(app) {
       res.status(500).json({ error: 'Failed to get preferences' });
     }
   });
-  
-  // Save user's dashboard preferences
   app.post('/api/metrics/preferences', ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const preferences = req.body;
     
     try {
-      // Validate preferences
       const validMetrics = [
         'messages_sent_today', 'messages_received_today', 'messages_trend',
         'active_conversations', 'response_time', 'ai_success_rate',
@@ -620,15 +564,12 @@ export default function registerMetricsRoutes(app) {
       }
       
       if (preferences.refreshInterval !== undefined && preferences.refreshInterval !== null) {
-        // Allow 0 to mean "Off"
         const n = Number(preferences.refreshInterval);
         preferences.refreshInterval = Math.max(0, Math.min(300, isNaN(n) ? 30 : n));
         if (preferences.refreshInterval > 0 && preferences.refreshInterval < 10) {
           preferences.refreshInterval = 10;
         }
       }
-      
-      // Save to database
       await SettingsMulti.findOneAndUpdate(
         { user_id: userId },
         { $set: { user_id: userId, dashboard_preferences: JSON.stringify(preferences) } },
@@ -642,8 +583,6 @@ export default function registerMetricsRoutes(app) {
       res.status(500).json({ error: 'Failed to save preferences' });
     }
   });
-  
-  // Export metrics data
   app.get('/api/metrics/export', ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const format = req.query.format || 'json';
@@ -688,7 +627,6 @@ export default function registerMetricsRoutes(app) {
       };
       
       if (format === 'csv') {
-        // Convert to CSV format
         const csv = convertToCSV(exportData);
         res.setHeader('Content-Type', 'text/csv');
         res.setHeader('Content-Disposition', `attachment; filename="metrics-export-${new Date().toISOString().split('T')[0]}.csv"`);
@@ -704,18 +642,11 @@ export default function registerMetricsRoutes(app) {
       res.status(500).json({ error: 'Failed to export metrics' });
     }
   });
-  
-  // Cleanup inactive users periodically
   setInterval(() => {
-    // Remove users who haven't accessed dashboard in last 5 minutes
-    // This is a simple cleanup - in production you'd want more sophisticated tracking
     if (activeDashboardUsers.size > 100) {
       activeDashboardUsers.clear();
     }
-  }, 5 * 60 * 1000); // 5 minutes
-}
-
-// Helper functions
+  }, 5 * 60 * 1000);}
 function calculateTrend(current, previous) {
   if (previous === 0) {
     return current > 0 ? 100 : 0;
@@ -737,8 +668,6 @@ function convertToCSV(data) {
   ];
   
   const rows = [];
-  
-  // Add messages
   data.messages.forEach(msg => {
     rows.push([
       new Date((msg.timestamp || 0) * 1000).toISOString(),
@@ -750,8 +679,6 @@ function convertToCSV(data) {
       ''
     ]);
   });
-  
-  // Add AI requests
   data.ai_requests.forEach(req => {
     rows.push([
       new Date(req.createdAt).toISOString(),

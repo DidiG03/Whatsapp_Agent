@@ -1,7 +1,4 @@
-/**
- * Outbound message queue using BullMQ with DLQ.
- * Always enabled; falls back to direct send only if queue bootstrap fails.
- */
+
 
 import crypto from 'node:crypto';
 import { logHelpers } from '../monitoring/logger.mjs';
@@ -30,10 +27,6 @@ async function loadBullMq() {
 }
 
 export async function initOutboundQueue() {
-  // Try to establish a Redis connection if not yet ready (e.g., serverless lazy connect)
-  // if (!isRedisConnected()) {
-  //   await ensureRedisConnected(2000);
-  // }
   if (!isRedisConnected()) {
     logHelpers.logBusinessEvent('queue_disabled', { reason: 'redis_not_connected' });
     return false;
@@ -44,8 +37,6 @@ export async function initOutboundQueue() {
   const connection = getRedisClient()?.options || {};
   queue = new Queue('outbound_messages', { connection });
   dlq = new Queue('outbound_messages_dlq', { connection });
-
-  // Worker
   const concurrency = Number(process.env.QUEUE_CONCURRENCY || 5);
   const attempts = Number(process.env.QUEUE_ATTEMPTS || 5);
   const backoff = { type: 'exponential', delay: 1000 };
@@ -112,5 +103,4 @@ export default {
   initOutboundQueue,
   enqueueOutboundMessage
 };
-
 

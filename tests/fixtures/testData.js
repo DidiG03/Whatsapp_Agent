@@ -1,6 +1,4 @@
-/**
- * Test fixtures - Common test data and mock objects
- */
+
 
 export const testUsers = {
   valid: {

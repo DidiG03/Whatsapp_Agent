@@ -1,6 +1,4 @@
-/**
- * OpenTelemetry bootstrap (env-gated via OTEL_ENABLED=1).
- */
+
 
 export async function initTelemetry() {
   if (process.env.OTEL_ENABLED !== '1') return false;
@@ -26,12 +24,10 @@ export async function initTelemetry() {
     await sdk.start();
     return true;
   } catch (e) {
-    // best-effort
     console.error('OpenTelemetry init failed:', e?.message || e);
     return false;
   }
 }
 
 export default { initTelemetry };
-
 

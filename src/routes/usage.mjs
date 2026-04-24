@@ -2,7 +2,6 @@ import { ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
 import { getCurrentUsage, getUserPlan, isUsageExceeded } from "../services/usage.mjs";
 
 export default function registerUsageRoutes(app) {
-  // Lightweight status endpoint used by navbar to show over-limit indicator
   app.get("/api/usage/status", ensureAuthed, async (req, res) => {
     try {
       const userId = getCurrentUserId(req);
@@ -27,5 +26,4 @@ export default function registerUsageRoutes(app) {
     }
   });
 }
-
 

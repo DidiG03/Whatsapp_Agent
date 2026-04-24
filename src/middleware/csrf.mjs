@@ -17,7 +17,6 @@ export const csrfProtection = csrfDisabled
 
 export function attachCsrfToken(req, res, next) {
   if (csrfDisabled) {
-    // Tests (and explicit disables) don't need CSRF token plumbing.
     res.locals.csrfToken = "";
     return next();
   }

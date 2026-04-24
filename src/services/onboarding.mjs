@@ -1,7 +1,4 @@
-/**
- * Onboarding state management per user.
- * Stores step index and transcript text, and defines the set of steps.
- */
+
 import { OnboardingState } from "../schemas/mongodb.mjs";
 
 export const ONBOARD_STEPS = [
@@ -16,14 +13,10 @@ export const ONBOARD_STEPS = [
   { key: 'payments', title: 'Payments', prompt: 'Which payment methods do you accept?' },
   { key: 'faqs', title: 'Top FAQs', prompt: 'List your top customer FAQs (comma-separated).' },
 ];
-
-/** Get onboarding state for a user. */
 export async function getOnboarding(userId) {
   if (!userId) return null;
   return (await OnboardingState.findOne({ user_id: userId }).lean()) || null;
 }
-
-/** Update onboarding state fields for a user (creates row if missing). */
 export async function setOnboarding(userId, fields) {
   if (!userId) return null;
   const current = (await getOnboarding(userId)) || { user_id: userId, step: 0, transcript: '' };

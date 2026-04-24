@@ -1,4 +1,3 @@
-// Simple month calendar renderer
 (function(){
   function parseISO(iso){ try { return new Date(iso); } catch { return new Date(); } }
   function startOfMonth(d){ return new Date(d.getFullYear(), d.getMonth(), 1); }
@@ -21,8 +20,7 @@
   function groupByDay(appts){
     var map = new Map();
     appts.forEach(function(a){
-      if (String(a.status||'confirmed') !== 'confirmed') return; // hide canceled
-      var d = new Date((a.start_ts||0)*1000);
+      if (String(a.status||'confirmed') !== 'confirmed') return;      var d = new Date((a.start_ts||0)*1000);
       var key = d.getFullYear()+"-"+(d.getMonth()+1)+"-"+d.getDate();
       if(!map.has(key)) map.set(key, []);
       map.get(key).push(a);
@@ -44,14 +42,12 @@
           if(/name/.test(key) && val) return val;
         }
       }
-      // fallback: take first pair's value if present
       var first = parts[0]||''; var idx = first.indexOf(':');
       if(idx > -1){
         var v = first.slice(idx+1).trim();
         if(v) return v;
       }
     }
-    // as a safer fallback, show phone or a generic label instead of echoing the message text
     return String(apt.contact_phone||'Booking');
   }
 
@@ -82,8 +78,6 @@
     var totalDays = last.getDate();
 
     var apptMap = groupByDay(state.appts);
-
-    // Fill 6 weeks (42 cells)
     for(var i=0;i<42;i++){
       var cell = document.createElement('div'); cell.className='calendar-cell';
       var date = new Date(first); date.setDate(1 - startIdx + i);
@@ -99,8 +93,6 @@
         list.appendChild(ev);
       });
       cell.appendChild(day); cell.appendChild(list);
-
-      // Click to open modal with all appointments for the day
       if(items.length > 0){
         cell.style.cursor = 'pointer';
         (function(dateCopy, itemsCopy){
@@ -147,7 +139,6 @@
     } else {
       var list = document.createElement('div');
       list.className = 'day-modal-list';
-      // sort by start time
       appointments.sort(function(a,b){ return a.start_ts - b.start_ts; });
       appointments.forEach(function(apt){
         var item = document.createElement('div');
@@ -189,10 +180,7 @@
     modal.appendChild(overlay);
     modal.appendChild(content);
     document.body.appendChild(modal);
-    // trigger fade-in
     requestAnimationFrame(function(){ modal.classList.add('show'); });
-
-    // Wire actions
     content.addEventListener('click', function(e){
       var t = e.target;
       if(!t || !t.getAttribute) return;
@@ -215,7 +203,6 @@
           .then(function(r){ try { console.log('[Calendar][Cancel] response status', r.status); } catch(e){} return r.json().catch(function(){ return { ok:false, error:'invalid response'}; }).then(function(j){ return { ok:r.ok, status:r.status, body:j }; }); })
           .then(function(resp){ try { console.log('[Calendar][Cancel] response body', resp); } catch(e){}
             if(!resp.ok || resp.body.ok === false){ alert('Failed to cancel booking'+ (resp.body && resp.body.error ? (': '+resp.body.error) : '')); return; }
-            // mark as canceled and close modal
             state.appts = state.appts.map(function(a){ var aid = String(a.id!=null?a.id:(a._id_str||a._id)); if(String(aid)===String(id)){ a.status='canceled'; } return a; });
             try { console.log('[Calendar][Cancel] local state updated; closing modal'); } catch(e){}
             render();
@@ -235,7 +222,6 @@
         fetch('/booking/'+id, { method:'PUT', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ start: s.toISOString(), end: e.toISOString() }) })
           .then(function(r){ try { console.log('[Calendar][Reschedule] response', r.status); } catch(e){} return r.json(); })
           .then(function(){
-            // update local appt times and cancel others handled server-side
             state.appts = state.appts.map(function(a){ var aid = String(a.id!=null?a.id:(a._id_str||a._id)); if(String(aid)===String(id)){ a.start_ts=Math.floor(s.getTime()/1000); a.end_ts=Math.floor(e.getTime()/1000); a.status='confirmed'; } return a; });
             render(); showDayModal(date, state.appts.filter(function(a){ return sameDay(new Date(a.start_ts*1000), date); }));
           })

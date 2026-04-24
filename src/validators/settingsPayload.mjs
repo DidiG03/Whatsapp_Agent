@@ -126,7 +126,6 @@ function parseEscalationQuestions(raw) {
 }
 
 function parseCategories(raw) {
-  // Accept comma-separated, newline-separated, array of strings, or empty.
   if (Array.isArray(raw)) {
     return raw
       .map((s) => String(s || "").trim())

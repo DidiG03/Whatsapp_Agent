@@ -6,7 +6,6 @@ import mongoose from 'mongoose';
 import { Staff } from "../schemas/mongodb.mjs";
 
 export default function registerBookingRoutes(app) {
-  // Public read: availability (admin-auth optional). If authed, uses their user_id.
   app.get("/booking/availability", async (req, res) => {
     try {
       const userId = getCurrentUserId(req) || (req.query.user_id || null);
@@ -21,16 +20,12 @@ export default function registerBookingRoutes(app) {
       return res.status(500).json({ error: String(e && e.message || e) });
     }
   });
-
-  // Create booking (authed admin; can be adapted for public with token)
   app.post("/booking/create", ensureAuthed, async (req, res) => {
     try {
       const userId = getCurrentUserId(req);
       const { staff_id, start, end, contact_phone, notes } = req.body || {};
       if (!staff_id || !start || !end) return res.status(400).json({ error: "staff_id, start, end required" });
       const r = await createBooking({ userId, staffId: Number(staff_id), startISO: String(start), endISO: String(end), contactPhone: contact_phone || null, notes: notes || null });
-      
-      // Send email notification
       try {
         const staff = db.prepare(`SELECT name FROM staff WHERE id = ?`).get(staff_id);
         const customerName = contact_phone || 'Customer';
@@ -46,8 +41,6 @@ export default function registerBookingRoutes(app) {
       } catch (e) {
         console.error('[Booking API] Failed to send booking email:', e.message);
       }
-      
-      // Create web notification
       try {
         const customerName = contact_phone || 'Customer';
         const formattedTime = new Date(start).toLocaleString();
@@ -74,15 +67,12 @@ export default function registerBookingRoutes(app) {
       return res.status(409).json({ error: String(e && e.message || e) });
     }
   });
-
-  // Read single booking details
   app.get("/booking/:id", ensureAuthed, async (req, res) => {
     try {
       const userId = getCurrentUserId(req);
       const id = Number(req.params.id || 0);
       if (!id) return res.status(400).json({ error: "invalid id" });
-      const dbh = db; // db adapter supports SQL-like helpers and Mongo-like access elsewhere
-      try {
+      const dbh = db;      try {
         const mongo = (await import('../db-mongodb.mjs')).getDB();
         const row = await mongo.collection('appointments')
           .aggregate([
@@ -102,8 +92,6 @@ export default function registerBookingRoutes(app) {
       return res.status(500).json({ error: String(e && e.message || e) });
     }
   });
-
-  // Update notes for a booking
   app.patch("/booking/:id/notes", ensureAuthed, async (req, res) => {
     try {
       const userId = getCurrentUserId(req);
@@ -117,20 +105,16 @@ export default function registerBookingRoutes(app) {
       return res.status(500).json({ error: String(e && e.message || e) });
     }
   });
-
-  // Cancel booking
   app.delete("/booking/:id", ensureAuthed, async (req, res) => {
     try {
       const userId = getCurrentUserId(req);
       const raw = String(req.params.id || '').trim();
       console.log('[Bookings][DELETE] incoming cancel', { userId: String(userId), raw });
       let ok = false;
-      // Try legacy numeric id path first
       if (/^\d+$/.test(raw)) {
         try { ok = await cancelBooking({ userId, appointmentId: Number(raw) }); } catch (e) { console.warn('[Bookings][DELETE] legacy cancel failed', e?.message || e); }
         if (ok) { console.log('[Bookings][DELETE] legacy path success'); return res.json({ ok: true }); }
       }
-      // Generic path: find by either numeric id or Mongo _id
       try {
         const mongo = (await import('../db-mongodb.mjs')).getDB();
         const or = [];
@@ -140,7 +124,6 @@ export default function registerBookingRoutes(app) {
         const appt = await mongo.collection('appointments').findOne({ user_id: String(userId), $or: or });
         if (!appt) { console.warn('[Bookings][DELETE] appointment not found for', { userId: String(userId), raw }); return res.json({ ok: false }); }
         console.log('[Bookings][DELETE] canceling appt', { _id: String(appt._id), id: appt.id });
-        // Remove Google event if present
         try {
           if (appt.gcal_event_id && appt.staff_id) {
             const owner = await Staff.findOne({ _id: appt.staff_id }).lean();
@@ -162,8 +145,6 @@ export default function registerBookingRoutes(app) {
       return res.status(500).json({ error: String(e && e.message || e) });
     }
   });
-
-  // Reschedule booking
   app.put("/booking/:id", ensureAuthed, async (req, res) => {
     try {
       const userId = getCurrentUserId(req);
@@ -173,17 +154,14 @@ export default function registerBookingRoutes(app) {
       if (/^\d+$/.test(raw)) {
         await rescheduleBooking({ userId, appointmentId: Number(raw), startISO: String(start), endISO: String(end) });
       } else {
-        // Fallback to Mongo _id
         const mongo = (await import('../db-mongodb.mjs')).getDB();
         if (!mongoose.Types.ObjectId.isValid(raw)) return res.status(400).json({ error: "invalid id" });
         const _id = new mongoose.Types.ObjectId(raw);
         const appt = await mongo.collection('appointments').findOne({ _id, user_id: String(userId) });
         if (!appt) return res.status(404).json({ error: 'not found' });
-        // If the legacy id exists, reuse service to ensure Google sync; otherwise update directly
         if (appt.id && Number(appt.id)) {
           await rescheduleBooking({ userId, appointmentId: Number(appt.id), startISO: String(start), endISO: String(end) });
         } else {
-          // Update and try Google calendar if linked
           try {
             if (appt.gcal_event_id && appt.staff_id) {
               const owner = await Staff.findOne({ _id: appt.staff_id }).lean();
@@ -207,5 +185,4 @@ export default function registerBookingRoutes(app) {
     }
   });
 }
-
 

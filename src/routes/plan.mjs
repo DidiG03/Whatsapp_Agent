@@ -8,8 +8,6 @@ export default function registerPlanRoutes(app) {
   app.get("/plan", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const email = await getSignedInEmail(req);
-    
-    // Get current usage and plan info
     const [usage, plan, settings] = await Promise.all([
       getCurrentUsage(userId),
       getUserPlan(userId),
@@ -18,19 +16,14 @@ export default function registerPlanRoutes(app) {
     const history = await getUsageHistory(userId, 6);
     const pricing = getPlanPricing();
     const isUpgraded = isPlanUpgraded(plan);
-    
-    // Calculate usage percentage
     const totalMessages = usage.inbound_messages + usage.outbound_messages + usage.template_messages;
     const usagePercentage = plan.monthly_limit > 0 ? Math.round((totalMessages / plan.monthly_limit) * 100) : 0;
-    
-    // Get current plan details
     const currentPlanDetails = pricing[plan.plan_name] || pricing.free;
     const stripeEnabled = isStripeEnabled();
     const stripePublishableKey = getStripePublishableKey();
     const paygEnabled = !!plan?.payg_enabled;
     const paygRateCents = Number(plan?.payg_rate_cents ?? (process.env.PAYG_RATE_CENTS || 5));
     const paygCurrency = String(plan?.payg_currency || process.env.PAYG_CURRENCY || 'usd').toLowerCase();
-    // Prepare a safe currency code and formatted PAYG price text for display
     let paygCurrencyCode = 'USD';
     try {
       const c = (paygCurrency || 'usd').toUpperCase();
@@ -63,7 +56,6 @@ export default function registerPlanRoutes(app) {
               scheduledTargetInterval = interval || null;
               scheduledStartTs = Number(next.start_date || 0) || null;
             } else if (String(schedule.end_behavior || '') === 'cancel') {
-              // No next phase, but schedule is set to cancel at end of current phase
               const currentPhase = schedule.phases.find(p => !p.end_date || Number(p.end_date) > now) || schedule.phases[0];
               if (currentPhase?.end_date) {
                 willCancelAtEnd = true;
@@ -76,9 +68,6 @@ export default function registerPlanRoutes(app) {
     }
     const isStarterCurrentMonthly = (plan.plan_name === 'starter') && (currentPaidInterval !== 'year');
     const isStarterCurrentYearly = (plan.plan_name === 'starter') && (currentPaidInterval === 'year');
-    // currentPaidInterval already set above
-    
-    // Format usage history for display
     const historyRows = (history || []).map(h => {
       const total = h.inbound_messages + h.outbound_messages + h.template_messages;
       const date = new Date(h.month_year + '-01');
@@ -92,16 +81,12 @@ export default function registerPlanRoutes(app) {
         </tr>
       `;
     }).join('');
-    
-    // Prevent caching to avoid showing cached authenticated pages after logout
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     const STARTER_YEARLY_PRICE_ID = (process.env.STRIPE_PRICE_ID_STARTER_YEARLY || process.env.STRIPE_PRICE_ID_STARTER_ANNUAL || process.env.STRIPE_PRICE_ID_STARTER_YEAR || '').toString();
-    // Prefer real Stripe Price for monthly too so coupons restricted to a product/price can apply
     const STARTER_MONTHLY_PRICE_ID = (process.env.STRIPE_PRICE_ID_STARTER_MONTHLY || process.env.STRIPE_PRICE_ID_STARTER || process.env.STRIPE_PRICE_ID_STARTER_MONTH || process.env.STRIPE_PRICE_ID || '').toString();
-    // PAYG outstanding and progress vs plan cost
     const paygSummary = await getCurrentMonthPaygOutstanding(userId).catch(()=>({ overageUnits:0, overageCents:0, chargedUnits:0, chargedCents:0, outstandingUnits:0, outstandingCents:0 }));
     const paygTotalCents = Number(paygSummary?.overageCents || 0);
     const paygChargedCents = Number(paygSummary?.chargedCents || 0);
@@ -885,8 +870,6 @@ export default function registerPlanRoutes(app) {
       </body></html>
     `);
   });
-  
-  // Handle plan updates
   app.post("/plan/update", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const { plan_name } = req.body;
@@ -896,8 +879,6 @@ export default function registerPlanRoutes(app) {
     }
     
     try {
-      // If user has an active Stripe subscription, block immediate switches;
-      // require period-end cancellation first (only free can be scheduled via cancel endpoint).
       const current = await getUserPlan(userId);
       if (current?.stripe_subscription_id) {
         return res.status(409).json({
@@ -912,14 +893,11 @@ export default function registerPlanRoutes(app) {
       if (!planDetails) {
         return res.status(400).json({ error: 'Plan not found' });
       }
-      
-      // Update user plan
       await updateUserPlan(userId, {
         plan_name: plan_name,
         monthly_limit: planDetails.monthly_limit,
         whatsapp_numbers: planDetails.whatsapp_numbers,
-        billing_cycle_start: Math.floor(Date.now() / 1000) // Reset billing cycle
-      });
+        billing_cycle_start: Math.floor(Date.now() / 1000)      });
       
       res.json({ success: true, message: `Plan updated to ${planDetails.name}` });
     } catch (error) {
@@ -927,8 +905,6 @@ export default function registerPlanRoutes(app) {
       res.status(500).json({ error: 'Failed to update plan' });
     }
   });
-
-  // Toggle PAYG
   app.post("/plan/payg", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const { enabled } = req.body || {};
@@ -947,7 +923,6 @@ export default function registerPlanRoutes(app) {
         } catch (e) {
           console.error('PAYG ensureCustomer failed:', e?.message || e);
         }
-        // Verify a default payment method exists; if not, require setup
         try {
           const planNow = await getUserPlan(userId);
           const cidEff = planNow?.stripe_customer_id || null;
@@ -958,7 +933,6 @@ export default function registerPlanRoutes(app) {
           needsSetup = true;
         }
       } else {
-        // Disabling: charge any outstanding overage now; if charge fails, don't disable
         try {
           const { getCurrentMonthPaygOutstanding } = await import('../services/usage.mjs');
           const out = await getCurrentMonthPaygOutstanding(userId);
@@ -994,8 +968,6 @@ export default function registerPlanRoutes(app) {
       return res.status(500).json({ error: 'Failed to update PAYG setting', details: e?.message || String(e) });
     }
   });
-
-  // Start payment method setup for PAYG
   app.post("/plan/payg/setup", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     if (!isStripeEnabled()) {

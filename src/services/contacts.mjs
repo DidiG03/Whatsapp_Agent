@@ -1,12 +1,5 @@
-/**
- * Enhanced Contact Management Service
- * Handles contact profiles, tags, search, and analytics
- */
-import { db } from "../db-mongodb.mjs";
 
-/**
- * Get contact profile by user_id and contact_id
- */
+import { db } from "../db-mongodb.mjs";
 export function getContactProfile(userId, contactId) {
   const contact = db.prepare(`
     SELECT * FROM customers 
@@ -14,8 +7,6 @@ export function getContactProfile(userId, contactId) {
   `).get(userId, contactId);
   
   if (!contact) return null;
-  
-  // Parse JSON fields
   try {
     contact.tags = contact.tags ? JSON.parse(contact.tags) : [];
     contact.social_media = contact.social_media ? JSON.parse(contact.social_media) : {};
@@ -28,10 +19,6 @@ export function getContactProfile(userId, contactId) {
   
   return contact;
 }
-
-/**
- * Create or update contact profile
- */
 export function upsertContactProfile(userId, contactId, profileData) {
   const {
     display_name,
@@ -55,8 +42,6 @@ export function upsertContactProfile(userId, contactId, profileData) {
     status = 'active',
     source = 'manual'
   } = profileData;
-
-  // Ensure display_name is set
   const finalDisplayName = display_name || 
     (first_name && last_name ? `${first_name} ${last_name}` : first_name || last_name || contactId);
 
@@ -98,10 +83,6 @@ export function upsertContactProfile(userId, contactId, profileData) {
     status, source
   );
 }
-
-/**
- * Get all contacts for a user with optional filtering
- */
 export function getContactsForUser(userId, filters = {}) {
   const {
     search,
@@ -158,8 +139,6 @@ export function getContactsForUser(userId, filters = {}) {
     ORDER BY c.updated_at DESC
     LIMIT ? OFFSET ?
   `).all(userId, userId, ...params, limit, offset);
-
-  // Parse JSON fields for each contact
   return contacts.map(contact => {
     try {
       contact.tags = contact.tags ? JSON.parse(contact.tags) : [];
@@ -173,10 +152,6 @@ export function getContactsForUser(userId, filters = {}) {
     return contact;
   });
 }
-
-/**
- * Get contact statistics
- */
 export function getContactStats(userId) {
   const stats = db.prepare(`
     SELECT 
@@ -199,10 +174,6 @@ export function getContactStats(userId) {
     contacts_with_email: 0
   };
 }
-
-/**
- * Contact Tags Management
- */
 
 export function getContactTags(userId) {
   return db.prepare(`
@@ -237,10 +208,6 @@ export function deleteContactTag(userId, tagId) {
     WHERE id = ? AND user_id = ?
   `).run(tagId, userId);
 }
-
-/**
- * Add tag to contact
- */
 export function addTagToContact(userId, contactId, tagName) {
   const contact = getContactProfile(userId, contactId);
   if (!contact) return false;
@@ -257,10 +224,6 @@ export function addTagToContact(userId, contactId, tagName) {
   }
   return false;
 }
-
-/**
- * Remove tag from contact
- */
 export function removeTagFromContact(userId, contactId, tagName) {
   const contact = getContactProfile(userId, contactId);
   if (!contact) return false;
@@ -273,20 +236,12 @@ export function removeTagFromContact(userId, contactId, tagName) {
   `).run(JSON.stringify(tags), userId, contactId);
   return true;
 }
-
-/**
- * Record contact interaction
- */
 export function recordContactInteraction(userId, contactId, interactionType, interactionData = {}) {
   return db.prepare(`
     INSERT INTO contact_interactions (user_id, contact_id, interaction_type, interaction_data, created_at)
     VALUES (?, ?, ?, ?, strftime('%s','now'))
   `).run(userId, contactId, interactionType, JSON.stringify(interactionData));
 }
-
-/**
- * Get contact interaction history
- */
 export function getContactInteractions(userId, contactId, limit = 20) {
   const interactions = db.prepare(`
     SELECT * FROM contact_interactions 
@@ -304,19 +259,12 @@ export function getContactInteractions(userId, contactId, limit = 20) {
     return interaction;
   });
 }
-
-/**
- * Update contact last contacted time and message count
- */
 export function updateContactActivity(userId, contactId) {
-  // Update last_contacted timestamp
   db.prepare(`
     UPDATE customers 
     SET last_contacted = strftime('%s','now'), updated_at = strftime('%s','now')
     WHERE user_id = ? AND contact_id = ?
   `).run(userId, contactId);
-
-  // Update message count
   const messageCount = db.prepare(`
     SELECT COUNT(*) as count FROM messages 
     WHERE user_id = ? AND (from_id = ? OR to_id = ?)
@@ -328,20 +276,12 @@ export function updateContactActivity(userId, contactId) {
     WHERE user_id = ? AND contact_id = ?
   `).run(messageCount.count, userId, contactId);
 }
-
-/**
- * Delete contact profile
- */
 export function deleteContactProfile(userId, contactId) {
   return db.prepare(`
     DELETE FROM customers 
     WHERE user_id = ? AND contact_id = ?
   `).run(userId, contactId);
 }
-
-/**
- * Export contacts to CSV format
- */
 export function exportContactsToCSV(userId, filters = {}) {
   const contacts = getContactsForUser(userId, { ...filters, limit: 10000 });
   
@@ -384,10 +324,6 @@ export function exportContactsToCSV(userId, filters = {}) {
 
   return csvRows.join('\n');
 }
-
-/**
- * Import contacts from CSV data
- */
 export function importContactsFromCSV(userId, csvData, source = 'import') {
   const lines = csvData.trim().split('\n');
   const headers = lines[0].split(',').map(h => h.replace(/"/g, '').trim());
@@ -403,8 +339,6 @@ export function importContactsFromCSV(userId, csvData, source = 'import') {
     headers.forEach((header, index) => {
       contactData[header.toLowerCase().replace(/\s+/g, '_')] = values[index];
     });
-
-    // Map CSV headers to our contact fields
     const contactProfile = {
       contact_id: contactData.contact_id || contactData.phone,
       display_name: contactData.display_name,

@@ -1,14 +1,8 @@
-/**
- * Notification routes for web alerts
- * - GET /api/notifications: fetch user's notifications
- * - POST /api/notifications/:id/read: mark notification as read
- * - POST /api/notifications/read-all: mark all as read
- */
+
 import { ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
 import { Notification } from "../schemas/mongodb.mjs";
 
 export default function registerNotificationRoutes(app) {
-  // Get notifications for current user
   app.get("/api/notifications", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const limit = parseInt(req.query.limit || '20', 10);
@@ -30,8 +24,6 @@ export default function registerNotificationRoutes(app) {
       res.status(500).json({ success: false, error: e.message });
     }
   });
-  
-  // Mark notification as read
   app.post("/api/notifications/:id/read", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const notificationId = parseInt(req.params.id, 10);
@@ -44,8 +36,6 @@ export default function registerNotificationRoutes(app) {
       res.status(500).json({ success: false, error: e.message });
     }
   });
-  
-  // Mark all notifications as read
   app.post("/api/notifications/read-all", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     
@@ -57,8 +47,6 @@ export default function registerNotificationRoutes(app) {
       res.status(500).json({ success: false, error: e.message });
     }
   });
-  
-  // Delete notification
   app.delete("/api/notifications/:id", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const notificationId = parseInt(req.params.id, 10);

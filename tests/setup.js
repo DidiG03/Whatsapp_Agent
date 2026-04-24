@@ -1,27 +1,16 @@
-/**
- * Jest test setup file
- * Runs before all tests to configure the test environment
- */
+
 
 import { jest } from '@jest/globals';
 import path from 'path';
 import fs from 'fs';
-
-// Set test environment variables
 process.env.NODE_ENV = 'test';
-process.env.LOG_LEVEL = 'error'; // Reduce log noise during tests
-process.env.DB_PATH = ':memory:'; // Use in-memory database for tests
-
-// Mock import.meta.url for ES modules
-Object.defineProperty(global, 'import', {
+process.env.LOG_LEVEL = 'error';process.env.DB_PATH = ':memory:';Object.defineProperty(global, 'import', {
   value: {
     meta: {
       url: 'file://' + path.resolve(process.cwd(), 'tests/setup.js')
     }
   }
 });
-
-// Mock external services
 jest.mock('@clerk/express', () => ({
   clerkMiddleware: jest.fn(() => (req, res, next) => next()),
   getAuth: jest.fn(() => ({ userId: 'test-user-id', sessionId: 'test-session-id' })),
@@ -39,8 +28,6 @@ jest.mock('@clerk/express', () => ({
     }
   }
 }));
-
-// Mock OpenAI (both default and named export)
 jest.mock('openai', () => {
   const mockClient = {
     chat: {
@@ -58,8 +45,6 @@ jest.mock('openai', () => {
     OpenAI: MockOpenAI
   };
 });
-
-// Mock Stripe
 jest.mock('stripe', () => {
   return jest.fn().mockImplementation(() => ({
     checkout: {
@@ -77,16 +62,12 @@ jest.mock('stripe', () => {
     }
   }));
 });
-
-// Mock nodemailer
 jest.mock('nodemailer', () => ({
   createTransport: jest.fn(() => ({
     sendMail: jest.fn(() => Promise.resolve({ messageId: 'test-message-id' })),
     verify: jest.fn(() => Promise.resolve(true))
   }))
 }));
-
-// Mock node-fetch
 jest.mock('node-fetch', () => {
   return jest.fn(() => Promise.resolve({
     ok: true,
@@ -95,16 +76,9 @@ jest.mock('node-fetch', () => {
     text: () => Promise.resolve('OK')
   }));
 });
-
-// Global test helpers
 global.testHelpers = {
-  // Create a test user ID
   createTestUserId: () => 'test-user-' + Math.random().toString(36).substr(2, 9),
-  
-  // Create a test phone number
   createTestPhone: () => '+1234567890',
-  
-  // Create test message data
   createTestMessage: (overrides = {}) => ({
     id: 'test-msg-' + Math.random().toString(36).substr(2, 9),
     direction: 'inbound',
@@ -116,19 +90,13 @@ global.testHelpers = {
     raw: { test: true },
     ...overrides
   }),
-  
-  // Create test contact data
   createTestContact: (overrides = {}) => ({
     contact_id: '+1234567890',
     display_name: 'Test Contact',
     notes: 'Test notes',
     ...overrides
   }),
-  
-  // Wait for async operations
   wait: (ms) => new Promise(resolve => setTimeout(resolve, ms)),
-  
-  // Mock Express request
   createMockRequest: (overrides = {}) => ({
     method: 'GET',
     url: '/test',
@@ -139,8 +107,6 @@ global.testHelpers = {
     user: { id: 'test-user-id' },
     ...overrides
   }),
-  
-  // Mock Express response
   createMockResponse: () => {
     const res = {};
     res.status = jest.fn().mockReturnValue(res);
@@ -152,11 +118,7 @@ global.testHelpers = {
     return res;
   }
 };
-
-// Clean up after each test
 afterEach(() => {
   jest.clearAllMocks();
 });
-
-// Global test timeout
 jest.setTimeout(10000);

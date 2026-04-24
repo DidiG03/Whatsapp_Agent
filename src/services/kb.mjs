@@ -1,8 +1,4 @@
-/**
- * Knowledge base service.
- * - Upsert items by title per user
- * - Retrieve naive keyword matches for a query
- */
+
 import { db } from "../db-mongodb.mjs";
 import { KBItem } from "../schemas/mongodb.mjs";
 import { getUserPlan, getPlanPricing } from "../services/usage.mjs";
@@ -10,10 +6,7 @@ import { cache } from "../scalability/redis.mjs";
 
 const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
 const shouldLogVerbose = LOG_LEVEL === "debug" || LOG_LEVEL === "trace";
-
-/** Create or update a KB item by title for a specific user. */
 export async function upsertKbItem(userId, title, content, file = null) {
-  // Update if the title exists for this user
   const existing = await KBItem.findOne({ user_id: userId, title }).select('_id').lean();
   if (existing?._id) {
     await KBItem.updateOne(
@@ -26,7 +19,6 @@ export async function upsertKbItem(userId, title, content, file = null) {
     );
     return String(existing._id);
   }
-  // Enforce plan limits for new items
   try {
     const plan = await getUserPlan(userId);
     const pricing = getPlanPricing();
@@ -50,29 +42,20 @@ export async function upsertKbItem(userId, title, content, file = null) {
   });
   return String(doc._id);
 }
-
-/**
- * Naive keyword retrieval for KB items. Scores documents by term presence
- * in title+content merged text and returns the top N.
- */
 export async function retrieveKbMatches(query, limit = 3, userId = null, onboardingTranscript = '') {
   if (shouldLogVerbose) console.log("Retrieving KB matches for user:", userId);
-  // Normalize inputs: strip diacritics, collapse repeated letters, standardize slang
   const stripDiacritics = (s) => {
     try { return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, ''); } catch { return String(s || ''); }
   };
   const collapseRepeats = (s) => String(s || '').replace(/(\p{L})\1{2,}/gu, '$1$1');
   const base = [String(query || ''), String(onboardingTranscript || '')].filter(Boolean).join(' ');
   let full = collapseRepeats(stripDiacritics(base));
-
-  // Synonym + slang expansion for better recall
   const synonymPairs = [
     [/\b(open|opening|hours|time)\b/gi, ' hours '],
     [/\b(where|location|address|located)\b/gi, ' locations '],
     [/\b(pay|payment|card|cash|visa|mastercard)\b/gi, ' payments '],
     [/\b(appointment|book|booking|reservation|reservations|walk\s?in|walk-ins)\b/gi, ' appointments reservations '],
     [/\b(deliver|delivery|ship|shipping|pickup)\b/gi, ' delivery shipping pickup '],
-    // common slang/misspellings
     [/\bhrs\b/gi, ' hours '],
     [/\baddr\b/gi, ' address '],
     [/\binfo\b/gi, ' information '],
@@ -86,8 +69,6 @@ export async function retrieveKbMatches(query, limit = 3, userId = null, onboard
   ];
   let expanded = ` ${full} `;
   for (const [re, rep] of synonymPairs) expanded = expanded.replace(re, ` ${rep} `);
-
-  // Build token-based boolean query for FTS (more flexible than a quoted phrase)
   const cleaned = expanded
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, ' ')
@@ -103,7 +84,6 @@ export async function retrieveKbMatches(query, limit = 3, userId = null, onboard
   const matchQuery = booleanQuery || `"${expanded.replace(/"/g, '""').trim()}"`;
   let rows = [];
   try {
-    // Prefer FTS when available
     const uidStr = userId != null ? String(userId) : null;
     const uidNum = userId != null && !Number.isNaN(Number(userId)) ? Number(userId) : null;
     const hasBoth = uidStr != null && uidNum != null && String(uidNum) !== uidStr;
@@ -125,7 +105,6 @@ export async function retrieveKbMatches(query, limit = 3, userId = null, onboard
   } catch (e) {
     if (shouldLogVerbose) console.warn("FTS MATCH failed; falling back to LIKE", e?.message || e);
     try {
-      // LIKE fallback using multiple token patterns for better recall
       const likeTokens = (tokens.length ? tokens : cleaned.split(' ')).filter(Boolean).slice(0, 8);
       const likes = likeTokens.map(t => `%${t.replace(/[%_]/g, '')}%`);
       const whereLike = likes.map(() => '(title LIKE ? OR content LIKE ?)').join(' OR ');
@@ -145,8 +124,6 @@ export async function retrieveKbMatches(query, limit = 3, userId = null, onboard
       console.warn("KB LIKE fallback failed", e2?.message || e2);
     }
   }
-
-  // Attach a synthetic score: inverse of rank + token hit boosts (title > content)
   const safeRows = Array.isArray(rows) ? rows : [];
   const results = safeRows.map(r => {
     const base = Math.max(1, 1000 - Math.floor(r.rank || 0));
@@ -192,15 +169,11 @@ export async function buildKbSuggestions(userId, question, max = 3) {
       picks.push({id: `KB_TITLE_${t}`, title: t});
     }
   }
-
-  // 1) Try semantic matches when there is a meaningful question
   const q = String(question || '').trim();
   if (q && q.length > 1 && q.toLowerCase() !== 'hello') {
     const matched = await retrieveKbMatches(q, 6, userId, '');
     for (const m of matched) push(m.title || "");
   }
-
-  // 2) Fill from user's own KB titles that are marked show_in_menu (most recent first)
   try {
     if (picks.length < max && userId) {
       const rows = db.prepare(`
@@ -212,8 +185,6 @@ export async function buildKbSuggestions(userId, question, max = 3) {
       for (const r of rows) { if (picks.length >= max) break; push(r.title || ""); }
     }
   } catch (e) { if (shouldLogVerbose) console.warn("KB title fill failed", e?.message || e); }
-
-  // 3) Fallback to sensible defaults if still short
   for(const t of defaults) { if (picks.length >= max) break; push(t) };
   
   const out = picks.slice(0, max);

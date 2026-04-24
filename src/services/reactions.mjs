@@ -1,12 +1,6 @@
-/**
- * Message reactions service for handling emoji reactions to messages.
- */
+
 
 import { getDB } from '../db-mongodb.mjs';
-
-/**
- * Get all reactions for a specific message
- */
 export async function getMessageReactions(messageId) {
   if (!messageId) return [];
   const db = getDB();
@@ -19,10 +13,6 @@ export async function getMessageReactions(messageId) {
   ];
   return await coll.aggregate(pipeline).toArray();
 }
-
-/**
- * Add a reaction to a message
- */
 export async function addReaction(messageId, userId, emoji) {
   try {
     const db = getDB();
@@ -38,10 +28,6 @@ export async function addReaction(messageId, userId, emoji) {
     return { success: false, error: error.message };
   }
 }
-
-/**
- * Remove a reaction from a message
- */
 export async function removeReaction(messageId, userId, emoji) {
   try {
     const db = getDB();
@@ -53,10 +39,6 @@ export async function removeReaction(messageId, userId, emoji) {
     return { success: false, error: error.message };
   }
 }
-
-/**
- * Toggle a reaction (add if not exists, remove if exists)
- */
 export async function toggleReaction(messageId, userId, emoji) {
   try {
     const db = getDB();
@@ -74,10 +56,6 @@ export async function toggleReaction(messageId, userId, emoji) {
     return { success: false, error: error.message, added: false, removed: false };
   }
 }
-
-/**
- * Get reactions for multiple messages
- */
 export async function getMessagesReactions(messageIds) {
   if (!Array.isArray(messageIds) || messageIds.length === 0) return {};
   const db = getDB();
@@ -96,10 +74,6 @@ export async function getMessagesReactions(messageIds) {
   }
   return groupedReactions;
 }
-
-/**
- * Get user's reactions for multiple messages (only agent reactions, not customer reactions)
- */
 export async function getUserReactionsForMessages(messageIds, userId) {
   if (!Array.isArray(messageIds) || messageIds.length === 0 || !userId) return {};
   const db = getDB();

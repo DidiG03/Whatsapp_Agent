@@ -1,10 +1,6 @@
-/**
- * Unit tests for WhatsApp service
- */
+
 
 import { describe, test, expect, beforeEach, jest } from '@jest/globals';
-
-// Mock node-fetch properly
 jest.mock('node-fetch', () => {
   return jest.fn(() => Promise.resolve({
     ok: true,
@@ -12,19 +8,13 @@ jest.mock('node-fetch', () => {
     json: () => Promise.resolve({ messages: [{ id: 'test-message-id' }] })
   }));
 });
-
-// Mock the database module
 jest.mock('../../../src/db.mjs', () => ({
-  db: null // Will be set in beforeEach
-}));
-
-// Import the WhatsApp service after mocking
+  db: null}));
 import { sendWhatsAppText, sendWhatsAppTemplate, sendWhatsappImage } from '../../../src/services/whatsapp.mjs';
 import fetch from 'node-fetch';
 
 describe('WhatsApp Service', () => {
   beforeEach(() => {
-    // Reset fetch mock
     fetch.mockClear();
     fetch.mockResolvedValue({
       ok: true,

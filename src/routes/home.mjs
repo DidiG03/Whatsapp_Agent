@@ -102,8 +102,6 @@ export default function registerHomeRoutes(app) {
       `);
       return;
     }
-
-    // LANDING (clean, white, clear message)
     res.end(`
       <html class="home-clean-html">${getProfessionalHead("Welcome")}
         <body class="home-clean home-landing">

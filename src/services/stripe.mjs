@@ -1,7 +1,4 @@
-/**
- * Stripe service for handling payments and subscriptions
- */
-// Ensure env-var sanitization has run before we read STRIPE_* values.
+
 import "../config.mjs";
 import Stripe from 'stripe';
 
@@ -15,12 +12,7 @@ function cleanEnv(v) {
 }
 
 const STRIPE_SECRET_KEY = cleanEnv(process.env.STRIPE_SECRET_KEY);
-// Initialize Stripe (only if API key is provided)
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
-
-/**
- * Ensure a Stripe customer exists for this user. Stores the id on the user plan if created/found.
- */
 export async function ensureCustomerForUser(userId, customerEmail = null) {
   if (!isStripeEnabled() || !stripe || !userId) return null;
   try {
@@ -53,10 +45,6 @@ export async function ensureCustomerForUser(userId, customerEmail = null) {
     return null;
   }
 }
-
-/**
- * Return true if the customer has a default payment method (card) set.
- */
 export async function hasDefaultPaymentMethod(customerId) {
   if (!isStripeEnabled() || !stripe || !customerId) return false;
   try {
@@ -73,26 +61,12 @@ export async function hasDefaultPaymentMethod(customerId) {
   }
   return false;
 }
-
-/**
- * Check if Stripe is properly configured
- */
 export function isStripeEnabled() {
   return !!(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_PUBLISHABLE_KEY);
 }
-
-/**
- * Get Stripe publishable key
- */
 export function getStripePublishableKey() {
   return process.env.STRIPE_PUBLISHABLE_KEY;
 }
-
-/**
- * Ensure only one active subscription exists for a customer.
- * Any other active/trialing/past_due/unpaid subscriptions (except keepId) are set to cancel at period end.
- * Incomplete or incomplete_expired subs are canceled immediately to avoid clutter.
- */
 async function ensureSingleActiveSubscription(customerId, keepId = null) {
   if (!isStripeEnabled() || !stripe || !customerId) return;
   try {
@@ -115,28 +89,19 @@ async function ensureSingleActiveSubscription(customerId, keepId = null) {
     console.warn('ensureSingleActiveSubscription failed:', e?.message || e);
   }
 }
-
-/**
- * Create a Stripe checkout session for plan subscription
- */
 export async function createCheckoutSession(userId, planName, customerEmail = null, priceId = null, promoCode = null) {
   if (!isStripeEnabled() || !stripe) {
     throw new Error('Stripe is not configured');
   }
-
-  // Get plan details
   const planDetails = getPlanDetails(planName);
   if (!planDetails) {
     throw new Error('Invalid plan name');
   }
-
-  // Skip checkout for free plan
   if (planName === 'free') {
     return { url: null, planName: 'free' };
   }
 
   try {
-    // Create or retrieve Stripe customer (prefer stored customer id when available)
     let customerId = null;
     try {
       const { UserPlan } = await import('../schemas/mongodb.mjs');
@@ -152,19 +117,13 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
         customerId = customer.id;
       }
     }
-
-    // Allow env-configured Prices per plan. Falls back to STRIPE_PRICE_ID (single price) if set.
     try {
       const envKey = `STRIPE_PRICE_ID_${String(planName || '').toUpperCase()}`;
       const sanitize = (v) => String(v || '').trim().replace(/^['"]|['"]$/g, '');
       const priceFromEnv = sanitize(process.env[envKey] || process.env.STRIPE_PRICE_ID || '');
       if (!priceId && priceFromEnv) priceId = priceFromEnv;
     } catch {}
-
-    // If a specific price_id is provided, try to validate it in the current account/mode.
-    // If not found, fall back to inline price_data so checkout can still proceed.
     let currency = String(process.env.STRIPE_CURRENCY || 'usd').toLowerCase();
-    // Prepare optional discounts from a promotion code
     let discountsArray = undefined;
     if (promoCode) {
       try {
@@ -173,7 +132,6 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
         if (pc?.id && !pc?.expired && pc?.active !== false) {
           discountsArray = [{ promotion_code: pc.id }];
         } else {
-          // If code is invalid, we still allow checkout but without discount
           console.warn('Promotion code not applicable or not found:', promoCode);
         }
       } catch (e) {
@@ -199,13 +157,10 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
           return { url: session.url, sessionId: session.id, planName };
         }
       } catch (e) {
-        // Known case: resource_missing -> fallback to price_data
         const msg = e?.raw?.message || e?.message || '';
         console.warn('Stripe price validation failed; falling back to price_data:', msg);
       }
     }
-
-    // Determine currency: match existing active subscription currency if present; else from env (default usd)
     try {
       if (customerId) {
         const subs = await stripe.subscriptions.list({ customer: customerId, status: 'active', limit: 1 });
@@ -213,8 +168,6 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
         if (existingCurrency) currency = existingCurrency.toLowerCase();
       }
     } catch {}
-
-    // Create checkout session
     const session = await stripe.checkout.sessions.create({
       customer: customerId,
       payment_method_types: ['card'],
@@ -222,8 +175,6 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
         {
           price_data: {
             currency,
-            // If a persistent Product is configured, tie price_data to it so
-            // promotion codes restricted to a product/price apply correctly.
             ...(function(){
               try {
                 const sanitize = (v) => String(v || '').trim().replace(/^['"]|['"]$/g, '');
@@ -237,8 +188,7 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
                 }
               };
             })(),
-            unit_amount: planDetails.price * 100, // Convert to cents
-            recurring: {
+            unit_amount: planDetails.price * 100,            recurring: {
               interval: 'month'
             }
           },
@@ -261,11 +211,6 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
     throw new Error('Failed to create checkout session');
   }
 }
-
-/**
- * Create a Checkout session in "setup" mode to collect a default payment method
- * for future off-session PAYG charges.
- */
 export async function createPayAsYouGoSetupSession(userId, customerEmail = null) {
   if (!isStripeEnabled() || !stripe) {
     throw new Error('Stripe is not configured');
@@ -277,7 +222,6 @@ export async function createPayAsYouGoSetupSession(userId, customerEmail = null)
       customer: customerId,
       mode: 'setup',
       payment_method_types: ['card'],
-      // Collect a new default payment method
       payment_method_collection: 'always',
       success_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/plan?success=true`,
       cancel_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/plan?canceled=true`,
@@ -289,11 +233,6 @@ export async function createPayAsYouGoSetupSession(userId, customerEmail = null)
     throw new Error('Failed to create setup session');
   }
 }
-
-/**
- * Charge PAYG amount for one or more usage units (e.g., messages) off-session.
- * Will be a no-op if PAYG not enabled or no payment method is available.
- */
 export async function chargePayAsYouGo(userId, units = 1, opts = {}) {
   if (!isStripeEnabled() || !stripe) return { charged: false, reason: 'stripe_disabled' };
   try {
@@ -330,7 +269,6 @@ export async function chargePayAsYouGo(userId, units = 1, opts = {}) {
       }, opts?.idempotencyKey ? { idempotencyKey: String(opts.idempotencyKey) } : undefined);
       return { charged: true, payment_intent_id: intent?.id || null };
     } catch (e) {
-      // Card might require authentication or be missing; do not block usage here
       console.warn('PAYG charge failed:', e?.message || e);
       return { charged: false, reason: 'payment_failed' };
     }
@@ -339,10 +277,6 @@ export async function chargePayAsYouGo(userId, units = 1, opts = {}) {
     return { charged: false, reason: 'internal_error' };
   }
 }
-
-/**
- * Retrieve a checkout session
- */
 export async function getCheckoutSession(sessionId) {
   if (!isStripeEnabled() || !stripe) {
     throw new Error('Stripe is not configured');
@@ -355,11 +289,6 @@ export async function getCheckoutSession(sessionId) {
     throw new Error('Failed to retrieve checkout session');
   }
 }
-
-/**
- * When a setup-mode Checkout session completes for PAYG, ensure the payment method
- * is set as default and enable PAYG on the user plan.
- */
 export async function handlePayAsYouGoSetupCompleted(session) {
   if (!isStripeEnabled() || !stripe) return;
   try {
@@ -395,10 +324,6 @@ export async function handlePayAsYouGoSetupCompleted(session) {
     console.error('handlePayAsYouGoSetupCompleted error:', e?.message || e);
   }
 }
-
-/**
- * Cancel a subscription
- */
 export async function cancelSubscription(subscriptionId) {
   if (!isStripeEnabled() || !stripe) {
     throw new Error('Stripe is not configured');
@@ -411,22 +336,9 @@ export async function cancelSubscription(subscriptionId) {
     throw new Error('Failed to cancel subscription');
   }
 }
-
-/**
- * Cancel any active Stripe billing for a user who is deleting their account.
- * Best-effort discovery:
- * - Prefer the subscription id stored on UserPlan
- * - Otherwise, list subscriptions for the stored customer id and cancel active ones
- *
- * IMPORTANT: This attempts to cancel immediately to prevent further charges.
- *
- * @param {string} userId
- * @returns {Promise<{attempted: boolean, canceled: number, failed: number, results: Array<{subscription_id: string, ok: boolean, error?: string}>}>}
- */
 export async function cancelBillingForUserDeletion(userId) {
   const uid = String(userId || '').trim();
   if (!uid) return { attempted: false, canceled: 0, failed: 0, results: [] };
-  // For cancellation we only need the secret key (publishable is not required).
   if (!stripe || !process.env.STRIPE_SECRET_KEY) return { attempted: false, canceled: 0, failed: 0, results: [] };
 
   let plan = null;
@@ -442,12 +354,8 @@ export async function cancelBillingForUserDeletion(userId) {
 
   const subIdFromPlan = plan?.stripe_subscription_id ? String(plan.stripe_subscription_id) : null;
   const customerId = plan?.stripe_customer_id ? String(plan.stripe_customer_id) : null;
-
-  /** @type {string[]} */
   let subscriptionIds = [];
   if (subIdFromPlan) subscriptionIds.push(subIdFromPlan);
-
-  // If we don't have a stored subscription id but we have a customer, list subscriptions to be safe.
   if (!subscriptionIds.length && customerId) {
     try {
       const list = await stripe.subscriptions.list({
@@ -458,7 +366,6 @@ export async function cancelBillingForUserDeletion(userId) {
       const subs = Array.isArray(list?.data) ? list.data : [];
       for (const s of subs) {
         const st = String(s?.status || '');
-        // Cancel anything that can incur charges or is in-flight.
         if (['active', 'trialing', 'past_due', 'unpaid', 'incomplete', 'incomplete_expired'].includes(st)) {
           if (s?.id) subscriptionIds.push(String(s.id));
         }
@@ -467,17 +374,12 @@ export async function cancelBillingForUserDeletion(userId) {
       console.warn('[cancelBillingForUserDeletion] list subscriptions failed:', e?.message || e);
     }
   }
-
-  // De-dupe
   subscriptionIds = [...new Set(subscriptionIds.filter(Boolean))];
   if (!subscriptionIds.length) return { attempted: false, canceled: 0, failed: 0, results: [] };
-
-  /** @type {Array<{subscription_id: string, ok: boolean, error?: string}>} */
   const results = [];
 
   for (const subscription_id of subscriptionIds) {
     try {
-      // If a subscription schedule manages this subscription, cancel the schedule (which cancels the subscription).
       let scheduleId = null;
       try {
         const sub = await stripe.subscriptions.retrieve(subscription_id, { expand: ['schedule'] });
@@ -487,7 +389,6 @@ export async function cancelBillingForUserDeletion(userId) {
       if (scheduleId) {
         await stripe.subscriptionSchedules.cancel(String(scheduleId));
       } else {
-        // Cancel immediately; avoid proration and immediate invoicing.
         await stripe.subscriptions.cancel(subscription_id, { prorate: false, invoice_now: false });
       }
       results.push({ subscription_id, ok: true });
@@ -500,10 +401,6 @@ export async function cancelBillingForUserDeletion(userId) {
   const failed = results.filter(r => !r.ok).length;
   return { attempted: true, canceled, failed, results };
 }
-
-/**
- * Get subscription details
- */
 export async function getSubscription(subscriptionId) {
   if (!isStripeEnabled() || !stripe) {
     throw new Error('Stripe is not configured');
@@ -516,10 +413,6 @@ export async function getSubscription(subscriptionId) {
     throw new Error('Failed to retrieve subscription');
   }
 }
-
-/**
- * Get subscription schedule (expanded with price objects) for a subscription.
- */
 export async function getSubscriptionScheduleForSubscription(subscriptionId) {
   if (!isStripeEnabled() || !stripe) {
     return null;
@@ -529,8 +422,6 @@ export async function getSubscriptionScheduleForSubscription(subscriptionId) {
     let scheduleId = null;
     try { scheduleId = (sub?.schedule && (typeof sub.schedule === 'string' ? sub.schedule : sub.schedule?.id)) || null; } catch {}
     if (!scheduleId) {
-      // Stripe's Subscription Schedule list API does not support filtering by 'subscription'.
-      // Fallback: list by customer and pick the schedule associated with this subscription if present.
       const customerId = (typeof sub?.customer === 'string' ? sub.customer : sub?.customer?.id) || null;
       if (customerId) {
         const list = await stripe.subscriptionSchedules.list({ customer: customerId, limit: 10 });
@@ -552,10 +443,6 @@ export async function getSubscriptionScheduleForSubscription(subscriptionId) {
     return null;
   }
 }
-
-/**
- * Get plan details
- */
 function getPlanDetails(planName) {
   const plans = {
     free: {
@@ -587,10 +474,6 @@ function getPlanDetails(planName) {
 
   return plans[planName] || null;
 }
-
-/**
- * Handle successful payment webhook
- */
 export async function handleSuccessfulPayment(session) {
   const userId = session.metadata?.user_id;
   const planName = session.metadata?.plan_name;
@@ -599,8 +482,6 @@ export async function handleSuccessfulPayment(session) {
     console.error('Missing metadata in Stripe session:', session.id);
     return;
   }
-
-  // Update user plan in database
   const { updateUserPlan } = await import('./usage.mjs');
   const { getPlanPricing } = await import('./usage.mjs');
   
@@ -618,11 +499,7 @@ export async function handleSuccessfulPayment(session) {
     });
     
     console.log(`User ${userId} successfully subscribed to ${planName} plan`);
-
-    // Ensure only one active subscription remains for this customer
     try { await ensureSingleActiveSubscription(session.customer, session.subscription); } catch (e) { console.warn('Single sub enforcement failed:', e?.message || e); }
-
-    // Send receipt email (best-effort)
     try {
       const { sendPaymentReceiptEmail } = await import('./email.mjs');
       const amountCents = typeof session.amount_total === 'number' ? session.amount_total : planDetails.price * 100;
@@ -630,17 +507,12 @@ export async function handleSuccessfulPayment(session) {
         amountCents,
         currency: session.currency || (process.env.STRIPE_CURRENCY || 'usd'),
         planName,
-        invoiceUrl: session?.invoice ? undefined : undefined // Checkout session may not provide invoice URL immediately
-      });
+        invoiceUrl: session?.invoice ? undefined : undefined      });
     } catch (e) {
       console.error('Failed to send payment receipt email:', e?.message || e);
     }
   }
 }
-
-/**
- * Handle subscription cancellation webhook
- */
 export async function handleSubscriptionCanceled(subscription) {
   const customerId = subscription.customer;
   const subId = subscription.id;
@@ -662,10 +534,6 @@ export async function handleSubscriptionCanceled(subscription) {
     console.error('Failed to handle subscription cancellation:', e?.message || e);
   }
 }
-
-/**
- * Handle subscription.updated events to reflect cancel_at_period_end and schedule downgrades at period end.
- */
 export async function handleSubscriptionUpdated(subscription) {
   try {
     const { UserPlan } = await import('../schemas/mongodb.mjs');
@@ -677,7 +545,6 @@ export async function handleSubscriptionUpdated(subscription) {
 
     const { updateUserPlan } = await import('./usage.mjs');
     await updateUserPlan(plan.user_id, {
-      // keep current paid plan active until the end of period
       plan_name: plan.plan_name,
       monthly_limit: plan.monthly_limit,
       whatsapp_numbers: plan.whatsapp_numbers,
@@ -687,17 +554,12 @@ export async function handleSubscriptionUpdated(subscription) {
     });
 
     if (cancelAtPeriodEnd) {
-      // We don’t downgrade immediately; we mark and a background job (future) could enforce at period end.
       console.log(`Subscription ${subscription.id} set to cancel at period end (${currentPeriodEnd}). User ${plan.user_id} will be downgraded then.`);
     }
   } catch (e) {
     console.error('Failed to handle subscription update:', e?.message || e);
   }
 }
-
-/**
- * Handle invoice payment state; on failure we keep access but can flag the account, on success we ensure active status.
- */
 export async function handleInvoicePaymentState(invoice, succeeded) {
   try {
     const subId = invoice.subscription;
@@ -720,7 +582,6 @@ export async function handleInvoicePaymentState(invoice, succeeded) {
         console.error('Failed to send invoice success email:', e?.message || e);
       }
     } else {
-      // Mark as past_due but do not downgrade yet; Stripe will retry.
       await updateUserPlan(plan.user_id, { status: 'past_due' });
       try {
         const { sendPaymentFailedEmail } = await import('./email.mjs');

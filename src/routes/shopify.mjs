@@ -28,20 +28,13 @@ export default function registerShopifyRoutes(app) {
     let raw = String(input).trim();
     if (!raw) return '';
     raw = raw.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
-
-    // If someone pasted an admin URL like admin.shopify.com/store/<slug>/...
-    // try to derive the myshopify domain.
     const adminMatch = raw.match(/^admin\.shopify\.com\/store\/([^\/\?]+)/i);
     if (adminMatch?.[1]) {
       return `${adminMatch[1].toLowerCase()}.myshopify.com`;
     }
-
-    // If they pasted with a path, keep only host portion
     const hostOnly = raw.split('/')[0];
     return hostOnly.toLowerCase();
   }
-
-  // Shopify OAuth initiation
   app.get("/shopify/auth", ensureAuthed, (req, res) => {
     if (!isShopifyEnabled()) {
       return res.redirect('/settings/shopify?shopify_error=not_configured');
@@ -53,8 +46,6 @@ export default function registerShopifyRoutes(app) {
     if (!shopDomain) {
       return res.redirect('/settings/shopify?shopify_error=missing_shop');
     }
-
-    // Shopify OAuth requires the shop domain to be a myshopify domain.
     if (!shopDomain.endsWith('.myshopify.com')) {
       return res.redirect('/settings/shopify?shopify_error=invalid_shop');
     }
@@ -67,8 +58,6 @@ export default function registerShopifyRoutes(app) {
       res.redirect('/settings/shopify?shopify_error=oauth_init_failed');
     }
   });
-
-  // Shopify OAuth callback
   app.get("/shopify/oauth/callback", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const code = String(req.query.code || '');
@@ -82,12 +71,9 @@ export default function registerShopifyRoutes(app) {
     }
 
     try {
-      // Optional safety: if the redirect URI is misconfigured, surface it early.
       if (!isShopifyEnabled() || !getShopifyRedirectUri()) {
         return res.redirect('/settings/shopify?shopify_error=not_configured');
       }
-
-      // Exchange code for access token
       let tokenData;
       try {
         tokenData = await exchangeCodeForToken(shop, code);
@@ -96,8 +82,6 @@ export default function registerShopifyRoutes(app) {
         const reason = encodeURIComponent(String(err?.message || 'token_exchange_failed').slice(0, 160));
         return res.redirect(`/settings/shopify?shopify_error=auth_failed&stage=token&reason=${reason}`);
       }
-
-      // Get store information
       let storeInfo;
       try {
         storeInfo = await getStoreInfo(shop, tokenData.access_token);
@@ -105,8 +89,6 @@ export default function registerShopifyRoutes(app) {
         console.error('Shopify getStoreInfo failed:', err?.message || err);
         return res.redirect('/settings/shopify?shopify_error=auth_failed&stage=store');
       }
-
-      // Save connection to database
       try {
         const { ShopifyStore } = await import('../schemas/mongodb.mjs');
         await ShopifyStore.findOneAndUpdate(
@@ -130,14 +112,11 @@ export default function registerShopifyRoutes(app) {
         console.error('Shopify DB save failed:', err?.message || err);
         return res.redirect('/settings/shopify?shopify_error=auth_failed&stage=db');
       }
-
-      // Register webhook for order updates
       try {
         const webhookUrl = `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/shopify/webhook`;
         await registerWebhook(userId, shop, tokenData.access_token, webhookUrl);
       } catch (webhookError) {
         console.warn('Failed to register webhook:', webhookError.message);
-        // Don't fail the whole setup if webhook registration fails
       }
 
       res.redirect('/settings/shopify?shopify_success=true');
@@ -146,8 +125,6 @@ export default function registerShopifyRoutes(app) {
       res.redirect('/settings/shopify?shopify_error=auth_failed&stage=unknown');
     }
   });
-
-  // Shopify webhook endpoint
   app.post("/shopify/webhook", async (req, res) => {
     if (!isShopifyEnabled()) {
       return res.status(400).send('Shopify not configured');
@@ -156,15 +133,12 @@ export default function registerShopifyRoutes(app) {
     const signature = req.headers['x-shopify-hmac-sha256'];
     const topic = req.headers['x-shopify-topic'];
     const shopDomain = req.headers['x-shopify-shop-domain'];
-
-    // Verify webhook signature
     if (!verifyWebhook(req.rawBody, signature)) {
       console.error('Invalid webhook signature');
       return res.status(401).send('Invalid signature');
     }
 
     try {
-      // Handle uninstalls explicitly so our DB stays accurate even if Shopify removes the app.
       if (String(topic) === 'app/uninstalled' && shopDomain) {
         await disconnectStoreByShopDomain(String(shopDomain));
         return res.json({ received: true, handled: 'app/uninstalled' });
@@ -177,8 +151,6 @@ export default function registerShopifyRoutes(app) {
       res.status(500).json({ error: 'Webhook processing failed' });
     }
   });
-
-  // Get Shopify connection status
   app.get("/api/shopify/status", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
 
@@ -189,9 +161,6 @@ export default function registerShopifyRoutes(app) {
       if (!store) {
         return res.json({ connected: false });
       }
-
-      // Validate that the access token still works. If the app was uninstalled or access revoked,
-      // Shopify will return 401/403 on API calls.
       try {
         await getStoreInfo(store.shop_domain, store.access_token);
       } catch (err) {
@@ -217,8 +186,6 @@ export default function registerShopifyRoutes(app) {
       res.status(500).json({ error: 'Failed to get connection status' });
     }
   });
-
-  // Disconnect Shopify store
   app.post("/api/shopify/disconnect", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
 
@@ -230,8 +197,6 @@ export default function registerShopifyRoutes(app) {
       res.status(500).json({ error: 'Failed to disconnect store' });
     }
   });
-
-  // Sync products
   app.post("/api/shopify/sync/products", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
 
@@ -251,8 +216,6 @@ export default function registerShopifyRoutes(app) {
       res.status(500).json({ error: 'Failed to sync products' });
     }
   });
-
-  // Sync orders
   app.post("/api/shopify/sync/orders", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
 
@@ -272,8 +235,6 @@ export default function registerShopifyRoutes(app) {
       res.status(500).json({ error: 'Failed to sync orders' });
     }
   });
-
-  // Sync customers
   app.post("/api/shopify/sync/customers", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
 
@@ -293,8 +254,6 @@ export default function registerShopifyRoutes(app) {
       res.status(500).json({ error: 'Failed to sync customers' });
     }
   });
-
-  // Get product catalog
   app.get("/api/shopify/products", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const { limit, search, category } = req.query;
@@ -316,8 +275,6 @@ export default function registerShopifyRoutes(app) {
       res.status(500).json({ error: 'Failed to retrieve products' });
     }
   });
-
-  // Get specific product
   app.get("/api/shopify/products/:productId", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const { productId } = req.params;
@@ -339,8 +296,6 @@ export default function registerShopifyRoutes(app) {
       res.status(500).json({ error: 'Failed to retrieve product' });
     }
   });
-
-  // Get orders
   app.get("/api/shopify/orders", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const { limit = 50, status, customer_id } = req.query;
@@ -363,8 +318,6 @@ export default function registerShopifyRoutes(app) {
       res.status(500).json({ error: 'Failed to retrieve orders' });
     }
   });
-
-  // Get specific order
   app.get("/api/shopify/orders/:orderId", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const { orderId } = req.params;
@@ -386,8 +339,6 @@ export default function registerShopifyRoutes(app) {
       res.status(500).json({ error: 'Failed to retrieve order' });
     }
   });
-
-  // Create order
   app.post("/api/shopify/orders", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const orderData = req.body;
@@ -408,8 +359,6 @@ export default function registerShopifyRoutes(app) {
       res.status(500).json({ error: 'Failed to create order' });
     }
   });
-
-  // Update order fulfillment
   app.post("/api/shopify/orders/:orderId/fulfill", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const { orderId } = req.params;
@@ -431,8 +380,6 @@ export default function registerShopifyRoutes(app) {
       res.status(500).json({ error: 'Failed to update order fulfillment' });
     }
   });
-
-  // Update Shopify settings
   app.post("/api/shopify/settings", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const settings = req.body;
@@ -457,10 +404,6 @@ export default function registerShopifyRoutes(app) {
       res.status(500).json({ error: 'Failed to update settings' });
     }
   });
-
-  // WhatsApp Commerce API endpoints
-
-  // Get product catalog for WhatsApp
   app.get("/api/whatsapp/shopify/products", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const { limit = 10, search } = req.query;
@@ -472,16 +415,13 @@ export default function registerShopifyRoutes(app) {
       } else {
         products = await getProductCatalog(userId, { limit: parseInt(limit) });
       }
-
-      // Format for WhatsApp display
       const formattedProducts = products.map(product => ({
         id: product.shopify_id,
         title: product.title,
         price: `$${product.price}`,
         image_url: product.image,
         description: product.body_html ? product.body_html.replace(/<[^>]*>/g, '').substring(0, 100) + '...' : '',
-        variants: product.variants?.slice(0, 3) || [] // Limit variants for WhatsApp
-      }));
+        variants: product.variants?.slice(0, 3) || []      }));
 
       res.json({ products: formattedProducts });
     } catch (error) {
@@ -489,8 +429,6 @@ export default function registerShopifyRoutes(app) {
       res.status(500).json({ error: 'Failed to retrieve products' });
     }
   });
-
-  // Create order from WhatsApp
   app.post("/api/whatsapp/shopify/orders", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const { contact_id, products, customer_info, shipping_address } = req.body;
@@ -503,8 +441,6 @@ export default function registerShopifyRoutes(app) {
 
       const { ShopifyStore } = await import('../schemas/mongodb.mjs');
       const store = await ShopifyStore.findOne({ user_id: userId });
-
-      // Transform products to line items
       const lineItems = products.map(product => ({
         variant_id: product.variant_id,
         quantity: product.quantity,
@@ -535,8 +471,6 @@ export default function registerShopifyRoutes(app) {
       res.status(500).json({ error: 'Failed to create order' });
     }
   });
-
-  // Shopify settings page
   app.get("/settings/shopify", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const error = req.query.shopify_error;
@@ -1063,8 +997,6 @@ export default function registerShopifyRoutes(app) {
       res.status(500).send('Failed to load Shopify settings');
     }
   });
-
-  // Full Shopify Dashboard
   app.get("/dashboard/shopify", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
 
@@ -1097,8 +1029,6 @@ export default function registerShopifyRoutes(app) {
         `;
         return res.send(html);
       }
-
-      // Get recent orders and products
       const { ShopifyOrder, ShopifyProduct } = await import('../schemas/mongodb.mjs');
 
       const recentOrders = await ShopifyOrder.find({ user_id: userId })

@@ -1,12 +1,6 @@
-/**
- * Message replies service for handling thread-style conversations.
- */
+
 
 import { getDB } from '../db-mongodb.mjs';
-
-/**
- * Create a reply relationship between two messages
- */
 export async function createReply(originalMessageId, replyMessageId) {
   try {
     const db = getDB();
@@ -22,10 +16,6 @@ export async function createReply(originalMessageId, replyMessageId) {
     return { success: false, error: error.message };
   }
 }
-
-/**
- * Get all replies for a specific message
- */
 export async function getMessageReplies(messageId) {
   try {
     const db = getDB();
@@ -42,10 +32,6 @@ export async function getMessageReplies(messageId) {
     return [];
   }
 }
-
-/**
- * Get the original message that a reply is responding to
- */
 export async function getOriginalMessage(replyMessageId) {
   try {
     const db = getDB();
@@ -60,10 +46,6 @@ export async function getOriginalMessage(replyMessageId) {
     return null;
   }
 }
-
-/**
- * Get replies for multiple messages
- */
 export async function getMessagesReplies(messageIds) {
   if (!Array.isArray(messageIds) || messageIds.length === 0) return {};
   try {
@@ -86,10 +68,6 @@ export async function getMessagesReplies(messageIds) {
     return {};
   }
 }
-
-/**
- * Get original messages for multiple reply messages
- */
 export async function getReplyOriginals(replyMessageIds) {
   if (!Array.isArray(replyMessageIds) || replyMessageIds.length === 0) return {};
   try {

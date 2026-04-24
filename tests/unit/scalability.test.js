@@ -1,7 +1,4 @@
-/**
- * Scalability System Test
- * Tests the scalability features and performance improvements
- */
+
 
 import { describe, test, expect, beforeEach } from '@jest/globals';
 import { scalabilityManager, scalabilityConfig, createPerformanceMiddleware } from '../../src/scalability/index.mjs';
@@ -37,13 +34,11 @@ describe('Scalability System', () => {
 
   describe('Redis Caching', () => {
     test('should handle cache operations gracefully when Redis is disabled', async () => {
-      // Test cache operations when Redis is not available
       const result = await cache.set('test-key', { test: 'data' });
       expect(typeof result).toBe('boolean');
       
       const cached = await cache.get('test-key');
-      expect(cached).toBeNull(); // Should return null when Redis is disabled
-    });
+      expect(cached).toBeNull();    });
 
     test('should handle session cache operations', async () => {
       const sessionId = 'test-session-123';
@@ -53,15 +48,13 @@ describe('Scalability System', () => {
       expect(typeof setResult).toBe('boolean');
       
       const getResult = await sessionCache.getSession(sessionId);
-      expect(getResult).toBeNull(); // Should return null when Redis is disabled
-    });
+      expect(getResult).toBeNull();    });
   });
 
   describe('CDN Integration', () => {
     test('should generate asset URLs', () => {
       const url = cdn.generateAssetUrl('images/logo.png');
-      expect(url).toBe('images/logo.png'); // Should return original path when CDN is disabled
-    });
+      expect(url).toBe('images/logo.png');    });
 
     test('should generate responsive image URLs', () => {
       const responsive = cdn.generateResponsiveImageUrls('images/hero.jpg');

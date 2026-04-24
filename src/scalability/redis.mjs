@@ -1,12 +1,7 @@
-/**
- * Redis Caching Layer
- * Provides high-performance caching for sessions, data, and API responses
- */
+
 
 import Redis from 'ioredis';
 import { logHelpers } from '../monitoring/logger.mjs';
-
-// Redis configuration
 const redisConfig = {
   host: process.env.REDIS_HOST || 'localhost',
   port: parseInt(process.env.REDIS_PORT || '6379'),
@@ -19,26 +14,19 @@ const redisConfig = {
   keepAlive: 30000,
   connectTimeout: 10000,
   commandTimeout: 5000,
-  // TLS is off by default; enable with REDIS_TLS=true when provider requires TLS (e.g., Upstash)
   ...(String(process.env.REDIS_TLS || '').toLowerCase() === 'true' ? { tls: {} } : {}),
-  // Connection pool settings
   family: 4,
   maxmemoryPolicy: 'allkeys-lru'
 };
-
-// Create Redis client
 let redisClient = null;
 let isConnected = false;
 
 export function initRedis() {
   try {
     redisClient = new Redis(redisConfig);
-    
-    // For serverless or when explicitly enabled, proactively connect so readiness checks pass.
     try {
       const shouldConnectEagerly = String(process.env.REDIS_ENABLED || '').toLowerCase() === 'true';
       if (shouldConnectEagerly && typeof redisClient.connect === 'function') {
-        // Fire-and-forget; events below will reflect readiness
         redisClient.connect().catch(() => {});
       }
     } catch {}
@@ -83,8 +71,6 @@ export async function closeRedis() {
     logHelpers.logError(error, { component: 'redis', operation: 'close' });
   }
 }
-
-// Ensure connection is established; wait briefly for 'ready'
 export async function ensureRedisConnected(timeoutMs = 3000) {
   try {
     if (!redisClient) {
@@ -103,23 +89,16 @@ export async function ensureRedisConnected(timeoutMs = 3000) {
   } catch {}
   return isRedisConnected();
 }
-
-// Get Redis client
 export function getRedisClient() {
   if (!redisClient) {
     redisClient = initRedis();
   }
   return redisClient;
 }
-
-// Check if Redis is connected
 export function isRedisConnected() {
   return isConnected && redisClient && redisClient.status === 'ready';
 }
-
-// Cache operations
 export const cache = {
-  // Set cache with TTL
   async set(key, value, ttlSeconds = 3600) {
     if (!isRedisConnected()) {
       logHelpers.logBusinessEvent('redis_cache_miss', { reason: 'not_connected', key });
@@ -142,8 +121,6 @@ export const cache = {
       return false;
     }
   },
-  
-  // Get from cache
   async get(key) {
     if (!isRedisConnected()) {
       logHelpers.logBusinessEvent('redis_cache_miss', { reason: 'not_connected', key });
@@ -165,8 +142,6 @@ export const cache = {
       return null;
     }
   },
-  
-  // Delete from cache
   async del(key) {
     if (!isRedisConnected()) {
       return false;
@@ -181,8 +156,6 @@ export const cache = {
       return false;
     }
   },
-  
-  // Check if key exists
   async exists(key) {
     if (!isRedisConnected()) {
       return false;
@@ -196,8 +169,6 @@ export const cache = {
       return false;
     }
   },
-  
-  // Set multiple keys
   async mset(keyValuePairs, ttlSeconds = 3600) {
     if (!isRedisConnected()) {
       return false;
@@ -223,8 +194,6 @@ export const cache = {
       return false;
     }
   },
-  
-  // Get multiple keys
   async mget(keys) {
     if (!isRedisConnected()) {
       return {};
@@ -255,8 +224,6 @@ export const cache = {
       return {};
     }
   },
-  
-  // Increment counter
   async incr(key, ttlSeconds = 3600) {
     if (!isRedisConnected()) {
       return 0;
@@ -277,8 +244,6 @@ export const cache = {
       return 0;
     }
   },
-  
-  // Get cache statistics
   async getStats() {
     if (!isRedisConnected()) {
       return { connected: false };
@@ -299,8 +264,6 @@ export const cache = {
       return { connected: false, error: error.message };
     }
   },
-  
-  // Clear all cache
   async flush() {
     if (!isRedisConnected()) {
       return false;
@@ -316,28 +279,18 @@ export const cache = {
     }
   }
 };
-
-// Session management with Redis
 export const sessionCache = {
-  // Store user session
-  async setSession(sessionId, sessionData, ttlSeconds = 86400) { // 24 hours default
-    const key = `session:${sessionId}`;
+  async setSession(sessionId, sessionData, ttlSeconds = 86400) {    const key = `session:${sessionId}`;
     return await cache.set(key, sessionData, ttlSeconds);
   },
-  
-  // Get user session
   async getSession(sessionId) {
     const key = `session:${sessionId}`;
     return await cache.get(key);
   },
-  
-  // Delete user session
   async deleteSession(sessionId) {
     const key = `session:${sessionId}`;
     return await cache.del(key);
   },
-  
-  // Update session TTL
   async refreshSession(sessionId, ttlSeconds = 86400) {
     if (!isRedisConnected()) {
       return false;
@@ -353,61 +306,37 @@ export const sessionCache = {
     }
   }
 };
-
-// Data caching helpers
 export const dataCache = {
-  // Cache user data
-  async cacheUserData(userId, userData, ttlSeconds = 1800) { // 30 minutes
-    const key = `user:${userId}`;
+  async cacheUserData(userId, userData, ttlSeconds = 1800) {    const key = `user:${userId}`;
     return await cache.set(key, userData, ttlSeconds);
   },
-  
-  // Get cached user data
   async getUserData(userId) {
     const key = `user:${userId}`;
     return await cache.get(key);
   },
-  
-  // Cache WhatsApp messages
-  async cacheMessages(conversationId, messages, ttlSeconds = 3600) { // 1 hour
-    const key = `messages:${conversationId}`;
+  async cacheMessages(conversationId, messages, ttlSeconds = 3600) {    const key = `messages:${conversationId}`;
     return await cache.set(key, messages, ttlSeconds);
   },
-  
-  // Get cached messages
   async getMessages(conversationId) {
     const key = `messages:${conversationId}`;
     return await cache.get(key);
   },
-  
-  // Cache AI responses
-  async cacheAIResponse(promptHash, response, ttlSeconds = 7200) { // 2 hours
-    const key = `ai:${promptHash}`;
+  async cacheAIResponse(promptHash, response, ttlSeconds = 7200) {    const key = `ai:${promptHash}`;
     return await cache.set(key, response, ttlSeconds);
   },
-  
-  // Get cached AI response
   async getAIResponse(promptHash) {
     const key = `ai:${promptHash}`;
     return await cache.get(key);
   },
-  
-  // Cache KB items
-  async cacheKBItems(userId, kbItems, ttlSeconds = 1800) { // 30 minutes
-    const key = `kb:${userId}`;
+  async cacheKBItems(userId, kbItems, ttlSeconds = 1800) {    const key = `kb:${userId}`;
     return await cache.set(key, kbItems, ttlSeconds);
   },
-  
-  // Get cached KB items
   async getKBItems(userId) {
     const key = `kb:${userId}`;
     return await cache.get(key);
   }
 };
-
-// Rate limiting with Redis
 export const rateLimiter = {
-  // Check rate limit
   async checkLimit(identifier, limit, windowSeconds) {
     if (!isRedisConnected()) {
       return { allowed: true, remaining: limit, resetTime: Date.now() + windowSeconds * 1000 };
@@ -436,8 +365,6 @@ export const rateLimiter = {
       return { allowed: true, remaining: limit, resetTime: Date.now() + windowSeconds * 1000 };
     }
   },
-  
-  // Reset rate limit
   async resetLimit(identifier) {
     if (!isRedisConnected()) {
       return false;
@@ -453,8 +380,6 @@ export const rateLimiter = {
     }
   }
 };
-
-// Cache middleware for Express
 export function cacheMiddleware(ttlSeconds = 300, keyGenerator = null) {
   return async (req, res, next) => {
     if (req.method !== 'GET') {
@@ -469,12 +394,9 @@ export function cacheMiddleware(ttlSeconds = 300, keyGenerator = null) {
       res.setHeader('X-Cache-Key', key);
       return res.json(cachedResponse);
     }
-    
-    // Store original res.json
     const originalJson = res.json;
     
     res.json = function(data) {
-      // Cache the response
       cache.set(key, data, ttlSeconds).catch(error => {
         logHelpers.logError(error, { component: 'redis', operation: 'cache_middleware', key });
       });
@@ -488,8 +410,6 @@ export function cacheMiddleware(ttlSeconds = 300, keyGenerator = null) {
     next();
   };
 }
-
-// Initialize Redis on module load
 initRedis();
 
 export default {

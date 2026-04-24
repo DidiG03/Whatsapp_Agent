@@ -1,17 +1,10 @@
-/**
- * Scalability Configuration and Management
- * Central configuration for all scalability features
- */
+
 
 import { logHelpers } from '../monitoring/logger.mjs';
 import { businessMetrics } from '../monitoring/metrics.mjs';
-
-// Scalability configuration
 export const scalabilityConfig = {
-  // Database configuration
   database: {
-    type: process.env.DATABASE_TYPE || 'mongodb', // mongodb
-    connectionPool: {
+    type: process.env.DATABASE_TYPE || 'mongodb',    connectionPool: {
       min: parseInt(process.env.DB_POOL_MIN || '5'),
       max: parseInt(process.env.DB_POOL_MAX || '20'),
       idleTimeout: parseInt(process.env.DB_POOL_IDLE_TIMEOUT || '30000')
@@ -21,8 +14,6 @@ export const scalabilityConfig = {
       backupBeforeMigrate: process.env.DB_BACKUP_MIGRATE === 'true'
     }
   },
-  
-  // Redis configuration
   redis: {
     enabled: process.env.REDIS_ENABLED === 'true',
     host: process.env.REDIS_HOST || 'localhost',
@@ -30,13 +21,8 @@ export const scalabilityConfig = {
     password: process.env.REDIS_PASSWORD || undefined,
     db: parseInt(process.env.REDIS_DB || '0'),
     ttl: {
-      session: parseInt(process.env.REDIS_SESSION_TTL || '86400'), // 24 hours
-      cache: parseInt(process.env.REDIS_CACHE_TTL || '3600'), // 1 hour
-      rateLimit: parseInt(process.env.REDIS_RATE_LIMIT_TTL || '3600') // 1 hour
-    }
+      session: parseInt(process.env.REDIS_SESSION_TTL || '86400'),      cache: parseInt(process.env.REDIS_CACHE_TTL || '3600'),      rateLimit: parseInt(process.env.REDIS_RATE_LIMIT_TTL || '3600')    }
   },
-  
-  // CDN configuration
   cdn: {
     enabled: process.env.CDN_ENABLED === 'true',
     provider: process.env.CDN_PROVIDER || 'cloudflare',
@@ -47,19 +33,14 @@ export const scalabilityConfig = {
       minification: process.env.CDN_MINIFICATION === 'true'
     }
   },
-  
-  // Clustering configuration
   cluster: {
     enabled: process.env.CLUSTER_ENABLED === 'true',
-    workers: parseInt(process.env.CLUSTER_WORKERS || '0'), // 0 = auto-detect
-    loadBalancing: {
+    workers: parseInt(process.env.CLUSTER_WORKERS || '0'),    loadBalancing: {
       algorithm: process.env.LB_ALGORITHM || 'round_robin',
       healthCheck: process.env.LB_HEALTH_CHECK === 'true',
       stickySessions: process.env.LB_STICKY_SESSIONS === 'true'
     }
   },
-  
-  // Performance configuration
   performance: {
     compression: {
       enabled: process.env.COMPRESSION_ENABLED === 'true',
@@ -73,18 +54,14 @@ export const scalabilityConfig = {
     },
     rateLimiting: {
       enabled: process.env.RATE_LIMITING_ENABLED === 'true',
-      windowMs: parseInt(process.env.RATE_LIMIT_WINDOW || '900000'), // 15 minutes
-      maxRequests: parseInt(process.env.RATE_LIMIT_MAX || '100')
+      windowMs: parseInt(process.env.RATE_LIMIT_WINDOW || '900000'),      maxRequests: parseInt(process.env.RATE_LIMIT_MAX || '100')
     }
   },
-  
-  // Monitoring configuration
   monitoring: {
     metrics: {
       enabled: process.env.METRICS_ENABLED === 'true',
       interval: parseInt(process.env.METRICS_INTERVAL || '30000'),
-      retention: parseInt(process.env.METRICS_RETENTION || '86400') // 24 hours
-    },
+      retention: parseInt(process.env.METRICS_RETENTION || '86400')    },
     healthChecks: {
       enabled: process.env.HEALTH_CHECKS_ENABLED === 'true',
       interval: parseInt(process.env.HEALTH_CHECK_INTERVAL || '60000'),
@@ -92,10 +69,7 @@ export const scalabilityConfig = {
     }
   }
 };
-
-// Scalability manager
 export const scalabilityManager = {
-  // Initialize all scalability features
   async init() {
     logHelpers.logBusinessEvent('scalability_init_started');
     
@@ -108,7 +82,6 @@ export const scalabilityManager = {
     };
     
     try {
-      // Initialize database
       if (scalabilityConfig.database.type === 'postgresql') {
         const { databaseAdapter } = await import('./postgres.mjs');
         await databaseAdapter.init();
@@ -117,26 +90,19 @@ export const scalabilityManager = {
           type: scalabilityConfig.database.type 
         });
       }
-      
-      // Initialize Redis
       if (scalabilityConfig.redis.enabled) {
         const { initRedis } = await import('./redis.mjs');
         initRedis();
         results.redis = true;
         logHelpers.logBusinessEvent('scalability_redis_initialized');
       }
-      
-      // Initialize CDN
       if (scalabilityConfig.cdn.enabled) {
         const { cdn } = await import('./cdn.mjs');
-        // CDN doesn't need initialization, just configuration
         results.cdn = true;
         logHelpers.logBusinessEvent('scalability_cdn_initialized', { 
           provider: scalabilityConfig.cdn.provider 
         });
       }
-      
-      // Initialize clustering
       if (scalabilityConfig.cluster.enabled) {
         const { clusterManager } = await import('./cluster.mjs');
         clusterManager.init();
@@ -145,8 +111,6 @@ export const scalabilityManager = {
           workers: scalabilityConfig.cluster.workers 
         });
       }
-      
-      // Initialize performance optimizations
       results.performance = this.initPerformanceOptimizations();
       
       logHelpers.logBusinessEvent('scalability_init_completed', results);
@@ -157,19 +121,14 @@ export const scalabilityManager = {
       throw error;
     }
   },
-  
-  // Initialize performance optimizations
   initPerformanceOptimizations() {
     try {
-      // Enable compression if configured
       if (scalabilityConfig.performance.compression.enabled) {
         logHelpers.logBusinessEvent('scalability_compression_enabled', {
           level: scalabilityConfig.performance.compression.level,
           threshold: scalabilityConfig.performance.compression.threshold
         });
       }
-      
-      // Enable caching if configured
       if (scalabilityConfig.performance.caching.staticAssets) {
         logHelpers.logBusinessEvent('scalability_static_caching_enabled');
       }
@@ -188,8 +147,6 @@ export const scalabilityManager = {
       return false;
     }
   },
-  
-  // Get scalability status
   getStatus() {
     return {
       config: scalabilityConfig,
@@ -209,12 +166,8 @@ export const scalabilityManager = {
       }
     };
   },
-  
-  // Validate configuration
   validateConfig() {
     const issues = [];
-    
-    // Check database configuration
     if (scalabilityConfig.database.type === 'postgresql') {
       if (!process.env.POSTGRES_HOST) {
         issues.push('POSTGRES_HOST is required for PostgreSQL');
@@ -223,22 +176,16 @@ export const scalabilityManager = {
         issues.push('POSTGRES_DB is required for PostgreSQL');
       }
     }
-    
-    // Check Redis configuration
     if (scalabilityConfig.redis.enabled) {
       if (!process.env.REDIS_HOST) {
         issues.push('REDIS_HOST is required when Redis is enabled');
       }
     }
-    
-    // Check CDN configuration
     if (scalabilityConfig.cdn.enabled) {
       if (!process.env.CDN_DOMAIN) {
         issues.push('CDN_DOMAIN is required when CDN is enabled');
       }
     }
-    
-    // Check cluster configuration
     if (scalabilityConfig.cluster.enabled) {
       if (scalabilityConfig.cluster.workers === 0) {
         issues.push('CLUSTER_WORKERS must be specified when clustering is enabled');
@@ -251,12 +198,8 @@ export const scalabilityManager = {
     };
   }
 };
-
-// Performance middleware factory
 export function createPerformanceMiddleware() {
   const middleware = [];
-  
-  // Compression middleware
   if (scalabilityConfig.performance.compression.enabled) {
     const compression = require('compression');
     middleware.push(compression({
@@ -264,8 +207,6 @@ export function createPerformanceMiddleware() {
       threshold: scalabilityConfig.performance.compression.threshold
     }));
   }
-  
-  // Rate limiting middleware
   if (scalabilityConfig.performance.rateLimiting.enabled) {
     const rateLimit = require('express-rate-limit');
     middleware.push(rateLimit({
@@ -279,8 +220,6 @@ export function createPerformanceMiddleware() {
   
   return middleware;
 }
-
-// Health check for scalability features
 export async function scalabilityHealthCheck() {
   const health = {
     overall: 'healthy',
@@ -289,7 +228,6 @@ export async function scalabilityHealthCheck() {
   };
   
   try {
-    // Check database
     if (scalabilityConfig.database.type === 'postgresql') {
       const { databaseAdapter } = await import('./postgres.mjs');
       const dbHealth = await databaseAdapter.healthCheck();
@@ -297,16 +235,12 @@ export async function scalabilityHealthCheck() {
     } else {
       health.features.database = { connected: true, type: 'sqlite' };
     }
-    
-    // Check Redis
     if (scalabilityConfig.redis.enabled) {
       const { isRedisConnected } = await import('./redis.mjs');
       health.features.redis = { connected: isRedisConnected() };
     } else {
       health.features.redis = { enabled: false };
     }
-    
-    // Check CDN
     if (scalabilityConfig.cdn.enabled) {
       const { cdn } = await import('./cdn.mjs');
       const cdnStats = await cdn.getStats();
@@ -314,8 +248,6 @@ export async function scalabilityHealthCheck() {
     } else {
       health.features.cdn = { enabled: false };
     }
-    
-    // Check cluster
     if (scalabilityConfig.cluster.enabled) {
       const { clusterManager } = await import('./cluster.mjs');
       const clusterStats = clusterManager.getStats();
@@ -323,8 +255,6 @@ export async function scalabilityHealthCheck() {
     } else {
       health.features.cluster = { enabled: false };
     }
-    
-    // Determine overall health
     const unhealthyFeatures = Object.values(health.features)
       .filter(feature => feature.connected === false || feature.enabled === false);
     

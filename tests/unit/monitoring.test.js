@@ -1,7 +1,4 @@
-/**
- * Monitoring System Test
- * Tests the basic functionality of our monitoring and logging system
- */
+
 
 import { describe, test, expect, beforeEach } from '@jest/globals';
 import { getAllMetrics, incrementCounter, setGauge, resetMetrics } from '../../src/monitoring/metrics.mjs';

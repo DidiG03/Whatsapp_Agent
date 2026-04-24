@@ -1,10 +1,5 @@
 #!/usr/bin/env node
 
-/**
- * MongoDB Setup Script
- * This script helps set up MongoDB for the WhatsApp Agent project
- */
-
 import { MongoClient } from 'mongodb';
 import mongoose from 'mongoose';
 
@@ -16,7 +11,6 @@ async function setupMongoDB() {
   console.log(`Connection URI: ${MONGODB_URI.replace(/\/\/.*@/, '//***@')}`);
   
   try {
-    // Connect to MongoDB
     await mongoose.connect(MONGODB_URI, {
       dbName: MONGODB_DB_NAME,
       useNewUrlParser: true,
@@ -24,41 +18,23 @@ async function setupMongoDB() {
     });
     
     console.log('✅ Connected to MongoDB successfully');
-    
-    // Create indexes for better performance
     const db = mongoose.connection.db;
-    
-    // Messages collection indexes
     await db.collection('messages').createIndex({ user_id: 1, timestamp: -1 });
     await db.collection('messages').createIndex({ from_digits: 1 });
     await db.collection('messages').createIndex({ to_digits: 1 });
     await db.collection('messages').createIndex({ direction: 1 });
-    
-    // Handoff collection indexes
     await db.collection('handoff').createIndex({ contact_id: 1, user_id: 1 }, { unique: true });
     await db.collection('handoff').createIndex({ user_id: 1, conversation_status: 1 });
-    
-    // AI requests collection indexes
     await db.collection('ai_requests').createIndex({ user_id: 1 });
     await db.collection('ai_requests').createIndex({ createdAt: -1 });
-    
-    // Settings multi collection indexes (now also stores dashboard preferences)
     await db.collection('settings_multi').createIndex({ user_id: 1 }, { unique: true });
-    
-    // Customers collection indexes
     await db.collection('customers').createIndex({ user_id: 1, contact_id: 1 }, { unique: true });
     await db.collection('customers').createIndex({ user_id: 1, email: 1 });
-    
-    // Notifications collection indexes
     await db.collection('notifications').createIndex({ user_id: 1 });
     await db.collection('notifications').createIndex({ user_id: 1, is_read: 1 });
-    
-    // Usage stats collection indexes
     await db.collection('usage_stats').createIndex({ user_id: 1, month_year: 1 }, { unique: true });
     
     console.log('✅ Database indexes created successfully');
-    
-    // Test basic operations
     const testCollection = db.collection('test_connection');
     await testCollection.insertOne({ test: true, timestamp: new Date() });
     await testCollection.deleteOne({ test: true });
@@ -85,8 +61,6 @@ async function setupMongoDB() {
     await mongoose.disconnect();
   }
 }
-
-// Run setup if this script is executed directly
 if (import.meta.url === `file://${process.argv[1]}`) {
   setupMongoDB();
 }

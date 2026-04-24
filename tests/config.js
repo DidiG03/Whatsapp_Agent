@@ -1,22 +1,15 @@
-/**
- * Test configuration for different environments
- */
+
 
 export const testConfig = {
-  // Database configuration
   database: {
     test: ':memory:',
     temp: './tests/temp/test.sqlite'
   },
-  
-  // Test timeouts
   timeouts: {
     short: 5000,
     medium: 10000,
     long: 30000
   },
-  
-  // Mock configurations
   mocks: {
     openai: {
       enabled: true,
@@ -31,16 +24,12 @@ export const testConfig = {
       testUserId: 'test-user-123'
     }
   },
-  
-  // Test data
   testData: {
     userId: 'test-user-123',
     phoneNumber: '+1234567890',
     businessName: 'Test Business',
     email: 'test@example.com'
   },
-  
-  // Environment variables for tests
   env: {
     NODE_ENV: 'test',
     LOG_LEVEL: 'error',

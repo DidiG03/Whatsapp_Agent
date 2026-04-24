@@ -1,12 +1,6 @@
-/**
- * Quick Replies service for managing predefined message templates.
- */
+
 
 import { QuickReply } from "../schemas/mongodb.mjs";
-
-/**
- * Get all quick replies for a user
- */
 export async function getQuickReplies(userId) {
   try {
     const rows = await QuickReply.find({ user_id: userId }).sort({ category: 1, display_order: 1 }).lean();
@@ -16,10 +10,6 @@ export async function getQuickReplies(userId) {
     return [];
   }
 }
-
-/**
- * Get all quick reply categories for a user
- */
 export async function getQuickReplyCategories(userId) {
   try {
     const rows = await QuickReply.aggregate([
@@ -33,10 +23,6 @@ export async function getQuickReplyCategories(userId) {
     return [];
   }
 }
-
-/**
- * Create a new quick reply
- */
 export async function createQuickReply(userId, text, category = 'General') {
   try {
     const maxOrderRow = await QuickReply.find({ user_id: userId, category }).sort({ display_order: -1 }).limit(1).lean();
@@ -48,10 +34,6 @@ export async function createQuickReply(userId, text, category = 'General') {
     return { success: false, error: error.message };
   }
 }
-
-/**
- * Update an existing quick reply
- */
 export async function updateQuickReply(userId, id, text, category) {
   try {
     const result = await QuickReply.findOneAndUpdate({ _id: id, user_id: userId }, { $set: { text, category } }, { new: true });
@@ -61,10 +43,6 @@ export async function updateQuickReply(userId, id, text, category) {
     return { success: false, error: error.message };
   }
 }
-
-/**
- * Delete a quick reply
- */
 export async function deleteQuickReply(userId, id) {
   try {
     const result = await QuickReply.findOneAndDelete({ _id: id, user_id: userId });
@@ -74,10 +52,6 @@ export async function deleteQuickReply(userId, id) {
     return { success: false, error: error.message };
   }
 }
-
-/**
- * Reorder quick replies within a category
- */
 export async function reorderQuickReplies(userId, category, orderedIds) {
   try {
     const ops = orderedIds.map((id, index) => QuickReply.findOneAndUpdate({ _id: id, user_id: userId, category }, { $set: { display_order: index + 1 } }));

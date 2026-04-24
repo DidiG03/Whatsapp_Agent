@@ -1,21 +1,11 @@
-/**
- * Usage tracking service for monitoring message counts and plan limits.
- */
-import { UsageStats, UserPlan } from "../schemas/mongodb.mjs";
 
-/**
- * Get current month/year string in format "2024-01"
- */
+import { UsageStats, UserPlan } from "../schemas/mongodb.mjs";
 function getCurrentMonthYear() {
   const now = new Date();
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, '0');
   return `${year}-${month}`;
 }
-
-/**
- * Get or create usage stats for a user for the current month
- */
 export async function getCurrentUsage(userId) {
   if (!userId) return null;
   const monthYear = getCurrentMonthYear();
@@ -44,10 +34,6 @@ export async function getCurrentUsage(userId) {
   }
   return usage;
 }
-
-/**
- * Increment usage counter for a specific message type
- */
 export async function incrementUsage(userId, messageType) {
   if (!userId || !messageType) return;
   const monthYear = getCurrentMonthYear();
@@ -61,7 +47,6 @@ export async function incrementUsage(userId, messageType) {
     { $inc: { [messageType]: 1 } },
     { upsert: true }
   );
-  // After increment, if PAYG is enabled and the user is over the free limit, attempt to charge per usage
   try {
     const plan = await getUserPlan(userId);
     if (plan?.payg_enabled) {
@@ -87,10 +72,6 @@ export async function incrementUsage(userId, messageType) {
     }
   } catch {}
 }
-
-/**
- * Compute PAYG outstanding for current month: total overage units/cents vs what has been charged so far.
- */
 export async function getCurrentMonthPaygOutstanding(userId) {
   const usage = await getCurrentUsage(userId);
   const plan = await getUserPlan(userId);
@@ -107,10 +88,6 @@ export async function getCurrentMonthPaygOutstanding(userId) {
   const outstandingCents = Math.max(0, overageCents - chargedCents);
   return { overageUnits, overageCents, chargedUnits, chargedCents, outstandingUnits, outstandingCents };
 }
-
-/**
- * Record a PAYG charge in usage stats (used when charging on disable).
- */
 export async function recordPaygCharge(userId, units, cents) {
   if (!userId || !units || !cents) return;
   await UsageStats.updateOne(
@@ -119,10 +96,6 @@ export async function recordPaygCharge(userId, units, cents) {
     { upsert: true }
   );
 }
-
-/**
- * Get user's plan information
- */
 export async function getUserPlan(userId) {
   if (!userId) return null;
   let plan = await UserPlan.findOne({ user_id: userId }).lean();
@@ -139,10 +112,6 @@ export async function getUserPlan(userId) {
   }
   return plan;
 }
-
-/**
- * Update user's plan
- */
 export async function updateUserPlan(userId, planData) {
   if (!userId) return null;
   const current = await getUserPlan(userId);
@@ -169,32 +138,19 @@ export async function updateUserPlan(userId, planData) {
   );
   return updated;
 }
-
-/**
- * Check if user has exceeded their monthly limit
- */
 export async function isUsageExceeded(userId) {
   const usage = await getCurrentUsage(userId);
   const plan = await getUserPlan(userId);
   if (!usage || !plan) return false;
-  // If PAYG is enabled, we don't block on limits (charges applied per usage)
   if (plan?.payg_enabled) return false;
   const totalMessages = usage.inbound_messages + usage.outbound_messages + usage.template_messages;
   return totalMessages >= plan.monthly_limit;
 }
-
-/**
- * Get usage statistics for multiple months
- */
 export async function getUsageHistory(userId, months = 6) {
   if (!userId) return [];
   const rows = await UsageStats.find({ user_id: userId }).sort({ month_year: -1 }).limit(months).lean();
   return rows || [];
 }
-
-/**
- * Get plan pricing information
- */
 export function getPlanPricing() {
   return {
     free: {
@@ -203,8 +159,7 @@ export function getPlanPricing() {
       monthly_limit: 100,
       whatsapp_numbers: 1,
       kb_docs_limit: 20,
-      kb_chars_limit: 5 * 1024 * 1024, // ~5 MB of text
-      features: [
+      kb_chars_limit: 5 * 1024 * 1024,      features: [
         'Basic AI responses',
         'Email notifications',
         '1 WhatsApp number',
@@ -217,8 +172,7 @@ export function getPlanPricing() {
       monthly_limit: 1000,
       whatsapp_numbers: 1,
       kb_docs_limit: 500,
-      kb_chars_limit: 200 * 1024 * 1024, // ~200 MB of text
-      features: [
+      kb_chars_limit: 200 * 1024 * 1024,      features: [
         'Advanced AI customization',
         'Email + web notifications',
         'Calendar integration',

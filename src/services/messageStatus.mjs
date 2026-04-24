@@ -1,33 +1,16 @@
-/**
- * Message Status Management Service
- * Handles WhatsApp-style message delivery and read status tracking
- */
+
 
 import { getDB } from "../db-mongodb.mjs";
-
-// Message status constants
 export const MESSAGE_STATUS = {
-  SENT: 'sent',           // 1 tick (gray)
-  DELIVERED: 'delivered', // 2 ticks (gray) 
-  READ: 'read',           // 2 ticks (blue)
-  FAILED: 'failed'        // 1 red exclamation mark
-};
-
-// Read status constants
+  SENT: 'sent',  DELIVERED: 'delivered',  READ: 'read',  FAILED: 'failed'};
 export const READ_STATUS = {
   UNREAD: 'unread',
   READ: 'read'
 };
-
-/**
- * Update message delivery status
- */
 export async function updateMessageDeliveryStatus(messageId, status, timestamp = null) {
   if (!Object.values(MESSAGE_STATUS).includes(status)) {
     throw new Error(`Invalid message status: ${status}`);
   }
-
-  // Enforce monotonic progression of delivery_status: sent < delivered < read; failed overrides
   const rank = {
     [MESSAGE_STATUS.SENT]: 1,
     [MESSAGE_STATUS.DELIVERED]: 2,
@@ -37,8 +20,6 @@ export async function updateMessageDeliveryStatus(messageId, status, timestamp =
 
   const db = getDB();
   const now = timestamp || Math.floor(Date.now() / 1000);
-
-  // If the target is failed, always set failed (do not downgrade from failed later)
   if (status === MESSAGE_STATUS.FAILED) {
     const resFailed = await db.collection('messages').updateOne(
       { id: messageId },
@@ -50,8 +31,6 @@ export async function updateMessageDeliveryStatus(messageId, status, timestamp =
     }
     return false;
   }
-
-  // Only update if current status rank is lower than incoming
   const res = await db.collection('messages').updateOne(
     { id: messageId, $or: [ { delivery_status: { $exists: false } }, { delivery_status: null }, { delivery_status: { $in: [MESSAGE_STATUS.SENT, MESSAGE_STATUS.DELIVERED] } } ] },
     [
@@ -68,7 +47,6 @@ export async function updateMessageDeliveryStatus(messageId, status, timestamp =
             ]
           },
           delivery_timestamp: now,
-          // Initialize read_status if missing
           read_status: { $ifNull: ['$read_status', 'unread'] }
         }
       }
@@ -81,10 +59,6 @@ export async function updateMessageDeliveryStatus(messageId, status, timestamp =
   
   return false;
 }
-
-/**
- * Update message read status
- */
 export async function updateMessageReadStatus(messageId, status, timestamp = null) {
   if (!Object.values(READ_STATUS).includes(status)) {
     throw new Error(`Invalid read status: ${status}`);
@@ -102,10 +76,6 @@ export async function updateMessageReadStatus(messageId, status, timestamp = nul
   
   return false;
 }
-
-/**
- * Get message status for display
- */
 export async function getMessageStatus(messageId) {
   const db = getDB();
   return await db.collection('messages').findOne(
@@ -113,10 +83,6 @@ export async function getMessageStatus(messageId) {
     { projection: { _id: 0, delivery_status: 1, read_status: 1, delivery_timestamp: 1, read_timestamp: 1 } }
   );
 }
-
-/**
- * Mark all messages in a conversation as read
- */
 export async function markConversationAsRead(userId, contactId) {
   const db = getDB();
   const timestamp = Math.floor(Date.now() / 1000);
@@ -127,10 +93,6 @@ export async function markConversationAsRead(userId, contactId) {
   console.log(`👁️ Marked ${result.modifiedCount || 0} messages as read for conversation: ${contactId}`);
   return result.modifiedCount || 0;
 }
-
-/**
- * Mark a message as failed
- */
 export async function markMessageAsFailed(messageId, errorMessage = null) {
   const db = getDB();
   const timestamp = Math.floor(Date.now() / 1000);
@@ -145,10 +107,6 @@ export async function markMessageAsFailed(messageId, errorMessage = null) {
   
   return false;
 }
-
-/**
- * Retry sending a failed message
- */
 export async function retryFailedMessage(messageId) {
   const db = getDB();
   const message = await db.collection('messages').findOne({ id: messageId, delivery_status: MESSAGE_STATUS.FAILED }, { projection: { id: 1, user_id: 1, text_body: 1, to_digits: 1, from_digits: 1, raw: 1 } });
@@ -156,8 +114,6 @@ export async function retryFailedMessage(messageId) {
   if (!message) {
     return { success: false, error: 'Message not found or not in failed state' };
   }
-  
-  // Reset status to sent for retry
   const timestamp = Math.floor(Date.now() / 1000);
   await db.collection('messages').updateOne({ id: messageId }, { $set: { delivery_status: MESSAGE_STATUS.SENT, delivery_timestamp: timestamp, error_message: null } });
   
@@ -175,11 +131,6 @@ export async function retryFailedMessage(messageId) {
     }
   };
 }
-
-/**
- * Simulate WhatsApp webhook delivery status updates
- * In a real implementation, this would be called by WhatsApp webhooks
- */
 export async function simulateDeliveryStatusUpdate(messageId, status) {
   const timestamp = Math.floor(Date.now() / 1000);
   

@@ -1,28 +1,9 @@
-/**
- * Generic utilities for rendering and formatting.
- * Contains:
- * - Phone normalization helper
- * - HTML escaping
- * - Transcript-to-chat-bubbles renderer
- * - Sidebar HTML renderer with current active nav
- * - Professional enhancements script inclusion
- */
+
 import { CLERK_ENABLED } from "./config.mjs";
 const ASSET_VER = process.env.STATIC_ASSETS_VERSION || process.env.VERCEL_GIT_COMMIT_SHA || process.env.GIT_COMMIT || 'dev';
-
-/**
- * Get the professional enhancements script tag for all pages
- * @returns {string} HTML script tag for enhancements
- */
 export function getEnhancementsScript() {
   return `<script src="/enhancements.js"></script>`;
 }
-
-/**
- * Vercel Web Analytics snippet (no-framework).
- * Only injected on Vercel to avoid 404s/noise in local dev.
- * @returns {string} HTML snippet for the <head>
- */
 export function getVercelWebAnalyticsSnippet() {
   if (!process.env.VERCEL) return '';
   return `
@@ -32,12 +13,6 @@ export function getVercelWebAnalyticsSnippet() {
       <script defer src="/_vercel/insights/script.js"></script>
   `;
 }
-
-/**
- * Get the complete head section with all necessary scripts and styles
- * @param {string} title - Page title
- * @returns {string} Complete HTML head section
- */
 export function getProfessionalHead(title) {
   return `
     <head>
@@ -54,17 +29,9 @@ export function getProfessionalHead(title) {
     </head>
   `;
 }
-
-/**
- * Normalize phone-like strings to digits-only. Used for consistent lookups.
- * @param {string} value Raw phone string
- * @returns {string} digits-only
- */
 export function normalizePhone(value) {
   return (value || "").replace(/\D/g, "");
 }
-
-/** Normalize to E.164-like (+digits) when plausible, else null. */
 export function normalizePhoneE164(value) {
   if (!value) return null;
   const cleaned = String(value).replace(/[ \-().]/g, "");
@@ -73,12 +40,6 @@ export function normalizePhoneE164(value) {
   }
   return null;
 }
-
-/**
- * Escape unsafe characters for safe HTML insertion.
- * @param {string} text raw text
- * @returns {string} escaped HTML
- */
 export function escapeHtml(text) {
   return (text || '')
     .replace(/&/g, '&amp;')
@@ -87,13 +48,6 @@ export function escapeHtml(text) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
 }
-
-/**
- * Convert a plain-text onboarding transcript into bubble-styled HTML.
- * Recognizes lines prefixed with "You:" and "AI:" as separate messages.
- * @param {string} transcript combined transcript text
- * @returns {string} HTML of chat bubbles
- */
 export function renderTranscriptAsBubbles(transcript) {
   if (!transcript || !transcript.trim()) return '<div class="empty_chat" style="text-align:center;">How can I improve your KB?</div>';
   const lines = transcript.split('\n');
@@ -120,21 +74,9 @@ export function renderTranscriptAsBubbles(transcript) {
   }).join('');
   return `<div class="chat">${html}</div>`;
 }
-
-/**
- * Render the left-hand sidebar with navigation links.
- * Adds an "active" class on the current section.
- * @param {"dashboard"|"inbox"|"contacts"|"onboarding"|"settings"|"kb"|"bookings"} activeKey
- * @returns {string} sidebar HTML
- */
 export function renderSidebar(activeKey, options = {}) {
-  const showBookings = options.showBookings !== false; // default true
-  const showKb = (options.showKb !== false) && (options.isUpgraded ?? true); // hide KB unless explicitly allowed
-  const iconSize = 15; // px, "just a bit bigger"
-  const fontSize = "12px"; // Smaller font size for sidebar text
-  const svgPrimary = `width:${iconSize}px;height:${iconSize}px;vertical-align:middle;margin-right:5px;`;
-  const svgSecondary = `width:12px;height:12px;`; // For secondary inline badge/feature icons
-
+  const showBookings = options.showBookings !== false;  const showKb = (options.showKb !== false) && (options.isUpgraded ?? true);  const iconSize = 15;  const fontSize = "12px";  const svgPrimary = `width:${iconSize}px;height:${iconSize}px;vertical-align:middle;margin-right:5px;`;
+  const svgSecondary = `width:12px;height:12px;`;
   const textStyle = `color: grey; font-size: ${fontSize}; cursor: pointer;`;
   const disabledTextStyle = `color: #9ca3af; font-size: ${fontSize}; cursor: not-allowed;`;
 
@@ -377,11 +319,7 @@ export function renderTopbar(crumbs, email) {
     </script>
   `;
 }
-
-// --- Signed media URLs -------------------------------------------------------
 import crypto from 'node:crypto';
-
-/** Create a time-limited signature for a local uploads path (e.g., "/uploads/abc.pdf"). */
 export function signMediaPath(path, ttlSeconds = 300) {
   try {
     const secret = process.env.MEDIA_SIGN_SECRET || process.env.SESSION_TOKEN_SECRET || 'dev-media-secret';
@@ -393,13 +331,6 @@ export function signMediaPath(path, ttlSeconds = 300) {
   }
 }
 
-
-// --- Timezone-safe date helpers ---------------------------------------------
-/**
- * Get year/month/day components for a Date as experienced in a given IANA time zone.
- * Returns numeric parts suitable for constructing UTC instants that represent
- * local wall-clock times.
- */
 export function getYmdPartsInTimeZone(dateObj, timeZone = 'UTC') {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: timeZone || 'UTC',
@@ -412,11 +343,6 @@ export function getYmdPartsInTimeZone(dateObj, timeZone = 'UTC') {
   const day = Number(parts.find(p => p.type === 'day')?.value || '01');
   return { year, month, day };
 }
-
-/**
- * Build a UTC Date that represents a wall-clock time (hour:minute) on dateISO
- * in a given IANA time zone.
- */
 export function buildUtcFromLocalWallTime(dateISO, hour, minute = 0, timeZone = 'UTC') {
   try {
     const baseUtc = new Date(`${dateISO}T00:00:00.000Z`);

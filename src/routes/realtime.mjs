@@ -227,7 +227,6 @@ export default function registerRealtimeRoutes(app) {
     }
 
     try {
-      // Block enabling live mode when monthly message limit is exceeded
       const overLimit = await isUsageExceeded(userId);
       if (overLimit && isLive) {
         return res.status(403).json({ error: "You have exceeded your monthly message limit. Please upgrade your plan." });

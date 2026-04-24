@@ -1,16 +1,10 @@
-/**
- * Booking service
- * - Compute availability (via Google FreeBusy + working hours)
- * - Create, cancel, and reschedule appointments (mirrors in Google Calendar)
- */
+
 import { getDB } from "../db-mongodb.mjs";
 import { getSettingsForUser } from "./../services/settings.mjs";
 import mongoose from 'mongoose';
 import { Staff, Calendar, Appointment } from "../schemas/mongodb.mjs";
 import { freeBusy, createEvent, updateEvent, deleteEvent } from "./google.mjs";
 import { getYmdPartsInTimeZone } from "../utils.mjs";
-
-// (removed unused toISO)
 
 function localMinutesOfDay(dateObj, timeZone) {
   try {
@@ -26,7 +20,6 @@ function localMinutesOfDay(dateObj, timeZone) {
 function getDowKeyInTz(dateObj, timeZone) {
   try {
     const part = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone }).format(dateObj).toLowerCase();
-    // sun, mon, tue, wed, thu, fri, sat
     return part.slice(0,3);
   } catch {
     return ["sun","mon","tue","wed","thu","fri","sat"][dateObj.getDay()];
@@ -34,19 +27,16 @@ function getDowKeyInTz(dateObj, timeZone) {
 }
 
 function computeDaySlots(dayDate, slotMinutes, tz, workingHours, busyBlocks) {
-  // workingHours example: { mon:["09:00-17:00"], ... } with keys sun..sat
   const dow = getDowKeyInTz(dayDate, tz);
   const spans = Array.isArray(workingHours?.[dow]) ? workingHours[dow] : [];
   if (process.env.DEBUG_BOOKINGS === '1') try { console.log('[availability] spans', { date: dayDate.toISOString().slice(0,10), dow, spans }); } catch {}
   const slots = [];
-  // Resolve Y-M-D in the staff timezone to avoid DST offset errors
   const { year: y, month: m, day: d } = getYmdPartsInTimeZone(dayDate, tz || 'UTC');
   for (const span of spans) {
     const [startStr, endStr] = String(span||"").split("-");
     if (!startStr || !endStr) continue;
     const [sh, sm] = startStr.split(":").map(n => Number(n||0));
     const [eh, em] = endStr.split(":").map(n => Number(n||0));
-    // Build UTC instants corresponding to local wall-clock times in tz
     const start = new Date(Date.UTC(y, m-1, d, sh, sm||0, 0, 0));
     const end = new Date(Date.UTC(y, m-1, d, eh, em||0, 0, 0));
     for (let t = new Date(start); t < end; t = new Date(t.getTime() + slotMinutes*60000)) {
@@ -68,7 +58,6 @@ export function getStaffById(staffId, userId) {
     if (mongoose.Types.ObjectId.isValid(String(staffId))) {
       return Staff.findOne({ _id: new mongoose.Types.ObjectId(String(staffId)), user_id: String(userId) }).lean();
     }
-    // Fallback: treat as legacy numeric id stored in a shadow field
     return Staff.findOne({ legacy_id: Number(staffId), user_id: String(userId) }).lean();
   } catch { return null; }
 }
@@ -86,7 +75,6 @@ export async function listAvailability({ userId, staffId, dateISO, days = 1, slo
   const staff = await getStaffById(staffId, userId);
   if (!staff) return [];
   let calendar = staff.calendar_id ? await getCalendarById(staff.calendar_id, userId) : null;
-  // Fallback: use any calendar linked to this user if staff has none explicitly assigned
   if (!calendar) {
     try {
       const db = getDB();
@@ -98,7 +86,6 @@ export async function listAvailability({ userId, staffId, dateISO, days = 1, slo
 
   const minutes = Number(slotMinutes || settings?.booking_display_interval_minutes || staff.slot_minutes || 30);
   let working = (() => { try { return JSON.parse(staff.working_hours_json || '{}'); } catch { return {}; } })();
-  // Fallback working hours if none configured: Mon–Fri 09:00–17:00
   try {
     const hasAny = working && Object.values(working).some(v => Array.isArray(v) && v.length > 0);
     if (!hasAny) {
@@ -111,8 +98,6 @@ export async function listAvailability({ userId, staffId, dateISO, days = 1, slo
   const capLimit = Number(settings?.booking_capacity_limit || 0);
   const DBG = process.env.DEBUG_BOOKINGS === '1';
   if (DBG) console.log('[availability] input', { userId, staffId: String(staffId), tz, minutes, days, startDate: dateISO, maxPerDay, daysAhead, capWindowMin, capLimit });
-
-  // Tenant closures and holiday rules
   const closedDatesSet = (() => {
     try {
       const arr = JSON.parse(settings?.closed_dates_json || '[]');
@@ -131,12 +116,10 @@ export async function listAvailability({ userId, staffId, dateISO, days = 1, slo
   const results = [];
   for (let d = 0; d < Number(days||1); d++) {
     const day = new Date(startDay.getTime() + d*86400000);
-    // Enforce days ahead limit, if configured
     if (daysAhead > 0) {
       const diffDays = Math.floor((day.getTime() - Date.now()) / 86400000);
       if (diffDays > daysAhead) { results.push({ date: day.toISOString().slice(0,10), slots: [] }); continue; }
     }
-    // Enforce closed dates (full-day)
     const ymdParts = getYmdPartsInTimeZone(day, tz || 'UTC');
     const ymdKey = `${ymdParts.year}-${String(ymdParts.month).padStart(2,'0')}-${String(ymdParts.day).padStart(2,'0')}`;
     if (closedDatesSet.has(ymdKey)) {
@@ -146,7 +129,6 @@ export async function listAvailability({ userId, staffId, dateISO, days = 1, slo
     const tMin = new Date(day); tMin.setHours(0,0,0,0);
     const tMax = new Date(day); tMax.setHours(23,59,59,999);
     const busy = calendar ? await freeBusy(calendar, tMin.toISOString(), tMax.toISOString()) : [];
-    // Load today's appointments once for capacity filtering
     let dayAppts = [];
     try {
       const db = getDB();
@@ -161,14 +143,12 @@ export async function listAvailability({ userId, staffId, dateISO, days = 1, slo
     try { if (!slots.length) console.log('availability-debug', { userId, staffId, tz, date: day.toISOString().slice(0,10), minutes, spans: (working && working[getDowKeyInTz(day, tz)] || []).length, busy: busy.length }); } catch {}
     let mapped = slots.map(s => ({ start: s.start.toISOString(), end: s.end.toISOString() }));
     if (DBG) console.log('[availability] pre-filter', { date: day.toISOString().slice(0,10), slotCount: mapped.length, busyCount: (busy||[]).length, apptCount: (dayAppts||[]).length });
-    // Enforce holiday rules (partial-day closures)
     try {
       const dayRules = holidayRules.filter(r => String(r?.date) === ymdKey);
       if (dayRules.length) {
         mapped = mapped.filter(s => {
           const sm = localMinutesOfDay(new Date(s.start), tz);
           const em = localMinutesOfDay(new Date(s.end), tz);
-          // A slot is allowed only if it does NOT overlap any closed window
           const overlapsClosed = dayRules.some(r => {
             const m1 = /^\s*(\d{2}):(\d{2})\s*$/.exec(String(r?.start||'00:00'));
             const m2 = /^\s*(\d{2}):(\d{2})\s*$/.exec(String(r?.end||'23:59'));
@@ -181,7 +161,6 @@ export async function listAvailability({ userId, staffId, dateISO, days = 1, slo
         });
       }
     } catch {}
-    // Enforce max bookings per day by emptying day when limit reached
     if (maxPerDay > 0) {
       try {
         const db = getDB();
@@ -192,7 +171,6 @@ export async function listAvailability({ userId, staffId, dateISO, days = 1, slo
         if (count >= maxPerDay) mapped = [];
       } catch {}
     }
-    // Enforce capacity per window (e.g., per hour or 30 min) when configured
     if (capLimit > 0 && capWindowMin > 0) {
       const filtered = [];
       const winMs = capWindowMin * 60000;
@@ -201,8 +179,7 @@ export async function listAvailability({ userId, staffId, dateISO, days = 1, slo
         const se = ss + winMs;
         const count = (dayAppts||[]).filter(a => {
           const as = (a.start_ts||0)*1000; const ae = (a.end_ts||0)*1000;
-          return ss < ae && se > as; // overlaps capacity window
-        }).length;
+          return ss < ae && se > as;        }).length;
         if (count < capLimit) filtered.push(s);
       }
       mapped = filtered;
@@ -217,7 +194,6 @@ export async function createBooking({ userId, staffId, startISO, endISO, contact
   const staff = await getStaffById(staffId, userId);
   if (!staff) throw new Error("staff not found");
   const calendar = staff.calendar_id ? await getCalendarById(staff.calendar_id, userId) : null;
-  // Double-check FreeBusy for the requested range
   if (calendar) {
     const busy = await freeBusy(calendar, startISO, endISO);
     const overlaps = (Array.isArray(busy) ? busy : []).some(b => {
@@ -238,7 +214,6 @@ export async function createBooking({ userId, staffId, startISO, endISO, contact
     const r = await createEvent(calendar, evt);
     gcalId = r?.id || null;
   }
-  // Optionally cancel existing upcoming appointments for this contact (avoid duplicates when user "reschedules" by booking anew)
   try {
     if (replaceExistingForContact && contactPhone) {
       const db = getDB();
@@ -267,15 +242,11 @@ export async function createBooking({ userId, staffId, startISO, endISO, contact
       }
     }
   } catch {}
-
-  // Create appointment in Mongo; include a legacy-compatible 'id' field (numeric seconds) to reference in flows
   const startTs = Math.floor(new Date(startISO).getTime() / 1000);
   const endTs = Math.floor(new Date(endISO).getTime() / 1000);
   const db = getDB();
   let legacyId = Math.floor(Date.now() / 1000);
   try {
-    // ensure uniqueness by bumping if collision for this user
-    // eslint-disable-next-line no-constant-condition
     for (let i = 0; i < 5; i++) {
       const exists = await db.collection('appointments').findOne({ user_id: String(userId), id: legacyId });
       if (!exists) break;
@@ -303,7 +274,6 @@ export async function cancelBooking({ userId, appointmentId }) {
   const db = getDB();
   const appt = await db.collection('appointments').findOne({ user_id: String(userId), id: Number(appointmentId) });
   if (!appt) return false;
-  // Try to delete Google event when possible
   try {
     if (appt.gcal_event_id && appt.staff_id) {
       const calOwner = await Staff.findOne({ _id: appt.staff_id }).lean();
@@ -338,8 +308,6 @@ export async function rescheduleBooking({ userId, appointmentId, startISO, endIS
   const startTs = Math.floor(new Date(startISO).getTime() / 1000);
   const endTs = Math.floor(new Date(endISO).getTime() / 1000);
   await Appointment.updateOne({ _id: appt._id }, { $set: { start_ts: startTs, end_ts: endTs, status: 'confirmed', updatedAt: new Date() } });
-
-  // Safety: cancel any other future appointments for this contact to avoid duplicates
   try {
     const digits = String(appt.contact_phone || '').replace(/\D/g, '');
     const nowSec = Math.floor(Date.now() / 1000);
@@ -368,8 +336,6 @@ export async function rescheduleBooking({ userId, appointmentId, startISO, endIS
   } catch {}
   return true;
 }
-
-/** Build the next 7 day-list rows for booking or reschedule. */
 export function buildDayRows(staffId, apptId = null) {
   const base = new Date();
   return Array.from({ length: 7 }).map((_, i) => {
@@ -381,8 +347,6 @@ export function buildDayRows(staffId, apptId = null) {
     return { id, title: d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }), description: 'Tap to view times' };
   });
 }
-
-/** Build time rows for a given date using availability. */
 export async function buildTimeRows({ userId, staffId, dateISO, limit = 10, apptId = null, slotMinutes = undefined }) {
   const avail = await listAvailability({ userId, staffId, dateISO, days: 1, slotMinutes });
   const slots = Array.isArray(avail) ? (avail[0]?.slots || []) : [];
@@ -398,11 +362,8 @@ export async function buildTimeRows({ userId, staffId, dateISO, limit = 10, appt
   }));
   return rows;
 }
-
-/** Return true if too close to start time per lead minutes. */
 export function isTooCloseToStart(nowSecs, startTs, minLeadMinutes) {
   const minsToStart = Math.floor(((startTs||0) - (nowSecs||0)) / 60);
   return minsToStart < Number(minLeadMinutes || 60);
 }
-
 

@@ -1,16 +1,9 @@
-/**
- * Conversation listing helpers.
- * - listContactsForUser: latest contacts for Inbox
- * - listMessagesForThread: chronological messages for a contact thread
- */
-import { Message, Handoff } from "../schemas/mongodb.mjs";
 
-/** List the latest 100 contacts with last timestamp and last text preview. */
+import { Message, Handoff } from "../schemas/mongodb.mjs";
 export async function listContactsForUser(userId, opts = {}) {
   try {
     const page = Math.max(1, parseInt(opts.page||1,10));
     const pageSize = Math.min(50, Math.max(10, parseInt(opts.pageSize||20,10)));
-    // Get all unique contacts from messages
     let contacts = await Message.aggregate([
       {
         $match: {
@@ -92,8 +85,6 @@ export async function listContactsForUser(userId, opts = {}) {
     ]);
 
     contacts = contacts.map(row => ({ ...row, contact: cleanContactId(row.contact) }));
-
-    // Fallback: if aggregation produced nothing, derive from recent messages using digits
     if (!contacts.length) {
       const recent = await Message.find({ user_id: userId })
         .select('direction from_id to_id from_digits to_digits text_body timestamp')
@@ -121,27 +112,17 @@ export async function listContactsForUser(userId, opts = {}) {
     return [];
   }
 }
-
-/** Clean contact ID by removing URL parameters and query strings */
 function cleanContactId(contactId) {
   if (!contactId) return contactId;
-  
-  // Remove common URL parameters that might be appended to phone numbers
   let cleaned = contactId.toString();
-  
-  // Remove query string parameters like ?type=success, &type=success, etc.
   cleaned = cleaned.replace(/[?&]type=[^&]*/g, '');
   cleaned = cleaned.replace(/[?&]status=[^&]*/g, '');
   cleaned = cleaned.replace(/[?&]state=[^&]*/g, '');
   cleaned = cleaned.replace(/[?&]code=[^&]*/g, '');
-  
-  // Remove any remaining query string parameters
   const questionMarkIndex = cleaned.indexOf('?');
   if (questionMarkIndex !== -1) {
     cleaned = cleaned.substring(0, questionMarkIndex);
   }
-  
-  // Remove any remaining ampersand parameters
   const ampersandIndex = cleaned.indexOf('&');
   if (ampersandIndex !== -1) {
     cleaned = cleaned.substring(0, ampersandIndex);
@@ -149,8 +130,6 @@ function cleanContactId(contactId) {
   
   return cleaned;
 }
-
-/** List messages for a user+phoneDigits thread ordered by timestamp ASC. */
 export async function listMessagesForThread(userId, phoneDigits) {
   try {
     const messages = await Message.find({

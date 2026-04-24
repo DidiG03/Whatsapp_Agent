@@ -1,7 +1,4 @@
-/**
- * Realtime manager backed by Ably channels.
- * Handles live chat updates and toast notifications.
- */
+
 class RealtimeManager {
   constructor() {
     this.ably = null;
@@ -188,7 +185,6 @@ class RealtimeManager {
       this.globalHandlers.set(eventName, new Set());
     }
     this.globalHandlers.get(eventName).add(handler);
-    // If we are already connected, emit synthetic event for stateful info
     if (eventName === 'metrics_update' && this.latestMetrics) {
       handler(this.latestMetrics);
     }
@@ -332,7 +328,6 @@ class RealtimeManager {
 
   startReconnectLoop() {
     if (this.reconnectIntervalId) return;
-    // Try to reconnect every 60s while disconnected
     this.reconnectIntervalId = setInterval(() => {
       if (this.isDestroyed) return;
       if (!this.isConnected) {
@@ -398,8 +393,6 @@ class RealtimeManager {
     }
     this.stopReconnectLoop();
   }
-
-  // ===== Methods below are reused from the legacy implementation =====
   normalizePhone(phone) {
     return String(phone || '').replace(/[^0-9]/g, '');
   }
@@ -472,7 +465,6 @@ class RealtimeManager {
       if (resp.status === 401) {
         this.showToast('Session expired. Please sign in again.', 'error');
         try { window.authManager?.checkAuthStatus?.(); } catch {}
-        // Redirect to sign-in, preserving return URL
         setTimeout(() => {
           try {
             const target = `/auth/signin?redirect_url=${encodeURIComponent(window.location.href)}`;
@@ -482,7 +474,6 @@ class RealtimeManager {
         return false;
       }
     } catch {
-      // Ignore network errors here; reconnect loop will handle retry
     }
     return true;
   }
@@ -521,7 +512,6 @@ class RealtimeManager {
       const bubble = document.createElement('div');
       bubble.className = 'bubble';
       const meta = this.formatTimestamp(message?.timestamp);
-      // If the user is upgraded (set by inbox page), render inline action buttons like server-rendered HTML
       const canActions = (typeof window !== 'undefined' && !!window.IS_UPGRADED && message?.id);
       const actionsHtml = canActions
         ? `<div class="message-actions">
@@ -622,9 +612,6 @@ class RealtimeManager {
     this.emitGlobal('live_mode_changed', data);
   }
 
-
-
-
   scrollThreadToBottom(container) {
     if (!container) return;
     try {
@@ -676,7 +663,7 @@ class RealtimeManager {
       try {
         window.location.reload();
       } catch {
-        /* noop */
+
       }
     }, 1000);
   }

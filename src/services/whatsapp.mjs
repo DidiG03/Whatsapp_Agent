@@ -1,14 +1,9 @@
-/**
- * WhatsApp Graph API client.
- * Exposes a resilient text send function with basic exponential backoff.
- */
+
 import fetch from "node-fetch";
 import fs from "fs";
 import path from "path";
 import FormData from "form-data";
 import https from "node:https";
-
-// Reuse HTTP connections for lower latency and fewer TCP handshakes
 const keepAliveAgent = new https.Agent({ keepAlive: true, keepAliveMsecs: 10_000 });
 
 async function postWhatsAppMessage(cfg, payload, { retry = false } = {}) {
@@ -27,8 +22,6 @@ async function postWhatsAppMessage(cfg, payload, { retry = false } = {}) {
     "Authorization": `Bearer ${cfg.whatsapp_token}`,
     "Content-Type": "application/json"
   };
-
-  // Diagnostics: log request metadata without secrets
   if (process.env.DEBUG_LOGS === '1') {
     try {
       const meta = {
@@ -50,7 +43,6 @@ async function postWhatsAppMessage(cfg, payload, { retry = false } = {}) {
       if (!resp.ok) {
         const text = await resp.text();
         console.error('[WA] HTTP error', { status: resp.status, body: text.slice(0, 2000) });
-        // Handle 401 authentication errors specifically
         if (resp.status === 401) {
           throw new Error(`WhatsApp authentication failed (401): Invalid or expired token. Please check your WhatsApp Business API configuration.`);
         }
@@ -73,7 +65,6 @@ async function postWhatsAppMessage(cfg, payload, { retry = false } = {}) {
     try {
       const resp = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload), agent: keepAliveAgent });
       if (resp.status === 401) {
-        // Don't retry 401 errors - they indicate authentication issues
         const text = await resp.text();
         console.error('[WA] Auth 401 during retry', { body: text.slice(0, 2000) });
         throw new Error(`WhatsApp authentication failed (401): Invalid or expired token. Please check your WhatsApp Business API configuration.`);
@@ -89,7 +80,6 @@ async function postWhatsAppMessage(cfg, payload, { retry = false } = {}) {
       return json;
     } catch (e) {
       lastErr = e;
-      // Don't retry if it's an authentication error
       if (e.message.includes('authentication failed')) {
         throw e;
       }
@@ -99,27 +89,15 @@ async function postWhatsAppMessage(cfg, payload, { retry = false } = {}) {
   }
   throw lastErr;
 }
-
-/**
- * Send a WhatsApp text message via Meta Graph API.
- * Retries transient errors with exponential backoff up to 3 attempts.
- * @param {string} to Recipient phone number (digits or E.164 accepted by API)
- * @param {string} body Message text content
- * @param {{ phone_number_id?: string, whatsapp_token?: string, user_id?: string }} cfg Tenant configuration
- * @returns {Promise<any>} Raw JSON response from the Graph API
- */
 export async function sendWhatsAppText(to, body, cfg, replyToMessageId = null) {
   const payload = { 
     messaging_product: "whatsapp", 
     to, 
     text: { body }
   };
-  
-  // Add reply context if replying to a message
   if (replyToMessageId) {
     payload.context = { message_id: replyToMessageId };
   }
-  // Debug: minimal payload log (no secrets)
   if (process.env.DEBUG_LOGS === '1') { try { console.log('[WA] Sending text', { to: String(to).slice(-6), hasToken: !!cfg?.whatsapp_token, hasPhoneId: !!cfg?.phone_number_id }); } catch {} }
 
   let result;
@@ -129,8 +107,6 @@ export async function sendWhatsAppText(to, body, cfg, replyToMessageId = null) {
     console.error('[WA] Send text error:', { message: e?.message || String(e) });
     throw e;
   }
-
-  // Debug: log shape of response to diagnose missing message id
   if (process.env.DEBUG_LOGS === '1') {
     try {
       const meta = {
@@ -140,8 +116,6 @@ export async function sendWhatsAppText(to, body, cfg, replyToMessageId = null) {
       console.log('[WA] Send text API result', meta);
     } catch {}
   }
-  
-  // Track outbound message usage
   if (cfg.user_id && result?.messages?.[0]?.id) {
     try {
       const { incrementUsage } = await import('./usage.mjs');
@@ -153,7 +127,6 @@ export async function sendWhatsAppText(to, body, cfg, replyToMessageId = null) {
   
   return result;
 }
-
 
 export async function sendWhatsappButton(to, promptText, buttons, cfg) {
   const payload = {
@@ -210,14 +183,6 @@ export async function sendWhatsappList(to, headerText, bodyText, buttonLabel, ro
   }
   return await postWhatsAppMessage(cfg, payload, { retry: false });
 }
-
-/**
- * React to a specific inbound message with an emoji (e.g., 👍).
- * @param {string} to Recipient phone number (digits or E.164)
- * @param {string} messageId The message id to react to (usually the inbound id)
- * @param {string} emoji The emoji character to use for the reaction
- * @param {{ phone_number_id?: string, whatsapp_token?: string }} cfg Tenant configuration
- */
 export async function sendWhatsappReaction(to, messageId, emoji, cfg) {
   if (!cfg.phone_number_id || !cfg.whatsapp_token) {
     throw new Error("WhatsApp is not configured");
@@ -253,15 +218,6 @@ export async function sendWhatsappReaction(to, messageId, emoji, cfg) {
   return { ok: true, status: resp.status, body: json };
 }
 
-
-/**
- * Send a WhatsApp image by URL.
- * @param {string} to Recipient phone number (digits or E.164)
- * @param {string} imageUrl URL of the image to send
- * @param {string} caption Optional caption for the image
- * @param {{ phone_number_id?: string, whatsapp_token?: string, user_id?: string }} cfg Tenant configuration
- * @returns {Promise<any>} Raw JSON response from the Graph API
- */
 export async function sendWhatsappImage(to, imageUrl, caption, cfg, replyToMessageId = null) {
   const payload = {
     messaging_product: "whatsapp",
@@ -272,15 +228,11 @@ export async function sendWhatsappImage(to, imageUrl, caption, cfg, replyToMessa
       ...(caption ? { caption } : {})
     }
   };
-  
-  // Add reply context if replying to a message
   if (replyToMessageId) {
     payload.context = { message_id: replyToMessageId };
   }
   
   const result = await postWhatsAppMessage(cfg, payload, { retry: true });
-  
-  // Track outbound message usage
   if (cfg.user_id && result?.messages?.[0]?.id) {
     try {
       const { incrementUsage } = await import('./usage.mjs');
@@ -295,10 +247,7 @@ export async function sendWhatsappImage(to, imageUrl, caption, cfg, replyToMessa
 
 export async function sendWhatsappImageBase64(to, imagePath, caption, cfg) {
   try {
-    // Read the image file (non-blocking)
     const imageBuffer = await fs.promises.readFile(imagePath);
-    
-    // Get file extension to determine MIME type
     const ext = path.extname(imagePath).toLowerCase();
     const mimeTypes = {
       '.jpg': 'image/jpeg',
@@ -308,11 +257,7 @@ export async function sendWhatsappImageBase64(to, imagePath, caption, cfg) {
       '.webp': 'image/webp'
     };
     const mimeType = mimeTypes[ext] || 'image/jpeg';
-    
-    // Try to upload to a free image hosting service
     let publicImageUrl = null;
-    
-    // Try tmpfiles.org (free, no API key required)
     try {
       const formData = new FormData();
       formData.append('file', imageBuffer, {
@@ -330,7 +275,6 @@ export async function sendWhatsappImageBase64(to, imagePath, caption, cfg) {
       if (uploadResponse.ok) {
         const uploadResult = await uploadResponse.json();
         if (uploadResult.status === 'success') {
-          // Convert tmpfiles.org URL to direct image URL
           publicImageUrl = uploadResult.data.url.replace('tmpfiles.org/', 'tmpfiles.org/dl/');
           console.log('Image uploaded to tmpfiles.org:', publicImageUrl);
         }
@@ -338,11 +282,8 @@ export async function sendWhatsappImageBase64(to, imagePath, caption, cfg) {
     } catch (e) {
       console.log('tmpfiles.org upload failed:', e.message);
     }
-    
-    // If tmpfiles failed, try another service
     if (!publicImageUrl) {
       try {
-        // Try 0x0.st (another free service)
         const formData = new FormData();
         formData.append('file', imageBuffer, {
           filename: path.basename(imagePath),
@@ -368,8 +309,6 @@ export async function sendWhatsappImageBase64(to, imagePath, caption, cfg) {
     if (!publicImageUrl) {
       throw new Error('Failed to upload image to any hosting service');
     }
-    
-    // Now send the image using the public URL
     const payload = {
       messaging_product: "whatsapp",
       to,
@@ -381,8 +320,6 @@ export async function sendWhatsappImageBase64(to, imagePath, caption, cfg) {
     };
     
     const result = await postWhatsAppMessage(cfg, payload, { retry: true });
-    
-    // Track outbound message usage
     if (cfg.user_id && result?.messages?.[0]?.id) {
       try {
         const { incrementUsage } = await import('./usage.mjs');
@@ -398,17 +335,6 @@ export async function sendWhatsappImageBase64(to, imagePath, caption, cfg) {
     throw error;
   }
 }
-
-/**
- * Send a WhatsApp document message via URL.
- * @param {string} to Recipient phone number (with country code, no +)
- * @param {string} documentUrl URL of the document to send
- * @param {string} filename Name of the document file
- * @param {string} caption Optional caption for the document
- * @param {{ phone_number_id?: string, whatsapp_token?: string, user_id?: string }} cfg Tenant configuration
- * @param {string} replyToMessageId Optional message ID to reply to
- * @returns {Promise<any>} Raw JSON response from the Graph API
- */
 export async function sendWhatsappDocument(to, documentUrl, filename, caption, cfg, replyToMessageId = null) {
   const payload = {
     messaging_product: "whatsapp",
@@ -420,15 +346,11 @@ export async function sendWhatsappDocument(to, documentUrl, filename, caption, c
       ...(caption ? { caption } : {})
     }
   };
-  
-  // Add reply context if replying to a message
   if (replyToMessageId) {
     payload.context = { message_id: replyToMessageId };
   }
   
   const result = await postWhatsAppMessage(cfg, payload, { retry: true });
-  
-  // Track outbound message usage
   if (cfg.user_id && result?.messages?.[0]?.id) {
     try {
       const { incrementUsage } = await import('./usage.mjs');
@@ -440,22 +362,9 @@ export async function sendWhatsappDocument(to, documentUrl, filename, caption, c
   
   return result;
 }
-
-/**
- * Send a WhatsApp document message via base64 upload (for localhost development).
- * @param {string} to Recipient phone number (with country code, no +)
- * @param {string} documentPath Path to the document file
- * @param {string} filename Name of the document file
- * @param {string} caption Optional caption for the document
- * @param {{ phone_number_id?: string, whatsapp_token?: string, user_id?: string }} cfg Tenant configuration
- * @returns {Promise<any>} Raw JSON response from the Graph API
- */
 export async function sendWhatsappDocumentBase64(to, documentPath, filename, caption, cfg) {
   try {
-    // Read the document file (non-blocking)
     const documentBuffer = await fs.promises.readFile(documentPath);
-    
-    // Get file extension to determine MIME type
     const ext = path.extname(documentPath).toLowerCase();
     const mimeTypes = {
       '.pdf': 'application/pdf',
@@ -473,11 +382,7 @@ export async function sendWhatsappDocumentBase64(to, documentPath, filename, cap
       '.rar': 'application/x-rar-compressed'
     };
     const mimeType = mimeTypes[ext] || 'application/octet-stream';
-    
-    // Try to upload to a free file hosting service
     let publicDocumentUrl = null;
-    
-    // Try tmpfiles.org (free, no API key required)
     try {
       const formData = new FormData();
       formData.append('file', documentBuffer, {
@@ -495,7 +400,6 @@ export async function sendWhatsappDocumentBase64(to, documentPath, filename, cap
       if (uploadResponse.ok) {
         const uploadResult = await uploadResponse.json();
         if (uploadResult.status === 'success') {
-          // Convert tmpfiles.org URL to direct document URL
           publicDocumentUrl = uploadResult.data.url.replace('tmpfiles.org/', 'tmpfiles.org/dl/');
           console.log('Document uploaded to tmpfiles.org:', publicDocumentUrl);
         }
@@ -507,8 +411,6 @@ export async function sendWhatsappDocumentBase64(to, documentPath, filename, cap
     if (!publicDocumentUrl) {
       throw new Error('Failed to upload document to hosting service');
     }
-    
-    // Now send the document using the public URL
     const payload = {
       messaging_product: "whatsapp",
       to,
@@ -521,8 +423,6 @@ export async function sendWhatsappDocumentBase64(to, documentPath, filename, cap
     };
     
     const result = await postWhatsAppMessage(cfg, payload, { retry: true });
-    
-    // Track outbound message usage
     if (cfg.user_id && result?.messages?.[0]?.id) {
       try {
         const { incrementUsage } = await import('./usage.mjs');
@@ -539,17 +439,6 @@ export async function sendWhatsappDocumentBase64(to, documentPath, filename, cap
   }
 }
 
-/**
- * Send a WhatsApp template message (HSM) using a pre-approved template.
- * @param {string} to recipient phone
- * @param {string} templateName approved template name (e.g., "hello_world")
- * @param {string} language language code (e.g., "en_US")
- * @param {Array} components optional components (header/body/buttons)
- * @param {{ user_id?: string }} cfg Tenant configuration
- */
-/**
- * Send product catalog via WhatsApp
- */
 export async function sendProductCatalog(to, products, cfg) {
   if (!Array.isArray(products) || products.length === 0) {
     return await sendWhatsAppText(to, "No products available at the moment.", cfg);
@@ -573,15 +462,10 @@ export async function sendProductCatalog(to, products, cfg) {
 
   return await sendWhatsAppText(to, message, cfg);
 }
-
-/**
- * Send product details with options
- */
 export async function sendProductDetails(to, product, cfg) {
   let message = `🛍️ *${product.title}*\n\n`;
 
   if (product.image) {
-    // Send image first
     await sendWhatsappImage(to, product.image, product.title, cfg);
   }
 
@@ -603,10 +487,6 @@ export async function sendProductDetails(to, product, cfg) {
 
   return await sendWhatsAppText(to, message, cfg);
 }
-
-/**
- * Send order confirmation
- */
 export async function sendOrderConfirmation(to, order, cfg) {
   let message = `✅ *Order Confirmed!*\n\n`;
   message += `📋 Order #${order.order_number}\n`;
@@ -625,10 +505,6 @@ export async function sendOrderConfirmation(to, order, cfg) {
 
   return await sendWhatsAppText(to, message, cfg);
 }
-
-/**
- * Send order status update
- */
 export async function sendOrderStatusUpdate(to, order, cfg) {
   let message = `📦 *Order Update*\n\n`;
   message += `📋 Order #${order.order_number}\n`;
@@ -644,10 +520,6 @@ export async function sendOrderStatusUpdate(to, order, cfg) {
 
   return await sendWhatsAppText(to, message, cfg);
 }
-
-/**
- * Send abandoned cart reminder
- */
 export async function sendAbandonedCartReminder(to, cart, cfg) {
   let message = `🛒 *Don't forget your cart!*\n\n`;
   message += `You have ${cart.line_items?.length || 0} item(s) waiting in your cart:\n\n`;
@@ -664,10 +536,6 @@ export async function sendAbandonedCartReminder(to, cart, cfg) {
 
   return await sendWhatsAppText(to, message, cfg);
 }
-
-/**
- * Send interactive product selection list
- */
 export async function sendProductSelectionList(to, products, cfg) {
   if (!Array.isArray(products) || products.length === 0) {
     return await sendWhatsAppText(to, "No products available.", cfg);
@@ -701,8 +569,6 @@ export async function sendWhatsAppTemplate(to, templateName, language, component
     }
   };
   const result = await postWhatsAppMessage(cfg, payload, { retry: false });
-  
-  // Track template message usage
   if (cfg.user_id && result?.messages?.[0]?.id) {
     try {
       const { incrementUsage } = await import('./usage.mjs');

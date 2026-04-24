@@ -1,12 +1,4 @@
-/**
- * Minimal Google Calendar client helpers.
- * - Refreshes access tokens using refresh_token if available
- * - Calls FreeBusy and Events endpoints
- *
- * This scaffold works without googleapis dependency and degrades gracefully
- * when credentials are not configured, returning empty busy lists and
- * storing null event ids so the rest of the app can function.
- */
+
 import fetch from "node-fetch";
 import { db } from "../db-mongodb.mjs";
 
@@ -20,8 +12,7 @@ function isTokenValid(row) {
   const exp = Number(row?.token_expiry || 0);
   if (!row?.access_token || !exp) return false;
   const now = Math.floor(Date.now() / 1000);
-  return exp - now > 120; // 2 minute buffer
-}
+  return exp - now > 120;}
 
 async function refreshAccessToken(calendarRow) {
   if (!calendarRow?.refresh_token || !CLIENT_ID || !CLIENT_SECRET) return null;
@@ -147,5 +138,4 @@ export async function listEvents(calendarRow, timeMinISO, timeMaxISO) {
     return [];
   }
 }
-
 

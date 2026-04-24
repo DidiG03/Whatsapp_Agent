@@ -1,12 +1,7 @@
-/**
- * Shopify service for e-commerce integration
- * Handles OAuth, API calls, webhooks, and data synchronization
- */
+
 
 import crypto from 'crypto';
 import axios from 'axios';
-
-// Initialize Shopify API client
 const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY;
 const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET;
 const SHOPIFY_SCOPES = process.env.SHOPIFY_SCOPES || 'read_products,write_products,read_orders,write_orders,read_customers,write_customers,read_inventory,write_inventory';
@@ -15,11 +10,6 @@ function normalizeBaseUrl(url) {
   if (!url) return '';
   return String(url).trim().replace(/\/+$/, '');
 }
-
-/**
- * Resolve the OAuth redirect URI.
- * Prefers explicit SHOPIFY_REDIRECT_URI, otherwise derives from PUBLIC_BASE_URL/NGROK_URL.
- */
 export function getShopifyRedirectUri() {
   const explicit = (process.env.SHOPIFY_REDIRECT_URI || '').trim();
   if (explicit) return explicit;
@@ -34,18 +24,10 @@ export function getShopifyRedirectUri() {
   const port = process.env.PORT || 3000;
   return `http://localhost:${port}/shopify/oauth/callback`;
 }
-
-/**
- * Check if Shopify integration is properly configured
- */
 export function isShopifyEnabled() {
   const redirectUri = getShopifyRedirectUri();
   return !!(SHOPIFY_API_KEY && SHOPIFY_API_SECRET && redirectUri);
 }
-
-/**
- * Generate Shopify OAuth URL for store authorization
- */
 export function generateOAuthUrl(shopDomain, state = null) {
   if (!isShopifyEnabled()) {
     throw new Error('Shopify is not configured');
@@ -61,19 +43,12 @@ export function generateOAuthUrl(shopDomain, state = null) {
 
   return `https://${shopDomain}/admin/oauth/authorize?${params.toString()}`;
 }
-
-/**
- * Exchange authorization code for access token
- */
 export async function exchangeCodeForToken(shopDomain, code) {
   if (!isShopifyEnabled()) {
     throw new Error('Shopify is not configured');
   }
 
   const url = `https://${shopDomain}/admin/oauth/access_token`;
-
-  // Use x-www-form-urlencoded (most compatible) and do NOT follow redirects.
-  // Redirects often indicate a wrong host/shop value and can lead to HTML error pages.
   const body = new URLSearchParams({
     client_id: SHOPIFY_API_KEY,
     client_secret: SHOPIFY_API_SECRET,
@@ -96,8 +71,6 @@ export async function exchangeCodeForToken(shopDomain, code) {
       scope: response.data.scope
     };
   }
-
-  // Try to extract a helpful error.
   const location = response.headers?.location;
   let oauthError = '';
   if (response.data && typeof response.data === 'object') {
@@ -119,13 +92,7 @@ export async function exchangeCodeForToken(shopDomain, code) {
   });
   throw new Error(`SHOPIFY_TOKEN_EXCHANGE_FAILED:${detail}`);
 }
-
-/**
- * Verify Shopify webhook signature
- */
 export function verifyWebhook(rawBody, signature, secret = process.env.SHOPIFY_WEBHOOK_SECRET) {
-  // Shopify webhook HMAC is typically signed with the app's API secret.
-  // Allow overriding via SHOPIFY_WEBHOOK_SECRET, but fallback to SHOPIFY_API_SECRET.
   const effectiveSecret = secret || SHOPIFY_API_SECRET;
   if (!effectiveSecret) return false;
 
@@ -138,10 +105,6 @@ export function verifyWebhook(rawBody, signature, secret = process.env.SHOPIFY_W
     Buffer.from(computedSignature, 'base64')
   );
 }
-
-/**
- * Create Shopify API client for a store
- */
 export function createShopifyClient(shopDomain, accessToken, apiVersion = '2024-01') {
   const baseURL = `https://${shopDomain}/admin/api/${apiVersion}`;
 
@@ -154,10 +117,6 @@ export function createShopifyClient(shopDomain, accessToken, apiVersion = '2024-
     timeout: 30000
   });
 }
-
-/**
- * Get store information
- */
 export async function getStoreInfo(shopDomain, accessToken) {
   try {
     const client = createShopifyClient(shopDomain, accessToken);
@@ -166,25 +125,16 @@ export async function getStoreInfo(shopDomain, accessToken) {
   } catch (error) {
     const status = error?.response?.status;
     console.error('Failed to get store info:', { status, data: error.response?.data || null, message: error.message });
-    // Preserve status for upstream "revoked/uninstalled" detection
     if (status) throw new Error(`SHOPIFY_STORE_INFO_FAILED:${status}`);
     throw new Error('SHOPIFY_STORE_INFO_FAILED');
   }
 }
-
-/**
- * Disconnect store by shop domain (used for app/uninstalled webhook).
- */
 export async function disconnectStoreByShopDomain(shopDomain) {
   if (!shopDomain) return { success: false };
   const { ShopifyStore } = await import('../schemas/mongodb.mjs');
   await ShopifyStore.findOneAndDelete({ shop_domain: String(shopDomain) });
   return { success: true };
 }
-
-/**
- * Sync products from Shopify
- */
 export async function syncProducts(userId, shopDomain, accessToken, options = {}) {
   try {
     const { ShopifyProduct, ShopifyStore } = await import('../schemas/mongodb.mjs');
@@ -192,13 +142,9 @@ export async function syncProducts(userId, shopDomain, accessToken, options = {}
 
     let allProducts = [];
     let nextUrl = '/products.json?limit=250';
-
-    // Fetch all products with pagination
     while (nextUrl) {
       const response = await client.get(nextUrl);
       const products = response.data.products || [];
-
-      // Transform and save products
       for (const product of products) {
         const productData = {
           user_id: userId,
@@ -252,8 +198,6 @@ export async function syncProducts(userId, shopDomain, accessToken, options = {}
       }
 
       allProducts.push(...products);
-
-      // Check for next page
       const linkHeader = response.headers.link;
       nextUrl = null;
       if (linkHeader) {
@@ -266,8 +210,6 @@ export async function syncProducts(userId, shopDomain, accessToken, options = {}
         }
       }
     }
-
-    // Update last sync timestamp
     await ShopifyStore.findOneAndUpdate(
       { user_id: userId },
       { last_sync_ts: Date.now() }
@@ -280,10 +222,6 @@ export async function syncProducts(userId, shopDomain, accessToken, options = {}
     throw new Error('Failed to sync products from Shopify');
   }
 }
-
-/**
- * Sync orders from Shopify
- */
 export async function syncOrders(userId, shopDomain, accessToken, options = {}) {
   try {
     const { ShopifyOrder } = await import('../schemas/mongodb.mjs');
@@ -292,13 +230,9 @@ export async function syncOrders(userId, shopDomain, accessToken, options = {}) 
     const sinceId = options.since_id || 0;
     let allOrders = [];
     let nextUrl = `/orders.json?limit=250&since_id=${sinceId}`;
-
-    // Fetch all orders with pagination
     while (nextUrl) {
       const response = await client.get(nextUrl);
       const orders = response.data.orders || [];
-
-      // Transform and save orders
       for (const order of orders) {
         const orderData = {
           user_id: userId,
@@ -367,8 +301,6 @@ export async function syncOrders(userId, shopDomain, accessToken, options = {}) 
       }
 
       allOrders.push(...orders);
-
-      // Check for next page
       const linkHeader = response.headers.link;
       nextUrl = null;
       if (linkHeader) {
@@ -389,10 +321,6 @@ export async function syncOrders(userId, shopDomain, accessToken, options = {}) 
     throw new Error('Failed to sync orders from Shopify');
   }
 }
-
-/**
- * Sync customers from Shopify
- */
 export async function syncCustomers(userId, shopDomain, accessToken, options = {}) {
   try {
     const { ShopifyCustomer } = await import('../schemas/mongodb.mjs');
@@ -400,13 +328,9 @@ export async function syncCustomers(userId, shopDomain, accessToken, options = {
 
     let allCustomers = [];
     let nextUrl = '/customers.json?limit=250';
-
-    // Fetch all customers with pagination
     while (nextUrl) {
       const response = await client.get(nextUrl);
       const customers = response.data.customers || [];
-
-      // Transform and save customers
       for (const customer of customers) {
         const customerData = {
           user_id: userId,
@@ -442,8 +366,6 @@ export async function syncCustomers(userId, shopDomain, accessToken, options = {
       }
 
       allCustomers.push(...customers);
-
-      // Check for next page
       const linkHeader = response.headers.link;
       nextUrl = null;
       if (linkHeader) {
@@ -464,10 +386,6 @@ export async function syncCustomers(userId, shopDomain, accessToken, options = {
     throw new Error('Failed to sync customers from Shopify');
   }
 }
-
-/**
- * Get product catalog for WhatsApp display
- */
 export async function getProductCatalog(userId, options = {}) {
   try {
     const { ShopifyProduct } = await import('../schemas/mongodb.mjs');
@@ -500,10 +418,6 @@ export async function getProductCatalog(userId, options = {}) {
     throw new Error('Failed to retrieve product catalog');
   }
 }
-
-/**
- * Search products for WhatsApp
- */
 export async function searchProducts(userId, searchTerm, options = {}) {
   try {
     const { ShopifyProduct } = await import('../schemas/mongodb.mjs');
@@ -532,10 +446,6 @@ export async function searchProducts(userId, searchTerm, options = {}) {
     throw new Error('Failed to search products');
   }
 }
-
-/**
- * Create order via Shopify API
- */
 export async function createOrder(userId, shopDomain, accessToken, orderData) {
   try {
     const client = createShopifyClient(shopDomain, accessToken);
@@ -566,8 +476,6 @@ export async function createOrder(userId, shopDomain, accessToken, orderData) {
     });
 
     const order = response.data.order;
-
-    // Save to our database
     const { ShopifyOrder } = await import('../schemas/mongodb.mjs');
     await ShopifyOrder.findOneAndUpdate(
       { user_id: userId, shopify_id: order.id.toString() },
@@ -600,15 +508,9 @@ export async function createOrder(userId, shopDomain, accessToken, orderData) {
     throw new Error('Failed to create order in Shopify');
   }
 }
-
-/**
- * Update order fulfillment status
- */
 export async function updateOrderFulfillment(userId, shopDomain, accessToken, orderId, trackingInfo) {
   try {
     const client = createShopifyClient(shopDomain, accessToken);
-
-    // First, create a fulfillment
     const fulfillmentData = {
       fulfillment: {
         tracking_number: trackingInfo.tracking_number,
@@ -619,8 +521,6 @@ export async function updateOrderFulfillment(userId, shopDomain, accessToken, or
     };
 
     const response = await client.post(`/orders/${orderId}/fulfillments.json`, fulfillmentData);
-
-    // Update our database
     const { ShopifyOrder } = await import('../schemas/mongodb.mjs');
     await ShopifyOrder.findOneAndUpdate(
       { user_id: userId, shopify_id: orderId },
@@ -639,10 +539,6 @@ export async function updateOrderFulfillment(userId, shopDomain, accessToken, or
     throw new Error('Failed to update order fulfillment');
   }
 }
-
-/**
- * Register webhook for order updates
- */
 export async function registerWebhook(userId, shopDomain, accessToken, webhookUrl) {
   try {
     const client = createShopifyClient(shopDomain, accessToken);
@@ -657,8 +553,6 @@ export async function registerWebhook(userId, shopDomain, accessToken, webhookUr
 
     const response = await client.post('/webhooks.json', webhookData);
     const webhook = response.data.webhook;
-
-    // Store webhook ID
     const { ShopifyStore } = await import('../schemas/mongodb.mjs');
     await ShopifyStore.findOneAndUpdate(
       { user_id: userId },
@@ -671,10 +565,6 @@ export async function registerWebhook(userId, shopDomain, accessToken, webhookUr
     throw new Error('Failed to register webhook');
   }
 }
-
-/**
- * Handle incoming Shopify webhook
- */
 export async function handleWebhook(topic, data) {
   try {
     switch (topic) {
@@ -701,17 +591,9 @@ export async function handleWebhook(topic, data) {
     throw error;
   }
 }
-
-/**
- * Handle order webhook
- */
 async function handleOrderWebhook(orderData) {
   try {
-    // Find the store by webhook ID or domain
     const { ShopifyStore, ShopifyOrder } = await import('../schemas/mongodb.mjs');
-
-    // For now, we'll need to find the user by matching the order data
-    // In production, you might want to include user_id in webhook metadata
     const store = await ShopifyStore.findOne({ webhook_id: orderData.webhook_id });
 
     if (!store) {
@@ -720,8 +602,6 @@ async function handleOrderWebhook(orderData) {
     }
 
     const userId = store.user_id;
-
-    // Update or create order
     await ShopifyOrder.findOneAndUpdate(
       { user_id: userId, shopify_id: orderData.id.toString() },
       {
@@ -751,47 +631,27 @@ async function handleOrderWebhook(orderData) {
     console.error('Failed to handle order webhook:', error.message);
   }
 }
-
-/**
- * Handle product webhook
- */
 async function handleProductWebhook(productData) {
   try {
-    // Similar logic to handleOrderWebhook
     console.log('Product webhook received:', productData.id);
-    // Implementation would be similar to syncProducts for individual product
   } catch (error) {
     console.error('Failed to handle product webhook:', error.message);
   }
 }
-
-/**
- * Handle customer webhook
- */
 async function handleCustomerWebhook(customerData) {
   try {
     console.log('Customer webhook received:', customerData.id);
-    // Implementation would be similar to syncCustomers for individual customer
   } catch (error) {
     console.error('Failed to handle customer webhook:', error.message);
   }
 }
-
-/**
- * Handle checkout webhook (for abandoned carts)
- */
 async function handleCheckoutWebhook(checkoutData) {
   try {
-    // Find store and save cart data for abandoned cart recovery
     console.log('Checkout webhook received:', checkoutData.token);
   } catch (error) {
     console.error('Failed to handle checkout webhook:', error.message);
   }
 }
-
-/**
- * Send WhatsApp order notification
- */
 export async function sendOrderNotification(userId, orderId, contactId, messageType = 'confirmation') {
   try {
     const { ShopifyOrder } = await import('../schemas/mongodb.mjs');
@@ -799,8 +659,6 @@ export async function sendOrderNotification(userId, orderId, contactId, messageT
 
     const order = await ShopifyOrder.findOne({ user_id: userId, shopify_id: orderId });
     if (!order) return false;
-
-    // Check if notification already sent
     if (order.whatsapp_notifications_sent.includes(messageType)) {
       return true;
     }
@@ -821,8 +679,6 @@ export async function sendOrderNotification(userId, orderId, contactId, messageT
 
     if (message) {
       await sendWhatsAppMessage(userId, contactId, message);
-
-      // Mark notification as sent
       await ShopifyOrder.findOneAndUpdate(
         { user_id: userId, shopify_id: orderId },
         { $push: { whatsapp_notifications_sent: messageType } }
@@ -835,10 +691,6 @@ export async function sendOrderNotification(userId, orderId, contactId, messageT
     return false;
   }
 }
-
-/**
- * Get store connection status
- */
 export async function getStoreConnection(userId) {
   try {
     const { ShopifyStore } = await import('../schemas/mongodb.mjs');
@@ -863,10 +715,6 @@ export async function getStoreConnection(userId) {
     return { connected: false, error: error.message };
   }
 }
-
-/**
- * Disconnect Shopify store
- */
 export async function disconnectStore(userId) {
   try {
     const { ShopifyStore } = await import('../schemas/mongodb.mjs');
@@ -877,5 +725,4 @@ export async function disconnectStore(userId) {
     throw new Error('Failed to disconnect Shopify store');
   }
 }
-
 

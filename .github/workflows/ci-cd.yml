@@ -124,13 +124,10 @@ jobs:
     - name: Deploy to staging
       run: |
         echo "Deploying to staging environment..."
-        # Add your staging deployment commands here
-        # Example: kubectl apply -f k8s/staging/
     
     - name: Run smoke tests
       run: |
         echo "Running smoke tests against staging..."
-        # Add smoke test commands here
 
   deploy-production:
     runs-on: ubuntu-latest
@@ -145,15 +142,11 @@ jobs:
     - name: Deploy to production
       run: |
         echo "Deploying to production environment..."
-        # Add your production deployment commands here
-        # Example: kubectl apply -f k8s/production/
     
     - name: Run health checks
       run: |
         echo "Running health checks..."
-        # Add health check commands here
     
     - name: Notify deployment
       run: |
         echo "Production deployment completed successfully!"
-        # Add notification commands here (Slack, email, etc.)

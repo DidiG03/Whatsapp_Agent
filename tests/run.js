@@ -1,10 +1,5 @@
 #!/usr/bin/env node
 
-/**
- * Test runner script
- * Provides additional test utilities and reporting
- */
-
 import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -55,8 +50,6 @@ function generateTestReport() {
   if (fs.existsSync(coveragePath)) {
     console.log(`📊 Coverage report generated: ${coveragePath}`);
   }
-  
-  // Generate summary report
   const summaryPath = path.join(process.cwd(), 'tests', 'test-summary.json');
   const summary = {
     timestamp: new Date().toISOString(),
@@ -110,8 +103,6 @@ if (!testCommands[testType]) {
   console.log('Run "node tests/run.js help" for available commands');
   process.exit(1);
 }
-
-// Set test environment variables
 process.env.NODE_ENV = 'test';
 process.env.LOG_LEVEL = 'error';
 

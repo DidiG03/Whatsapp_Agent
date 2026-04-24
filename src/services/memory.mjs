@@ -1,18 +1,8 @@
-/**
- * Contact memory service
- * - Stores lightweight, structured context about a contact
- * - Builds a concise snippet usable as AI context
- */
-import { getDB } from "../db-mongodb.mjs";
 
-/** Safely coerce to a plain object */
+import { getDB } from "../db-mongodb.mjs";
 function toObject(maybe) {
   return maybe && typeof maybe === 'object' && !Array.isArray(maybe) ? maybe : {};
 }
-
-/**
- * Get merged customer memory stored in customers.custom_fields.
- */
 export async function getContactMemory(userId, contactId) {
   try {
     const db = getDB();
@@ -31,10 +21,6 @@ export async function getContactMemory(userId, contactId) {
     return {};
   }
 }
-
-/**
- * Merge and upsert memory into customers.custom_fields
- */
 export async function updateContactMemory(userId, contactId, patch) {
   try {
     const db = getDB();
@@ -54,17 +40,10 @@ export async function updateContactMemory(userId, contactId, patch) {
     return false;
   }
 }
-
-/**
- * Build a compact profile snippet to prime AI with customer memory and timeline.
- * Returns { title, content } or null if nothing meaningful.
- */
 export async function buildCustomerProfileSnippet(userId, contactId) {
   try {
     const db = getDB();
     const mem = await getContactMemory(userId, contactId);
-
-    // Upcoming appointment (soonest)
     const digits = String(contactId || '').replace(/\D/g, '');
     const nowSec = Math.floor(Date.now() / 1000);
     const upcoming = await db.collection('appointments')
@@ -78,8 +57,6 @@ export async function buildCustomerProfileSnippet(userId, contactId) {
       ])
       .toArray()
       .then(arr => arr[0] || null);
-
-    // Last appointment (if no upcoming or for agent/service memory)
     const last = await db.collection('appointments')
       .aggregate([
         { $match: { user_id: String(userId), $or: [ { contact_phone: digits }, { contact_phone: '+' + digits } ], start_ts: { $lt: nowSec } } },
@@ -111,8 +88,6 @@ export async function buildCustomerProfileSnippet(userId, contactId) {
     return null;
   }
 }
-
-/** Convenience helpers */
 export async function rememberName(userId, contactId, displayName) {
   try {
     const db = getDB();
@@ -141,5 +116,4 @@ export async function rememberAppointment(userId, contactId, { startISO }) {
     if (ts > 0) await updateContactMemory(userId, contactId, { last_appointment_ts: ts });
   } catch {}
 }
-
 

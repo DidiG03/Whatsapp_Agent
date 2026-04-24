@@ -1,17 +1,8 @@
-/**
- * Email notification service using nodemailer.
- * Supports multiple email providers through SMTP configuration.
- * Prioritizes per-user SMTP settings, falls back to environment variables.
- */
+
 import nodemailer from 'nodemailer';
 import { getSettingsForUser } from './settings.mjs';
 import { clerkClient } from '../middleware/auth.mjs';
-
-// Minimize Clerk API calls by caching user primary email briefly.
-// This is especially important on Vercel where a single lambda instance can serve many requests.
-const _clerkEmailCache = new Map(); // userId -> { email: string|null, expMs: number }
-const CLERK_EMAIL_CACHE_TTL_MS = Math.max(30_000, Number(process.env.CLERK_EMAIL_CACHE_TTL_MS || 300_000)); // default 5m
-
+const _clerkEmailCache = new Map();const CLERK_EMAIL_CACHE_TTL_MS = Math.max(30_000, Number(process.env.CLERK_EMAIL_CACHE_TTL_MS || 300_000));
 async function getPrimaryEmailFromClerk(userId) {
   if (!userId) return null;
   const cached = _clerkEmailCache.get(userId);
@@ -29,20 +20,12 @@ async function getPrimaryEmailFromClerk(userId) {
     return null;
   }
 }
-
-/**
- * Create a nodemailer transporter based on user settings or environment variables
- * @param {Object} userSettings - User's settings object (optional)
- */
 function createTransporter(userSettings = {}) {
-  // Try user-specific SMTP settings first, then fall back to environment variables
   const host = userSettings?.smtp_host || process.env.SMTP_HOST || 'smtp.gmail.com';
   const port = userSettings?.smtp_port || parseInt(process.env.SMTP_PORT || '587', 10);
   const secure = userSettings?.smtp_secure === 1 || process.env.SMTP_SECURE === 'true';
   const user = userSettings?.smtp_user || process.env.SMTP_USER;
   const pass = userSettings?.smtp_pass || process.env.SMTP_PASS;
-
-  // If no SMTP credentials configured, return null
   if (!user || !pass) {
     console.warn('[Email] SMTP credentials not configured. Email notifications disabled.');
     return null;
@@ -51,8 +34,7 @@ function createTransporter(userSettings = {}) {
   const config = {
     host,
     port,
-    secure, // true for 465, false for other ports
-    auth: {
+    secure,    auth: {
       user,
       pass,
     },
@@ -60,29 +42,14 @@ function createTransporter(userSettings = {}) {
 
   return nodemailer.createTransport(config);
 }
-
-/**
- * Send escalation notification email to account owner
- * @param {string} userId - The Clerk user ID (account owner)
- * @param {Object} escalationData - Data about the escalation
- * @param {string} escalationData.customerName - Name of the customer
- * @param {string} escalationData.customerPhone - Phone number of the customer
- * @param {string} escalationData.reason - Reason for escalation
- * @param {string} escalationData.timestamp - ISO timestamp of escalation
- */
 export async function sendEscalationNotification(userId, escalationData) {
   try {
-    // Check if email notifications are enabled for this user
     const settings = await getSettingsForUser(userId);
     if (!settings?.escalation_email_enabled) {
       console.log('[Email] Escalation notifications disabled for user:', userId);
       return { success: false, reason: 'disabled' };
     }
-
-    // Get the notification email (either custom or from Clerk account)
     let notificationEmail = settings?.escalation_email;
-    
-    // If no custom email set, try to get from Clerk account
     if (!notificationEmail) {
       notificationEmail = await getPrimaryEmailFromClerk(userId);
       if (!notificationEmail) {
@@ -99,11 +66,7 @@ export async function sendEscalationNotification(userId, escalationData) {
     if (!transporter) {
       return { success: false, reason: 'no_smtp_config' };
     }
-    
-    // Determine the "from" email address
     const fromEmail = settings?.smtp_user || process.env.SMTP_USER;
-
-    // Format the email
     const { customerName, customerPhone, reason, timestamp } = escalationData;
     const businessName = settings?.business_name || 'Your Business';
     const formattedTime = timestamp ? new Date(timestamp).toLocaleString() : 'Just now';
@@ -182,8 +145,6 @@ View in inbox: ${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/inbox
 This is an automated notification from ${businessName} WhatsApp Agent.
 To manage notification settings, visit: ${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/settings
     `.trim();
-
-    // Send the email
     const info = await transporter.sendMail({
       from: `"${businessName}" <${fromEmail}>`,
       to: notificationEmail,
@@ -200,16 +161,9 @@ To manage notification settings, visit: ${process.env.PUBLIC_BASE_URL || 'http:/
     return { success: false, error: error.message };
   }
 }
-
-/**
- * Send a lightweight escalation ping to the account's email, regardless of the
- * escalation_email_enabled toggle. Useful for critical alerts (e.g., when we
- * actually send the “connecting you to a human now” message).
- */
 export async function sendEscalationPingToAccount(userId, escalationData = {}) {
   try {
     const settings = await getSettingsForUser(userId);
-    // Resolve destination from Clerk account primary email
     const toEmail = await getPrimaryEmailFromClerk(userId);
     if (!toEmail) {
       console.warn('[Email] No destination email for escalation ping:', userId);
@@ -244,32 +198,14 @@ export async function sendEscalationPingToAccount(userId, escalationData = {}) {
     return { success: false, error: e?.message || String(e) };
   }
 }
-
-/**
- * Send booking confirmation email to account owner
- * @param {string} userId - The Clerk user ID (account owner)
- * @param {Object} bookingData - Data about the booking
- * @param {string} bookingData.customerName - Name of the customer
- * @param {string} bookingData.customerPhone - Phone number of the customer
- * @param {string} bookingData.startTime - Appointment start time (ISO string)
- * @param {string} bookingData.endTime - Appointment end time (ISO string)
- * @param {string} bookingData.notes - Booking notes/answers
- * @param {number} bookingData.appointmentId - Appointment ID
- * @param {string} bookingData.staffName - Staff member name
- */
 export async function sendBookingNotification(userId, bookingData) {
   try {
-    // Check if email notifications are enabled for this user
     const settings = await getSettingsForUser(userId);
     if (!settings?.escalation_email_enabled) {
       console.log('[Email] Email notifications disabled for user:', userId);
       return { success: false, reason: 'disabled' };
     }
-
-    // Get the notification email (either custom or from Clerk account)
     let notificationEmail = settings?.escalation_email;
-    
-    // If no custom email set, try to get from Clerk account
     if (!notificationEmail) {
       notificationEmail = await getPrimaryEmailFromClerk(userId);
       if (!notificationEmail) {
@@ -286,11 +222,7 @@ export async function sendBookingNotification(userId, bookingData) {
     if (!transporter) {
       return { success: false, reason: 'no_smtp_config' };
     }
-    
-    // Determine the "from" email address
     const fromEmail = settings?.smtp_user || process.env.SMTP_USER;
-
-    // Format the email
     const { customerName, customerPhone, startTime, endTime, notes, appointmentId, staffName } = bookingData;
     const businessName = settings?.business_name || 'Your Business';
     const formattedStart = new Date(startTime).toLocaleString();
@@ -386,8 +318,6 @@ View dashboard: ${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/dashbo
 This is an automated notification from ${businessName} WhatsApp Agent.
 To manage notification settings, visit: ${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/settings
     `.trim();
-
-    // Send the email
     const info = await transporter.sendMail({
       from: `"${businessName}" <${fromEmail}>`,
       to: notificationEmail,
@@ -404,22 +334,9 @@ To manage notification settings, visit: ${process.env.PUBLIC_BASE_URL || 'http:/
     return { success: false, error: error.message };
   }
 }
-
-/**
- * Notify account when a WhatsApp template status changes (APPROVED/REJECTED)
- * @param {string} userId
- * @param {Object} t - Template payload
- * @param {string} t.name
- * @param {string} t.language
- * @param {string} t.category
- * @param {string} t.status
- * @param {string} [t.quality_score]
- * @param {string} [oldStatus]
- */
 export async function sendTemplateStatusEmail(userId, t, oldStatus = null) {
   try {
     const settings = await getSettingsForUser(userId);
-    // Destination email: custom notification email or Clerk primary
     let toEmail = settings?.escalation_email;
     if (!toEmail) {
       toEmail = await getPrimaryEmailFromClerk(userId);
@@ -468,20 +385,9 @@ export async function sendTemplateStatusEmail(userId, t, oldStatus = null) {
     return { success: false, error: e?.message || String(e) };
   }
 }
-
-/**
- * Send a payment receipt email to the account owner
- * @param {string} userId
- * @param {Object} data
- * @param {number} data.amountCents
- * @param {string} data.currency
- * @param {string} [data.planName]
- * @param {string} [data.invoiceUrl]
- */
 export async function sendPaymentReceiptEmail(userId, data) {
   try {
     const settings = getSettingsForUser(userId) || {};
-    // Determine email destination: custom notification email or Clerk account email
     let toEmail = settings?.escalation_email;
     if (!toEmail) {
       toEmail = await getPrimaryEmailFromClerk(userId);
@@ -524,16 +430,6 @@ export async function sendPaymentReceiptEmail(userId, data) {
     return { success: false, error: e?.message || String(e) };
   }
 }
-
-/**
- * Send a payment failed email to the account owner
- * @param {string} userId
- * @param {Object} data
- * @param {number} [data.amountCents]
- * @param {string} [data.currency]
- * @param {string} [data.planName]
- * @param {string} [data.reason]
- */
 export async function sendPaymentFailedEmail(userId, data = {}) {
   try {
     const settings = getSettingsForUser(userId) || {};
@@ -580,11 +476,6 @@ export async function sendPaymentFailedEmail(userId, data = {}) {
     return { success: false, error: e?.message || String(e) };
   }
 }
-
-/**
- * Test email configuration by sending a test email
- * @param {string} toEmail - Email address to send test to
- */
 export async function sendTestEmail(toEmail) {
   try {
     const transporter = createTransporter();

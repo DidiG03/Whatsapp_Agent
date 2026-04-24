@@ -1,6 +1,4 @@
-/**
- * Simple test to verify Jest setup
- */
+
 
 import { describe, test, expect } from '@jest/globals';
 

@@ -1,13 +1,8 @@
-/**
- * MongoDB Database Configuration
- * Provides MongoDB connection and database operations for the WhatsApp Agent
- */
+
 
 import { MongoClient } from 'mongodb';
 import mongoose from 'mongoose';
 import { logHelpers } from './monitoring/logger.mjs';
-
-// MongoDB connection configuration
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/whatsapp_agent';
 const MONGODB_DB_NAME = process.env.MONGODB_DB_NAME || 'whatsapp_agent';
 const MONGOOSE_BUFFER_TIMEOUT_MS = Number(process.env.MONGOOSE_BUFFER_TIMEOUT_MS || '30000');
@@ -18,14 +13,10 @@ const MONGODB_SOCKET_TIMEOUT_MS = Number(process.env.MONGODB_SOCKET_TIMEOUT_MS |
 let client = null;
 let mongoDb = null;
 let isConnected = false;
-
-// Global Mongoose settings to avoid silent buffering timeouts
 try {
   mongoose.set('bufferCommands', false);
   mongoose.set('bufferTimeoutMS', MONGOOSE_BUFFER_TIMEOUT_MS);
 } catch {}
-
-// Connection state logging and flags
 mongoose.connection.on('connected', () => {
   isConnected = true;
 });
@@ -39,17 +30,12 @@ mongoose.connection.on('error', (err) => {
   isConnected = false;
   logHelpers.logError(err, { component: 'mongodb', operation: 'connection_event' });
 });
-
-// Initialize MongoDB connection
 export async function initMongoDB() {
   try {
-    // Some environments accidentally append a quote to the write concern in the URI (w=majority%22 or w=majority")
-    // Sanitize the URI defensively to avoid "No write concern mode named 'majority\"'" errors.
     const SANITIZED_URI = String(MONGODB_URI)
       .replace(/w=majority(%22|%27|%5C%22|%5C%27|\"|')/gi, 'w=majority')
       .replace(/(\?|&)w=majority(%22|%27)(&|$)/i, '$1w=majority$3')
       .replace(/(\"|\')$/g, '');
-    // Connect using mongoose for better connection management
     await mongoose.connect(SANITIZED_URI, {
       dbName: MONGODB_DB_NAME,
       useNewUrlParser: true,
@@ -58,11 +44,8 @@ export async function initMongoDB() {
       serverSelectionTimeoutMS: MONGODB_SERVER_SELECTION_TIMEOUT_MS,
       socketTimeoutMS: MONGODB_SOCKET_TIMEOUT_MS,
       retryWrites: true,
-      // Explicit write concern to override any malformed query string value
       w: 'majority'
     });
-
-    // Also create a native MongoDB client for direct operations
     client = new MongoClient(SANITIZED_URI, {
       maxPoolSize: MONGODB_MAX_POOL_SIZE,
       serverSelectionTimeoutMS: MONGODB_SERVER_SELECTION_TIMEOUT_MS,
@@ -75,19 +58,13 @@ export async function initMongoDB() {
     isConnected = true;
 
     logHelpers.logBusinessEvent('mongodb_connected', {
-      uri: SANITIZED_URI.replace(/\/\/.*@/, '//***@'), // Hide credentials in logs
-      database: MONGODB_DB_NAME 
+      uri: SANITIZED_URI.replace(/\/\/.*@/, '//***@'),      database: MONGODB_DB_NAME 
     });
 
     console.log('MongoDB connected successfully');
-
-    // On serverless platforms like Vercel we want to keep cold-start time minimal.
-    // Assume indexes are managed via migrations and skip index bootstrapping by default there.
     if (!process.env.MONGODB_BOOTSTRAP_INDEXES && process.env.VERCEL) {
       return { client, db: mongoDb };
     }
-
-    // Ensure critical indexes for common query patterns (best-effort)
     try {
       await Promise.all([
         mongoDb.collection('messages').createIndexes([
@@ -105,7 +82,6 @@ export async function initMongoDB() {
         ])
       ]);
     } catch {}
-    // Trigger Mongoose model-backed index creation after connection is ready
     try {
       const { createIndexes } = await import('./schemas/mongodb.mjs');
       await createIndexes();
@@ -118,26 +94,18 @@ export async function initMongoDB() {
     throw error;
   }
 }
-
-// Get database instance
 export function getDB() {
   if (!isConnected || !mongoDb) {
     throw new Error('MongoDB not connected. Call initMongoDB() first.');
   }
   return mongoDb;
 }
-
-// Get mongoose connection
 export function getMongoose() {
   return mongoose;
 }
-
-// Check if MongoDB is connected
 export function isMongoConnected() {
   return isConnected && mongoose.connection.readyState === 1;
 }
-
-// Close MongoDB connection
 export async function closeMongoDB() {
   try {
     if (client) {
@@ -150,8 +118,6 @@ export async function closeMongoDB() {
     logHelpers.logError(error, { component: 'mongodb', operation: 'disconnect' });
   }
 }
-
-// Database adapter that mimics SQLite interface for compatibility
 class MongoDBAdapter {
   constructor() {
     this.db = null;
@@ -168,7 +134,6 @@ class MongoDBAdapter {
   }
 
   async exec(operation) {
-    // MongoDB doesn't have exec like SQLite, but we can use this for schema operations
     console.log('MongoDB exec:', operation);
     return { changes: 0 };
   }
@@ -177,51 +142,38 @@ class MongoDBAdapter {
     return {
       get: async (...args) => {
         await this.init();
-        // Support legacy SQL-shaped calls used throughout the codebase
         if (typeof collectionName === 'string' && /FROM\s+handoff/i.test(collectionName) && /is_human/i.test(collectionName)) {
           const [contactId, userId] = args;
           const doc = await this.db.collection('handoff').findOne({ contact_id: contactId, user_id: userId }, { projection: { is_human: 1, human_expires_ts: 1 } });
           if (!doc) return null;
           return { is_human: !!doc.is_human, exp: Number(doc.human_expires_ts || 0) };
         }
-
-        // Legacy: SELECT escalation_step FROM handoff WHERE contact_id = ? AND user_id = ?
         if (typeof collectionName === 'string' && /FROM\s+handoff/i.test(collectionName) && /escalation_step/i.test(collectionName) && !/escalation_questions_json|escalation_question_index|escalation_reason/i.test(collectionName)) {
           const [contactId, userId] = args;
           const doc = await this.db.collection('handoff').findOne({ contact_id: contactId, user_id: userId }, { projection: { escalation_step: 1 } });
           if (!doc) return null;
           return { escalation_step: doc.escalation_step };
         }
-
-        // Legacy: SELECT escalation_step, escalation_questions_json, escalation_question_index FROM handoff ...
         if (typeof collectionName === 'string' && /FROM\s+handoff/i.test(collectionName) && /escalation_step/i.test(collectionName) && /escalation_questions_json|escalation_question_index/i.test(collectionName)) {
           const [contactId, userId] = args;
           const doc = await this.db.collection('handoff').findOne({ contact_id: contactId, user_id: userId }, { projection: { escalation_step: 1, escalation_questions_json: 1, escalation_question_index: 1 } });
           if (!doc) return null;
           return { escalation_step: doc.escalation_step, escalation_questions_json: doc.escalation_questions_json, escalation_question_index: doc.escalation_question_index };
         }
-
-        // Legacy: SELECT escalation_step, escalation_reason FROM handoff WHERE contact_id = ? AND user_id = ?
         if (typeof collectionName === 'string' && /FROM\s+handoff/i.test(collectionName) && /escalation_step/i.test(collectionName) && /escalation_reason/i.test(collectionName)) {
           const [contactId, userId] = args;
           const doc = await this.db.collection('handoff').findOne({ contact_id: contactId, user_id: userId }, { projection: { escalation_step: 1, escalation_reason: 1 } });
           if (!doc) return null;
           return { escalation_step: doc.escalation_step, escalation_reason: doc.escalation_reason };
         }
-
-        // Legacy: SELECT display_name FROM customers WHERE user_id = ? AND contact_id = ?
         if (typeof collectionName === 'string' && /FROM\s+customers/i.test(collectionName) && /display_name/i.test(collectionName)) {
           const [a, b] = args;
-          // Try both argument orders for compatibility
           let doc = await this.db.collection('customers').findOne({ user_id: a, contact_id: b }, { projection: { display_name: 1 } });
           if (!doc) doc = await this.db.collection('customers').findOne({ user_id: b, contact_id: a }, { projection: { display_name: 1 } });
           if (!doc) return null;
           return { display_name: doc.display_name };
         }
-
-        // Normal path: collection name + query object
         const query = args[0] || {};
-        // Legacy MAX(timestamp) via .get
         if (typeof collectionName === 'string' && /FROM\s+messages/i.test(collectionName) && /MAX\(timestamp\)/i.test(collectionName)) {
           const [userId, fromId] = args;
           const doc = await this.db.collection('messages').find({ user_id: userId, from_id: fromId, direction: 'inbound' }, { projection: { timestamp: 1 } }).sort({ timestamp: -1 }).limit(1).next();
@@ -240,14 +192,12 @@ class MongoDBAdapter {
       },
       all: async (...args) => {
         await this.init();
-        // Legacy compatibility: translate a few common SQL-shaped queries
         if (typeof collectionName === 'string' && /FROM\s+messages/i.test(collectionName) && /text_body/i.test(collectionName)) {
           const [userId, digitsA, digitsB, sinceTs] = args;
           const collection = this.db.collection('messages');
           const orDigits = [];
           if (digitsA) orDigits.push({ from_digits: String(digitsA) });
           if (digitsB) orDigits.push({ from_digits: String(digitsB) });
-          // Also try match on from_id suffix digits
           if (digitsA) orDigits.push({ from_id: new RegExp(`${digitsA}$`) });
           const cursor = collection.find({
             user_id: userId,
@@ -259,11 +209,7 @@ class MongoDBAdapter {
           const rows = await cursor.toArray();
           return rows.map(r => ({ t: r.text_body, ts: r.timestamp }));
         }
-
-        // Legacy FTS: kb_items_fts JOIN kb_items ... MATCH ? [LIMIT ?]
         if (typeof collectionName === 'string' && /FROM\s+kb_items_fts/i.test(collectionName)) {
-          // Patterns with user filter: (userId, matchQuery, limit)
-          // Or without user filter: (matchQuery, limit)
           let userId = null;
           let matchQuery = '';
           let limit = 3;
@@ -291,15 +237,11 @@ class MongoDBAdapter {
           const rows = await this.db.collection('kb_items').find({ user_id: userId, $or: [ { show_in_menu: 1 }, { show_in_menu: true } ], title: { $exists: true, $ne: '' } }, { projection: { title: 1 } }).sort({ created_at: -1, id: -1 }).limit(20).toArray();
           return rows.map(r => ({ title: r.title }));
         }
-
-        // Legacy: SELECT MAX(timestamp) AS ts FROM messages WHERE user_id = ? AND from_id = ? AND direction = 'inbound'
         if (typeof collectionName === 'string' && /FROM\s+messages/i.test(collectionName) && /MAX\(timestamp\)/i.test(collectionName)) {
           const [userId, fromId] = args;
           const doc = await this.db.collection('messages').find({ user_id: userId, from_id: fromId, direction: 'inbound' }, { projection: { timestamp: 1 } }).sort({ timestamp: -1 }).limit(1).next();
           return doc ? { ts: Number(doc.timestamp || 0) } : { ts: 0 };
         }
-
-        // Normal path
         const query = args[0] || {};
         if (typeof collectionName !== 'string' || /\s|SELECT|INSERT|UPDATE|DELETE|FROM|WHERE|JOIN|PRAGMA|strftime/i.test(collectionName)) {
           console.warn(`Invalid MongoDB all target:`, collectionName);
@@ -314,19 +256,15 @@ class MongoDBAdapter {
       },
       run: async (...args) => {
         await this.init();
-        // Reject SQL-like inputs; expect a simple collection name
         if (typeof collectionName !== 'string' || /\s|SELECT|INSERT|UPDATE|DELETE|FROM|WHERE|JOIN|PRAGMA|strftime/i.test(collectionName)) {
-          // Legacy translation: INSERT INTO messages ...
           if (typeof collectionName === 'string' && /INSERT\s+INTO\s+messages/i.test(collectionName)) {
             try {
-              // Map positional args from SQLite-style run
               if (args && args.length >= 11) {
                 const [id, user_id, from_id, to_id, from_digits, to_digits, text_body, timestamp, raw, delivery_status, error_message] = args;
                 const doc = { id, user_id, direction: 'outbound', from_id, to_id, from_digits, to_digits, type: 'text', text_body, timestamp: Number(timestamp||0), raw, delivery_status, error_message };
                 await this.db.collection('messages').insertOne(doc);
                 return { changes: 1, lastInsertRowid: id };
               }
-              // If a single object was passed
               const payload = args?.[0];
               if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
                 await this.db.collection('messages').insertOne(payload);
@@ -336,15 +274,12 @@ class MongoDBAdapter {
             console.warn(`Invalid MongoDB run target:`, collectionName);
             return { changes: 0, lastInsertRowid: null };
           }
-          // Legacy translation: INSERT/UPSERT into handoff table (supports several variants)
           if (typeof collectionName === 'string' && /INSERT\s+INTO\s+handoff/i.test(collectionName)) {
             try {
               const sql = collectionName;
               const hasReason = /escalation_reason/i.test(sql);
               const hasStep = /escalation_step/i.test(sql);
               const hasFlags = /is_human/i.test(sql) || /human_expires_ts/i.test(sql);
-
-              // Basic variant: INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at) ...
               if (!hasReason && hasStep && !hasFlags) {
                 let [contactId, userId, step] = args;
                 if (!step) {
@@ -360,9 +295,6 @@ class MongoDBAdapter {
                 );
                 return { changes: 1, lastInsertRowid: null };
               }
-
-              // Rich variant used when escalation is completed:
-              // INSERT INTO handoff (contact_id, user_id, escalation_step, escalation_reason, is_human, human_expires_ts, updated_at) ...
               if (hasReason && hasFlags) {
                 const [contactId, userId, reason, humanExpires] = args;
                 const update = {
@@ -386,7 +318,6 @@ class MongoDBAdapter {
             console.warn(`Invalid MongoDB run target:`, collectionName);
             return { changes: 0, lastInsertRowid: null };
           }
-          // Legacy translation: UPDATE handoff SET is_human = 0 ... WHERE contact_id = ? AND user_id = ?
           if (typeof collectionName === 'string' && /UPDATE\s+handoff\s+SET\s+is_human\s*=\s*0/i.test(collectionName)) {
             try {
               const [contactId, userId] = args;
@@ -425,14 +356,8 @@ class MongoDBAdapter {
     return [];
   }
 }
-
-// Create MongoDB adapter instance
 const mongoAdapter = new MongoDBAdapter();
-
-// Export the adapter as 'db' for compatibility with existing code
 export const db = mongoAdapter;
-
-// Initialize MongoDB on module load (skip during tests to avoid leaks)
 if (process.env.NODE_ENV !== 'test') {
   initMongoDB().catch(error => {
     console.error('Failed to initialize MongoDB:', error);

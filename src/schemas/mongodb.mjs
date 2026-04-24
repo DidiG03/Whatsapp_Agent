@@ -1,12 +1,7 @@
-/**
- * MongoDB Schemas and Models
- * Defines all database collections and their schemas for the WhatsApp Agent
- */
+
 
 import mongoose from 'mongoose';
 import { logHelpers } from '../monitoring/logger.mjs';
-
-// Message Schema
 const messageSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true },
   direction: { type: String, required: true, enum: ['inbound', 'outbound'] },
@@ -24,8 +19,6 @@ const messageSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'messages'
 });
-
-// Message Status Schema
 const messageStatusSchema = new mongoose.Schema({
   message_id: { type: String, required: true },
   status: { type: String, required: true },
@@ -39,8 +32,6 @@ const messageStatusSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'message_statuses'
 });
-
-// Message Reactions Schema
 const messageReactionSchema = new mongoose.Schema({
   message_id: { type: String, required: true },
   user_id: { type: String, required: true },
@@ -49,8 +40,6 @@ const messageReactionSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'message_reactions'
 });
-
-// Message Replies Schema
 const messageReplySchema = new mongoose.Schema({
   original_message_id: { type: String, required: true },
   reply_message_id: { type: String, required: true }
@@ -58,25 +47,19 @@ const messageReplySchema = new mongoose.Schema({
   timestamps: true,
   collection: 'message_replies'
 });
-
-// Knowledge Base Schema
 const kbItemSchema = new mongoose.Schema({
   title: String,
   content: { type: String, required: true },
   user_id: String,
   file_url: String,
   file_mime: String,
-  // Optional GridFS id when file is stored inside MongoDB
   file_id: String,
-  // Optional extracted/plaintext content for retrieval (e.g., from PDF/TXT)
   file_text: String,
   show_in_menu: { type: Boolean, default: false }
 }, {
   timestamps: true,
   collection: 'kb_items'
 });
-
-// Handoff Schema
 const handoffSchema = new mongoose.Schema({
   contact_id: String,
   user_id: String,
@@ -99,8 +82,6 @@ const handoffSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'handoff'
 });
-
-// AI Requests Schema
 const aiRequestSchema = new mongoose.Schema({
   user_id: { type: String, required: true },
   success: { type: Boolean, default: true },
@@ -111,12 +92,6 @@ const aiRequestSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'ai_requests'
 });
-
-// NOTE: Previously there was a separate `user_settings` collection that only
-// stored `dashboard_preferences`. To reduce collections, we now store this
-// field inside `settings_multi`.
-
-// Settings Multi Schema
 const settingsMultiSchema = new mongoose.Schema({
   user_id: { type: String, required: true, unique: true },
   name: String,
@@ -127,9 +102,7 @@ const settingsMultiSchema = new mongoose.Schema({
   app_secret: String,
   business_phone: String,
   business_name: String,
-  // High-level business classification (e.g., restaurant, retail, healthcare)
   business_type: String,
-  // JSON string of categories/tags for the business (array of strings)
   business_categories_json: String,
   website_url: String,
   ai_tone: String,
@@ -147,21 +120,17 @@ const settingsMultiSchema = new mongoose.Schema({
   wa_template_language: String,
   escalation_email_enabled: { type: Boolean, default: false },
   escalation_email: String,
-  // Escalation mode messages and questions
   escalation_additional_message: String,
   escalation_out_of_hours_message: String,
   escalation_questions_json: String,
-  // Holidays and closures
   holidays_json_url: String,
   closed_dates_json: String,
   holidays_rules_json: String,
-  // Advanced booking controls
   booking_max_per_day: { type: Number, default: 0 },
   booking_days_ahead: { type: Number, default: 60 },
   booking_display_interval_minutes: { type: Number, default: 30 },
   booking_capacity_window_minutes: { type: Number, default: 60 },
   booking_capacity_limit: { type: Number, default: 0 },
-  // Services and waitlist
   services_json: String,
   waitlist_enabled: { type: Boolean, default: false },
   smtp_host: String,
@@ -169,14 +138,11 @@ const settingsMultiSchema = new mongoose.Schema({
   smtp_secure: { type: Boolean, default: false },
   smtp_user: String,
   smtp_pass: String,
-  // Dashboard preferences moved from legacy `user_settings`
   dashboard_preferences: String
 }, {
   timestamps: true,
   collection: 'settings_multi'
 });
-
-// Onboarding State Schema
 const onboardingStateSchema = new mongoose.Schema({
   user_id: { type: String, required: true, unique: true },
   step: { type: Number, default: 0 },
@@ -185,8 +151,6 @@ const onboardingStateSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'onboarding_state'
 });
-
-// Calendar Schema
 const calendarSchema = new mongoose.Schema({
   user_id: { type: String, required: true },
   provider: { type: String, default: 'google' },
@@ -201,8 +165,6 @@ const calendarSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'calendars'
 });
-
-// Staff Schema
 const staffSchema = new mongoose.Schema({
   user_id: { type: String, required: true },
   name: { type: String, required: true },
@@ -214,8 +176,6 @@ const staffSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'staff'
 });
-
-// Appointment Schema
 const appointmentSchema = new mongoose.Schema({
   user_id: { type: String, required: true },
   staff_id: { type: mongoose.Schema.Types.ObjectId, required: true },
@@ -223,7 +183,6 @@ const appointmentSchema = new mongoose.Schema({
   start_ts: { type: Number, required: true },
   end_ts: { type: Number, required: true },
   gcal_event_id: String,
-  // Source of truth for the reservation (e.g., 'local', 'google')
   source: { type: String, default: 'local' },
   status: { type: String, default: 'confirmed' },
   notes: String,
@@ -234,8 +193,6 @@ const appointmentSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'appointments'
 });
-
-// Booking Session Schema
 const bookingSessionSchema = new mongoose.Schema({
   user_id: { type: String, required: true },
   contact_id: { type: String, required: true },
@@ -249,8 +206,6 @@ const bookingSessionSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'booking_sessions'
 });
-
-// Contact State Schema
 const contactStateSchema = new mongoose.Schema({
   user_id: { type: String, required: true },
   contact_id: { type: String, required: true },
@@ -259,8 +214,6 @@ const contactStateSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'contact_state'
 });
-
-// Customer Schema
 const customerSchema = new mongoose.Schema({
   user_id: { type: String, required: true },
   contact_id: { type: String, required: true },
@@ -292,8 +245,6 @@ const customerSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'customers'
 });
-
-// Contact Tags Schema
 const contactTagSchema = new mongoose.Schema({
   user_id: { type: String, required: true },
   name: { type: String, required: true },
@@ -303,8 +254,6 @@ const contactTagSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'contact_tags'
 });
-
-// Contact Interactions Schema
 const contactInteractionSchema = new mongoose.Schema({
   user_id: { type: String, required: true },
   contact_id: { type: String, required: true },
@@ -314,8 +263,6 @@ const contactInteractionSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'contact_interactions'
 });
-
-// Notifications Schema
 const notificationSchema = new mongoose.Schema({
   user_id: { type: String, required: true },
   type: { type: String, required: true },
@@ -328,8 +275,6 @@ const notificationSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'notifications'
 });
-
-// Agent Stripe connection schema (per-tenant Stripe Connect OAuth data)
 const agentStripeSchema = new mongoose.Schema({
   user_id: { type: String, required: true, unique: true },
   stripe_user_id: { type: String, required: true },
@@ -352,8 +297,6 @@ const agentStripeSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'agent_stripe_connections'
 });
-
-// One-off payment requests created from the inbox
 const paymentRequestSchema = new mongoose.Schema({
   user_id: { type: String, required: true, index: true },
   contact_id: { type: String, required: true, index: true },
@@ -379,23 +322,18 @@ const paymentRequestSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'payment_requests'
 });
-
-// Usage Stats Schema
 const usageStatsSchema = new mongoose.Schema({
   user_id: { type: String, required: true },
   month_year: { type: String, required: true },
   inbound_messages: { type: Number, default: 0 },
   outbound_messages: { type: Number, default: 0 },
   template_messages: { type: Number, default: 0 },
-  // PAYG tracking for the month to avoid double-charging
   payg_charged_units: { type: Number, default: 0 },
   payg_charged_cents: { type: Number, default: 0 }
 }, {
   timestamps: true,
   collection: 'usage_stats'
 });
-
-// User Plans Schema
 const userPlanSchema = new mongoose.Schema({
   user_id: { type: String, required: true, unique: true },
   plan_name: { type: String, default: 'free' },
@@ -405,9 +343,7 @@ const userPlanSchema = new mongoose.Schema({
   billing_cycle_start: Number,
   stripe_customer_id: String,
   stripe_subscription_id: String,
-  // Pay-as-you-go (PAYG) configuration
   payg_enabled: { type: Boolean, default: false },
-  // Charge rate in the smallest currency unit (e.g., cents)
   payg_rate_cents: { type: Number, default: function() {
     try { return Number(process.env.PAYG_RATE_CENTS || 5); } catch { return 5; }
   } },
@@ -418,8 +354,6 @@ const userPlanSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'user_plans'
 });
-
-// Quick Replies Schema
 const quickReplySchema = new mongoose.Schema({
   user_id: { type: String, required: true },
   text: { type: String, required: true },
@@ -429,8 +363,6 @@ const quickReplySchema = new mongoose.Schema({
   timestamps: true,
   collection: 'quick_replies'
 });
-
-// Guides Schema
 const guideSchema = new mongoose.Schema({
   slug: { type: String, unique: true },
   title: { type: String, required: true },
@@ -440,8 +372,6 @@ const guideSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'guides'
 });
-
-// Enquiries Schema
 const enquirySchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true },
@@ -452,8 +382,6 @@ const enquirySchema = new mongoose.Schema({
   timestamps: true,
   collection: 'enquiries'
 });
-
-// Settings audit schema
 const settingsAuditSchema = new mongoose.Schema({
   user_id: { type: String, required: true },
   actor_id: { type: String, default: null },
@@ -473,8 +401,6 @@ const settingsAuditSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'settings_audit'
 });
-
-// Shopify Store Connection Schema
 const shopifyStoreSchema = new mongoose.Schema({
   user_id: { type: String, required: true, unique: true },
   shop_domain: { type: String, required: true },
@@ -482,9 +408,7 @@ const shopifyStoreSchema = new mongoose.Schema({
   api_version: { type: String, default: '2024-01' },
   scopes: [String],
   is_active: { type: Boolean, default: true },
-  store_info: mongoose.Schema.Types.Mixed, // Cached store information
-  webhook_id: String, // ID of the main webhook for order updates
-  last_sync_ts: { type: Number, default: 0 },
+  store_info: mongoose.Schema.Types.Mixed,  webhook_id: String,  last_sync_ts: { type: Number, default: 0 },
   sync_enabled: { type: Boolean, default: true },
   inventory_sync_enabled: { type: Boolean, default: false },
   abandoned_cart_enabled: { type: Boolean, default: false },
@@ -493,8 +417,6 @@ const shopifyStoreSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'shopify_stores'
 });
-
-// Shopify Product Schema (cached from Shopify)
 const shopifyProductSchema = new mongoose.Schema({
   user_id: { type: String, required: true },
   shopify_id: { type: String, required: true },
@@ -544,15 +466,12 @@ const shopifyProductSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'shopify_products'
 });
-
-// Shopify Order Schema
 const shopifyOrderSchema = new mongoose.Schema({
   user_id: { type: String, required: true },
   shopify_id: { type: String, required: true },
   order_number: { type: Number, required: true },
   email: String,
-  contact_id: String, // Link to WhatsApp contact if applicable
-  phone: String,
+  contact_id: String,  phone: String,
   customer: mongoose.Schema.Types.Mixed,
   billing_address: mongoose.Schema.Types.Mixed,
   shipping_address: mongoose.Schema.Types.Mixed,
@@ -603,15 +522,12 @@ const shopifyOrderSchema = new mongoose.Schema({
   cancelled_at: Date,
   cancel_reason: String,
   last_sync_ts: { type: Number, default: 0 },
-  whatsapp_notifications_sent: { type: [String], default: [] }, // Track sent notifications
-  tracking_numbers: [String],
+  whatsapp_notifications_sent: { type: [String], default: [] },  tracking_numbers: [String],
   tracking_urls: [String]
 }, {
   timestamps: true,
   collection: 'shopify_orders'
 });
-
-// Shopify Customer Schema (synced from Shopify)
 const shopifyCustomerSchema = new mongoose.Schema({
   user_id: { type: String, required: true },
   shopify_id: { type: String, required: true },
@@ -619,8 +535,7 @@ const shopifyCustomerSchema = new mongoose.Schema({
   phone: String,
   first_name: String,
   last_name: String,
-  contact_id: String, // Link to WhatsApp contact
-  accepts_marketing: { type: Boolean, default: false },
+  contact_id: String,  accepts_marketing: { type: Boolean, default: false },
   accepts_marketing_updated_at: Date,
   marketing_opt_in_level: String,
   tax_exempt: { type: Boolean, default: false },
@@ -641,8 +556,6 @@ const shopifyCustomerSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'shopify_customers'
 });
-
-// Shopify Cart/Checkout Schema (for abandoned cart recovery)
 const shopifyCartSchema = new mongoose.Schema({
   user_id: { type: String, required: true },
   contact_id: String,
@@ -670,19 +583,13 @@ const shopifyCartSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'shopify_carts'
 });
-
-// Create indexes for better performance
 const createIndexes = async () => {
   try {
-    // Messages indexes
     await Message.collection.createIndex({ user_id: 1, timestamp: -1 });
     await Message.collection.createIndex({ from_digits: 1 });
     await Message.collection.createIndex({ to_digits: 1 });
     await Message.collection.createIndex({ direction: 1 });
-    // Hot-path: fetch recent messages for a contact within a tenant
     await Message.collection.createIndex({ user_id: 1, from_digits: 1 }, { name: 'user_from_digits' });
-
-    // Message statuses indexes + TTL
     await MessageStatus.collection.createIndex({ message_id: 1, status: 1, timestamp: 1, user_id: 1 }, { unique: true, name: 'uniq_message_status_event' });
     await MessageStatus.collection.createIndex({ user_id: 1, message_id: 1 });
     try {
@@ -691,61 +598,34 @@ const createIndexes = async () => {
         await MessageStatus.collection.createIndex({ createdAt: 1 }, { expireAfterSeconds: statusTtlDays * 86400, name: 'ttl_message_status_createdAt' });
       }
     } catch {}
-
-    // Message reactions indexes
     await MessageReaction.collection.createIndex({ message_id: 1, user_id: 1, emoji: 1 }, { unique: true, name: 'uniq_message_reaction' });
     await MessageReaction.collection.createIndex({ user_id: 1 });
-
-    // KB items indexes
     await KBItem.collection.createIndex({ user_id: 1 });
     await KBItem.collection.createIndex({ title: 1 });
-
-    // Handoff indexes
     await Handoff.collection.createIndex({ contact_id: 1, user_id: 1 }, { unique: true });
     await Handoff.collection.createIndex({ user_id: 1, conversation_status: 1 });
-    // Hot-path: lookups by tenant + contact
     await Handoff.collection.createIndex({ user_id: 1, contact_id: 1 }, { name: 'user_contact' });
-
-    // AI requests indexes
     await AIRequest.collection.createIndex({ user_id: 1 });
     await AIRequest.collection.createIndex({ createdAt: -1 });
-
-    // Customer indexes
     await Customer.collection.createIndex({ user_id: 1, contact_id: 1 }, { unique: true });
     await Customer.collection.createIndex({ user_id: 1, email: 1 });
     await Customer.collection.createIndex({ user_id: 1, status: 1 });
-
-    // Notification indexes
     await Notification.collection.createIndex({ user_id: 1 });
     await Notification.collection.createIndex({ user_id: 1, is_read: 1 });
-
-    // Agent Stripe indexes
     await AgentStripeConnection.collection.createIndex({ user_id: 1 }, { unique: true, name: 'agent_stripe_user' });
     await AgentStripeConnection.collection.createIndex({ stripe_user_id: 1 }, { unique: true, sparse: true, name: 'agent_stripe_account' });
-
-    // Payment request indexes
     await PaymentRequest.collection.createIndex({ user_id: 1, contact_id: 1, createdAt: -1 }, { name: 'payment_requests_contact_recent' });
     await PaymentRequest.collection.createIndex({ checkout_session_id: 1 }, { unique: true, sparse: true, name: 'payment_requests_session' });
     await PaymentRequest.collection.createIndex({ payment_intent_id: 1 }, { unique: true, sparse: true, name: 'payment_requests_intent' });
-
-    // Usage stats indexes
     await UsageStats.collection.createIndex({ user_id: 1, month_year: 1 }, { unique: true });
-
-    // Booking sessions TTL cleanup
     try {
       const sessionTtlHours = Number(process.env.BOOKING_SESSION_TTL_HOURS || 24);
       if (sessionTtlHours > 0) {
         await BookingSession.collection.createIndex({ updatedAt: 1 }, { expireAfterSeconds: sessionTtlHours * 3600, name: 'ttl_booking_sessions_updatedAt' });
       }
     } catch {}
-
-    // Appointments hot-path index: by tenant, phone, and time
     await Appointment.collection.createIndex({ user_id: 1, contact_phone: 1, start_ts: 1 }, { name: 'user_phone_startTs' });
-
-    // Settings audit indexes
     await SettingsAudit.collection.createIndex({ user_id: 1, createdAt: -1 }, { name: 'settings_audit_user' });
-
-    // Shopify indexes
     await ShopifyStore.collection.createIndex({ user_id: 1 }, { unique: true, name: 'shopify_store_user' });
     await ShopifyStore.collection.createIndex({ shop_domain: 1 }, { unique: true, sparse: true, name: 'shopify_store_domain' });
 
@@ -774,15 +654,11 @@ const createIndexes = async () => {
     logHelpers.logError(error, { component: 'mongodb', operation: 'create_indexes' });
   }
 };
-
-// Shopify models
 export const ShopifyStore = mongoose.model('ShopifyStore', shopifyStoreSchema);
 export const ShopifyProduct = mongoose.model('ShopifyProduct', shopifyProductSchema);
 export const ShopifyOrder = mongoose.model('ShopifyOrder', shopifyOrderSchema);
 export const ShopifyCustomer = mongoose.model('ShopifyCustomer', shopifyCustomerSchema);
 export const ShopifyCart = mongoose.model('ShopifyCart', shopifyCartSchema);
-
-// Export models
 export const Message = mongoose.model('Message', messageSchema);
 export const MessageStatus = mongoose.model('MessageStatus', messageStatusSchema);
 export const MessageReaction = mongoose.model('MessageReaction', messageReactionSchema);
@@ -809,9 +685,6 @@ export const QuickReply = mongoose.model('QuickReply', quickReplySchema);
 export const Guide = mongoose.model('Guide', guideSchema);
 export const Enquiry = mongoose.model('Enquiry', enquirySchema);
 export const SettingsAudit = mongoose.model('SettingsAudit', settingsAuditSchema);
-
-// Initialize indexes when module loads
-// Note: Index creation is triggered post-connection from db-mongodb.mjs
 export { createIndexes };
 
 export default {

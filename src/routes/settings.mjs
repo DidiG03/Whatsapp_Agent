@@ -43,7 +43,6 @@ export default function registerSettingsRoutes(app, options = {}) {
     const ob = await getOnboarding(userId);
     const email = await getSignedInEmail(req);
     const q = req.query || {};
-    // Precompute business categories input value
     const businessCategories = (() => { try { return JSON.parse(s.business_categories_json || '[]'); } catch { return []; } })();
     const businessCategoriesValue = Array.isArray(businessCategories) ? businessCategories.join(', ') : '';
     const calendars = await Calendar.find({ user_id: userId }).select('_id display_name account_email calendar_id').sort({ _id: 1 }).lean();
@@ -55,7 +54,6 @@ export default function registerSettingsRoutes(app, options = {}) {
     const csrfToken = res.locals.csrfToken || '';
     const csrfField = `<input type="hidden" name="_csrf" value="${escapeAttr(csrfToken)}">`;
     const csrfTokenJson = JSON.stringify(csrfToken);
-    // Prevent caching to avoid showing cached authenticated pages after logout
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
     res.setHeader("Pragma", "no-cache");
@@ -1056,7 +1054,6 @@ export default function registerSettingsRoutes(app, options = {}) {
     const userId = getCurrentUserId(req);
     try {
       console.log("[KB][CLEAR] requested by", { userId });
-      // Preflight FTS integrity; rebuild if necessary BEFORE delete to avoid error noise
       try {
         db.prepare("INSERT INTO kb_items_fts(kb_items_fts) VALUES ('integrity-check')").run();
       } catch {
@@ -1073,8 +1070,6 @@ export default function registerSettingsRoutes(app, options = {}) {
           db.exec(`INSERT INTO kb_items_fts(rowid, title, content) SELECT id, title, content FROM kb_items;`);
         } catch {}
       }
-
-      // Now perform the delete
       const del = db.prepare(`DELETE FROM kb_items WHERE user_id = ?`).run(userId);
       console.log("[KB][CLEAR] deleted rows", { changes: del?.changes || 0 });
       const remaining = db.prepare(`SELECT COUNT(1) AS c FROM kb_items WHERE user_id = ?`).get(userId)?.c || 0;
@@ -1084,8 +1079,6 @@ export default function registerSettingsRoutes(app, options = {}) {
     }
     return res.redirect(303, '/settings');
   });
-
-  // Staff: fresh implementation
   function normalizeTimezoneLabel(tz) {
     if (!tz) return null;
     if (/\//.test(tz)) return tz;
@@ -1122,7 +1115,6 @@ export default function registerSettingsRoutes(app, options = {}) {
     const calendarId = calIdRaw ? String(calIdRaw) : null;
     const workingJson = parseWorkingHoursFromFields(req.body);
     try {
-      // Dedupe guard: if an identical staff document already exists, skip creating another
       const exists = await Staff.findOne({ user_id: userId, name, timezone, slot_minutes: slotMinutes, calendar_id: calendarId, working_hours_json: workingJson || '{}' }).lean();
       if (!exists) {
         await Staff.create({ user_id: userId, name, calendar_id: calendarId, timezone, slot_minutes: slotMinutes, working_hours_json: workingJson || '{}' });
@@ -1160,8 +1152,6 @@ export default function registerSettingsRoutes(app, options = {}) {
     const userId = getCurrentUserId(req);
 
     try {
-      // Cancel any Stripe billing first to prevent future charges.
-      // If cancellation is attempted and fails, do NOT proceed with deletion.
       const out = await cancelBillingForUserDeletion(userId);
       if (out?.attempted && out?.failed > 0) {
         console.error('[Wipe] Stripe cancellation failed:', out);
@@ -1171,7 +1161,6 @@ export default function registerSettingsRoutes(app, options = {}) {
         );
       }
     } catch (e) {
-      // Be conservative: if Stripe is configured and something goes wrong, block deletion.
       const stripeConfigured = !!process.env.STRIPE_SECRET_KEY;
       if (stripeConfigured) {
         console.error('[Wipe] Stripe cancellation error:', e?.message || e);
@@ -1244,8 +1233,6 @@ export default function registerSettingsRoutes(app, options = {}) {
 
     res.redirect(303, "/settings?saved=1");
   }));
-
-  // WhatsApp token status check (used by Inbox modal)
   app.get("/api/settings/wa-token/status", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     try {
@@ -1262,7 +1249,6 @@ export default function registerSettingsRoutes(app, options = {}) {
           return res.json({ status: 'invalid', code: resp.status });
         }
         if (!resp.ok) {
-          // Consider other non-OK statuses as unknown but not necessarily invalid
           return res.json({ status: 'unknown', code: resp.status });
         }
         return res.json({ status: 'ok' });
@@ -1273,15 +1259,12 @@ export default function registerSettingsRoutes(app, options = {}) {
       return res.json({ status: 'unknown' });
     }
   });
-
-  // Update WhatsApp token (AJAX from Inbox modal)
   app.post("/api/settings/wa-token", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const newTokenRaw = (req.body?.whatsapp_token || '').toString();
     const newToken = newTokenRaw.trim();
     if (!newToken) return res.status(400).json({ success: false, error: 'Token is required' });
     try {
-      // Optionally validate against phone_number_id if set
       const s = await getSettingsForUser(userId);
       if (s?.phone_number_id) {
         try {
@@ -1300,8 +1283,6 @@ export default function registerSettingsRoutes(app, options = {}) {
       return res.status(500).json({ success: false, error: e?.message || 'Failed to update token' });
     }
   });
-
-  // Lightweight API for dashboard setup tasks (step 2 modal)
   app.post("/api/settings/setup-task", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const updates = (req.body?.updates || {});
@@ -1331,8 +1312,6 @@ export default function registerSettingsRoutes(app, options = {}) {
       return res.status(500).json({ success: false, error: 'Failed to save settings' });
     }
   });
-
-  // Start email update: create email address and send verification
   app.post("/settings/email/start", ensureAuthed, protect, async (req, res) => {
     const userId = getCurrentUserId(req);
     const newEmail = String(req.body?.new_email || '').trim();
@@ -1346,8 +1325,6 @@ export default function registerSettingsRoutes(app, options = {}) {
       return res.redirect(303, `/settings?email_error=${msg}`);
     }
   });
-
-  // Resend verification code
   app.post("/settings/email/resend", ensureAuthed, protect, async (req, res) => {
     const userId = getCurrentUserId(req);
     const emailId = String(req.body?.email_id || '').trim();
@@ -1360,8 +1337,6 @@ export default function registerSettingsRoutes(app, options = {}) {
       return res.redirect(303, `/settings?email_error=${msg}`);
     }
   });
-
-  // Verify code and set as primary
   app.post("/settings/email/verify", ensureAuthed, protect, async (req, res) => {
     const userId = getCurrentUserId(req);
     const emailId = String(req.body?.email_id || '').trim();
@@ -1376,10 +1351,6 @@ export default function registerSettingsRoutes(app, options = {}) {
       return res.redirect(303, `/settings?email_error=${msg}&email_update=sent&email_id=${encodeURIComponent(emailId)}`);
     }
   });
-
-  // Staff management temporarily disabled (endpoints removed)
-
-  // Quick Replies API endpoints
   app.post("/api/quick-replies", ensureAuthed, (req, res) => {
     const userId = getCurrentUserId(req);
     const { text, category } = req.body;

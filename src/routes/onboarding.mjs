@@ -17,7 +17,6 @@ export default function registerOnboardingRoutes(app) {
     const stepDef = ONBOARD_STEPS[state.step];
     const prompt = 'Ask me to add or improve your KB...';
     const chat = renderTranscriptAsBubbles(state.transcript);
-    // Prevent caching to avoid showing cached authenticated pages after logout
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
     res.setHeader("Pragma", "no-cache");
@@ -78,14 +77,10 @@ export default function registerOnboardingRoutes(app) {
     const userMsg = (req.body?.message || '').toString().trim();
     const state = getOnboarding(userId) || { step: 0, transcript: '' };
     const stepDef = ONBOARD_STEPS[state.step];
-    // Ignore legacy step prompts; always use AI-driven onboarding
-
-    // AI-driven onboarding/KB coach (single path)
     if (!userMsg) return res.redirect("/onboarding");
     try {
       const titles = (await KBItem.find({ user_id: userId, title: { $ne: null } }).select('title').lean()).map(r => r.title);
       const history = state.transcript || "";
-      // Use onboarding coach so it can both ask for missing info and save KB entries
       const prefs = await getSettingsForUser(userId);
       let coach = await onboardingCoachReply(userMsg, titles, history, {
         tone: prefs?.ai_tone,
@@ -102,8 +97,6 @@ export default function registerOnboardingRoutes(app) {
       const completeLine = trimmed.find(l => /^COMPLETE$/.test(l));
       const { summaries: savedSummaries, visible: appliedVisible } = await applyDirectives(userId, directives);
       let visible = appliedVisible;
-
-      // Apply any settings updates returned by the coach (SET|key|value)
       if (setLines.length) {
         const current = getSettingsForUser(userId) || {};
         const updates = { };
@@ -122,7 +115,6 @@ export default function registerOnboardingRoutes(app) {
         }
         if (Object.keys(updates).length) {
           upsertSettingsForUser(userId, { ...current, ...updates });
-          // Mirror key settings into KB so they show up in KB UI even when AI returns only SET lines
           try {
             if (updates.business_name) {
               await upsertKbItem(userId, 'Business Name', updates.business_name);
@@ -137,7 +129,6 @@ export default function registerOnboardingRoutes(app) {
               savedSummaries.push('Saved “Contact” to KB.');
             }
           } catch {}
-          // If the AI only sent settings, surface a concise confirmation
           if (!visible) {
             if (entryGreetingVal) {
               visible = entryGreetingVal;
@@ -149,8 +140,6 @@ export default function registerOnboardingRoutes(app) {
           }
         }
       }
-
-      // Lightweight heuristics to capture common statements even if the AI omitted ADD_KB
       try {
         const lower = userMsg.toLowerCase();
         const extractSentence = (text, kw) => {
@@ -160,8 +149,6 @@ export default function registerOnboardingRoutes(app) {
             return (hit || '').trim() ? (hit.trim() + '.') : '';
           } catch { return ''; }
         };
-
-        // Settings capture heuristics (business_name, website_url, business_phone)
         const currentSettings = getSettingsForUser(userId) || {};
         const toUpdate = {};
         const heuristicUpdatedKeys = [];
@@ -181,13 +168,11 @@ export default function registerOnboardingRoutes(app) {
           upsertSettingsForUser(userId, { ...currentSettings, ...toUpdate });
           if (!visible) visible = 'Saved your settings.';
         }
-        // What We Do
         if (/\bwe\s+are\b|\bwe\s+do\b|\bour\s+business\b|\bwe\s+sell\b|\brestaurant|cafe|salon|clinic|store|shop\b/i.test(userMsg)) {
           const sentence = extractSentence(userMsg, 'we') || userMsg;
           await upsertKbItem(userId, 'What We Do', sentence);
           savedSummaries.push('Saved “What We Do” to KB.');
         }
-        // Hours detection: days or time patterns
         const hasDay = /(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i.test(userMsg);
         const hasTime = /\b(\d{1,2})([:.][0-5]\d)?\s*(am|pm)?\b.*?-.*?\b(\d{1,2})([:.][0-5]\d)?\s*(am|pm)?\b/i.test(userMsg);
         if (hasDay || hasTime) {
@@ -195,7 +180,6 @@ export default function registerOnboardingRoutes(app) {
           await upsertKbItem(userId, 'Hours', sentence);
           savedSummaries.push('Saved “Hours” to KB.');
         }
-        // Locations detection: common address/location cues
         if (/(street|st\.|ave\.|avenue|blvd\.|boulevard|road|rd\.|drive|dr\.|plaza|center|centre|city|town|village|address|located|location|near)/i.test(userMsg)) {
           const sentence = extractSentence(userMsg, 'location') || extractSentence(userMsg, 'address') || userMsg;
           await upsertKbItem(userId, 'Locations', sentence);
@@ -226,9 +210,6 @@ export default function registerOnboardingRoutes(app) {
       }
       let aiReply = visible || (askFollow ? askFollow : '');
       if (!aiReply || !aiReply.trim()) aiReply = 'Got it.';
-
-      // Fallback: if the AI didn't ask a follow-up and we only saved a setting,
-      // continue the conversation with a sensible next question.
       if (!askFollow && !addLines.length) {
         const madeSettingChange = (typeof updatedKeys !== 'undefined' && updatedKeys.length) || /Saved “Business Name” to KB\./.test(savedSummaries.join(' '));
         const shouldAsk = madeSettingChange || (setLines.length > 0) || savedSummaries.length > 0;
@@ -264,8 +245,6 @@ export default function registerOnboardingRoutes(app) {
     } catch {}
     return res.redirect("/onboarding");
   });
-
-  // Clear only the transcript (keep step and KB entries)
   app.post("/onboarding/clear", ensureAuthed, (req, res) => {
     const userId = getCurrentUserId(req);
     try {

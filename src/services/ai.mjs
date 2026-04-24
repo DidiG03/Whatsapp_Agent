@@ -1,10 +1,7 @@
-// kb-tools.mjs
 import OpenAI from "openai";
 import { normalizePhoneE164 } from "../utils.mjs";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-// ----------------------------- Logging --------------------------------------
 
 export function logOpenAiError(err, label = "OpenAI error") {
   try {
@@ -30,8 +27,6 @@ export function logOpenAiError(err, label = "OpenAI error") {
   }
 }
 
-// ----------------------------- Shared utils ---------------------------------
-
 const MODEL = "gpt-4o-mini";
 const MAX_HISTORY_CHARS = 4000;
 
@@ -44,8 +39,7 @@ const LINE_PATTERNS = [
 
 function isValidDslResponse(s) {
   if (!s) return false;
-  if (/^```|```$|^\s*-/m.test(s)) return false; // kill code fences/bullets
-  const lines = s.trim().split(/\r?\n/);
+  if (/^```|```$|^\s*-/m.test(s)) return false;  const lines = s.trim().split(/\r?\n/);
   if (!lines.length) return false;
   let askMore = 0;
   let hasComplete = false;
@@ -72,8 +66,6 @@ function detectLanguageHint(userMessage) {
   return "User language: English; reply in English unless user writes otherwise.";
 }
 
-// moved to utils: normalizePhoneE164
-
 function normalizeUrl(value) {
   if (!value) return null;
   let v = value.trim();
@@ -92,18 +84,14 @@ function normalizeBusinessName(value) {
     .replace(/\s+/g, " ")
     .trim();
   if (!v) return null;
-  // Obvious non-names or placeholders
   const generic = /^(my|our|the)?\s*(restaurant|shop|business|store)$/i;
   if (generic.test(v)) return null;
   if (!/[a-zA-Z]/.test(v)) return null;
-  // Naive title-case without affecting acronyms excessively
   const titled = v
     .toLowerCase()
     .replace(/\b([a-z])/g, (m) => m.toUpperCase());
   return titled;
 }
-
-// Parses ADD_KB line allowing escaped pipes. Returns [ok, title, content].
 function parseAddKb(line) {
   if (!line.startsWith("ADD_KB|")) return [false, "", ""];
   const rest = line.slice("ADD_KB|".length);
@@ -158,7 +146,6 @@ function normalizeSetLines(response) {
       if (norm) {
         out.push(`SET|business_name|${norm}`);
       } else {
-        // Keep the original line but also ask for clarification if allowed
         out.push(line);
         if (!hasAskMoreAlready && !hasComplete && !addedAskMore) {
           out.push("ASK_MORE|Could you share your exact business name as customers would see it?");
@@ -173,7 +160,6 @@ function normalizeSetLines(response) {
 }
 
 function applyReplacePolicy(response) {
-  // We assume client will overwrite existing on same title. Just pass through after parse check.
   const lines = response.trim().split(/\r?\n/);
   const out = [];
   for (const line of lines) {
@@ -186,15 +172,6 @@ function applyReplacePolicy(response) {
   }
   return out.join("\n").trim();
 }
-
-// ----------------------------- kbCoachReply ---------------------------------
-
-/**
- * @param {string} userMessage
- * @param {string[]} existingTitles
- * @param {string} historyTranscript
- * @returns {Promise<string>}
- */
 export async function kbCoachReply(userMessage, existingTitles = [], historyTranscript = "") {
   const context = (existingTitles || []).map((t) => `- ${escapePipes(t)}`).join("\n");
   const history = String(historyTranscript || "").slice(-MAX_HISTORY_CHARS);
@@ -228,12 +205,9 @@ Behavior:
       max_tokens: 250,
     });
     let out = resp.choices?.[0]?.message?.content?.trim() || "";
-
-    // Soft validation: allow short prose + optional single DSL line
     const lines = out.split(/\r?\n/);
     const dslLines = lines.filter((l) => /^ASK_MORE\|/.test(l) || /^ADD_KB\|/.test(l));
     if (dslLines.length > 1) {
-      // Keep last DSL line only
       out = [
         ...lines.filter((l) => !/^ASK_MORE\||^ADD_KB\|/.test(l)).slice(0, 4),
         dslLines.pop(),
@@ -247,16 +221,6 @@ Behavior:
     return "";
   }
 }
-
-// ----------------------------- generateAiReply -------------------------------
-
-/**
- * Generate a reply from the AI.
- * @param {string} userMessage
- * @param {{ title: string, content: string }[]} contextSnippets
- * @param {{ tone?: string, style?: string, blockedTopics?: string }} options
- * @returns {Promise<string|null>}
- */
 export async function generateAiReply(userMessage, contextSnippets, options = {}) {
   const context =
     (contextSnippets || [])
@@ -282,8 +246,6 @@ export async function generateAiReply(userMessage, contextSnippets, options = {}
     : "";
 
   const OUT_OF_SCOPE_PHRASE = "That seems outside my scope. Try choosing one of these topics";
-
-  // Base system policy and tasking
   const policy = [
     "You are a WhatsApp assistant for a business.",
     "Use ONLY the provided Docs (KB context). If the KB does not support an answer, reply with EXACTLY: " + OUT_OF_SCOPE_PHRASE + ".",
@@ -297,14 +259,10 @@ export async function generateAiReply(userMessage, contextSnippets, options = {}
     "Booking guidance (no pickers): If intent to book without BOTH date and time, ask for a preferred date/time in one short sentence (e.g., 'Nov 3 at 3pm').",
     "Availability: if asked without a date range, ask for a range (e.g., 'tomorrow', 'Nov 3–5').",
   ].filter(Boolean).join("\n");
-
-  // Build chat messages with optional conversation history
   const messages = [
     { role: "system", content: policy },
     { role: "system", content: "Docs:\n" + context },
   ];
-
-  // Append prior turns if provided: each item should be { role: 'user'|'assistant', content: string }
   for (const m of historyMessages.slice(-10)) {
     try {
       const role = (m && (m.role === 'assistant' || m.role === 'user')) ? m.role : 'user';
@@ -332,16 +290,6 @@ export async function generateAiReply(userMessage, contextSnippets, options = {}
     return null;
   }
 }
-
-/**
- * Generate a short, natural WhatsApp message for common assistant nudges
- * (asking for a date/time, range, warnings, suggestions, etc.).
- * Falls back to a sensible default if the model call fails.
- * @param {string} kind - e.g., 'ask_datetime', 'ask_range', 'closest_times', 'no_times', 'past_time_warning', 'confirm_booking'
- * @param {object} data - variables for the nudge (e.g., { examples: [...], suggestions: [...], dateLabel: 'Nov 3' })
- * @param {{ tone?: string, style?: string }} options
- * @returns {Promise<string>}
- */
 export async function generateAssistantNudge(kind, data = {}, options = {}) {
   const tone = (options.tone || 'friendly').trim();
   const style = (options.style || 'clear and concise').trim();
@@ -398,7 +346,6 @@ export async function generateAssistantNudge(kind, data = {}, options = {}) {
     return resp.choices?.[0]?.message?.content?.trim() || '';
   } catch (e) {
     logOpenAiError(e, 'AI nudge error');
-    // Fallbacks
     if (kind === 'ask_datetime') return "Please share a preferred date and time (e.g., 'Nov 3 at 3pm', 'tomorrow 14:30').";
     if (kind === 'ask_range') return "Which dates should I check? You can say 'tomorrow', 'Nov 3', or 'Nov 3–5'.";
     if (kind === 'closest_times') return `That exact time isn't available. Here are some nearby options: ${(data?.suggestions||[]).join(', ')}.`;
@@ -414,25 +361,6 @@ export async function generateAssistantNudge(kind, data = {}, options = {}) {
     return 'Okay.';
   }
 }
-
-// ----------------------------- generateAgentDecision -------------------------
-
-/**
- * Plan a smart assistant reply and an optional intent for the server to execute.
- * The model returns a JSON object with shape:
- * {
- *   text: string, // WhatsApp-ready reply to send
- *   intent?: {
- *     type: 'availability'|'book'|'reschedule'|'cancel'|'handoff'|'none',
- *     data?: object // free-form; server will interpret safely
- *   }
- * }
- *
- * Notes:
- * - The model is encouraged to sell/upsell politely and ask for missing info.
- * - The server executes the intent opportunistically (when enough info is present).
- * - If parsing fails, falls back to generateAiReply.
- */
 export async function generateAgentDecision(userMessage, contextSnippets, options = {}) {
   const context =
     (contextSnippets || [])
@@ -548,17 +476,13 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
   function tryExtractJson(s) {
     if (!s) return null;
     let str = String(s).trim();
-    // Common case: raw JSON
     try { return JSON.parse(str); } catch {}
-    // Extract first fenced code block with json
     const fence = /```json\s*([\s\S]*?)\s*```/i.exec(str);
     if (fence) {
       try { return JSON.parse(fence[1]); } catch {}
     }
-    // Extract first { ... } object
     const start = str.indexOf('{');
     if (start >= 0) {
-      // naive scan to matching brace count
       let depth = 0;
       for (let i = start; i < str.length; i++) {
         const ch = str[i];
@@ -581,7 +505,6 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
     if (obj && typeof obj === 'object' && obj.text) {
       return obj;
     }
-    // Fallback: simple KB answer
     const fallback = await generateAiReply(userMessage, contextSnippets, options);
     return fallback ? { text: fallback, intent: { type: 'none' } } : null;
   } catch (e) {
@@ -594,8 +517,6 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
     }
   }
 }
-
-// ----------------------------- onboardingCoachReply -------------------------
 
 function buildOnboardingSystem(tonePref, stylePref, blockedTopics) {
   const toneLine = tonePref ? `- Tone: ${String(tonePref)}.` : "- Tone/style: concise, helpful; adopt ai_tone/ai_style if provided by user.";
@@ -671,14 +592,6 @@ ${history || "(no history)"}
 (Reply ONLY with the allowed DSL lines. If you can extract multiple facts, output multiple ADD_KB lines (up to 8). Always ask exactly one high‑impact follow‑up via ASK_MORE unless onboarding is complete.)
 `.trim();
 }
-
-/**
- * @param {string} userMessage
- * @param {{ title?: string }[]} kbItems
- * @param {string} historyTranscript
- * @param {{ tone?: string, style?: string, blockedTopics?: string }} options
- * @returns {Promise<string>}
- */
 export async function onboardingCoachReply(userMessage, kbItems = [], historyTranscript = "", options = {}) {
   const system = buildOnboardingSystem(options?.tone, options?.style, options?.blockedTopics);
   const instruction = buildOnboardingInstruction(kbItems, historyTranscript, userMessage);
@@ -695,11 +608,7 @@ export async function onboardingCoachReply(userMessage, kbItems = [], historyTra
     });
     return resp.choices?.[0]?.message?.content?.trim() || "";
   }
-
-  // First attempt
   let out = await callOnce();
-
-  // One retry if invalid
   if (!isValidDslResponse(out)) {
     const retrySystem =
       system +
@@ -715,34 +624,16 @@ export async function onboardingCoachReply(userMessage, kbItems = [], historyTra
     });
     out = resp.choices?.[0]?.message?.content?.trim() || out;
   }
-
-  // Normalize/validate pipeline
   if (isValidDslResponse(out)) {
     out = applyReplacePolicy(out);
     out = normalizeSetLines(out);
   } else {
-    // Fallback guard
     out = "ASK_MORE|Could you share the key missing details (e.g., services/products offered, booking or shipping/returns info)?";
   }
 
   return out.trim();
 }
 
-// ----------------------------- usageInsights ----------------------------------
-
-/**
- * Generate a short insights recap for the Home dashboard based on recent usage.
- *
- * @param {{ plan?: any, usage?: any, history?: any[] }} params
- *   - plan: UserPlan document (or plain object with plan_name/monthly_limit/etc.)
- *   - usage: current month UsageStats (inbound_messages, outbound_messages, template_messages, month_year)
- *   - history: optional array of recent UsageStats objects for previous months
- *
- * @returns {Promise<string>} Human‑readable text with a few sentences of suggestions.
- */
-/**
- * Generate commerce-aware AI reply with product browsing and ordering capabilities
- */
 export async function generateCommerceAiReply(userMessage, contextSnippets, options = {}) {
   const context =
     (contextSnippets || [])
@@ -755,8 +646,6 @@ export async function generateCommerceAiReply(userMessage, contextSnippets, opti
   const historyMessages = Array.isArray(options.historyMessages) ? options.historyMessages : [];
   const bizType = String(options.businessType || "").trim();
   const bizCats = Array.isArray(options.businessCategories) ? options.businessCategories.map(s => String(s || "").trim()).filter(Boolean).slice(0, 20) : [];
-
-  // Check if Shopify is enabled and get products
   let productsContext = "";
   let hasShopify = false;
 
@@ -787,8 +676,6 @@ export async function generateCommerceAiReply(userMessage, contextSnippets, opti
     : "";
 
   const OUT_OF_SCOPE_PHRASE = "That seems outside my scope. Try choosing one of these topics";
-
-  // Enhanced system policy with commerce capabilities
   const policy = [
     "You are a WhatsApp assistant for a business with e-commerce capabilities.",
     "Use ONLY the provided Docs (KB context). If the KB does not support an answer, reply with EXACTLY: " + OUT_OF_SCOPE_PHRASE + ".",
@@ -805,19 +692,13 @@ export async function generateCommerceAiReply(userMessage, contextSnippets, opti
     "Booking guidance (no pickers): If intent to book without BOTH date and time, ask for a preferred date/time in one short sentence (e.g., 'Nov 3 at 3pm').",
     "Availability: if asked without a date range, ask for a range (e.g., 'tomorrow', 'Nov 3–5').",
   ].filter(Boolean).join("\n");
-
-  // Build chat messages with optional conversation history
   const messages = [
     { role: "system", content: policy },
     { role: "system", content: "Docs:\n" + context },
   ];
-
-  // Add products context if available
   if (productsContext) {
     messages.push({ role: "system", content: "Available Products:\n" + productsContext });
   }
-
-  // Append prior turns if provided: each item should be { role: 'user'|'assistant', content: string }
   for (const m of historyMessages.slice(-10)) {
     try {
       const role = String(m.role || "").toLowerCase().trim();
@@ -829,8 +710,6 @@ export async function generateCommerceAiReply(userMessage, contextSnippets, opti
       }
     } catch (_) {}
   }
-
-  // Add the current user message
   messages.push({
     role: "user",
     content: String(userMessage || "").slice(0, MAX_HISTORY_CHARS)
@@ -845,8 +724,6 @@ export async function generateCommerceAiReply(userMessage, contextSnippets, opti
     });
 
     const reply = String(completion.choices?.[0]?.message?.content || "").trim();
-
-    // Log usage for analytics
     try {
       const usage = completion.usage;
       if (usage) {
@@ -864,8 +741,6 @@ export async function generateCommerceAiReply(userMessage, contextSnippets, opti
     return reply;
   } catch (err) {
     logOpenAiError(err, "Commerce AI reply generation failed");
-
-    // Log failed request
     try {
       const { AIRequest } = await import('../schemas/mongodb.mjs');
       await AIRequest.create({
@@ -876,15 +751,9 @@ export async function generateCommerceAiReply(userMessage, contextSnippets, opti
         tokens_used: 0
       });
     } catch (_) {}
-
-    // Return a fallback response
     return "I'm sorry, I'm having trouble processing your request right now. Please try again in a moment.";
   }
 }
-
-/**
- * Detect if a message contains commerce intent
- */
 export function detectCommerceIntent(message) {
   const commerceKeywords = [
     'buy', 'purchase', 'order', 'shop', 'product', 'price', 'cost',

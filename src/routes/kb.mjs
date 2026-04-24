@@ -8,12 +8,10 @@ import { selectStorage } from '../services/uploads.mjs';
 import { wrapAsync } from "../middleware/errors.mjs";
 
 export default function registerKbRoutes(app) {
-  // Shared storage selection (serverless vs disk)
   const storage = selectStorage('kb');
   const uploadKb = multer({
     storage,
-    limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
-    fileFilter: (req, file, cb) => {
+    limits: { fileSize: 50 * 1024 * 1024 },    fileFilter: (req, file, cb) => {
       const allowed = /pdf|txt|md|doc|docx|rtf|odt|csv|xls|xlsx/i;
       if (allowed.test(file.mimetype) || allowed.test(path.extname(file.originalname))) return cb(null, true);
       cb(new Error('Unsupported file type'));
@@ -27,7 +25,6 @@ export default function registerKbRoutes(app) {
     if (!content || typeof content !== "string") return res.status(400).json({ error: "content required" });
 
     try {
-      // Guard: booking-related KB items require bookings to be enabled
       try {
         const settings = await getSettingsForUser(userId);
         const mentionsBooking = /\bbooking(s)?\b/i.test(String(title || "") + " " + String(content || ""));
@@ -61,8 +58,6 @@ export default function registerKbRoutes(app) {
     });
     return res.json({ id: String(doc._id), title: doc.title, content: doc.content, file_url: doc.file_url, file_mime: doc.file_mime, show_in_menu: doc.show_in_menu, user_id: doc.user_id });
   }));
-
-  // Upload a document and create a KB item that references it
   app.post("/kb/upload", ensureAuthed, uploadKb.single('document'), wrapAsync(async (req, res) => {
     try {
       const userId = getCurrentUserId(req);
@@ -74,8 +69,6 @@ export default function registerKbRoutes(app) {
       const dbNative = getDB();
       const { GridFSBucket, ObjectId } = await import('mongodb');
       const bucket = new GridFSBucket(dbNative, { bucketName: 'kbfiles' });
-
-      // Upload binary into GridFS
       const filename = req.file.originalname || 'kb-file';
       const uploadStream = bucket.openUploadStream(filename, {
         contentType: req.file.mimetype || 'application/octet-stream',
@@ -93,8 +86,6 @@ export default function registerKbRoutes(app) {
         }
       });
       const fileId = uploadStream.id ? uploadStream.id.toString() : null;
-
-      // Attempt lightweight text extraction for better retrieval
       let extracted = '';
       try {
         const mime = (req.file.mimetype || '').toLowerCase();
@@ -102,7 +93,6 @@ export default function registerKbRoutes(app) {
           if (req.file.buffer) {
             extracted = req.file.buffer.toString('utf8');
           } else if (req.file.path) {
-            // Use non-blocking async read to avoid blocking the event loop on large files
             extracted = await fs.promises.readFile(req.file.path, 'utf8');
           }
         } else if (/pdf/.test(mime)) {
@@ -115,10 +105,7 @@ export default function registerKbRoutes(app) {
           } catch {}
         }
       } catch {}
-      const MAX_TEXT = 200000; // 200k chars cap
-      const contentForSearch = (summary + '\n\n' + extracted).trim().slice(0, MAX_TEXT) || summary || (title + ' (document)');
-
-      // File URL served via GridFS route
+      const MAX_TEXT = 200000;      const contentForSearch = (summary + '\n\n' + extracted).trim().slice(0, MAX_TEXT) || summary || (title + ' (document)');
       const fileUrl = fileId ? (`/kb/file/${fileId}`) : null;
       const fileMime = req.file.mimetype || '';
 
@@ -138,8 +125,6 @@ export default function registerKbRoutes(app) {
       return res.status(500).json({ error: 'kb_upload_failed' });
     }
   }));
-
-  // Stream a KB file from GridFS by id
   app.get('/kb/file/:id', ensureAuthed, async (req, res) => {
     try {
       const { getDB } = await import('../db-mongodb.mjs');
@@ -147,7 +132,6 @@ export default function registerKbRoutes(app) {
       const { GridFSBucket, ObjectId } = await import('mongodb');
       const bucket = new GridFSBucket(dbNative, { bucketName: 'kbfiles' });
       const id = new ObjectId(String(req.params.id));
-      // Try to fetch file doc for content-type
       try {
         const files = dbNative.collection('kbfiles.files');
         const meta = await files.findOne({ _id: id });
@@ -158,8 +142,6 @@ export default function registerKbRoutes(app) {
       return res.status(404).send('Not Found');
     }
   });
-
-  // Update an existing KB item (title and/or content)
   app.put("/kb/:id", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const id = String(req.params.id || '').trim();
@@ -181,8 +163,6 @@ export default function registerKbRoutes(app) {
       return res.status(409).json({ error: "conflict", message: String(e && e.message || e) });
     }
   });
-
-  // Delete a KB item
   app.delete("/kb/:id", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const id = String(req.params.id || '').trim();
@@ -265,8 +245,6 @@ export default function registerKbRoutes(app) {
         </div>
       `;
     }).join("");
-
-    // Synthetic, non-deletable informational card for Bookings feature visibility in KB
     const bookingsCard = (() => {
       const enabled = !!(settings?.bookings_enabled);
       const badge = enabled
@@ -288,8 +266,6 @@ export default function registerKbRoutes(app) {
           </div>
         </div>`;
     })();
-
-    // Prevent caching to avoid showing cached authenticated pages after logout
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
     res.setHeader("Pragma", "no-cache");

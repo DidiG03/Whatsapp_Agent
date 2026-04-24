@@ -1,33 +1,23 @@
-/**
- * PostgreSQL Database Adapter with Connection Pooling
- * Provides enterprise-grade database support with connection pooling and migrations
- */
+
 
 import pg from 'pg';
 import { logHelpers } from '../monitoring/logger.mjs';
 import { businessMetrics } from '../monitoring/metrics.mjs';
 
 const { Pool } = pg;
-
-// Database configuration
 const dbConfig = {
   host: process.env.POSTGRES_HOST || 'localhost',
   port: parseInt(process.env.POSTGRES_PORT || '5432'),
   database: process.env.POSTGRES_DB || 'whatsapp_agent',
   user: process.env.POSTGRES_USER || 'postgres',
   password: process.env.POSTGRES_PASSWORD || 'password',
-  // Connection pool settings
   max: parseInt(process.env.POSTGRES_MAX_CONNECTIONS || '20'),
   min: parseInt(process.env.POSTGRES_MIN_CONNECTIONS || '5'),
   idleTimeoutMillis: parseInt(process.env.POSTGRES_IDLE_TIMEOUT || '30000'),
   connectionTimeoutMillis: parseInt(process.env.POSTGRES_CONNECTION_TIMEOUT || '10000'),
-  // SSL configuration
   ssl: process.env.POSTGRES_SSL === 'true' ? { rejectUnauthorized: false } : false,
-  // Application name for monitoring
   application_name: 'whatsapp-agent'
 };
-
-// Create connection pool
 let pool = null;
 let isConnected = false;
 
@@ -59,23 +49,16 @@ export function initPostgreSQL() {
     return null;
   }
 }
-
-// Get database pool
 export function getPool() {
   if (!pool) {
     pool = initPostgreSQL();
   }
   return pool;
 }
-
-// Check if database is connected
 export function isPostgreSQLConnected() {
   return isConnected && pool && !pool.ended;
 }
-
-// Database operations with performance tracking
 export const db = {
-  // Execute query with performance tracking
   async query(text, params = []) {
     const startTime = Date.now();
     
@@ -86,8 +69,6 @@ export const db = {
     try {
       const result = await pool.query(text, params);
       const duration = Date.now() - startTime;
-      
-      // Track database metrics
       businessMetrics.trackDatabaseQuery(
         this.extractTableName(text),
         this.extractOperation(text),
@@ -123,8 +104,6 @@ export const db = {
       throw error;
     }
   },
-  
-  // Get a client from the pool for transactions
   async getClient() {
     if (!isPostgreSQLConnected()) {
       throw new Error('Database not connected');
@@ -132,8 +111,6 @@ export const db = {
     
     return await pool.connect();
   },
-  
-  // Execute transaction
   async transaction(callback) {
     const client = await this.getClient();
     const startTime = Date.now();
@@ -159,8 +136,6 @@ export const db = {
       client.release();
     }
   },
-  
-  // Helper methods
   extractTableName(query) {
     const match = query.match(/FROM\s+(\w+)/i) || query.match(/UPDATE\s+(\w+)/i) || query.match(/INSERT\s+INTO\s+(\w+)/i);
     return match ? match[1] : 'unknown';
@@ -177,8 +152,6 @@ export const db = {
     if (trimmed.startsWith('ALTER')) return 'alter';
     return 'other';
   },
-  
-  // Health check
   async healthCheck() {
     try {
       const result = await this.query('SELECT NOW() as current_time, version() as version');
@@ -200,13 +173,9 @@ export const db = {
     }
   }
 };
-
-// Database schema and migrations
 export const migrations = {
-  // Create tables if they don't exist
   async createTables() {
     const tables = [
-      // Users table
       `CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
         clerk_user_id VARCHAR(255) UNIQUE NOT NULL,
@@ -217,8 +186,6 @@ export const migrations = {
         is_active BOOLEAN DEFAULT true,
         metadata JSONB DEFAULT '{}'
       )`,
-      
-      // Settings table
       `CREATE TABLE IF NOT EXISTS settings (
         id SERIAL PRIMARY KEY,
         user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -237,8 +204,6 @@ export const migrations = {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(user_id)
       )`,
-      
-      // Messages table
       `CREATE TABLE IF NOT EXISTS messages (
         id SERIAL PRIMARY KEY,
         user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -256,8 +221,6 @@ export const migrations = {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`,
-      
-      // Customers table
       `CREATE TABLE IF NOT EXISTS customers (
         id SERIAL PRIMARY KEY,
         user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -270,8 +233,6 @@ export const migrations = {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(user_id, contact_id)
       )`,
-      
-      // Knowledge base table
       `CREATE TABLE IF NOT EXISTS kb_items (
         id SERIAL PRIMARY KEY,
         user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -284,8 +245,6 @@ export const migrations = {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`,
-      
-      // Conversations table
       `CREATE TABLE IF NOT EXISTS conversations (
         id SERIAL PRIMARY KEY,
         user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -298,8 +257,6 @@ export const migrations = {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(user_id, contact_id)
       )`,
-      
-      // Usage tracking table
       `CREATE TABLE IF NOT EXISTS usage_tracking (
         id SERIAL PRIMARY KEY,
         user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -316,8 +273,6 @@ export const migrations = {
     for (const table of tables) {
       await db.query(table);
     }
-    
-    // Create indexes for performance
     const indexes = [
       'CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id)',
       'CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp)',
@@ -335,8 +290,6 @@ export const migrations = {
     
     logHelpers.logBusinessEvent('postgres_tables_created');
   },
-  
-  // Run migrations
   async runMigrations() {
     try {
       await this.createTables();
@@ -347,39 +300,29 @@ export const migrations = {
     }
   }
 };
-
-// Database adapter that can work with both SQLite and PostgreSQL
 export const databaseAdapter = {
-  // Initialize database based on configuration
   async init() {
     if (process.env.DATABASE_TYPE === 'postgresql') {
       await initPostgreSQL();
       await migrations.runMigrations();
       return 'postgresql';
     } else {
-      // Fallback to SQLite
       logHelpers.logBusinessEvent('database_fallback_sqlite');
       return 'mongodb';
     }
   },
-  
-  // Get appropriate database instance
   getInstance() {
     if (process.env.DATABASE_TYPE === 'postgresql' && isPostgreSQLConnected()) {
       return db;
     } else {
-      // Return SQLite instance (from existing db.mjs)
       const { db: sqliteDb } = require('../db.mjs');
       return sqliteDb;
     }
   },
-  
-  // Health check
   async healthCheck() {
     if (process.env.DATABASE_TYPE === 'postgresql') {
       return await db.healthCheck();
     } else {
-      // SQLite health check
       try {
         const sqliteDb = this.getInstance();
         sqliteDb.prepare('SELECT 1').get();
@@ -390,8 +333,6 @@ export const databaseAdapter = {
     }
   }
 };
-
-// Initialize PostgreSQL on module load
 if (process.env.DATABASE_TYPE === 'postgresql') {
   initPostgreSQL();
 }

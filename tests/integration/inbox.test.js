@@ -1,10 +1,6 @@
 import request from 'supertest';
-
-// Disable Clerk in tests
 process.env.CLERK_PUBLISHABLE = '';
 process.env.CLERK_SECRET_KEY = '';
-
-// Mock heavy dependencies before app import
 jest.mock('../../src/services/settings.mjs', () => ({
   getSettingsForUser: jest.fn(async () => ({ bookings_enabled: false }))
 }));
@@ -23,7 +19,6 @@ jest.mock('../../src/db-mongodb.mjs', () => ({
   db: { prepare: () => ({ all: () => [], get: () => null, run: () => ({}) }) },
   getDB: () => ({ collection: () => ({ aggregate: () => ({ toArray: async () => [] }) }) }),
   getMongoose: () => ({ connection: { readyState: 1 } }),
-  // createApp() expects these exports; keep them lightweight for integration tests
   initMongoDB: async () => ({ client: null, db: null }),
   isMongoConnected: () => true
 }));

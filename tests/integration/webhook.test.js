@@ -1,7 +1,5 @@
 import request from 'supertest';
 import { createApp } from '../../src/app.mjs';
-
-// Minimal helper to compute X-Hub signature (sha256)
 import crypto from 'node:crypto';
 
 function signBody(secret, body) {
@@ -42,22 +40,16 @@ describe('Webhook Routes (integration)', () => {
     const secret = 'app-secret';
     process.env.APP_SECRET = secret;
     const payload = { object: 'whatsapp_business_account', entry: [{ changes: [{}] }] };
-
-    // Invalid signature
     let res = await request(app)
       .post('/webhook')
       .set('x-hub-signature-256', 'sha256=deadbeef')
       .send(payload);
-    // Should 403 when signature gate applies
     expect([200, 403]).toContain(res.status);
-
-    // Valid signature
     const sig = signBody(secret, payload);
     res = await request(app)
       .post('/webhook')
       .set('x-hub-signature-256', sig)
       .send(payload);
-    // For valid but minimal payload, handler may 200-ACK
     expect([200, 204]).toContain(res.status);
   });
 });

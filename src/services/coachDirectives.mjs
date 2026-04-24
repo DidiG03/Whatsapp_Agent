@@ -1,9 +1,4 @@
-/**
- * Shared parser and applier for AI coach directives used by Assistant/Onboarding.
- * Supports directives:
- *  - ADD_KB|<title>|<content>
- *  - SET|<key>|<value>
- */
+
 import { upsertKbItem } from "../services/kb.mjs";
 import { upsertSettingsForUser, getSettingsForUser } from "../services/settings.mjs";
 
@@ -41,19 +36,12 @@ export function parseDirectives(text = "") {
 
   return { adds, sets, complete, visible };
 }
-
-/**
- * Apply parsed directives: upsert KB items and settings.
- * Returns { summaries: string[], visible: string } suitable for rendering.
- */
 export async function applyDirectives(userId, { adds = [], sets = {}, visible = "" }) {
   const summaries = [];
-  // Save KB items
   for (const a of adds) {
     const ok = await upsertKbItem(userId, a.title, a.content);
     if (ok) summaries.push(`Saved “${a.title}” to KB.`);
   }
-  // Save settings (service merges with current values)
   if (Object.keys(sets).length) {
     await upsertSettingsForUser(userId, sets);
     try {
@@ -63,7 +51,6 @@ export async function applyDirectives(userId, { adds = [], sets = {}, visible = 
     } catch {}
     if (!visible) {
       const current = await getSettingsForUser(userId);
-      // Prefer greeting as visible confirmation if present
       visible = sets.entry_greeting || `Updated settings for ${current?.business_name || 'your business'}.`;
     }
   }

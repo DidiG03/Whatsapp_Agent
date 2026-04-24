@@ -23,11 +23,7 @@ export default function registerDashboardRoutes(app) {
     const tokensStepCompleted = !!(s.whatsapp_token && s.app_secret && s.verify_token);
     const allCompleted = metaStepCompleted && tokensStepCompleted && kbStepCompleted;
     const showSetupGuide = !allCompleted;
-    
-    // Get usage and plan info (metrics)
     const totalMessages = usage.inbound_messages + usage.outbound_messages + usage.template_messages;    
-
-    // High-level setup steps for the guide widget
     const setupSections = [
       {
         id: 'meta',
@@ -520,9 +516,6 @@ export default function registerDashboardRoutes(app) {
         </div>
       </div>
     ` : '';
-
-    // Create metrics dashboard HTML
-    // Make this section scrollable so deeper content (like integrations) is reachable even on smaller screens.
     const metricsHtml = `
       <div style="padding: 16px; overflow-y: auto;">
         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
@@ -589,8 +582,6 @@ export default function registerDashboardRoutes(app) {
       </div>
     `;
     
-    
-    // Prevent caching to avoid showing cached authenticated pages after logout
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
     res.setHeader("Pragma", "no-cache");
@@ -1185,8 +1176,6 @@ export default function registerDashboardRoutes(app) {
       </body></html>
     `);
   });
-
-  // Save intake questions
   app.post("/dashboard/booking-questions", ensureAuthed, (req, res) => {
     const userId = getCurrentUserId(req);
     let raw = (req.body?.booking_questions_json || '').toString();
@@ -1196,12 +1185,9 @@ export default function registerDashboardRoutes(app) {
       const clean = parsed.map(v => String(v||'').trim()).filter(Boolean).slice(0, 10);
       upsertSettingsForUser(userId, { booking_questions_json: JSON.stringify(clean) });
     } catch {
-      // keep raw if invalid? prefer ignore
     }
     return res.redirect('/dashboard');
   });
-
-  // CSAT metrics API (per-user)
   app.get("/api/metrics/csat", ensureAuthed, async (req, res) => {
     try {
       const userId = getCurrentUserId(req);
@@ -1229,8 +1215,6 @@ export default function registerDashboardRoutes(app) {
       }
       const t = stats(todayDocs);
       const w = stats(last7Docs);
-
-      // Distribution for the last 7 days
       const dist = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
       for (const r of last7Docs) {
         const s = Number(r.score || 0);

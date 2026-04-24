@@ -32,27 +32,17 @@ import {
 import { broadcastReaction, broadcastMessageStatus } from "./realtime.mjs";
 import multer from 'multer';
 import { selectStorage } from '../services/uploads.mjs';
-
-/** Clean contact ID by removing URL parameters and query strings */
 function cleanContactId(contactId) {
   if (!contactId) return contactId;
-  
-  // Remove common URL parameters that might be appended to phone numbers
   let cleaned = contactId.toString();
-  
-  // Remove query string parameters like ?type=success, &type=success, etc.
   cleaned = cleaned.replace(/[?&]type=[^&]*/g, '');
   cleaned = cleaned.replace(/[?&]status=[^&]*/g, '');
   cleaned = cleaned.replace(/[?&]state=[^&]*/g, '');
   cleaned = cleaned.replace(/[?&]code=[^&]*/g, '');
-  
-  // Remove any remaining query string parameters
   const questionMarkIndex = cleaned.indexOf('?');
   if (questionMarkIndex !== -1) {
     cleaned = cleaned.substring(0, questionMarkIndex);
   }
-  
-  // Remove any remaining ampersand parameters
   const ampersandIndex = cleaned.indexOf('&');
   if (ampersandIndex !== -1) {
     cleaned = cleaned.substring(0, ampersandIndex);
@@ -60,12 +50,6 @@ function cleanContactId(contactId) {
   
   return cleaned;
 }
-
-// Format a unix timestamp (seconds) for display:
-// - today: show time only (HH:MM)
-// - yesterday: show 'yesterday'
-// - within last 7 days: show weekday name (e.g., Wednesday)
-// - 7+ days ago: show date only
 function formatTimestampForDisplay(unixTs){
   const ts = Number(unixTs || 0);
   if (!ts) return '';
@@ -88,15 +72,10 @@ function formatTimestampForDisplay(unixTs){
   }
   return d.toLocaleDateString();
 }
-
-// Configure multer for file uploads - serverless compatible
 const storage = selectStorage('inbox');
-
-// Upload configuration for images
 const uploadImage = multer({ 
   storage: storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
-  fileFilter: (req, file, cb) => {
+  limits: { fileSize: 5 * 1024 * 1024 },  fileFilter: (req, file, cb) => {
     const allowedTypes = /jpeg|jpg|png|gif|webp/;
     const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
     const mimetype = allowedTypes.test(file.mimetype);
@@ -108,12 +87,9 @@ const uploadImage = multer({
     }
   }
 });
-
-// Upload configuration for documents
 const uploadDocument = multer({ 
   storage: storage,
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB limit for documents
-  fileFilter: (req, file, cb) => {
+  limits: { fileSize: 100 * 1024 * 1024 },  fileFilter: (req, file, cb) => {
     const allowedExtensions = /\.(pdf|doc|docx|txt|rtf|odt|ppt|pptx|xls|xlsx|csv|zip|rar)$/i;
     const allowedMimeTypes = /^(application\/(pdf|msword|vnd\.openxmlformats-officedocument\.wordprocessingml\.document|rtf|vnd\.oasis\.opendocument\.text|vnd\.ms-powerpoint|vnd\.openxmlformats-officedocument\.presentationml\.presentation|vnd\.ms-excel|vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet|zip|x-rar-compressed)|text\/(plain|csv))$/;
     
@@ -127,35 +103,23 @@ const uploadDocument = multer({
     }
   }
 });
-
-// Advanced search function for messages and conversations
 async function performAdvancedSearch(userId, filters) {
   const { q, messageType, direction, dateFrom, dateTo } = filters;
-  
-  // Build the search query
   let whereConditions = ['m.user_id = ?'];
   let queryParams = [userId];
-  
-  // Text search in message content
   if (q) {
     whereConditions.push(`(m.text_body LIKE ? OR m.raw LIKE ?)`);
     const searchTerm = `%${q}%`;
     queryParams.push(searchTerm, searchTerm);
   }
-  
-  // Message type filter
   if (messageType) {
     whereConditions.push('m.type = ?');
     queryParams.push(messageType);
   }
-  
-  // Direction filter
   if (direction) {
     whereConditions.push('m.direction = ?');
     queryParams.push(direction);
   }
-  
-  // Date range filters
   if (dateFrom) {
     whereConditions.push('m.timestamp >= ?');
     queryParams.push(Math.floor(new Date(dateFrom).getTime() / 1000));
@@ -165,8 +129,6 @@ async function performAdvancedSearch(userId, filters) {
     whereConditions.push('m.timestamp <= ?');
     queryParams.push(Math.floor(new Date(dateTo + 'T23:59:59').getTime() / 1000));
   }
-  
-  // Get contacts that have matching messages
   const searchQuery = `
     SELECT DISTINCT 
       CASE 
@@ -182,49 +144,33 @@ async function performAdvancedSearch(userId, filters) {
   `;
   
   const searchResults = db.prepare(searchQuery).all(...queryParams);
-  
-  // Convert to contact format expected by the UI and clean contact IDs
   return searchResults.map(result => ({
     contact: cleanContactId(result.contact),
     last_message_ts: result.last_message_ts,
     message_count: result.message_count
   }));
 }
-
-// Advanced message search function for individual messages
 async function performMessageSearch(userId, filters) {
   const { q, messageType, direction, dateFrom, dateTo, contact, limit, offset } = filters;
-  
-  // Build the search query
   let whereConditions = ['m.user_id = ?'];
   let queryParams = [userId];
-  
-  // Text search in message content
   if (q) {
     whereConditions.push(`(m.text_body LIKE ? OR m.raw LIKE ?)`);
     const searchTerm = `%${q}%`;
     queryParams.push(searchTerm, searchTerm);
   }
-  
-  // Message type filter
   if (messageType) {
     whereConditions.push('m.type = ?');
     queryParams.push(messageType);
   }
-  
-  // Direction filter
   if (direction) {
     whereConditions.push('m.direction = ?');
     queryParams.push(direction);
   }
-  
-  // Contact filter
   if (contact) {
     whereConditions.push('(m.from_digits = ? OR m.to_digits = ?)');
     queryParams.push(contact, contact);
   }
-  
-  // Date range filters
   if (dateFrom) {
     whereConditions.push('m.timestamp >= ?');
     queryParams.push(Math.floor(new Date(dateFrom).getTime() / 1000));
@@ -234,8 +180,6 @@ async function performMessageSearch(userId, filters) {
     whereConditions.push('m.timestamp <= ?');
     queryParams.push(Math.floor(new Date(dateTo + 'T23:59:59').getTime() / 1000));
   }
-  
-  // Get total count for pagination
   const countQuery = `
     SELECT COUNT(*) as total
     FROM messages m
@@ -243,8 +187,6 @@ async function performMessageSearch(userId, filters) {
   `;
   const totalResult = db.prepare(countQuery).get(...queryParams);
   const total = totalResult.total;
-  
-  // Get messages with pagination
   const messagesQuery = `
     SELECT 
       m.id,
@@ -267,8 +209,6 @@ async function performMessageSearch(userId, filters) {
   `;
   
   const messages = db.prepare(messagesQuery).all(userId, ...queryParams, limit, offset);
-  
-  // Format messages for API response
   const formattedMessages = messages.map(msg => ({
     id: msg.id,
     direction: msg.direction,
@@ -289,9 +229,6 @@ async function performMessageSearch(userId, filters) {
     hasMore: (offset + limit) < total
   };
 }
-
-// When agent is in live (human) mode and sends the first message,
-// automatically set conversation status to In Progress
 async function ensureInProgressIfHuman(userId, phone) {
   try {
     const handoff = await Handoff.findOne({ user_id: userId, contact_id: phone }).select('is_human');
@@ -302,16 +239,11 @@ async function ensureInProgressIfHuman(userId, phone) {
     }
   } catch {}
 }
-
-// List archived conversations for a user (paginated)
 async function listArchivedContacts(userId, { page = 1, pageSize = 20 } = {}) {
   try {
-    // Get archived contact ids for this user
     const rows = await Handoff.find({ user_id: userId, is_archived: true, $or: [ { deleted_at: { $exists: false } }, { deleted_at: null } ] }).select('contact_id');
     const archivedIds = rows.map(r => String(r.contact_id)).filter(Boolean);
     if (!archivedIds.length) return [];
-
-    // Aggregate last message per archived contact
     const contacts = await Message.aggregate([
       {
         $match: {
@@ -347,14 +279,10 @@ export default function registerInboxRoutes(app) {
     const dateFrom = (req.query.date_from || "").toString().trim();
     const dateTo = (req.query.date_to || "").toString().trim();
     const showArchived = ['1','true','yes'].includes(String(req.query.archived||'').toLowerCase());
-    
-    // Enhanced search logic
     let contacts;
     if (!showArchived && (q || messageType || direction || dateFrom || dateTo)) {
-      // Advanced search with message content filtering
       contacts = await performAdvancedSearch(userId, { q, messageType, direction, dateFrom, dateTo });
     } else {
-      // Regular contact list
       const page = Math.max(1, parseInt(req.query.page||'1', 10) || 1);
       const pageSize = Math.min(50, Math.max(10, parseInt(req.query.page_size||'20', 10) || 20));
       contacts = showArchived
@@ -363,11 +291,8 @@ export default function registerInboxRoutes(app) {
     }
     const email = await getSignedInEmail(req);
     const s = await getSettingsForUser(userId);
-    // Plan gating: only upgraded users can reply/react
     const plan = await getUserPlan(userId);
     const isUpgraded = isPlanUpgraded(plan);
-
-    // Ensure archived conversations are excluded from the default inbox list
     if (!showArchived) {
       try {
         const archivedRows = await Handoff.find({ user_id: userId, is_archived: true }).select('contact_id');
@@ -375,8 +300,6 @@ export default function registerInboxRoutes(app) {
         contacts = (contacts||[]).filter(c => !archivedSet.has(String(c.contact)));
       } catch(_) { }
     }
-
-    // ETag for inbox list: derive from userId + view + top contact timestamps
     try {
       const viewKey = ['1','true','yes'].includes(String(req.query.archived||'').toLowerCase()) ? 'archived' : 'inbox';
       const etagBase = `${viewKey}:${contacts.length}:${contacts.slice(0, 50).map(c => `${c.contact}:${c.last_ts||0}`).join('|')}`;
@@ -388,7 +311,6 @@ export default function registerInboxRoutes(app) {
     const customerNameByContact = new Map(customers.map(r => [String(r.contact_id), r.display_name]));
     const lastSeenRows = await Handoff.find({ user_id: userId }).select('contact_id last_seen_ts');
     const lastSeenByContact = new Map(lastSeenRows.map(r => [String(r.contact_id), Number(r.last_seen_ts || 0)]));
-    // Compute unread inbound counts per contact (since last seen)
     const unreadCounts = new Map();
     try {
       await Promise.all((contacts||[]).slice(0, 50).map(async (c) => {
@@ -410,11 +332,8 @@ export default function registerInboxRoutes(app) {
         } catch(_){ }
       }));
     } catch(_){ }
-    
-    // Get conversation statuses
     const statusRows = await Handoff.find({ user_id: userId }).select('contact_id conversation_status');
     const statusByContact = new Map(statusRows.map(r => [String(r.contact_id), r.conversation_status || CONVERSATION_STATUSES.NEW]));
-    // Get escalations and check if support has handled them
     const escalationRows = await Handoff.find({ 
       user_id: userId, 
       escalation_reason: { $exists: true, $ne: null } 
@@ -428,12 +347,7 @@ export default function registerInboxRoutes(app) {
       const escalationTs = Number(row.updatedAt || 0);
       const isHuman = Number(row.is_human || 0);
       const humanExpiresTs = Number(row.human_expires_ts || 0);
-      
-      // Check if human mode is still active (not expired and not manually turned off)
       const isHumanModeActive = isHuman && humanExpiresTs > now;
-      
-      // Only show live chip if human mode is still active (escalation not handled yet)
-      // If human mode is off or expired, the escalation has been handled
       if (isHumanModeActive) {
         escalationByContact.set(contactId, row.escalation_reason);
       }
@@ -446,7 +360,6 @@ export default function registerInboxRoutes(app) {
       const preview = shortened.replace(/</g,'&lt;');
       const initials = String(c.contact||'').slice(-2);
       const displayDefault = c.contact ? `+${String(c.contact).replace(/^\+/, '')}` : '';
-      // For the inbox list, always show the phone number, even if a name is saved.
       const displayName = displayDefault;
       const seenTs = lastSeenByContact.get(String(c.contact)) || 0;
       const hasNew = lastTs > seenTs;
@@ -519,12 +432,8 @@ export default function registerInboxRoutes(app) {
         </li>
       `;
     }).join("");
-    
-    // Add search results count
     const searchResultsCount = (q || messageType || direction || dateFrom || dateTo) ? 
       `<div class="search-result-count">Found ${contacts.length} conversation${contacts.length !== 1 ? 's' : ''} matching your search criteria</div>` : '';
-    
-    // Prevent caching to avoid showing cached authenticated pages after logout
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
     res.setHeader("Pragma", "no-cache");
@@ -978,8 +887,6 @@ export default function registerInboxRoutes(app) {
       </body></html>
     `);
   });
-
-  // Advanced search API endpoint
   app.get("/api/search", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const q = (req.query.q || "").toString().trim();
@@ -1017,8 +924,6 @@ export default function registerInboxRoutes(app) {
       });
     }
   });
-
-  // Search results page
   app.get("/search", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const q = (req.query.q || "").toString().trim();
@@ -1044,14 +949,10 @@ export default function registerInboxRoutes(app) {
         console.error('Search error:', error);
       }
     }
-    
-    // Render search results
     const resultsHtml = searchResults.messages.map(msg => {
       const contactName = msg.contact_name || `+${msg.contact.replace(/^\+/, '')}`;
       const directionIcon = msg.direction === 'inbound' ? '←' : '→';
       const typeIcon = msg.type === 'image' ? '🖼️' : msg.type === 'document' ? '📄' : msg.type === 'interactive' ? '🔘' : '💬';
-      
-      // Highlight search terms in text
       let highlightedText = msg.text_body || '';
       if (q) {
         const regex = new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
@@ -1200,9 +1101,7 @@ export default function registerInboxRoutes(app) {
   });
 
   app.get("/inbox/:phone", ensureAuthed, async (req, res) => {
-    const phone = req.params.phone.split('?')[0]; // Remove any query parameters from phone
-    const userId = getCurrentUserId(req);
-    // Guard: show 404 if this contact doesn't exist for this user
+    const phone = req.params.phone.split('?')[0];    const userId = getCurrentUserId(req);
     try {
       const digits = normalizePhone(phone);
       const [custRow, handoffRow, msgRow] = await Promise.all([
@@ -1290,7 +1189,6 @@ export default function registerInboxRoutes(app) {
       }
     }
     const phoneDigits = normalizePhone(phone);
-    // Mark as seen (Mongo)
     try {
       const nowSec = Math.floor(Date.now()/1000);
       await Handoff.findOneAndUpdate(
@@ -1301,8 +1199,6 @@ export default function registerInboxRoutes(app) {
     } catch {}
     const cust = await Customer.findOne({ user_id: userId, contact_id: phone }).select('display_name');
     const headerName = cust?.display_name || ('+' + String(phone).replace(/^\+/, ''));
-    // Fetch richer message data using Mongo aggregation
-    // Limit to the most recent 400 messages to keep the view fast and avoid serverless timeouts
     let msgs = await Message.aggregate([
       {
         $match: {
@@ -1314,7 +1210,6 @@ export default function registerInboxRoutes(app) {
         }
       },
       { $sort: { timestamp: 1 } },
-      // Keep only the last 400 messages by re-sorting in-memory order after limiting
       { $group: { _id: null, items: { $push: '$$ROOT' } } },
       { $project: { items: { $slice: ['$items', -400] } } },
       { $unwind: '$items' },
@@ -1348,10 +1243,7 @@ export default function registerInboxRoutes(app) {
         }
       }
     ]);
-    // Hide system clear markers from the chat view
     try { msgs = msgs.filter(m => m?.type !== 'system_clear'); } catch {}
-    
-    // Load reactions and replies for all messages
     const messageIds = msgs.map(m => m.id);
     const reactionsByMessage = await getMessagesReactions(messageIds);
     const userReactionsByMessage = await getUserReactionsForMessages(messageIds, userId);
@@ -1362,7 +1254,6 @@ export default function registerInboxRoutes(app) {
     const expTs = Number(status?.human_expires_ts || 0);
     const nowSec = Math.floor(Date.now()/1000);
     const remain = expTs > nowSec ? (expTs - nowSec) : 0;
-    // Compute last inbound message timestamp to enforce 24h window rules
     let lastInboundTs = 0;
     try {
       for (const m of msgs) {
@@ -1373,14 +1264,10 @@ export default function registerInboxRoutes(app) {
       }
     } catch {}
     const over24h = lastInboundTs && (nowSec - lastInboundTs) > 24*3600;
-
-    // Normalize expired human mode back to AI by default
     if (isHuman && remain <= 0) {
       isHuman = false;
       try { await Handoff.findOneAndUpdate({ contact_id: phone, user_id: userId }, { $set: { is_human: false, human_expires_ts: 0, updatedAt: new Date() } }, { upsert: true }); } catch {}
     }
-    
-    // Get conversation status
     const conversationStatus = await getConversationStatus(userId, phone);
     const statusKey = conversationStatus || 'new';
     const statusDisplay = STATUS_DISPLAY_NAMES[statusKey] || 'New';
@@ -1389,7 +1276,6 @@ export default function registerInboxRoutes(app) {
     
     const email = await getSignedInEmail(req);
     const quickReplies = await getQuickReplies(userId);
-    // ETag for thread: hash of last message id + count
     try {
       const etagBase = `${userId}:${phone}:${msgs.length}:${msgs[msgs.length-1]?.id||''}`;
       const etag = 'W/"'+Buffer.from(etagBase).toString('base64').slice(0, 32)+'"';
@@ -1400,10 +1286,7 @@ export default function registerInboxRoutes(app) {
     const items = msgs.map(m => {
       const cls = m.direction === 'inbound' ? 'msg msg-in' : 'msg msg-out';
       let display = String(m.text_body || '').trim();
-      // For non-text messages, derive a readable label from raw payload
-      // Also handle cases where text_body contains placeholder text like '[image]'
       if (!display || display === '[image]' || display === '[document]' || display === '[audio]' || display === '[video]' || (m.type && m.type !== 'text')) {
-        // Raw can be stored as an object (Mongo) or as a JSON string (legacy)
         let raw = {};
         if (m && typeof m.raw === 'object' && m.raw !== null) {
           raw = m.raw;
@@ -1414,12 +1297,10 @@ export default function registerInboxRoutes(app) {
           const br = raw?.interactive?.button_reply;
           const lr = raw?.interactive?.list_reply;
           const bodyText = raw?.interactive?.body?.text;
-          // Primary known shapes
           if (br?.title) display = br.title;
           else if (lr?.title) display = lr.title;
           else if (bodyText) display = bodyText;
           else {
-            // Fallback: handle variants where interactive is nested under value/messages
             try {
               const v = raw?.value || raw;
               const arr = Array.isArray(v?.messages) ? v.messages : (Array.isArray(raw?.messages) ? raw.messages : []);
@@ -1434,19 +1315,15 @@ export default function registerInboxRoutes(app) {
             } catch { display = '[interactive]'; }
           }
         } else if (m.type === 'document') {
-          // Handle both inbound (raw.document.link) and outbound (raw.documentUrl) document formats
           let documentUrl = raw?.document?.link || raw?.documentUrl;
           const filename = raw?.document?.filename || raw?.filename || 'Document';
           
           if (documentUrl) {
-            // Fix localhost URLs to use current request's host
             if (documentUrl.includes('localhost:3000')) {
               const host = req.get('host');
               const protocol = req.protocol;
               documentUrl = documentUrl.replace(/https?:\/\/localhost:3000/, `${protocol}://${host}`);
             }
-            
-            // Get file extension for icon
             const fileExtension = filename.split('.').pop()?.toUpperCase() || 'DOC';
             
             display = `
@@ -1467,14 +1344,11 @@ export default function registerInboxRoutes(app) {
             display = `[document] ${escapeHtml(filename)}`;
           }
         } else if (m.type === 'image') {
-          // Handle both inbound (raw.image.link) and outbound (raw.imageUrl) image formats.
-          // For inbound images without direct link, construct secure proxy via media id.
           let imageUrl = raw?.image?.link || raw?.imageUrl;
           if (!imageUrl && raw?.image?.id) {
             imageUrl = `/wa-media/${encodeURIComponent(String(userId))}/${encodeURIComponent(String(raw.image.id))}`;
           }
           if (imageUrl) {
-            // Fix localhost URLs to use current request's host
             if (imageUrl.includes('localhost:3000')) {
               const host = req.get('host');
               const protocol = req.protocol;
@@ -1492,26 +1366,17 @@ export default function registerInboxRoutes(app) {
           display = `[${m.type}]`;
         }
       }
-      // Only escape HTML if the display doesn't contain HTML tags (like images)
       const safe = display.includes('<img') || display.includes('<div') ? display : escapeHtml(display).replace(/\n/g, '<br/>');
       const ts = formatTimestampForDisplay(m.ts||0);
-      
-      // Generate WhatsApp-style status ticks for outbound messages
       let statusTicks = '';
       if (m.direction === 'outbound') {
-        // Use delivery/read status directly from message document
         const deliveryStatus = m.delivery_status || MESSAGE_STATUS.SENT;
         const readStatus = m.read_status || READ_STATUS.UNREAD;
-        
-        // Determine final status (read overrides delivered)
         let finalStatus = deliveryStatus;
         if (readStatus === READ_STATUS.READ) {
           finalStatus = MESSAGE_STATUS.READ;
         }
-        
-        // Generate ticks HTML
         if (finalStatus === MESSAGE_STATUS.FAILED) {
-          // Show red exclamation mark for failed messages with retry button
           statusTicks = `
             <div class="message-status-ticks message-status-failed">
               <div class="message-failed-indicator" title="Message failed to send">
@@ -1528,7 +1393,6 @@ export default function registerInboxRoutes(app) {
             </div>
           `;
         } else {
-          // Show normal ticks for other statuses
           statusTicks = `
             <div class="message-status-ticks message-status-${finalStatus}">
               <div class="message-tick"></div>
@@ -1537,15 +1401,9 @@ export default function registerInboxRoutes(app) {
           `;
         }
       }
-      
-      // Get reactions for this message
       const messageReactions = reactionsByMessage[m.id] || [];
       const userReactions = userReactionsByMessage[m.id] || [];
-      
-      // Get original message if this is a reply
       const originalMessage = replyOriginals[m.id];
-      
-      // Render original message preview if this is a reply
       let originalMessageHtml = '';
       if (originalMessage) {
         const originalText = originalMessage.text_body || '[Media]';
@@ -1562,8 +1420,6 @@ export default function registerInboxRoutes(app) {
           </div>
         `;
       }
-      
-      // Render reactions
       let reactionsHtml = '';
       if (messageReactions.length > 0) {
         reactionsHtml = '<div class="message-reactions">';
@@ -1578,8 +1434,6 @@ export default function registerInboxRoutes(app) {
         });
         reactionsHtml += '</div>';
       }
-      
-      // Add action buttons inside the bubble
       const actionButtons = isUpgraded ? `
         <div class="message-actions">
           <button class="action-btn reply-btn" onclick="replyToMessage('${m.id}')" title="Reply to this message">↩️</button>
@@ -1591,7 +1445,6 @@ export default function registerInboxRoutes(app) {
     }).join("");
     const toastMsg = (req.query?.toast || '').toString();
     const toastType = (req.query?.type || '').toString();
-    // Prevent caching to avoid showing cached authenticated pages after logout
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
     res.setHeader("Pragma", "no-cache");
@@ -3251,14 +3104,12 @@ export default function registerInboxRoutes(app) {
   async function handleHandoff(req, res) {
     const phone = req.params.phone;
     const userId = getCurrentUserId(req);
-    // Support both POST body and GET query param so we can use GET from the UI
     const source = req.method === 'GET' ? (req.query || {}) : (req.body || {});
     const isHuman = source?.is_human ? 1 : 0;
     const now = Math.floor(Date.now()/1000);
     const exp = isHuman ? (now + 5*60) : 0;
     try {
       if (isHuman) {
-        // Disallow enabling live mode when the last inbound message is older than 24h
         try {
           const dbNative = getDB();
           const row = dbNative.prepare(`SELECT MAX(timestamp) AS ts FROM messages WHERE user_id = ? AND from_id = ? AND direction = 'inbound'`).get(userId, phone) || {};
@@ -3283,8 +3134,6 @@ export default function registerInboxRoutes(app) {
             { upsert: true }
           );
         } catch {}
-
-        // Fire-and-forget welcome message so the response isn't blocked by external APIs
         (async () => {
           try {
             if (cfg?.whatsapp_token && cfg?.phone_number_id) {
@@ -3333,7 +3182,6 @@ export default function registerInboxRoutes(app) {
           }
         })();
       } else {
-        // Disabling live mode
         try {
           await Handoff.findOneAndUpdate(
             { contact_id: phone, user_id: userId },
@@ -3347,8 +3195,6 @@ export default function registerInboxRoutes(app) {
   }
   app.post("/handoff/:phone", ensureAuthed, handleHandoff);
   app.get("/handoff/:phone", ensureAuthed, handleHandoff);
-
-  // Simulate message status updates (for demo purposes)
   app.post("/inbox/:phone/simulate-status", ensureAuthed, (req, res) => {
     const phone = req.params.phone.split('?')[0];
     const userId = getCurrentUserId(req);
@@ -3358,11 +3204,7 @@ export default function registerInboxRoutes(app) {
       if (!messageId || !status) {
         return res.status(400).json({ error: 'Missing messageId or status' });
       }
-      
-      // Import the simulation function
       simulateDeliveryStatusUpdate(messageId, status);
-      
-      // Broadcast status update to real-time clients
       broadcastMessageStatus(userId, phone, messageId, status, {
         messageId,
         status,
@@ -3375,11 +3217,8 @@ export default function registerInboxRoutes(app) {
       res.status(500).json({ error: 'Failed to update status' });
     }
   });
-
-  // Update conversation status
   app.post("/inbox/:phone/status", ensureAuthed, async (req, res) => {
-    const phone = req.params.phone.split('?')[0]; // Clean phone number
-    const userId = getCurrentUserId(req);
+    const phone = req.params.phone.split('?')[0];    const userId = getCurrentUserId(req);
     const { status, reason } = req.body;
     
     try {
@@ -3388,15 +3227,11 @@ export default function registerInboxRoutes(app) {
       }
       
       await updateConversationStatus(userId, phone, status, reason);
-      
-      // If resolved → request CSAT rating via WhatsApp and flag awaiting rating
       if (status === CONVERSATION_STATUSES.RESOLVED) {
-        // Ensure live mode is off when conversation is resolved
         try { await Handoff.findOneAndUpdate({ contact_id: phone, user_id: userId }, { $set: { is_human: false, human_expires_ts: 0, updatedAt: new Date() } }, { upsert: true }); } catch {}
         try {
           const cfg = await getSettingsForUser(userId);
           if (cfg?.whatsapp_token && cfg?.phone_number_id) {
-            // Template-based CSAT behavior is temporarily disabled; always send the interactive list instead.
             const over24h = false;
             if (over24h) {
               try {
@@ -3407,7 +3242,6 @@ export default function registerInboxRoutes(app) {
                 console.warn('[CSAT] Session expired and template send failed:', e?.message || e);
               }
             } else {
-              // Send WhatsApp list for emoji selection
               const agentName = String(cfg?.name || '').trim();
               const header = `Rate your experience with ${agentName || 'our team'}`;
               const body = 'Tap one of the options below:';
@@ -3496,8 +3330,6 @@ export default function registerInboxRoutes(app) {
           } catch (e) { console.warn('[CSAT] Failed to flag await_rating:', e?.message || e); }
         } catch {}
       }
-      
-      // Redirect back to conversation with success message
       const statusDisplay = STATUS_DISPLAY_NAMES[status];
       res.redirect(`/inbox/${encodeURIComponent(phone)}`);
     } catch (error) {
@@ -3505,8 +3337,6 @@ export default function registerInboxRoutes(app) {
       res.redirect(`/inbox/${encodeURIComponent(phone)}?toast=${encodeURIComponent('Failed to update status')}&type=error`);
     }
   });
-
-  // Renew 5 more minutes of human mode
   app.post("/inbox/:phone/renew", ensureAuthed, async (req, res) => {
     const phone = req.params.phone;
     const userId = getCurrentUserId(req);
@@ -3519,25 +3349,18 @@ export default function registerInboxRoutes(app) {
     } catch {}
     res.redirect(`/inbox/${phone}`);
   });
-
-  // Archive a conversation (hide from inbox list)
   app.post("/inbox/:phone/archive", ensureAuthed, async (req, res) => {
     const phone = req.params.phone;
     const userId = getCurrentUserId(req);
     try { await Handoff.findOneAndUpdate({ contact_id: phone, user_id: userId }, { $set: { is_archived: true, updatedAt: new Date() } }, { upsert: true }); } catch {}
     res.redirect(`/inbox`);
   });
-
-  // Unarchive a conversation (return to inbox list)
   app.post("/inbox/:phone/unarchive", ensureAuthed, async (req, res) => {
     const phone = req.params.phone;
     const userId = getCurrentUserId(req);
     try { await Handoff.findOneAndUpdate({ contact_id: phone, user_id: userId }, { $set: { is_archived: false, updatedAt: new Date() } }, { upsert: true }); } catch {}
-    // Stay on archived view
     res.redirect(`/inbox?archived=1`);
   });
-
-  // Opt-out a contact
   app.post("/inbox/:phone/optout", ensureAuthed, async (req, res) => {
     const phone = req.params.phone;
     const userId = getCurrentUserId(req);
@@ -3545,8 +3368,6 @@ export default function registerInboxRoutes(app) {
     try { await Customer.findOneAndUpdate({ user_id: userId, contact_id: phone }, { $set: { opted_out: true, updatedAt: new Date() } }, { upsert: true }); } catch {}
     res.redirect(`/inbox/${encodeURIComponent(phone)}`);
   });
-
-  // Remove opt-out
   app.post("/inbox/:phone/unoptout", ensureAuthed, async (req, res) => {
     const phone = req.params.phone;
     const userId = getCurrentUserId(req);
@@ -3554,8 +3375,6 @@ export default function registerInboxRoutes(app) {
     try { await Customer.updateOne({ user_id: userId, contact_id: phone }, { $set: { opted_out: false, updatedAt: new Date() } }); } catch {}
     res.redirect(`/inbox/${encodeURIComponent(phone)}`);
   });
-
-  // Block for 24 hours
   app.post("/inbox/:phone/block24h", ensureAuthed, async (req, res) => {
     const phone = req.params.phone;
     const userId = getCurrentUserId(req);
@@ -3564,14 +3383,11 @@ export default function registerInboxRoutes(app) {
     try { await Customer.findOneAndUpdate({ user_id: userId, contact_id: phone }, { $set: { blocked_until_ts: until, updatedAt: new Date() } }, { upsert: true }); } catch {}
     res.redirect(`/inbox/${encodeURIComponent(phone)}`);
   });
-
-  // Clear a conversation (delete messages only for this contact/user)
   app.post("/inbox/:phone/clear", ensureAuthed, async (req, res) => {
     const phone = req.params.phone;
     const userId = getCurrentUserId(req);
     const digits = normalizePhone(phone);
     try {
-      // Delete by digits; include id fallbacks (+digits or digits) for older records
       await Message.deleteMany({
         user_id: String(userId),
         $or: [
@@ -3581,7 +3397,6 @@ export default function registerInboxRoutes(app) {
           { to_id: { $in: [digits, '+' + digits] } }
         ]
       });
-      // Insert a lightweight system marker so the conversation remains in the inbox list
       try {
         const now = Math.floor(Date.now()/1000);
         await Message.create({
@@ -3604,14 +3419,11 @@ export default function registerInboxRoutes(app) {
     }
     return res.redirect(`/inbox/${encodeURIComponent(phone)}`);
   });
-
-  // Delete a conversation (mark deleted and remove messages)
   app.post("/inbox/:phone/delete", ensureAuthed, async (req, res) => {
     const phone = req.params.phone;
     const userId = getCurrentUserId(req);
     const digits = normalizePhone(phone);
     try {
-      // Build a single criteria object so we can reuse it
       const criteria = {
         user_id: String(userId),
         $or: [
@@ -3621,15 +3433,12 @@ export default function registerInboxRoutes(app) {
           { to_id: { $in: [digits, '+' + digits] } }
         ]
       };
-
-      // Collect message ids first to cascade delete associated entities
       const ids = (await Message.find(criteria).select('id').lean().catch(() => []))
         .map(m => m?.id)
         .filter(Boolean);
 
       if (ids.length) {
         const dbNative = getDB();
-        // Delete replies that reference these messages (either side)
         try {
           await dbNative.collection('message_replies').deleteMany({
             $or: [
@@ -3640,24 +3449,18 @@ export default function registerInboxRoutes(app) {
         } catch (e) {
           console.warn('[Inbox][DELETE] delete message_replies failed:', e?.message || e);
         }
-        // Delete reactions for these messages
         try {
           await dbNative.collection('message_reactions').deleteMany({ message_id: { $in: ids } });
         } catch (e) {
           console.warn('[Inbox][DELETE] delete message_reactions failed:', e?.message || e);
         }
-        // Delete delivery/status rows tied to these messages (best-effort)
         try {
           await MessageStatus.deleteMany({ user_id: String(userId), message_id: { $in: ids } });
         } catch (e) {
           console.warn('[Inbox][DELETE] delete message_statuses failed:', e?.message || e);
         }
       }
-
-      // Finally, delete the conversation messages themselves
       await Message.deleteMany(criteria);
-
-      // Remove contact interactions history for this contact (best-effort)
       try {
         const dbNative = getDB();
         await dbNative.collection('contact_interactions').deleteMany({
@@ -3711,8 +3514,6 @@ export default function registerInboxRoutes(app) {
     const cfg = await getSettingsForUser(userId);
     const text = (req.body?.text || "").toString().trim();
     if (!text) return respondError('Message cannot be empty.', 400);
-
-    // Enforce 24h window: if last inbound >24h ago, send the configured reopen template instead.
     try {
       let over24h = false;
       try {
@@ -3730,19 +3531,15 @@ export default function registerInboxRoutes(app) {
         }
         try {
           await sendWhatsAppTemplate(to, tname, tlang, [], cfg);
-          // Do not send the freeform text; wait for customer to respond to template.
           return respondSuccess({ templateSent: true });
         } catch (e) {
           console.error('24h reopen template send failed:', e?.message || e);
           return respondError('Session expired and the configured template failed to send. Please try again later.', 502);
         }
       }
-
-      // Get the original message ID if this is a reply
       let originalMessageId = null;
       const replyTo = req.body?.replyTo;
       if (replyTo) {
-        // Get the WhatsApp message ID from the original message
         const originalMessage = db.prepare(`SELECT id FROM messages WHERE id = ? AND user_id = ?`).get(replyTo, userId);
         originalMessageId = originalMessage?.id;
       }
@@ -3774,19 +3571,13 @@ export default function registerInboxRoutes(app) {
         };
         broadcastNewMessage(userId, String(to), messageData);
       } catch {}
-      // Always move conversation to In Progress when agent replies
       try { await updateConversationStatus(userId, String(to), CONVERSATION_STATUSES.IN_PROGRESS, 'agent_reply'); } catch {}
-      // Backwards compat: if agent is live, also ensure first-message transition logic
       try { await ensureInProgressIfHuman(userId, String(to)); } catch {}
-      
-      // Update contact activity
       try {
         updateContactActivity(userId, to);
       } catch (error) {
         console.error('Error updating contact activity:', error);
       }
-      
-      // Handle reply relationship if this is a reply to another message
       if (replyTo && outboundId) {
         try {
           const plan = await getUserPlan(userId);
@@ -3803,8 +3594,6 @@ export default function registerInboxRoutes(app) {
       return respondSuccess({ messageId: outboundId });
     } catch (e) {
       console.error("Manual send error:", e);
-      
-      // Create a failed message record in the database
       const tempMessageId = `failed_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       const fromBiz = (cfg.business_phone || "").replace(/\D/g, "") || null;
       const timestamp = Math.floor(Date.now() / 1000);
@@ -3837,14 +3626,11 @@ export default function registerInboxRoutes(app) {
       return respondError(e?.message || 'Failed to send message.', 502, { temporaryMessageId: tempMessageId });
     }
   });
-
-  // Retry failed message endpoint
   app.post("/retry-message/:messageId", ensureAuthed, async (req, res) => {
     const messageId = req.params.messageId;
     const userId = getCurrentUserId(req);
     
     try {
-      // Get the failed message details
       const retryResult = await retryFailedMessage(messageId);
       
       if (!retryResult.success) {
@@ -3855,16 +3641,12 @@ export default function registerInboxRoutes(app) {
       }
       
       const message = retryResult.message;
-      
-      // Verify the message belongs to the current user
       if (message.userId !== userId) {
         return res.status(403).json({ 
           success: false, 
           error: 'Unauthorized to retry this message' 
         });
       }
-      
-      // Get user settings for WhatsApp API
       const cfg = await getSettingsForUser(userId);
       if (!cfg || !cfg.whatsapp_token || !cfg.phone_number_id) {
         return res.status(400).json({ 
@@ -3872,14 +3654,11 @@ export default function registerInboxRoutes(app) {
           error: 'WhatsApp configuration not found' 
         });
       }
-      
-      // Attempt to resend the message (with diagnostics)
       try { if (process.env.DEBUG_LOGS === '1') console.log('[Retry] Resending WA text', { to_tail: String(message.to||'').slice(-6), hasPhoneId: !!cfg.phone_number_id, hasToken: !!cfg.whatsapp_token }); } catch {}
       const data = await sendWhatsAppText(message.to, message.text, cfg);
       const outboundId = data?.messages?.[0]?.id;
       
       if (outboundId) {
-        // Update the message with the new WhatsApp message ID
         const updateStmt = db.prepare(`
           UPDATE messages 
           SET id = ?, delivery_status = ?, delivery_timestamp = ?, error_message = NULL
@@ -3888,8 +3667,6 @@ export default function registerInboxRoutes(app) {
         
         const timestamp = Math.floor(Date.now() / 1000);
         updateStmt.run(outboundId, MESSAGE_STATUS.SENT, timestamp, messageId);
-        
-        // Update contact activity
         try {
           updateContactActivity(userId, message.to);
         } catch (error) {
@@ -3897,8 +3674,6 @@ export default function registerInboxRoutes(app) {
         }
         
         if (process.env.DEBUG_LOGS === '1') console.log(`✅ Successfully retried message ${messageId} -> ${outboundId}`);
-        
-        // Broadcast the newly sent message to the chat in real-time
         try {
           const { broadcastNewMessage } = await import('../routes/realtime.mjs');
           const messageData = {
@@ -3926,7 +3701,6 @@ export default function registerInboxRoutes(app) {
           newMessageId: outboundId
         });
       } else {
-        // Mark as failed again
         markMessageAsFailed(messageId, 'Retry failed: No message ID returned from WhatsApp');
         
         return res.status(500).json({ 
@@ -3937,8 +3711,6 @@ export default function registerInboxRoutes(app) {
       
     } catch (error) {
       console.error('Retry message error:', error);
-      
-      // Mark as failed again
       markMessageAsFailed(messageId, `Retry failed: ${error.message}`);
       
       return res.status(500).json({ 
@@ -3947,8 +3719,6 @@ export default function registerInboxRoutes(app) {
       });
     }
   });
-
-  // Upload and send image route
   app.post("/upload-image/:phone", ensureAuthed, uploadImage.single('image'), async (req, res) => {
     const to = req.params.phone;
     const userId = getCurrentUserId(req);
@@ -3958,25 +3728,15 @@ export default function registerInboxRoutes(app) {
     if (!req.file) {
       return res.redirect(`/inbox/${encodeURIComponent(to)}`);
     }
-
-    // Create a public URL for the uploaded image
-    // Use the current request's host to ensure URLs are accessible from the current context
     const host = req.get('host');
     const isNgrok = host.includes('ngrok') || host.includes('ngrok.io');
-    
-    // Always use the current request's host for display purposes
-    // For WhatsApp API, we'll use ngrok URL if available
     let imageUrl;
     let whatsappImageUrl;
     
     if (isNgrok) {
       imageUrl = `${req.protocol}://${host}/uploads/${req.file.filename}`;
-      whatsappImageUrl = imageUrl; // Same URL for ngrok
-    } else {
-      // For display: use current request host
+      whatsappImageUrl = imageUrl;    } else {
       imageUrl = `${req.protocol}://${host}/uploads/${req.file.filename}`;
-      
-      // For WhatsApp API: use ngrok URL if available
       const ngrokUrl = process.env.NGROK_URL || 'https://85d9d75e0287.ngrok-free.app';
       whatsappImageUrl = `${ngrokUrl}/uploads/${req.file.filename}`;
       if (process.env.DEBUG_LOGS === '1') console.log('⚠️ WARNING: Using localhost for display, ngrok for WhatsApp API');
@@ -3986,8 +3746,6 @@ export default function registerInboxRoutes(app) {
     if (process.env.DEBUG_LOGS === '1') console.log('Image upload - File:', req.file.filename);
     if (process.env.DEBUG_LOGS === '1') console.log('Image upload - Using ngrok:', isNgrok);
     if (process.env.DEBUG_LOGS === '1') console.log('Image upload - Note: WhatsApp needs this URL to be publicly accessible');
-
-    // Enforce 24h window for media as well: send reopen template instead of image when expired.
     try {
       let over24h = false;
       try {
@@ -4010,12 +3768,9 @@ export default function registerInboxRoutes(app) {
         }
         return res.redirect(`/inbox/${encodeURIComponent(to)}`);
       }
-
-      // Get the original message ID if this is a reply
       let originalMessageId = null;
       const replyTo = req.body?.replyTo;
       if (replyTo) {
-        // Get the WhatsApp message ID from the original message
         const originalMessage = db.prepare(`SELECT id FROM messages WHERE id = ? AND user_id = ?`).get(replyTo, userId);
         originalMessageId = originalMessage?.id;
       }
@@ -4024,10 +3779,8 @@ export default function registerInboxRoutes(app) {
       
       let data;
       if (isNgrok) {
-        // Direct URL method for ngrok (no preflight HEAD request)
         data = await sendWhatsappImage(to, whatsappImageUrl, caption, cfg, originalMessageId);
       } else {
-        // Use cloud upload method for localhost
         if (process.env.DEBUG_LOGS === '1') console.log('Using cloud upload for localhost compatibility');
         const { sendWhatsappImageBase64 } = await import('../services/whatsapp.mjs');
         data = await sendWhatsappImageBase64(to, req.file.path, caption, cfg);
@@ -4042,8 +3795,6 @@ export default function registerInboxRoutes(app) {
           const rawData = { to, imageUrl, caption, filename: req.file.filename };
           await recordOutboundMessage({ messageId: outboundId, userId, cfg, to, type: 'image', text: caption || '📷 Image', raw: rawData });
         } catch {}
-        
-        // Handle reply relationship if this is a reply to another message
         const replyTo = req.body?.replyTo;
         if (replyTo && outboundId) {
           try {
@@ -4058,7 +3809,6 @@ export default function registerInboxRoutes(app) {
             console.error('Error creating reply relationship:', error);
           }
         }
-        // If agent is live, move status to in_progress on first message
         try { await ensureInProgressIfHuman(userId, String(to)); } catch {}
       }
     } catch (e) {
@@ -4068,8 +3818,6 @@ export default function registerInboxRoutes(app) {
     
     res.redirect(`/inbox/${encodeURIComponent(to)}`);
   });
-
-  // Upload and send document route
   app.post("/upload-document/:phone", ensureAuthed, uploadDocument.single('document'), async (req, res) => {
     const to = req.params.phone;
     const userId = getCurrentUserId(req);
@@ -4079,8 +3827,6 @@ export default function registerInboxRoutes(app) {
     if (!req.file) {
       return res.redirect(`/inbox/${encodeURIComponent(to)}`);
     }
-
-    // Create a public URL for the uploaded document
     const host = req.get('host');
     const isNgrok = host.includes('ngrok') || host.includes('ngrok.io');
     
@@ -4099,8 +3845,6 @@ export default function registerInboxRoutes(app) {
     
     if (process.env.DEBUG_LOGS === '1') console.log('Document upload - Generated URL:', documentUrl);
     if (process.env.DEBUG_LOGS === '1') console.log('Document upload - File:', req.file.filename);
-
-    // Enforce 24h window for documents as well: send reopen template instead of document when expired.
     try {
       let over24h = false;
       try {
@@ -4123,8 +3867,6 @@ export default function registerInboxRoutes(app) {
         }
         return res.redirect(`/inbox/${encodeURIComponent(to)}`);
       }
-
-      // Get the original message ID if this is a reply
       let originalMessageId = null;
       const replyTo = req.body?.replyTo;
       if (replyTo) {
@@ -4175,10 +3917,7 @@ export default function registerInboxRoutes(app) {
           };
           broadcastNewMessage(userId, String(to), messageData);
         } catch {}
-        // If agent is live, move status to in_progress on first message
         try { await ensureInProgressIfHuman(userId, String(to)); } catch {}
-        
-        // Handle reply relationship if this is a reply to another message
         if (replyTo && outboundId) {
           try {
             const plan = await getUserPlan(userId);
@@ -4211,8 +3950,6 @@ export default function registerInboxRoutes(app) {
       const msg = encodeURIComponent('No default template configured. Pick one on the Campaigns page first.');
       return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${msg}&type=error`);
     }
-
-    // Collect any provided {{n}} variables (var1, var2, …) in numeric order
     const components = [];
     const bodyParams = [];
     try {
@@ -4272,8 +4009,6 @@ export default function registerInboxRoutes(app) {
     } catch {}
     return res.redirect(`/inbox`);
   });
-
-  // Message reactions API endpoints
   app.post("/api/reactions/:messageId", ensureAuthed, async (req, res) => {
     const { messageId } = req.params;
     const { emoji, phone } = req.body;
@@ -4291,7 +4026,6 @@ export default function registerInboxRoutes(app) {
     
     const result = await toggleReaction(messageId, userId, emoji);
     if (result.success) {
-      // Broadcast the reaction change in real-time
       if (phone) {
         const action = result.added ? 'added' : 'removed';
         const reactionData = {
@@ -4301,15 +4035,10 @@ export default function registerInboxRoutes(app) {
           added: result.added,
           removed: result.removed
         };
-        
-        // Broadcast to all users in the chat room
         broadcastReaction(userId, phone, messageId, emoji, action, reactionData);
       }
-      
-      // Send reaction changes to WhatsApp
       if (phone) {
         try {
-          // Get the original message to find the WhatsApp message ID (MongoDB)
           const dbNative = getDB();
           const originalMessage = await dbNative.collection('messages').findOne(
             { id: String(messageId), user_id: String(userId) },
@@ -4318,9 +4047,7 @@ export default function registerInboxRoutes(app) {
           if (originalMessage) {
             let whatsappMessageId = null;
             try {
-              // Prefer the stored message id (it should be the WA message id)
               whatsappMessageId = originalMessage.id || null;
-              // Fallback to raw payload if needed
               if (!whatsappMessageId && originalMessage.raw) {
                 const rawData = typeof originalMessage.raw === 'string' ? JSON.parse(originalMessage.raw) : (originalMessage.raw || {});
                 whatsappMessageId = rawData.id || rawData.message_id || null;
@@ -4328,16 +4055,13 @@ export default function registerInboxRoutes(app) {
             } catch {}
             
             if (whatsappMessageId) {
-              // Get user settings for WhatsApp configuration
               const settings = await getSettingsForUser(userId);
               
               if (settings.whatsapp_token && settings.phone_number_id) {
                 if (result.added) {
-                  // Send reaction addition to WhatsApp
                   const r = await sendWhatsappReaction(phone, whatsappMessageId, emoji, settings);
                   if (process.env.DEBUG_LOGS === '1') console.log('WA reaction add resp:', r);
                 } else if (result.removed) {
-                  // Send reaction removal to WhatsApp (empty emoji)
                   const r = await sendWhatsappReaction(phone, whatsappMessageId, '', settings);
                   if (process.env.DEBUG_LOGS === '1') console.log('WA reaction remove resp:', r);
                 }
@@ -4346,7 +4070,6 @@ export default function registerInboxRoutes(app) {
           }
         } catch (error) {
           console.error('Error sending WhatsApp reaction:', error);
-          // Don't fail the API call if WhatsApp sending fails
         }
       }
       

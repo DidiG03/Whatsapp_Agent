@@ -1,19 +1,10 @@
-/**
- * Test database helper
- * Provides utilities for setting up and tearing down test databases
- */
+
 
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 
 let testDb = null;
-
-/**
- * Initialize a test database
- * @param {string} dbPath - Path to test database (defaults to in-memory)
- * @returns {Database} SQLite database instance
- */
 export function initTestDatabase(dbPath = ':memory:') {
   if (testDb) {
     testDb.close();
@@ -21,40 +12,23 @@ export function initTestDatabase(dbPath = ':memory:') {
   
   testDb = new Database(dbPath);
   testDb.pragma('journal_mode = WAL');
-  
-  // Create test schema
   createTestSchema(testDb);
   
   return testDb;
 }
-
-/**
- * Get the current test database instance
- * @returns {Database} SQLite database instance
- */
 export function getTestDatabase() {
   if (!testDb) {
     return initTestDatabase();
   }
   return testDb;
 }
-
-/**
- * Clean up test database
- */
 export function cleanupTestDatabase() {
   if (testDb) {
     testDb.close();
     testDb = null;
   }
 }
-
-/**
- * Create test schema in the database
- * @param {Database} db - Database instance
- */
 function createTestSchema(db) {
-  // Core schema (simplified for tests)
   db.exec(`
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT PRIMARY KEY,
@@ -141,21 +115,12 @@ function createTestSchema(db) {
     );
   `);
 }
-
-/**
- * Seed test database with sample data
- * @param {Database} db - Database instance
- * @param {string} userId - User ID for test data
- */
 export function seedTestDatabase(db, userId = 'test-user-id') {
-  // Insert test user settings
   db.prepare(`
     INSERT OR REPLACE INTO settings_multi 
     (user_id, business_name, business_phone, ai_tone, entry_greeting)
     VALUES (?, ?, ?, ?, ?)
   `).run(userId, 'Test Business', '+1234567890', 'friendly', 'Hello! How can I help you?');
-  
-  // Insert test KB items
   db.prepare(`
     INSERT OR REPLACE INTO kb_items (user_id, title, content)
     VALUES (?, ?, ?)
@@ -165,30 +130,19 @@ export function seedTestDatabase(db, userId = 'test-user-id') {
     INSERT OR REPLACE INTO kb_items (user_id, title, content)
     VALUES (?, ?, ?)
   `).run(userId, 'Location', 'We are located at 123 Main St, City, State');
-  
-  // Insert test customer
   db.prepare(`
     INSERT OR REPLACE INTO customers (user_id, contact_id, display_name, notes)
     VALUES (?, ?, ?, ?)
   `).run(userId, '+1234567890', 'Test Customer', 'Test customer notes');
-  
-  // Insert test usage stats
   db.prepare(`
     INSERT OR REPLACE INTO usage_stats (user_id, month_year, inbound_messages, outbound_messages)
     VALUES (?, ?, ?, ?)
   `).run(userId, '2024-01', 50, 30);
-  
-  // Insert test user plan
   db.prepare(`
     INSERT OR REPLACE INTO user_plans (user_id, plan_name, monthly_limit)
     VALUES (?, ?, ?)
   `).run(userId, 'free', 100);
 }
-
-/**
- * Clear all test data from database
- * @param {Database} db - Database instance
- */
 export function clearTestDatabase(db) {
   const tables = [
     'messages', 'settings_multi', 'kb_items', 'customers', 
@@ -199,15 +153,9 @@ export function clearTestDatabase(db) {
     try {
       db.prepare(`DELETE FROM ${table}`).run();
     } catch (error) {
-      // Ignore errors for tables that don't exist
     }
   });
 }
-
-/**
- * Create a temporary test database file
- * @returns {string} Path to temporary database file
- */
 export function createTempTestDatabase() {
   const tempDir = path.join(process.cwd(), 'tests', 'temp');
   if (!fs.existsSync(tempDir)) {
@@ -217,11 +165,6 @@ export function createTempTestDatabase() {
   const dbPath = path.join(tempDir, `test-${Date.now()}.sqlite`);
   return dbPath;
 }
-
-/**
- * Clean up temporary test database file
- * @param {string} dbPath - Path to database file
- */
 export function cleanupTempTestDatabase(dbPath) {
   try {
     if (fs.existsSync(dbPath)) {

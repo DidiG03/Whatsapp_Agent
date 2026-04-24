@@ -1,7 +1,4 @@
-/**
- * App factory: constructs and configures the Express application.
- * Mounts logging, body parsers, static assets, Clerk auth, security middleware, and all routes.
- */
+
 import express from "express";
 import cookieParser from "cookie-parser";
 import { STATIC_DIR } from "./config.mjs";
@@ -9,21 +6,13 @@ import { initClerk } from "./middleware/auth.mjs";
 import { securityHeaders, createRateLimiters, sanitizeInput } from "./middleware/security.mjs";
 import { errorHandler, requestLogger, notFoundHandler } from "./middleware/errors.mjs";
 import { csrfProtection, attachCsrfToken } from "./middleware/csrf.mjs";
-
-// Monitoring and Logging
 import { initSentry } from "./monitoring/sentry.mjs";
 import { loggingMiddleware } from "./monitoring/logger.mjs";
 import { healthCheckMiddleware, startHealthCheckScheduler } from "./monitoring/health.mjs";
 import { metricsMiddleware, startMetricsCollection } from "./monitoring/metrics.mjs";
 import { initVercelAnalytics, createAnalyticsMiddleware } from "./monitoring/analytics.mjs";
-
-// Scalability and Performance
 import { scalabilityManager, createPerformanceMiddleware, scalabilityHealthCheck } from "./scalability/index.mjs";
-
-// Ensure DB side-effects are applied by importing appropriate db module
 import { initMongoDB, isMongoConnected } from "./db-mongodb.mjs";
-
-// Routes
 import registerHomeRoutes from "./routes/home.mjs";
 import registerAuthRoutes from "./routes/auth.mjs";
 import registerDashboardRoutes from "./routes/dashboard.mjs";
@@ -49,17 +38,11 @@ import registerGoogleRoutes from "./routes/google.mjs";
 import registerUsageRoutes from "./routes/usage.mjs";
 import registerShopifyRoutes from "./routes/shopify.mjs";
 import { initOutboundQueue } from "./jobs/outboundQueue.mjs";
-/**
- * Create and configure an Express app instance.
- * @returns {import('express').Express}
- */
+
 export async function createApp() {
   const app = express();
   app.use(cookieParser());
-  
-  // Ensure database is connected before proceeding
   try { await initMongoDB(); } catch {}
-  // Fallback guard during early traffic or transient disconnects
   app.use(async (_req, res, next) => {
     if (!isMongoConnected()) {
       try { await initMongoDB(); } catch {
@@ -68,32 +51,17 @@ export async function createApp() {
     }
     next();
   });
-  
-  // Initialize scalability systems first
   await scalabilityManager.init();
-  
-  // Initialize monitoring systems
   initSentry();
   initVercelAnalytics();
-  
-  // Trust proxy for accurate IP addresses
   app.set('trust proxy', 1);
-  
-  // Security middleware
   app.use(securityHeaders);
-  
-  // Performance middleware
   const performanceMiddleware = createPerformanceMiddleware();
   performanceMiddleware.forEach(middleware => app.use(middleware));
-  
-  // Monitoring middleware (before other middleware)
   app.use(loggingMiddleware());
   app.use(metricsMiddleware());
   app.use(createAnalyticsMiddleware());
-  // Warm up outbound queue once at boot (falls back to direct send if unavailable)
   try {
-    // On serverless (Vercel), don't block cold start on Redis/queue initialization.
-    // Fire-and-forget; message-sending paths already fall back to direct sends.
     if (process.env.VERCEL) {
       initOutboundQueue()
         .then((queueReady) => {
@@ -113,39 +81,26 @@ export async function createApp() {
   } catch (error) {
     console.error('[Queue] Failed to initialize outbound queue:', error?.message || error);
   }
-  
-  // Rate limiting
   const { generalLimiter, strictLimiter, webhookLimiter } = createRateLimiters();
   app.use(generalLimiter);
-  
-  // Request size limits to prevent DoS attacks
   app.use(express.json({ 
-    limit: '10mb', // Limit JSON payloads to 10MB
-    verify: (req, _res, buf) => { req.rawBody = buf; } 
+    limit: '10mb',    verify: (req, _res, buf) => { req.rawBody = buf; } 
   }));
   app.use(express.urlencoded({ 
-    limit: '10mb', // Limit URL-encoded payloads to 10MB
-    extended: true 
+    limit: '10mb',    extended: true 
   }));
-
-  // Input sanitization to prevent XSS attacks
   app.use(sanitizeInput);
-
-  // Static file serving with security headers
   app.use(express.static(STATIC_DIR, {
     setHeaders: (res, path) => {
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     }
   }));
-  // Favicon fallback: redirect /favicon.ico to our logo PNG if no .ico exists
   app.get('/favicon.ico', (_req, res) => {
     res.redirect(302, '/logo-icon.png');
   });
-  // Signed media gate (optional via env)
   app.use('/uploads', (req, res, next) => {
     if (process.env.MEDIA_SIGNING_DISABLED === '1') return next();
-    const urlPath = `${req.baseUrl}${req.path}`; // full path e.g. /uploads/file.pdf
-    const exp = parseInt((req.query.exp || '0').toString(), 10);
+    const urlPath = `${req.baseUrl}${req.path}`;    const exp = parseInt((req.query.exp || '0').toString(), 10);
     const sig = (req.query.sig || '').toString();
     try {
       const secret = process.env.MEDIA_SIGN_SECRET || process.env.SESSION_TOKEN_SECRET || 'dev-media-secret';
@@ -158,21 +113,12 @@ export async function createApp() {
     next();
   });
   app.use('/uploads', express.static('uploads', { setHeaders: (res)=> res.setHeader('Cache-Control','public, max-age=604800') }));
-
-  // Clerk (if configured)
   initClerk(app);
-
-  // Additional security headers
   app.use((req, res, next) => {
     res.setHeader("Cache-Control", "no-store");
-    // X-Frame-Options disabled as requested
     next();
   });
-  
-  // Health check middleware (before rate limiting)
   app.use(healthCheckMiddleware());
-  
-  // Scalability health check endpoint
   app.get('/health/scalability', async (req, res) => {
     try {
       const health = await scalabilityHealthCheck();
@@ -185,8 +131,6 @@ export async function createApp() {
       });
     }
   });
-
-  // Block access to disabled features
   app.use('/webhooks', (req, res) => {
     res.status(403).send(`
       <!DOCTYPE html>
@@ -246,8 +190,6 @@ export async function createApp() {
       </html>
     `);
   });
-
-  // Block access to contacts routes
   app.use('/contacts', (req, res) => {
     res.status(403).send(`
       <!DOCTYPE html>
@@ -277,8 +219,6 @@ export async function createApp() {
       </html>
     `);
   });
-
-  // Block access to contacts API routes
   app.use('/api/contacts', (req, res) => {
     res.status(403).json({
       error: 'Contacts feature disabled',
@@ -286,8 +226,6 @@ export async function createApp() {
       code: 'FEATURE_DISABLED'
     });
   });
-
-  // Register routes
   registerHomeRoutes(app);
   registerAuthRoutes(app);
   registerDashboardRoutes(app);
@@ -311,19 +249,9 @@ export async function createApp() {
   registerShopifyRoutes(app);
   registerWebhookRoutes(app);
   registerMiscRoutes(app);
-  
-  // Apply specific rate limits to sensitive endpoints
   app.use('/webhook', webhookLimiter);
-  
-  // Start monitoring services
-  startHealthCheckScheduler(300000); // Check every 5 minutes (reduced frequency)
-  startMetricsCollection(60000); // Collect metrics every minute (reduced frequency)
-  
-  // Global error handler (must be last)
-  app.use(notFoundHandler);
+  startHealthCheckScheduler(300000);  startMetricsCollection(60000);  app.use(notFoundHandler);
   app.use(errorHandler);
-
-  // Return configured app
   return { app };
 }
 

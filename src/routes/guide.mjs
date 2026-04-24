@@ -98,7 +98,6 @@ async function ensureDefaultGuides() {
         content: g.content
       });
     } catch (e) {
-      // Ignore duplicate key errors (race between parallel requests).
       const msg = String(e?.message || "");
       if (!/E11000 duplicate key/i.test(msg)) throw e;
     }
@@ -106,7 +105,6 @@ async function ensureDefaultGuides() {
 }
 
 export default function registerGuideRoutes(app) {
-  // Guides index
   app.get("/guide", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const email = await getSignedInEmail(req);
@@ -121,7 +119,6 @@ export default function registerGuideRoutes(app) {
         <div class="guide-card-cta">Read more →</div>
       </a>
     `).join('');
-    // Prevent caching to avoid showing cached authenticated pages after logout
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
     res.setHeader("Pragma", "no-cache");
@@ -184,8 +181,6 @@ export default function registerGuideRoutes(app) {
       </html>
     `);
   });
-
-  // Guide detail by slug
   app.get("/guide/:slug", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const email = await getSignedInEmail(req);
@@ -203,7 +198,6 @@ export default function registerGuideRoutes(app) {
         </a>
       </li>
     `).join('');
-    // naive markdown-ish to HTML: headers and lists
     const lines = String(g.content||'').split('\n');
     const html = [];
     for (const line of lines) {
@@ -213,7 +207,6 @@ export default function registerGuideRoutes(app) {
       if (/^https?:\/\/.+/.test(line)) { html.push(`<a href="${line}">${escapeHtml(line)}</a>`); continue; }
       if (line.trim() === '') { html.push('<p></p>'); continue; }
       if (/^!\[.*\]\(.*\)$/.test(line)) {
-        // Handle images: ![alt](url)
         const match = line.match(/^!\[(.*)\]\((.*)\)$/);
         if (match) {
           const alt = escapeHtml(match[1]);
@@ -228,7 +221,6 @@ export default function registerGuideRoutes(app) {
       html.push(`<p>${inline}</p>`);
     }
     const body = html.join('');
-    // Prevent caching to avoid showing cached authenticated pages after logout
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
     res.setHeader("Pragma", "no-cache");

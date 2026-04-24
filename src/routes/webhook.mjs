@@ -1,8 +1,4 @@
-/**
- * Webhook routes for Meta (WhatsApp) integration.
- * - GET /webhook: verification handshake
- * - POST /webhook: inbound messages and status updates
- */
+
 import crypto from "node:crypto";
 import { getRedisClient, isRedisConnected, rateLimiter } from "../scalability/redis.mjs";
 import { db, getDB } from "../db-mongodb.mjs";
@@ -25,8 +21,6 @@ import { updateMessageDeliveryStatus, updateMessageReadStatus, READ_STATUS, MESS
 import { getConversationStatus, updateConversationStatus, CONVERSATION_STATUSES } from "../services/conversationStatus.mjs";
 import { businessMetrics, incrementCounter } from "../monitoring/metrics.mjs";
 import { enqueueOutboundMessage } from "../jobs/outboundQueue.mjs";
-
-// Precompiled patterns and caches
 const RE_GREETING_SIMPLE = /^(hi|hello|hey|yo|hiya|howdy|greetings)\b/;
 const RE_GREETING_GOOD = /^good\s+(morning|afternoon|evening)\b/;
 const RE_ACK_ONLY_EMOJI = /^[\u{1F44D}\u{1F44C}\u{1F64F}\u{1F44F}\u{2764}\u{1F60A}\u{1F642}]+$/u;
@@ -37,8 +31,6 @@ const ACK_TOKENS = [
 const ACK_TOKENS_SET = new Set(ACK_TOKENS);
 const SUBSTANTIVE_INTENT_RE = /(book|booking|reserve|reservation|appointment|order|buy|purchase|price|cost|quote|hours|open|closing|when\s*open|location|address|where|near|deliver|delivery|ship|shipping|pickup|refund|return|exchange|warranty|support|help|issue|problem|complaint|agent|human|connect|cancel|resched|change|modify|update|subscribe|signup|register|payment|pay|invoice|billing|menu|service|services|product|products|availability|slot|table|contact|phone|email)/i;
 const DEFAULT_ESCALATION_ACK = "An agent will respond to you shortly.";
-
-// In-memory cache for KB matches (per tenant+contact+query) with short TTL
 const memKb = new Map();
 const KB_CACHE_TTL_MS = Number(process.env.KB_CACHE_TTL_MS || 5000);
 function kbCacheKey(userId, contact, text) {
@@ -75,24 +67,16 @@ function isGreeting(raw) {
 function isAcknowledgement(raw) {
   const text = String(raw || '').toLowerCase().replace(/[\s\p{P}]+/gu, ' ').trim();
   if (!text) return false;
-  // explicit exclusion for dev/testing commands
   if (/\btest\b/.test(text)) return false;
-
-  // Quick emoji thumbs-up or similar
   const onlyEmoji = text.replace(/[\p{L}\p{N}\s]/gu, '').trim();
   if (RE_ACK_ONLY_EMOJI.test(onlyEmoji)) return true;
-
-  // Exact phrase or token match
   if (ACK_TOKENS_SET.has(text)) return true;
-
-  // Fuzzy match with small typos on phrase and tokens
   const tokens = text.split(' ').filter(Boolean);
   const candidates = [text, ...tokens];
   for (const c of candidates) {
     for (const a of ACK_TOKENS) {
       const lenOk = c.length >= 4 && a.length >= 4;
-      if (!lenOk) continue; // avoid false positives like "ok" vs random tokens
-      const dist = levenshtein(c, a);
+      if (!lenOk) continue;      const dist = levenshtein(c, a);
       const rel = dist / Math.max(c.length, a.length);
       if (dist <= 1 || rel <= 0.2) return true;
     }
@@ -138,8 +122,6 @@ function needsAgentFollowup(raw) {
   if (/^(hi|hello|hey)\b/.test(s) && s.length <= 16) return true;
   return false;
 }
-
-// Helper: send KB item by title (prefers PDF if present), and record outbound message
 async function sendKbItemByTitle({ tenantUserId, to, title, cfg }) {
   try {
     const row = await KBItem.findOne({ user_id: tenantUserId, title }).select('content file_url file_mime title').lean();
@@ -167,14 +149,10 @@ async function sendKbItemByTitle({ tenantUserId, to, title, cfg }) {
     return false;
   }
 }
-
-// Parse full-sentence booking requests: extract desired date and time if present
 function parseRequestedDateTime(raw) {
   const text = String(raw || '').toLowerCase();
   const now = new Date();
   const out = { dateISO: null, hour: null, minute: null };
-
-  // Relative dates
   const weekdays = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
   if (/\b(today)\b/.test(text)) {
     const d = new Date();
@@ -192,8 +170,6 @@ function parseRequestedDateTime(raw) {
       out.dateISO = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
     }
   }
-
-  // Month names: "Sep 30", "September 30, 2025"
   if (!out.dateISO) {
     const months = ['january','february','march','april','may','june','july','august','september','october','november','december'];
     const mm = new RegExp(`\\b(${months.map(m=>m.slice(0,3)).join('|')}|${months.join('|')})\\.?,?\\s+(\\d{1,2})(?:,?\\s*(\\d{4}))?`);
@@ -208,8 +184,6 @@ function parseRequestedDateTime(raw) {
       }
     }
   }
-
-  // Numeric dates: YYYY-MM-DD or DD/MM or MM/DD
   if (!out.dateISO) {
     let m = /(\d{4})-(\d{2})-(\d{2})/.exec(text);
     if (m) {
@@ -220,7 +194,6 @@ function parseRequestedDateTime(raw) {
         const a = Number(m[1]);
         const b = Number(m[2]);
         const c = m[3] ? Number(m[3]) : now.getUTCFullYear();
-        // Heuristic: if a > 12 then DD/MM, else if b > 12 then MM/DD, else assume MM/DD
         const mm = (a > 12 || (a <= 31 && b <= 12 && a > b)) ? b : a;
         const dd = (a > 12 || (a <= 31 && b <= 12 && a > b)) ? a : b;
         const yr = c < 100 ? (2000 + c) : c;
@@ -228,9 +201,6 @@ function parseRequestedDateTime(raw) {
       }
     }
   }
-
-  // Time: prioritize token after 'at'/'for'.
-  // Fallback only if the token is explicit (has ":mm" or am/pm). Avoid picking stray numbers like date ranges (e.g., "Nov 3-10").
   let mt = /(?:\bat|\bfor)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i.exec(text);
   let matchedByKeyword = !!mt;
   if (!mt) {
@@ -241,7 +211,6 @@ function parseRequestedDateTime(raw) {
     }
   }
   if (mt) {
-    // Normalize capture groups for both patterns
     const h = mt[1] || mt[3];
     const m = mt[2] || null;
     const ap = (mt[4] || mt[3] || '').toLowerCase();
@@ -257,17 +226,12 @@ function parseRequestedDateTime(raw) {
   if (!out.dateISO || out.hour == null) return null;
   return out;
 }
-
-// Build a UTC Date that represents a wall-clock time (hour:minute) on dateISO in a given IANA time zone
 function buildUtcFromLocalTz(dateISO, hour, minute, tz) {
   return buildUtcFromLocalWallTime(dateISO, hour, minute, tz);
 }
-
-// Parse date-only or simple ranges from free text
 function parseDateOnly(raw) {
   const text = String(raw || '').toLowerCase();
   const now = new Date();
-  // today / tomorrow
   if (/\btoday\b/.test(text)) {
     const d = new Date();
     return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
@@ -276,7 +240,6 @@ function parseDateOnly(raw) {
     const d = new Date(Date.now()+86400000);
     return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
   }
-  // Month name
   const months = ['january','february','march','april','may','june','july','august','september','october','november','december'];
   const mm = new RegExp(`\\b(${months.map(m=>m.slice(0,3)).join('|')}|${months.join('|')})\\.?,?\\s+(\\d{1,2})(?:,?\\s*(\\d{4}))?`);
   let m = mm.exec(text);
@@ -289,7 +252,6 @@ function parseDateOnly(raw) {
       return `${yr}-${String(monIdx+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
     }
   }
-  // Numeric
   m = /(\d{4})-(\d{2})-(\d{2})/.exec(text);
   if (m) return `${m[1]}-${m[2]}-${m[3]}`;
   m = /(\b\d{1,2})[\/\-.](\d{1,2})(?:[\/\-.](\d{2,4}))?/.exec(text);
@@ -306,24 +268,18 @@ function parseDateOnly(raw) {
 function parseDateRange(raw) {
   const s = String(raw || '').toLowerCase();
   const todayISO = (()=>{ const d=new Date(); return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`; })();
-  // "next X days"
   let m = /next\s+(\d{1,2})\s+day(s)?/.exec(s);
   if (m) { const n = Math.max(1, Number(m[1]||1)); return { startISO: todayISO, days: Math.min(30, n) }; }
-  // "this week" (remaining days)
   if (/\bthis\s+week\b/.test(s)) {
     const now = new Date();
-    const wd = now.getUTCDay(); // 0=Sun
-    const remain = 7 - wd;
+    const wd = now.getUTCDay();    const remain = 7 - wd;
     return { startISO: todayISO, days: Math.max(1, remain) };
   }
-  // "next week" (next Monday..Sunday)
   if (/\bnext\s+week\b/.test(s)) {
     const d = new Date();
-    const delta = ((8 - d.getUTCDay()) % 7) || 7; // days until next Monday
-    const start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()+delta));
+    const delta = ((8 - d.getUTCDay()) % 7) || 7;    const start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()+delta));
     return { startISO: `${start.getUTCFullYear()}-${String(start.getUTCMonth()+1).padStart(2,'0')}-${String(start.getUTCDate()).padStart(2,'0')}`, days: 7 };
   }
-  // "between X and Y" or "X - Y"
   m = /(?:between|from)\s+([\w\s\/.\-]+?)\s+(?:and|to|-)\s+([\w\s\/.\-]+)/.exec(s);
   if (m) {
     const a = parseDateOnly(m[1]);
@@ -335,7 +291,6 @@ function parseDateRange(raw) {
       return { startISO: a, days };
     }
   }
-  // Single date
   const single = parseDateOnly(s);
   if (single) return { startISO: single, days: 1 };
   return null;
@@ -355,7 +310,6 @@ function parseNameFromMessage(raw) {
     const m = /(my\s+name\s+is|i\s*am|i'm|im)\s+([a-zA-Z][a-zA-Z'\-]+(?:\s+[a-zA-Z][a-zA-Z'\-]+){0,2})/i.exec(s);
     if (m) {
       const name = m[2].replace(/\s+/g,' ').trim();
-      // Title-case
       const titled = name.split(' ').map(w => w.slice(0,1).toUpperCase()+w.slice(1).toLowerCase()).join(' ');
       return titled;
     }
@@ -367,21 +321,11 @@ function hasSubstantiveRequest(raw) {
   try {
     const s = String(raw || '').toLowerCase().trim();
     if (!s) return false;
-
-    // Ignore pure greetings (short and only greeting tokens)
     const pureGreeting = isGreeting(s) && /^(hi|hello|hey|yo|hiya|howdy|greetings|good\s+(morning|afternoon|evening))\b/.test(s) && s.split(/\s+/).length <= 3;
     if (pureGreeting) return false;
-
-    // Any explicit question is substantive
     if (s.includes('?')) return true;
-
-    // Broad set of common intents across domains (pricing, hours, locations, delivery, support, etc.)
     if (SUBSTANTIVE_INTENT_RE.test(s)) return true;
-
-    // Dates/times/numbers often indicate a request (e.g., "tomorrow 3pm", "2 people")
     if (/(\d{1,2}[:.][0-5]\d\s*(am|pm)?|\b\d{1,2}\s*(am|pm)\b|today|tomorrow|next\s+(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|\b\d+\b)/i.test(s)) return true;
-
-    // Otherwise, consider non-trivial free text as substantive
     const wc = s.split(/\s+/).filter(Boolean).length;
     return wc >= 3 || s.length >= 15;
   } catch { return false; }
@@ -421,22 +365,13 @@ async function findUpcomingConfirmedAppointment({ userId, digits, projection } =
     return null;
   }
 }
-
-// Escalation session storage: prefer Redis with TTL; fallback to in-memory Map
 const memEscalation = new Map();
-// Tenant settings cache (PNID/BusinessPhone) with TTL
 const memTenant = new Map();
-// Status idempotency fallback (when Redis not connected)
 const memStatus = new Map();
-  // Lightweight spam suppression memory (per tenant+contact)
-  const memSpam = new Map(); // key -> { hits: number[] (timestamps ms) }
-function memKey(userId, contact) {
+  const memSpam = new Map();function memKey(userId, contact) {
   return `${String(userId || '')}:${String(contact || '')}`;
 }
-// In‑progress holding/throttle memory
-const memProgress = new Map(); // key -> { lastHoldingAtMs: number, hits: number[] (timestamps ms) }
-const memEscalationHold = new Map(); // key -> lastSentAtMs
-async function getMemSession(userId, contact) {
+const memProgress = new Map();const memEscalationHold = new Map();async function getMemSession(userId, contact) {
   const key = memKey(userId, contact);
   try {
     if (isRedisConnected()) {
@@ -523,11 +458,9 @@ export default function registerWebhookRoutes(app) {
       return d.slice(0,2) + '******' + d.slice(-2);
     } catch { return '***'; }
   }
-  // IP-based rate limiter: Redis if available, fallback to in-memory map
   const rateWindowMs = Number(process.env.WEBHOOK_RATE_WINDOW_MS || 15_000);
   const maxHits = Number(process.env.WEBHOOK_RATE_MAX || 60);
-  const hits = new Map(); // fallback: key -> { count, ts }
-  const rateLimit = async (req, res, next) => {
+  const hits = new Map();  const rateLimit = async (req, res, next) => {
     try {
       const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || req.connection?.remoteAddress || 'unknown';
       if (isRedisConnected()) {
@@ -554,12 +487,9 @@ export default function registerWebhookRoutes(app) {
     } catch {}
     next();
   };
-  
-  // Helpers to eliminate duplicated logic
   async function getFirstStaffOrNotifyNoStaff(tenantUserId, from, cfg) {
     const tenant = cfg;
     try {
-      // Primary: Mongo native driver (for performance)
       const s = await getDB().collection('staff')
         .find({ user_id: String(tenantUserId) })
         .project({ _id: 1, slot_minutes: 1, timezone: 1, working_hours_json: 1 })
@@ -567,7 +497,6 @@ export default function registerWebhookRoutes(app) {
         .limit(1)
         .toArray();
       let staff = s[0] || null;
-      // Fallback: Mongoose model (handles potential typing quirks)
       if (!staff) {
         try {
           const row = await Staff.findOne({ user_id: String(tenantUserId) }).select('_id slot_minutes timezone working_hours_json').lean();
@@ -597,8 +526,6 @@ export default function registerWebhookRoutes(app) {
     const n = await generateAssistantNudge('too_close', { minLead }, { tone: tenant?.ai_tone, style: tenant?.ai_style });
     await sendTextTracked(from, n || `It's too close to your start time (less than ${minLead} min). Please contact us directly.`, cfg);
   }
-
-  // Unified availability presenter: single-day → interactive list; multi-day → text summary
   async function sendAvailabilityRange({ from, tenantUserId, staffId, startISODate, days, tod, cfg, bodyLabel = 'Choose a time:' }) {
     try {
       const effectiveDays = Math.min(14, Math.max(1, Number(days || 1)));
@@ -633,8 +560,6 @@ export default function registerWebhookRoutes(app) {
       }
     } catch {}
   }
-
-  // Service tiers helpers
   function getServicesFromSettings(cfg) {
     try {
       const arr = JSON.parse(cfg?.services_json || '[]');
@@ -654,8 +579,6 @@ export default function registerWebhookRoutes(app) {
     await sendListTracked(to, 'Choose a service', 'Select a service type:', 'Select', rows, cfg);
     return true;
   }
-
-  // Waitlist helpers
   function formatYmdFromTs(ts) {
     const d = new Date((Number(ts)||0)*1000);
     const y = d.getUTCFullYear();
@@ -686,8 +609,6 @@ export default function registerWebhookRoutes(app) {
       try { await dbNative.collection('waitlist').deleteMany({ user_id: String(tenantUserId), staff_id: staffId, date: dateKey }); } catch {}
     } catch {}
   }
-
-  // Unified outbound send helpers that also record outbound messages
   async function sendTextTracked(to, text, cfg, options = {}) {
     try {
       const jobId = await enqueueOutboundMessage({
@@ -729,7 +650,6 @@ export default function registerWebhookRoutes(app) {
           to,
           type: 'interactive',
           text: combinedText,
-          // Provide interactive body so UI can render header instead of [interactive]
           raw: { to, interactive: { body: { text: header }, type: 'list' } }
         });
         businessMetrics.trackWhatsAppMessage('sent', 'interactive', true);
@@ -761,8 +681,6 @@ export default function registerWebhookRoutes(app) {
     } catch {}
     return resp;
   }
-
-  // ---------- Refactor helpers (deduplication and flow control) ----------
   async function recordAndBroadcastInbound({ message, tenantUserId, metadata, normalizedType, text, mediaUrl }) {
     try {
       const inboundId = message?.id;
@@ -803,7 +721,6 @@ export default function registerWebhookRoutes(app) {
         try {
           const current = await getConversationStatus(tenantUserId, message.from);
           if (current === CONVERSATION_STATUSES.RESOLVED || current === CONVERSATION_STATUSES.CLOSED) {
-            // Only reopen when the message is substantive (not just 'thanks', emoji, or pure greeting)
             let shouldReopen = false;
             try {
               if (normalizedType === 'text') {
@@ -814,10 +731,8 @@ export default function registerWebhookRoutes(app) {
                   shouldReopen = substantive && !ack;
                 }
               } else if (normalizedType === 'interactive') {
-                // Interactive replies typically mean intent; but CSAT is handled elsewhere and returns early
                 shouldReopen = true;
               } else {
-                // Media without caption should not reopen by itself
                 shouldReopen = false;
               }
             } catch { shouldReopen = false; }
@@ -861,8 +776,6 @@ export default function registerWebhookRoutes(app) {
       return false;
     }
   }
-
-  // Suppress non-substantive spam (e.g., repeated greetings/short messages)
   function maybeSuppressNonSubstantiveSpam(tenantUserId, from, text) {
     try {
       const key = memKey(tenantUserId, from);
@@ -870,14 +783,10 @@ export default function registerWebhookRoutes(app) {
       const windowMs = Number(process.env.SPAM_WINDOW_MS || 20000);
       const threshold = Number(process.env.SPAM_THRESHOLD || 3);
       const rec = memSpam.get(key) || { hits: [] };
-      // Drop old hits
       rec.hits = (rec.hits || []).filter(ts => (nowMs - ts) <= windowMs);
-      // Always record this hit
       rec.hits.push(nowMs);
       memSpam.set(key, rec);
-      // If message is substantive, do not suppress
       if (hasSubstantiveRequest(text)) return false;
-      // For non-substantive messages (greetings, acknowledgements, very short), suppress when above threshold
       if (rec.hits.length >= threshold) return true;
     } catch {}
     return false;
@@ -1006,9 +915,6 @@ async function completeEscalationHandoff({ tenantUserId, from, reason, cfg, cust
   }
   const connecting = await generateAssistantNudge('handoff_connecting', {}, { tone: cfg?.ai_tone, style: cfg?.ai_style });
   await sendTextTracked(from, connecting, cfg);
-  // Ensure an alert email is sent to the account owner when this message is sent.
-  // If standard escalation emails are disabled, send a lightweight ping to the
-  // primary email from Personal Information.
   try {
     if (!cfg?.escalation_email_enabled) {
       await sendEscalationPingToAccount(tenantUserId, {
@@ -1050,8 +956,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         }
         return true;
       }
-
-      // If there's already a meaningful message, treat it as the escalation reason
       const isShortGreeting = /^(\s*(hi|hello|hey)\b.*)$/i.test(trimmed) && trimmed.length <= 40;
       if (trimmed && !isShortGreeting) {
         const reason = trimmed.slice(0, 300);
@@ -1064,8 +968,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         });
         return true;
       }
-
-      // Otherwise start the structured escalation flow (intro + questions)
       await sendEscalationIntroMessage(from, cfg);
       if (customer.display_name) {
         try {
@@ -1130,8 +1032,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       }
       return true;
     }
-
-    // Fallback: restart escalation flow
     await sendEscalationIntroMessage(from, cfg);
     try {
       await db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, updated_at)
@@ -1210,7 +1110,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
     const greetResp = await sendTextTracked(from, greetText, cfg);
     await sendBrandingIfFree({ tenantUserId, to: from, cfg, planHint });
     if (DEBUG_LOGS) console.log('[Webhook] Greeting send result:', { id: greetResp?.messages?.[0]?.id || null });
-    // In Simple Escalation Mode, do not show KB menu on greeting
     if (cfg?.conversation_mode !== 'escalation') {
       const rows = [];
       if (cfg?.bookings_enabled) rows.push({ id: 'GREET_BOOK', title: 'Bookings', description: '' });
@@ -1236,10 +1135,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
     }
     return true;
   }
-
-  // Holiday cache
-  const memHolidays = new Map(); // key=userId -> { dates:Set<string>, expires:number }
-  async function getHolidayDatesForTenant(cfg) {
+  const memHolidays = new Map();  async function getHolidayDatesForTenant(cfg) {
     const userId = cfg?.user_id || cfg?.userId || null;
     const now = Date.now();
     const ttlMs = Number(process.env.HOLIDAYS_TTL_MS || 12*60*60*1000);
@@ -1248,16 +1144,13 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
     if (hit && hit.expires > now) return hit.dates;
     let dates = new Set();
     try {
-      // Closed dates from settings
       try {
         const arr = JSON.parse(cfg?.closed_dates_json || '[]');
         if (Array.isArray(arr)) arr.forEach(d => { if (typeof d === 'string') dates.add(d); });
       } catch {}
-      // Optional URL
       if (cfg?.holidays_json_url) {
         const url = String(cfg.holidays_json_url);
         try {
-          // Try Redis-backed cache first
           if (isRedisConnected()) {
             const redis = getRedisClient();
             const rkey = `holidays:url:${url}`;
@@ -1278,7 +1171,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
               }
             }
           } else {
-            // Memory-only fetch
             const fetch = (await import('node-fetch')).default;
             const resp = await fetch(url, { timeout: Number(process.env.HOLIDAYS_FETCH_TIMEOUT_MS||5000) });
             if (resp.ok) {
@@ -1296,15 +1188,10 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
 
   function isClosedByHolidayForMoment(cfg, tz, dateKey, minutesNow) {
     try {
-      // Date-only closures
-      // Note: getHolidayDatesForTenant is async; but in this hot path we only use mem cache if available
-      // For simplicity, we will check sync sources first, then fallback to cached async elsewhere.
       try {
         const arr = JSON.parse(cfg?.closed_dates_json || '[]');
         if (Array.isArray(arr) && arr.includes(dateKey)) return true;
       } catch {}
-
-      // Structured rules with time windows
       try {
         const rules = JSON.parse(cfg?.holidays_rules_json || '[]');
         if (Array.isArray(rules)) {
@@ -1322,8 +1209,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
     } catch {}
     return false;
   }
-
-  // Throttle helper for Out-of-Hours messages per contact
   async function shouldSendOutOfHours(tenantUserId, contactId) {
     try {
       const dbNative = getDB();
@@ -1341,8 +1226,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       return true;
     } catch { return true; }
   }
-
-  // Determine if now is within any working-hours slot for the first staff member, considering holidays/closures
   async function isWithinStaffWorkingHours(tenantUserId, cfg) {
     try {
       const dbNative = getDB();
@@ -1353,8 +1236,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         .limit(1)
         .toArray();
       const s = staff[0] || null;
-      if (!s) return true; // no staff configured → do not block
-      const working = (() => { try { return JSON.parse(s.working_hours_json || '{}'); } catch { return {}; } })();
+      if (!s) return true;      const working = (() => { try { return JSON.parse(s.working_hours_json || '{}'); } catch { return {}; } })();
       const tz = s.timezone || 'UTC';
       const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', weekday: 'short', hour12: false }).formatToParts(new Date());
       const hh = Number(parts.find(p => p.type === 'hour')?.value || '00');
@@ -1367,14 +1249,12 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       const dateKey = `${yyyy}-${mm2}-${dd2}`;
       const dayKey = ({ mon:'mon', tue:'tue', wed:'wed', thu:'thu', fri:'fri', sat:'sat', sun:'sun' })[wd] || 'mon';
       const slots = Array.isArray(working[dayKey]) ? working[dayKey] : [];
-      // Holiday/closure hard stop (full-day and time-windowed)
       try {
         if (isClosedByHolidayForMoment(cfg||{}, tz, dateKey, hh*60+mm)) return false;
         const hol = await getHolidayDatesForTenant(cfg||{});
         if (hol && hol.has(dateKey)) return false;
       } catch {}
-      if (!slots.length) return false; // day has no hours → out of hours
-      const nowMin = hh * 60 + mm;
+      if (!slots.length) return false;      const nowMin = hh * 60 + mm;
       for (const slot of slots) {
         const m = /^(\d{2}):(\d{2})\s*[-–]\s*(\d{2}):(\d{2})$/.exec(String(slot||''));
         if (!m) continue;
@@ -1385,8 +1265,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       return false;
     } catch { return true; }
   }
-
-  // Encapsulated interactive handlers
   async function handleButtonReply({ id, title, tenantUserId, from, cfg }) {
     const tenant = cfg;
     if (!id) return;
@@ -1585,7 +1463,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
             { $set: { step: 'awaiting_datetime', service_name: svc.name, service_minutes: Number(svc.minutes||0) }, $currentDate: { updatedAt: true } },
             { upsert: true }
           );
-          // Remember last chosen service for future “same as last time” intents
           try { await rememberService(tenantUserId, from, { name: svc.name, minutes: Number(svc.minutes||0) }); } catch {}
           const n = await generateAssistantNudge('ask_datetime', { examples: ["Nov 3 at 3pm", "tomorrow 14:30"] }, { tone: tenant?.ai_tone, style: tenant?.ai_style });
           await sendTextTracked(from, n, cfg);
@@ -1650,7 +1527,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         }
         if (tenantUserId && staffId && dateStr) {
           const dateISO = new Date(`${dateStr}T12:00:00.000Z`).toISOString();
-          // Try to honor selected service duration from session
           let slotOverride = undefined;
           try {
             const dbNative = getDB();
@@ -1695,10 +1571,8 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       return;
     }
   }
-  // Lightweight payload shape validator
   function isValidWebhookPayload(p) {
     try {
-      // Tolerant: accept when change value exists and has messages[] or statuses[]
       const changeNode = (() => {
         const entryNode = Array.isArray(p?.entry) ? p.entry[0] : (p?.entry && typeof p.entry === 'object' ? Object.values(p.entry)[0] : undefined);
         const ch = Array.isArray(entryNode?.changes) ? entryNode.changes[0] : (entryNode?.changes && typeof entryNode.changes === 'object' ? Object.values(entryNode.changes)[0] : undefined);
@@ -1710,8 +1584,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       return hasMsgs || hasStatuses;
     } catch { return false; }
   }
-
-  // Test endpoint for debugging (bypasses signature verification)
   app.post("/test-webhook", async (req, res) => {
     if (!process.env.ENABLE_TEST_WEBHOOK) {
       return res.status(404).send('Not Found');
@@ -1760,16 +1632,11 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       let text = message.text?.body || "";
 
       if (DEBUG_LOGS) console.log("Test webhook received:", { from, text, tenantUserId, conversation_mode: cfg.conversation_mode });
-
-      // Check conversation mode FIRST - if Simple Escalation Mode, handle differently
       if (cfg.conversation_mode === 'escalation') {
         if (DEBUG_LOGS) console.log("Simple Escalation Mode active in test");
-        
-        // Check if this is the first message from this contact (show greeting first)
         const state = db.prepare(`SELECT escalation_step FROM handoff WHERE contact_id = ? AND user_id = ?`).get(from, tenantUserId);
         
         if (!state) {
-          // First message: show greeting and additional message
           const greetText = cfg.entry_greeting || await generateAssistantNudge('greeting', {}, { tone: tenant?.ai_tone, style: tenant?.ai_style });
           const additionalMessage = cfg.escalation_additional_message || "";
           
@@ -1777,16 +1644,12 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           if (additionalMessage) {
             response += "\n\n" + additionalMessage;
           }
-          
-          // Get custom escalation questions
           let escalationQuestions = [];
           try {
             escalationQuestions = JSON.parse(cfg.escalation_questions_json || '[]');
           } catch {}
           
           response += "\n\n" + escalationQuestions[0];
-          
-          // Save the state for testing
           try {
             db.prepare(`INSERT INTO handoff (contact_id, user_id, escalation_step, escalation_questions_json, escalation_question_index, updated_at)
               VALUES (?, ?, 'ask_question', ?, 0, strftime('%s','now'))
@@ -1795,8 +1658,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           
           return res.json({ success: true, response: response, type: "escalation_first_message" });
         }
-        
-        // Continue with dynamic escalation questions flow for subsequent messages
         const currentState = db.prepare(`SELECT escalation_step, escalation_questions_json, escalation_question_index FROM handoff WHERE contact_id = ? AND user_id = ?`).get(from, tenantUserId);
         
         if (currentState?.escalation_step === 'ask_question') {
@@ -1808,14 +1669,10 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           
           const currentIndex = currentState.escalation_question_index || 0;
           const nextIndex = currentIndex + 1;
-          
-          // Store the user's answer for testing
           const answerKey = `escalation_answer_${currentIndex}`;
           try {
             db.prepare(`UPDATE handoff SET ${answerKey} = ?, escalation_question_index = ?, updated_at = strftime('%s','now') WHERE contact_id = ? AND user_id = ?`).run(text, nextIndex, from, tenantUserId);
           } catch {}
-          
-          // Check if there are more questions
           if (nextIndex < escalationQuestions.length) {
             return res.json({ success: true, response: escalationQuestions[nextIndex], type: "escalation_ask_question" });
           } else {
@@ -1825,10 +1682,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         
         return res.json({ success: true, response: "What's your name?", type: "escalation_ask_name" });
       }
-
-      // In full AI mode, do not short-circuit greetings; let the AI handle tone and replies
-
-      // Test KB response
       const kbMatchesBase = await cachedRetrieveKbMatches(text, 8, tenantUserId, '', from);
       const prof = await buildCustomerProfileSnippet(tenantUserId, from);
       const kbMatches = prof ? [prof, ...(Array.isArray(kbMatchesBase) ? kbMatchesBase : [])] : kbMatchesBase;
@@ -1851,8 +1704,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       return res.status(500).json({ error: e.message });
     }
   });
-
-  // Webhook verification (Meta)
   app.get("/webhook", rateLimit, (req, res) => {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
@@ -1868,13 +1719,9 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
     }
     return res.sendStatus(403);
   });
-
-  // Receive messages
   app.post("/webhook", rateLimit, async (req, res) => {
     try {
-      // Guard: enforce small payload size for webhook
-      const maxBytes = Number(process.env.WEBHOOK_MAX_BYTES || 1048576); // 1MB default
-      const contentLen = Number(req.headers['content-length'] || 0);
+      const maxBytes = Number(process.env.WEBHOOK_MAX_BYTES || 1048576);      const contentLen = Number(req.headers['content-length'] || 0);
       if (contentLen && contentLen > maxBytes) {
         res.setHeader('Connection', 'close');
         return res.status(413).send('Payload too large');
@@ -1889,8 +1736,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         }
       } catch {}
       const sig = req.header("X-Hub-Signature-256") || req.header("x-hub-signature-256");
-      // Resolve tenant settings by phone_number_id from the raw payload BEFORE signature verification
-      // Note: the earlier implementation returned a Promise and was not awaited, causing s.app_secret to be undefined.
       let s = {};
       try {
         const obj = JSON.parse((req.rawBody || Buffer.from("{}"))?.toString("utf8"));
@@ -1903,7 +1748,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           s = (await findSettingsByPhoneNumberId(pnid)) || {};
         }
       } catch {}
-      // Verify webhook signature for security
       const REQUIRE_SIG = (process.env.NODE_ENV === 'production') && (process.env.REQUIRE_WEBHOOK_SIGNATURE !== '0');
       if (REQUIRE_SIG && (!sig || !s.app_secret)) {
         return res.sendStatus(403);
@@ -1932,7 +1776,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         if (DEBUG_LOGS) {
           try { console.log("[WEBHOOK] Invalid payload shape", JSON.stringify(payload).slice(0,500)); } catch { console.log("[WEBHOOK] Invalid payload shape"); }
         }
-        // No-op ACK instead of 400 to avoid blocking/extra retries from Meta
         return res.sendStatus(200);
       }
       const firstOf = (x) => Array.isArray(x) ? x[0] : (x && typeof x === 'object' ? Object.values(x)[0] : undefined);
@@ -1944,8 +1787,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       const metadata = change?.metadata;
       const tenantSettings = (await cachedFindSettingsByPhoneNumberId(metadata?.phone_number_id)) || (await cachedFindSettingsByBusinessPhone(metadata?.display_phone_number?.replace(/\D/g, "")));
       const tenantUserId = tenantSettings?.user_id || null;
-
-      // Per-tenant rate limit using Redis (if available)
       try {
         const limit = Number(process.env.WEBHOOK_TENANT_LIMIT || 120);
         const windowSec = Number(process.env.WEBHOOK_TENANT_WINDOW || 60);
@@ -1969,16 +1810,13 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
             const tsNum = st.timestamp ? Number(st.timestamp) : null;
             const error = Array.isArray(st.errors) ? st.errors[0] : undefined;
             if (!messageId || !status) continue;
-
-            // Idempotency guard for statuses
             try {
               const ttl = Number(process.env.STATUS_NONCE_TTL || 600);
               if (isRedisConnected()) {
                 const redis = getRedisClient();
                 const skey = `wp:status:${tenantUserId || 'null'}:${messageId}:${status}:${tsNum || 0}`;
                 const r = await redis.set(skey, '1', 'EX', ttl, 'NX');
-                if (r !== 'OK') continue; // duplicate status
-              } else {
+                if (r !== 'OK') continue;              } else {
                 const nkey = `status:${tenantUserId || 'null'}:${messageId}:${status}:${tsNum || 0}`;
                 const now = Date.now();
                 const rec = memStatus.get(nkey);
@@ -1986,8 +1824,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
                 memStatus.set(nkey, now + ttl*1000);
               }
             } catch {}
-
-            // Persist raw status event idempotently
             try {
               await dbNative.collection('message_statuses').updateOne(
                 { message_id: messageId, status, timestamp: tsNum, user_id: tenantUserId || null },
@@ -2006,8 +1842,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
                 { upsert: true }
               );
             } catch {}
-
-            // Update messages collection delivery/read status with monotonic rules
             try {
               if (status === 'read') {
                 await updateMessageDeliveryStatus(messageId, MESSAGE_STATUS.READ, tsNum || undefined);
@@ -2020,8 +1854,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
                 await updateMessageDeliveryStatus(messageId, MESSAGE_STATUS.FAILED, tsNum || undefined);
               }
             } catch {}
-
-            // Broadcast message status update in real-time
             try {
               if (tenantUserId) {
                 const messageDoc = await dbNative.collection('messages').findOne({ id: messageId, user_id: String(tenantUserId) }, { projection: { from_digits: 1, to_digits: 1 } });
@@ -2051,25 +1883,16 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       }
       
       if (DEBUG_LOGS) console.log("Processing message:", message);
-
-      // Handle reaction messages - don't process them as regular messages
       if (message.type === 'reaction') {
         if (DEBUG_LOGS) console.log("Received reaction message, skipping bot processing");
-        
-        // Store the reaction in our database for the agent to see
         try {
           
           if (tenantUserId && message.reaction && message.reaction.message_id) {
             const customerUserId = `customer_${message.from}`;
             const phone = normalizePhone(message.from);
-            
-            // Check if this is a reaction removal (empty emoji) or addition
             if (message.reaction.emoji && message.reaction.emoji.trim() !== '') {
-              // This is a reaction addition
               const result = addReaction(message.reaction.message_id, customerUserId, message.reaction.emoji);
               if (DEBUG_LOGS) console.log("Stored customer reaction:", result);
-              
-              // Broadcast the reaction in real-time to agents
               if (result.success) {
                 const reactionData = {
                   messageId: message.reaction.message_id,
@@ -2083,12 +1906,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
                 if (DEBUG_LOGS) console.log("📡 Broadcasted customer reaction addition to agents");
               }
             } else {
-              // This is a reaction removal (empty emoji)
               if (DEBUG_LOGS) console.log("Received reaction removal from customer");
-              
-              // We need to find which emoji was removed
-              // WhatsApp doesn't tell us which emoji was removed, so we need to check the database
-              // Use Mongo to find the latest reaction for this customer on the message
               const dbNative = getDB();
               const latestReaction = await dbNative.collection('message_reactions')
                 .find({ message_id: message.reaction.message_id, user_id: customerUserId })
@@ -2098,12 +1916,8 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
               const existingReactions = latestReaction[0] || null;
               if (existingReactions) {
                 const emojiToRemove = existingReactions.emoji;
-                
-                // Remove the reaction from database
                 const result = removeReaction(message.reaction.message_id, customerUserId, emojiToRemove);
                 if (DEBUG_LOGS) console.log("Removed customer reaction:", result);
-                
-                // Broadcast the reaction removal in real-time to agents
                 if (result.success) {
                   const reactionData = {
                     messageId: message.reaction.message_id,
@@ -2127,8 +1941,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         
         return res.sendStatus(200);
       }
-
-      // Handle reply messages: store and create linkage; only suppress bot when human is explicitly live
       if (message.context && message.context.id) {
         if (DEBUG_LOGS) console.log("Received reply message; storing and deciding whether to suppress bot");
 
@@ -2152,8 +1964,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
             if (inserted) {
               if (DEBUG_LOGS) console.log("Stored customer reply message:", messageId);
             }
-
-            // Create reply relationship
             try {
               const { createReply } = await import('../services/replies.mjs');
               const replyResult = createReply(message.context.id, messageId);
@@ -2165,8 +1975,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         } catch (error) {
           console.error("Error storing customer reply message:", error);
         }
-
-        // Determine if a human is explicitly live; only then suppress bot
         let shouldSuppressBot = false;
         try {
           let hsSql = null;
@@ -2188,11 +1996,9 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           if (DEBUG_LOGS) console.log("Reply received while human live; suppressing bot");
           return res.sendStatus(200);
         }
-        // else: fall through to normal AI handling
       }
 
       const tenant = tenantSettings;
-      // tenantUserId already computed
       const businessNumber = metadata?.display_phone_number?.replace(/\D/g, "");
       if (businessNumber && message.from === businessNumber) {
         return res.sendStatus(200);
@@ -2209,27 +2015,20 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       } catch {
         tenantPlan = null;
       }
-
-      // Define sender and extract content by type
       const from = message.from;
       const fromDigits = digitsOnly(from);
       let text = message.text?.body || "";
       let mediaUrl = null;
       let normalizedType = message.type || 'text';
       if (normalizedType === 'image' && message.image) {
-        // Prefer direct link. If missing, construct proxy URL so browser can download with our credentials
         mediaUrl = message.image.link || null;
         if (!mediaUrl && message.image.id) {
           mediaUrl = `/wa-media/${encodeURIComponent(String(tenantUserId))}/${encodeURIComponent(String(message.image.id))}`;
         }
       }
       try { businessMetrics.trackWhatsAppMessage('received', normalizedType || 'text'); } catch {}
-
-      // Precompute live-mode status to avoid sending any bot messages when human is explicitly active
       let humanActive = false;
-      let humanLive = false; // true only when an agent explicitly toggled live mode (is_human)
-      try {
-        // Read both legacy (SQLite) and current (Mongo) sources and consider human live if either indicates active
+      let humanLive = false;      try {
         let hsSql = null;
         let hsMongo = null;
         try {
@@ -2241,19 +2040,14 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         } catch {}
 
         const now = Math.floor(Date.now()/1000);
-        const seenWindow = Number(process.env.LIVE_SEEN_WINDOW_SEC || 180); // 3 min default
-        const sqlLive = !!(hsSql?.is_human && (!hsSql.exp || hsSql.exp > now));
+        const seenWindow = Number(process.env.LIVE_SEEN_WINDOW_SEC || 180);        const sqlLive = !!(hsSql?.is_human && (!hsSql.exp || hsSql.exp > now));
         const mongoLive = !!(hsMongo?.is_human && (!hsMongo.exp || hsMongo.exp > now));
         const lastSeenTs = Math.max(Number(hsSql?.lastSeen || 0), Number(hsMongo?.lastSeen || 0));
 
-        humanLive = mongoLive || sqlLive; // prefer live if either source says so
-        // Only suppress bot when an agent explicitly enabled live mode.
-        // Viewing the chat recently should not block AI replies after resolution.
-        humanActive = humanLive;
+        humanLive = mongoLive || sqlLive;        humanActive = humanLive;
       } catch {}
 
       const inboundId = message.id;
-      // Replay protection: dedupe message.id per-tenant for short TTL
       try {
         if (inboundId && tenantUserId && isRedisConnected()) {
           const redis = getRedisClient();
@@ -2261,7 +2055,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           const ttl = Number(process.env.WEBHOOK_NONCE_TTL || 600);
           const result = await redis.set(nonceKey, '1', 'EX', ttl, 'NX');
           if (result !== 'OK') {
-            // Duplicate delivery; acknowledge without reprocessing
             return res.sendStatus(200);
           }
         }
@@ -2274,8 +2067,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           console.warn('[Webhook] Failed to record inbound message, continuing to process reply anyway:', e?.message || e);
         }
       }
-
-      // Opt-out and temporary block checks per contact
       try {
         if (tenantUserId && from) {
           const cust = await Customer.findOne({ user_id: tenantUserId, contact_id: from }).lean();
@@ -2284,10 +2075,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           if (cust?.blocked_until_ts && cust.blocked_until_ts > now) return res.sendStatus(200);
         }
       } catch {}
-
-      // Proceed with bot logic even if message was seen before; prevents missed replies when duplicate detection is inconclusive
-
-      // CSAT rating capture: if awaiting rating for this contact, capture first emoji/keyword and store
       let awaitingRating = false;
       try {
         const dbNative = getDB();
@@ -2330,19 +2117,12 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           }
         }
       } catch {}
-
-      // If a human agent is active for this contact, stay completely silent.
-      // Once live mode is enabled, all further messages should go only between
-      // the customer and the human agent, without additional bot messages.
       if (humanActive) {
         return res.sendStatus(200);
       }
-
-      // Enforce plan usage limits: when exceeded, the bot must stay silent
       try {
         const overLimit = await isUsageExceeded(tenantUserId);
         if (overLimit) {
-          // Do not send any replies when over the monthly limit
           return res.sendStatus(200);
         }
       } catch {}
@@ -2351,12 +2131,9 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         const handledEscalation = await handleSimpleEscalationFlow({ tenantUserId, from, text, cfg });
         if (handledEscalation) return res.sendStatus(200);
       }
-
-      // Handle interactive replies (buttons/lists) BEFORE filtering to text
       if (message?.type === "interactive") {
         try { incrementCounter('whatsapp_interactive_received', 1, { kind: String(message?.interactive?.type||'unknown') }); } catch {}
         const data = message.interactive;
-        // Record the interactive inbound for visibility in the thread
         try {
           const inboundId = message.id;
           let displayText = '';
@@ -2404,13 +2181,9 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         }
         return res.sendStatus(200);
       }
-
-      // Combine recent short fragments to improve intent detection
       try {
         text = await maybeJoinRecentFragments({ text, from, tenantUserId, timestampSec: Number(message.timestamp || Math.floor(Date.now()/1000)) });
       } catch {}
-
-      // Before greetings/AI: suppress non-substantive spam bursts (no replies)
       if (!humanActive) {
         try {
           if (maybeSuppressNonSubstantiveSpam(tenantUserId, from, text)) {
@@ -2418,25 +2191,18 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           }
         } catch {}
       }
-
-      // Show greeting + KB menu on pure greetings regardless of conversation mode
       if (!humanActive) {
         const greeted = await maybeHandleGreeting({ text, tenantUserId, from, cfg, planHint: tenantPlan });
         if (greeted) return res.sendStatus(200);
       }
-
-      // In full AI mode, let the model respond to acknowledgements and small talk; keep reaction only in escalation mode
       if (!humanActive && cfg?.conversation_mode === 'escalation' && isAcknowledgement(text)) {
         try { incrementCounter('acknowledgement_detected', 1, { userId: String(tenantUserId||'') }); } catch {}
         try { await sendWhatsappReaction(from, inboundId, "👍", cfg); } catch {}
         return res.sendStatus(200);
       }
-
-      // Dev/test: manual reminder preview
       if (/\btest\s+reminder\b/i.test(text || "")) {
         let appt = await findUpcomingConfirmedAppointment({ userId: tenantUserId, digits: fromDigits });
         if (!appt) {
-          // Create a lightweight test appointment 60 minutes from now if none exists
           const staff = db.prepare(`SELECT id, slot_minutes FROM staff WHERE user_id = ? ORDER BY id LIMIT 1`).get(tenantUserId);
           if (staff?.id) {
             const startISO = new Date(Date.now() + 60*60000).toISOString();
@@ -2461,8 +2227,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         ], cfg);
         return res.sendStatus(200);
       }
-
-      // Appointment lookup intent ("When is my booking?")
       const bookingLookup = /(when|what\s*time|time|date|when\s*is)\b[\s\S]*\b(booking|appointment|reservation)s?/i.test(text || "");
       if (cfg?.bookings_enabled && bookingLookup) {
         const digits = fromDigits;
@@ -2505,8 +2269,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         }
         return res.sendStatus(200);
       }
-
-      // "Who was my previous agent?" → look up last appointment's staff
       const prevAgentLookup = /\b(previous|last)\s+(agent|staff|person|rep|representative)\b/i.test(text || "");
       if (cfg?.bookings_enabled && prevAgentLookup) {
         try {
@@ -2533,17 +2295,13 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         }
         return res.sendStatus(200);
       }
-
-      // If awaiting booking date/time, parse the user's free-text and move to Q&A (no pickers)
       if (tenantUserId && message.type === 'text') {
         try {
           const dbNative = getDB();
           const sessAwait = await dbNative.collection('booking_sessions').findOne({ user_id: String(tenantUserId), contact_id: String(from), step: { $in: ['awaiting_datetime','awaiting_reschedule_dt','awaiting_cancel_confirm'] } });
           if (sessAwait) {
-            // If user asks for availability while we're awaiting a date/time, show availability by range
             const wantsAvailWhileAwaiting = /\b(available|availability|free\s*slots?|open\s*times?|show\s+(me\s+)?(times|slots)|what\s+times\b)/i.test(text || "");
             if (sessAwait.step === 'awaiting_datetime') {
-              // First, try to parse a specific date+time directly
               const staff = await getFirstStaffOrNotifyNoStaff(tenantUserId, from, cfg);
               if (!staff) return res.sendStatus(200);
               const parsedReqDirect = parseRequestedDateTime(text);
@@ -2566,7 +2324,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
                 if (match) {
                   try {
                     const notesParts = [];
-                    // Name captured later in Q&A
                     const r = await createBooking({ userId: tenantUserId, staffId: String(staff._id), startISO: match.start, endISO: match.end, contactPhone: from, notes: '' });
                     let questions = [];
                     try { questions = JSON.parse((tenant || {}).booking_questions_json || '[]'); } catch {}
@@ -2591,7 +2348,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
               const range = parseDateRange(text);
               const tod = parseTimeOfDayFilter(text);
               if (!range && !wantsAvailWhileAwaiting) {
-                // No explicit range and no availability keyword: continue below to parse exact datetime
               } else {
                 if (!range) {
                   const msg = await generateAssistantNudge('ask_range', {}, { tone: tenant?.ai_tone, style: tenant?.ai_style });
@@ -2607,7 +2363,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
               return res.sendStatus(200);
               }
             }
-            // Cancel flow confirmation
             if (sessAwait.step === 'awaiting_cancel_confirm' && sessAwait.appt_id) {
               const ok = /\b(yes|confirm|y|cancel)\b/i.test(String(text||''));
               if (!ok) {
@@ -2629,8 +2384,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
               try { await dbNative.collection('booking_sessions').deleteOne({ _id: sessAwait._id }); } catch {}
               return res.sendStatus(200);
             }
-
-            // Reschedule and initial booking datetime parsing
             const parsedReq = parseRequestedDateTime(text);
             if (!parsedReq) { const n = await generateAssistantNudge('ask_datetime', { examples: ["Nov 3 at 3pm", "tomorrow 14:30"] }, { tone: tenant?.ai_tone, style: tenant?.ai_style }); await sendTextTracked(from, n, cfg); return res.sendStatus(200); }
             const staff = await getFirstStaffOrNotifyNoStaff(tenantUserId, from, cfg);
@@ -2639,7 +2392,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
             const start = buildUtcFromLocalTz(parsedReq.dateISO, parsedReq.hour, parsedReq.minute || 0, staff.timezone || 'UTC');
             const durationMin = Number((sessAwait?.service_minutes)||0) > 0 ? Number(sessAwait.service_minutes) : Number(staff.slot_minutes||30);
             const end = new Date(start.getTime() + (durationMin * 60000));
-            // Guard: prevent past bookings (small lead time allowed)
             const minLeadMs = Math.max(1, Number(process.env.BOOKING_MIN_LEAD_MINUTES || 5)) * 60000;
             if (start.getTime() < Date.now() + minLeadMs) {
               try {
@@ -2652,7 +2404,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
             const avail = await listAvailability({ userId: tenantUserId, staffId: String(staff._id), dateISO: base.toISOString(), days: 1, slotMinutes: durationMin });
             const nowCutoff = Date.now() + minLeadMs;
             const slots = (Array.isArray(avail) ? (avail[0]?.slots || []) : []).filter(s => new Date(s.start).getTime() >= nowCutoff);
-            // Find exact/near match (allow small drift and round to nearest slot). If not found, propose nearest options.
             const toleranceMs = Math.max(120000, Math.floor(durationMin * 60000 / 2));
             const scored = slots.map(s => ({ slot: s, diff: Math.abs(new Date(s.start).getTime() - start.getTime()) }));
             scored.sort((a,b) => a.diff - b.diff);
@@ -2666,7 +2417,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
             }
 
             if (sessAwait.step === 'awaiting_reschedule_dt' && sessAwait.appt_id) {
-              // Reschedule appointment
               try {
                 const minLead = Number(cfg.reschedule_min_lead_minutes || 60);
                 const row = await dbNative.collection('appointments').findOne({ id: Number(sessAwait.appt_id), user_id: String(tenantUserId) }, { projection: { start_ts: 1 } });
@@ -2678,8 +2428,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
               try { await dbNative.collection('booking_sessions').deleteOne({ _id: sessAwait._id }); } catch {}
               return res.sendStatus(200);
             }
-
-            // New booking path
             let questions = [];
             try { questions = JSON.parse((tenant || {}).booking_questions_json || '[]'); } catch {}
             if (!Array.isArray(questions) || !questions.length) questions = ["What's your name?", "What's the reason for the booking?"];
@@ -2699,8 +2447,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           }
         } catch {}
       }
-
-      // If in booking session: collect answers based on configured questions
       const sess = tenantUserId ? await (async () => {
         try {
           const dbNative = getDB();
@@ -2708,11 +2454,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         } catch { return null; }
       })() : null;
       if (tenantUserId && sess && message.type === 'text') {
-        // Only collect Q&A answers after a time has been selected and session is pending
         if (String(sess.step || '') !== 'pending') {
-          // Not in Q&A phase yet → skip answer collection
-          // awaiting_datetime/awaiting_reschedule_dt/awaiting_cancel_confirm handled above
-          // fall through to rest of pipeline
         } else {
         const settings = tenant || {};
         let questions = [];
@@ -2722,7 +2464,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         let answers = [];
         try { answers = JSON.parse(sess.answers_json || '[]'); } catch { answers = []; }
         const idx = Number(sess.question_index || 0);
-        // If user says "continue", resend the current question without recording as an answer
         const wantsContinue = /\b(continue|resume|carry\s*on|pick\s*up|where\s+we\s+left\s+off)\b/i.test(content);
         if (wantsContinue) {
           await sendTextTracked(from, String(questions[idx] || questions[0] || "Let's continue.").slice(0,200), cfg);
@@ -2741,7 +2482,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           await sendTextTracked(from, String(questions[nextIdx]).slice(0,200), cfg);
           return res.sendStatus(200);
         }
-        // All answered: create booking; notes join Q/A
         const pairs = questions.map((q, i) => `${q}: ${answers[i] || ''}`.trim());
         const notes = pairs.join(' | ').slice(0, 800);
         try {
@@ -2749,12 +2489,9 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           const title = tenant?.business_name ? `Appointment with ${tenant.business_name}` : 'Appointment';
           const icsUrl = `${req.protocol}://${req.get('host')}/ics?title=${encodeURIComponent(title)}&start=${encodeURIComponent(sess.start_iso)}&end=${encodeURIComponent(sess.end_iso)}&desc=${encodeURIComponent('Ref #' + r.id)}`;
           { const n = await generateAssistantNudge('confirm_booking', { when: new Date(sess.start_iso).toLocaleString() }, { tone: tenant?.ai_tone, style: tenant?.ai_style }); await sendTextTracked(from, `${n || 'Great — I can book that.'} Ref #${r.id}\n\nAdd to your calendar: ${icsUrl}`.trim(), cfg); }
-          
-          // Send email notification to account owner
           try {
           const staff = await (async () => { try { return await getDB().collection('staff').findOne({ _id: sess.staff_id }, { projection: { name: 1 } }); } catch { return null; } })();
-          const customerName = answers[0] || from; // First answer is usually the name
-            await sendBookingNotification(tenantUserId, {
+          const customerName = answers[0] || from;            await sendBookingNotification(tenantUserId, {
               customerName,
               customerPhone: from,
               startTime: sess.start_iso,
@@ -2766,8 +2503,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           } catch (e) {
             console.error('[Webhook] Failed to send booking email:', e.message);
           }
-          
-          // Create web notification
           try {
             const customerName = answers[0] || from;
             const formattedTime = new Date(sess.start_iso).toLocaleString();
@@ -2788,8 +2523,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           } catch (e) {
             console.error('[Webhook] Failed to create booking notification:', e.message);
           }
-
-          // Persist memory: name, service, agent, appointment time, last answers
           try { if (answers[0]) await rememberName(tenantUserId, from, answers[0]); } catch {}
           try {
             if (sess.service_minutes || sess.service_name) {
@@ -2815,8 +2548,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         return res.sendStatus(200);
         }
       }
-
-      // Availability / Reschedule / Cancel intents (gated by settings)
       const wantsAvailability = /\b(available|availability|free\s*slots?|open\s*times?|show\s+(me\s+)?(times|slots)|what\s+times\s+do\s+you\s+have)\b/i.test(text || "");
       const wantsReschedule = /\b(reschedule|change\s+(time|booking|appointment))\b/i.test(text || "");
       const wantsCancel = /\b(cancel|cancelation|cancellation)\b/i.test(text || "");
@@ -2842,8 +2573,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         await sendTextTracked(from, n, cfg);
         return res.sendStatus(200);
       }
-
-      // Waitlist opt-in: "waitlist", "notify earlier", "earlier slot"
       const wantsWaitlist = /\b(waitlist|notify\s+(me\s+)?(if\s+)?(earlier|sooner)|earlier\s+slot|sooner\s+(time|slot))\b/i.test(text || "");
       if (cfg?.bookings_enabled && cfg?.waitlist_enabled && wantsWaitlist) {
         try {
@@ -2901,19 +2630,14 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           return res.sendStatus(200);
         }
       }
-
-      // Booking intent (gated by settings flag) with full-sentence parsing for date/time + name
       const wantsBooking = /\b(book|booking|appointment|schedule)\b/i.test(text || "");
       if (cfg?.bookings_enabled && wantsBooking) {
-        // Pick first staff for tenant
         const staff = await getFirstStaffOrNotifyNoStaff(tenantUserId, from, cfg);
         if (!staff) return res.sendStatus(200);
 
         const parsed = parseRequestedDateTime(text);
-        // If services are configured and no service chosen in session, prompt for service first
         try {
           const services = getServicesFromSettings(cfg);
-          // Shortcut: "same service as last time"
           const wantsSameService = /\b(same\s+(service|as\s+last\s+time)|what\s+i\s+had\s+last\s+time|repeat\s+last\s+service)\b/i.test(text || "");
           if (services.length && wantsSameService) {
             try {
@@ -2949,10 +2673,8 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         } catch {}
         const providedName = parseNameFromMessage(text);
         if (parsed) {
-          // Build requested slot in staff timezone (approximate using provided hour/minute)
           const base = new Date(`${parsed.dateISO}T00:00:00.000Z`);
           const start = buildUtcFromLocalTz(parsed.dateISO, parsed.hour, parsed.minute || 0, staff.timezone || 'UTC');
-          // Use service-specific duration if chosen in session
           let durationMin = Number(staff.slot_minutes||30);
           try {
             const dbNative = getDB();
@@ -2960,32 +2682,27 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
             if (sessSvc?.service_minutes) durationMin = Number(sessSvc.service_minutes);
           } catch {}
           const end = new Date(start.getTime() + (durationMin * 60000));
-          // Guard: prevent past bookings (small lead time allowed)
           const minLeadMs = Math.max(1, Number(process.env.BOOKING_MIN_LEAD_MINUTES || 5)) * 60000;
           if (start.getTime() < Date.now() + minLeadMs) {
             const n = await generateAssistantNudge('past_time_warning', { examples: ["today 4pm", "tomorrow 14:30"] }, { tone: tenant?.ai_tone, style: tenant?.ai_style });
             await sendTextTracked(from, n, cfg);
             return res.sendStatus(200);
           }
-          // Check availability for that date
           if (process.env.DEBUG_BOOKINGS === '1') console.log('[bot-book] parsed request', { from, parsed, staff_tz: staff.timezone, match_window: { start: start.toISOString(), end: end.toISOString() } });
           const avail = await listAvailability({ userId: tenantUserId, staffId: String(staff._id), dateISO: base.toISOString(), days: 1, slotMinutes: durationMin });
           const nowCutoff = Date.now() + minLeadMs;
           const slots = (Array.isArray(avail) ? (avail[0]?.slots || []) : []).filter(s => new Date(s.start).getTime() >= nowCutoff);
-          // Allow small drift; pick nearest slot if within tolerance, else propose suggestions later
           const toleranceMs = Math.max(120000, Math.floor(durationMin * 60000 / 2));
           const scored = slots.map(s => ({ slot: s, diff: Math.abs(new Date(s.start).getTime() - start.getTime()) }));
           scored.sort((a,b) => a.diff - b.diff);
           const match = scored.find(x => x.diff <= toleranceMs)?.slot || null;
           if (process.env.DEBUG_BOOKINGS === '1') console.log('[bot-book] slots', { count: slots.length, first5: slots.slice(0,5), matched: !!match });
           if (match) {
-            // Create booking immediately and start Q&A from next question after name if present
             try {
               const notesParts = [];
               if (providedName) notesParts.push(`Name: ${providedName}`);
               const notes = notesParts.join(' ');
               const r = await createBooking({ userId: tenantUserId, staffId: String(staff._id), startISO: match.start, endISO: match.end, contactPhone: from, notes });
-              // Start dynamic questions if configured, skipping name if already provided
               let questions = [];
               try { questions = JSON.parse((tenant || {}).booking_questions_json || '[]'); } catch {}
               if (!Array.isArray(questions) || !questions.length) {
@@ -2993,7 +2710,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
               }
               let startIndex = 0;
               if (providedName) {
-                // Auto-fill name answer and move to next question
               try {
                 const dbNative = getDB();
                 await dbNative.collection('booking_sessions').updateOne(
@@ -3019,15 +2735,12 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
               if (q) {
                 await sendTextTracked(from, String(q).slice(0,200), cfg);
               } else {
-                // No questions → finalize
               { const nn = await generateAssistantNudge('confirm_booking', { when }, { tone: tenant?.ai_tone, style: tenant?.ai_style }); await sendTextTracked(from, `${nn || 'Great — I can book that.'} Ref #${r.id}`, cfg); }
               }
               return res.sendStatus(200);
             } catch {
-              // Fall through to time picker if booking creation fails
             }
           }
-          // If date exists but no near time available → suggest closest a few options
           const suggestions = scored.slice(0, 3).map(x => new Date(x.slot.start).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }));
           if (suggestions.length) {
             const n = await generateAssistantNudge('closest_times', { suggestions }, { tone: tenant?.ai_tone, style: tenant?.ai_style });
@@ -3038,8 +2751,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           await sendTextTracked(from, n2 || "That time isn't available.", cfg);
           return res.sendStatus(200);
         }
-
-        // If a single date is present (no time), show a full time selector for that day
         const onlyDate = parseDateOnly(text);
         if (onlyDate) {
           const dateISO = `${onlyDate}T00:00:00.000Z`;
@@ -3057,7 +2768,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
             return res.sendStatus(200);
           }
         }
-        // Otherwise ask for a combined date+time
         try {
           const dbNative = getDB();
           await dbNative.collection('booking_sessions').updateOne(
@@ -3072,10 +2782,6 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         }
         return res.sendStatus(200);
       }
-
-      // (moved: early return above ensures no bot replies when handoff is enabled)
-
-      // Build short conversation history for better context
       let historyMessages = [];
       try {
         const hist = await listMessagesForThread(tenantUserId, from);
@@ -3098,10 +2804,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         cachedCustomerProfile = db.prepare(`SELECT display_name FROM customers WHERE user_id = ? AND contact_id = ?`).get(tenantUserId, from) || {};
         knownCustomerName = String(cachedCustomerProfile.display_name || '').trim();
       } catch {}
-
-      // Check for escalation requests BEFORE generating AI response
       if (wantsHuman(text)) {
-        // In full AI mode, if the user requests a human, respect out-of-hours rules here
         try {
           if (await handleOutOfHoursGuard(tenantUserId, from, cfg)) {
             return res.sendStatus(200);
@@ -3126,18 +2829,13 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           return res.sendStatus(200);
         }
       }
-
-      // Check for commerce intents before AI processing
       const { detectCommerceIntent, generateCommerceAiReply } = await import('../services/ai.mjs');
       const hasCommerceIntent = detectCommerceIntent(text);
 
       if (hasCommerceIntent && !humanActive) {
         try {
-          // Get KB matches for context
           const kbMatchesCommerce = await cachedRetrieveKbMatches(text, 8, tenantUserId, '', from);
           const profileSnippet = await buildCustomerProfileSnippet(tenantUserId, from);
-
-          // Generate commerce-aware AI response
           const commerceReply = await generateCommerceAiReply(text, kbMatchesCommerce, {
             ...aiOptions,
             userId: tenantUserId,
@@ -3156,12 +2854,8 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           }
         } catch (commerceError) {
           console.error('Commerce AI processing failed:', commerceError);
-          // Fall through to regular AI processing
         }
       }
-
-      // AI-first decision mode: let the model craft replies and propose one optional intent to execute
-      // Allow AI decision planner in all modes (including simple escalation).
       const preferFullAI = true;
       if (!humanActive && preferFullAI) {
         console.log('[AI-path] enter', { from: String(from).slice(-6), tenantUserId: String(tenantUserId || ''), textLen: (text || '').length, mode: cfg?.conversation_mode || '' });
@@ -3215,11 +2909,9 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           const intentType = String(decision?.intent?.type || 'none').toLowerCase();
           const intentData = decision?.intent?.data || {};
           if (intentType && intentType !== 'none') {
-            // In Simple Escalation Mode, ignore any operational intents except handoff.
             if (cfg?.conversation_mode === 'escalation' && intentType !== 'handoff') {
               return res.sendStatus(200);
             }
-            // Execute lightweight intents if we have enough info
             if (intentType === 'availability' && cfg?.bookings_enabled) {
               try {
                 const staff = await getFirstStaffOrNotifyNoStaff(tenantUserId, from, cfg);
@@ -3372,14 +3064,11 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           return res.sendStatus(200);
         }
       }
-
-      // Retrieve candidate KB matches (expand to 8 for broader context)
       const kbMatches = await cachedRetrieveKbMatches(text, 8, tenantUserId, '', from);
       if (DEBUG_LOGS) console.log("KB Matches:", Array.isArray(kbMatches) ? kbMatches : []);
       
       const hasMatch = Array.isArray(kbMatches) && kbMatches.length > 0;
       const topScore = hasMatch ? (kbMatches[0].score || 0) : 0;
-      // PRIORITIZE: if top KB hit has a PDF attached, send it instead of AI text
       if (!humanActive && hasMatch) {
         try {
           const kbTop = kbMatches[0];
@@ -3391,20 +3080,17 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           }
         } catch {}
       }
-      // Let AI decide using the KB. If it cannot answer from KB (or no KB), it must return the exact OUT OF SCOPE phrase.
       if (!humanActive) {
         const aiStart = Date.now();
         const aiReply = await generateAiReply(text, kbMatches, aiOptions);
         try { businessMetrics.trackAIRequest(true, Date.now() - aiStart); } catch {}
         const normalized = String(aiReply || '').trim();
         if (normalized && normalized.toLowerCase().startsWith(OUT_OF_SCOPE_PHRASE.toLowerCase())) {
-          // Before initiating escalation in full AI mode, apply OOH guard
           try {
             if (await handleOutOfHoursGuard(tenantUserId, from, cfg)) {
               return res.sendStatus(200);
             }
           } catch {}
-          // Out of scope → begin human escalation flow (collect name → reason)
           const customer = db.prepare(`SELECT display_name FROM customers WHERE user_id = ? AND contact_id = ?`).get(tenantUserId, from) || {};
           const hasName = !!customer.display_name;
           try {

@@ -287,8 +287,6 @@ export async function createInboxPaymentRequest({ userId, contactId, amount, cur
     success_url: `${PUBLIC_BASE_URL}/payments/thank-you?status=success`,
     cancel_url: `${PUBLIC_BASE_URL}/payments/thank-you?status=cancelled`
   });
-
-  // Normalize existing docs: remove null payment_intent_id so unique sparse index works as intended
   try {
     await PaymentRequest.updateMany(
       { payment_intent_id: null },
@@ -400,5 +398,4 @@ export async function handlePaymentIntentEvent(intent, eventType) {
   await PaymentRequest.findByIdAndUpdate(requestId, { $set: update });
   return true;
 }
-
 

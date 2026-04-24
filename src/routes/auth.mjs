@@ -5,13 +5,9 @@ import { getVercelWebAnalyticsSnippet } from "../utils.mjs";
 
 export default function registerAuthRoutes(app) {
   const CLERK_JS_VERSION = (process.env.CLERK_JS_VERSION || '5').toString().trim() || '5';
-
-  // Redirect main auth route to signin
   app.get("/auth", (_req, res) => {
     res.redirect("/auth/signin");
   });
-
-  // Custom signup page with Clerk integration
   app.get("/auth/signup", (_req, res) => {
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.end(`
@@ -140,8 +136,6 @@ export default function registerAuthRoutes(app) {
       </html>
     `);
   });
-
-  // Custom signin page with Clerk integration
   app.get("/auth/signin", (_req, res) => {
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.end(`
@@ -274,20 +268,16 @@ export default function registerAuthRoutes(app) {
     `);
   });
 
-
   app.get("/auth/status", (req, res) => {
     try {
       const auth = getAuth(req) || {};
       const { userId, sessionId } = auth;
       res.setHeader("Cache-Control", "no-store");
-      
-      // Return detailed auth status including session info
       return res.json({ 
         signedIn: !!userId,
         userId: userId || null,
         sessionId: sessionId || null,
-        needsRefresh: false // We'll determine this based on session age
-      });
+        needsRefresh: false      });
     } catch (error) {
       console.error('Auth status check failed:', error);
       return res.json({ 
@@ -299,8 +289,6 @@ export default function registerAuthRoutes(app) {
       });
     }
   });
-
-  // Issue a signed token for WebSocket auth (ttl configurable via WS_TOKEN_TTL_SECONDS)
   app.get("/auth/ws-token", (req, res) => {
     try {
       const { userId } = getAuth(req) || {};
@@ -314,8 +302,6 @@ export default function registerAuthRoutes(app) {
       return res.status(500).json({ error: "Failed to issue token" });
     }
   });
-
-  // New endpoint to refresh session
   app.post("/auth/refresh", async (req, res) => {
     try {
       const auth = getAuth(req) || {};
@@ -328,10 +314,6 @@ export default function registerAuthRoutes(app) {
           redirectTo: '/auth'
         });
       }
-      
-      // Clerk session refresh should be handled client-side by Clerk JS.
-      // On the server we simply confirm whether the current request is authed.
-      // (Avoids extra Clerk API calls and prevents "flapping" from forcing logouts.)
       return res.json({ 
         success: true, 
         message: 'Session is active',
@@ -355,7 +337,6 @@ export default function registerAuthRoutes(app) {
       const { sessionId } = getAuth(req) || {};
       if (sessionId) await clerkClient.sessions.revokeSession(sessionId);
     } catch {}
-    // Clear any clerk session cookies
     res.setHeader("Clear-Site-Data", '"cache", "cookies", "storage"');
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
     return res.redirect("/auth/signin");

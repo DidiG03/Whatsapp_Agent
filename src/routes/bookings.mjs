@@ -11,16 +11,12 @@ export default function registerBookingsTab(app) {
     const email = await getSignedInEmail(req);
     const s = await getSettingsForUser(userId);
     const { isUpgraded } = await getPlanStatus(userId);
-    // If bookings are disabled, render a lightweight page with a helpful prompt instead of redirecting.
     const bookingsEnabled = !!s?.bookings_enabled;
     const db = getDB();
-    // Calendar connection status
     let cal = null;
     try {
       cal = await db.collection('calendars').findOne({ user_id: String(userId) });
     } catch {}
-
-    // Pull appointments for calendar (past 30d to next 90d)
     const nowSec = Math.floor(Date.now()/1000);
     const fromSec = nowSec - 30*86400;
     const toSec = nowSec + 90*86400;
@@ -36,7 +32,6 @@ export default function registerBookingsTab(app) {
           { $sort: { start_ts: 1 } }
         ]).toArray();
     } catch {}
-    // Overlay Google Calendar events if connected
     try {
       if (cal) {
         const timeMin = new Date(fromSec*1000).toISOString();
@@ -45,10 +40,8 @@ export default function registerBookingsTab(app) {
         const gcalIds = new Set((appts||[]).map(a => String(a.gcal_event_id||'')).filter(Boolean));
         const mapped = [];
         for (const ev of (gitems||[])) {
-          // Skip cancelled or duplicates of our own created bookings
           if (String(ev.status||'confirmed') === 'cancelled') continue;
           if (ev.id && gcalIds.has(String(ev.id))) continue;
-          // Determine start/end (dateTime or all-day date)
           const sISO = ev.start?.dateTime || (ev.start?.date ? (ev.start.date + 'T00:00:00.000Z') : null);
           const eISO = ev.end?.dateTime || (ev.end?.date ? (ev.end.date + 'T00:00:00.000Z') : null);
           if (!sISO || !eISO) continue;
@@ -71,8 +64,6 @@ export default function registerBookingsTab(app) {
       }
     } catch {}
     const apptJson = JSON.stringify(appts || []);
-
-    // Settings values with defaults
     const bookingMaxPerDay = Number(s?.booking_max_per_day || 0);
     const bookingDaysAhead = Number(s?.booking_days_ahead || 60);
     const displayInterval = Number(s?.booking_display_interval_minutes || 30);
@@ -83,8 +74,6 @@ export default function registerBookingsTab(app) {
     const bookingQuestionsJson = String(s?.booking_questions_json || '[]');
     const servicesJson = String(s?.services_json || '[]');
     const waitlistEnabled = !!s?.waitlist_enabled;
-
-    // Security headers and no-cache
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
     res.setHeader("Pragma", "no-cache");
@@ -255,17 +244,14 @@ export default function registerBookingsTab(app) {
     const qjsonRaw = (req.body?.booking_questions_json || '').toString();
     const servicesRaw = (req.body?.services_json || '').toString();
     const waitlistEnabled = String(req.body?.waitlist_enabled || '') === '1';
-    // Normalize booking questions: ensure array of strings and prepend Name if absent
     let qjsonSave = '';
     try {
       const arr = JSON.parse(qjsonRaw || '[]');
       let qs = Array.isArray(arr) ? arr.map(x => String(x||'').trim()).filter(x => !!x) : [];
       const hasName = qs.some(q => /name/i.test(q));
       if (!hasName) qs = ["What's your name?", ...qs];
-      // Limit to 10 questions to keep flow reasonable
       qjsonSave = JSON.stringify(qs.slice(0, 10));
     } catch { qjsonSave = JSON.stringify(["What's your name?","What's the reason for the booking?"]); }
-    // Normalize services: ensure array of {name, minutes, price?}
     let servicesSave = '[]';
     try {
       const arr = JSON.parse(servicesRaw || '[]');
@@ -293,5 +279,4 @@ export default function registerBookingsTab(app) {
     return res.redirect('/bookings');
   });
 }
-
 

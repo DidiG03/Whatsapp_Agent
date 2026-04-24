@@ -1,6 +1,4 @@
-/**
- * Simple test handler for Vercel deployment debugging
- */
+
 export default function handler(req, res) {
   try {
     console.log('Test handler called:', req.method, req.url);

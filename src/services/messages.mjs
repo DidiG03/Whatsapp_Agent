@@ -1,11 +1,6 @@
 import { db, getDB } from "../db-mongodb.mjs";
 import { normalizePhone } from "../utils.mjs";
 import { Customer } from "../schemas/mongodb.mjs";
-
-/**
- * Record an outbound message in the messages table (idempotent).
- * Mirrors existing inserts used across webhook routes.
- */
 export async function recordOutboundMessage({
   messageId,
   userId,
@@ -17,7 +12,6 @@ export async function recordOutboundMessage({
 }) {
   if (!messageId || !userId || !to) return false;
   try {
-    // Opt-out and temporary block check
     try {
       const customer = await Customer.findOne({ user_id: String(userId), contact_id: String(to) }).lean();
       const now = Math.floor(Date.now()/1000);
@@ -50,8 +44,6 @@ export async function recordOutboundMessage({
     return false;
   }
 }
-
-// Record an inbound message idempotently; returns true if newly inserted
 export async function recordInboundMessage({
   messageId,
   userId,
@@ -92,5 +84,4 @@ export async function recordInboundMessage({
     return false;
   }
 }
-
 

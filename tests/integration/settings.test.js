@@ -1,6 +1,4 @@
 import request from 'supertest';
-
-// Disable Clerk in tests
 process.env.CLERK_PUBLISHABLE = '';
 process.env.CLERK_SECRET_KEY = '';
 
@@ -10,8 +8,6 @@ jest.mock('../../src/services/settings.mjs', () => ({
 }));
 
 import { createApp } from '../../src/app.mjs';
-
-// Stub middleware to bypass Clerk for tests (if needed)
 jest.unmock('@clerk/express');
 
 describe('Settings Routes (integration)', () => {
@@ -25,7 +21,6 @@ describe('Settings Routes (integration)', () => {
 
   test('GET /settings requires auth (responds 200 with mocked auth)', async () => {
     const res = await request(app).get('/settings');
-    // With mocked Clerk, should render settings page
     expect([200, 302, 303]).toContain(res.status);
   });
 

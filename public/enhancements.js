@@ -1,12 +1,7 @@
-/**
- * Professional Enhancement Script for WhatsApp Agent
- * Adds smooth interactions, animations, and enterprise-grade UX improvements
- */
+
 
 (function() {
   'use strict';
-
-  // Professional Loading States
   class LoadingManager {
     constructor() {
       this.loadingElements = new Set();
@@ -19,7 +14,6 @@
     }
 
     setupPageTransition() {
-      // Add page transition effect
       document.addEventListener('DOMContentLoaded', () => {
         document.body.style.opacity = '0';
         document.body.style.transition = 'opacity 0.3s ease-in-out';
@@ -31,12 +25,10 @@
     }
 
     setupLoadingStates() {
-      // Add loading states to buttons and forms
       const buttons = document.querySelectorAll('button');
       buttons.forEach(button => {
         if (!button.hasAttribute('data-loading')) {
           button.addEventListener('click', (e) => {
-            // Only show loading state when explicitly opted-in
             if (button.hasAttribute('data-loading') || button.classList.contains('submit-btn')) {
               this.showLoading(button);
             }
@@ -50,8 +42,6 @@
       element.setAttribute('data-loading', 'true');
       element.textContent = 'Loading...';
       element.disabled = true;
-      
-      // Add loading spinner
       const spinner = document.createElement('span');
       spinner.className = 'loading-spinner';
       spinner.innerHTML = '⟳';
@@ -63,8 +53,6 @@
       `;
       
       element.insertBefore(spinner, element.firstChild);
-      
-      // Store original content for restoration
       element.dataset.originalText = originalText;
     }
 
@@ -81,8 +69,6 @@
       }
     }
   }
-
-  // Enhanced Scroll Manager
   class ScrollManager {
     constructor() {
       this.init();
@@ -95,7 +81,6 @@
     }
 
     setupSmoothScroll() {
-      // Enhanced smooth scrolling for all links
       document.addEventListener('click', (e) => {
         const link = e.target.closest('a[href^="#"]');
         if (link) {
@@ -112,7 +97,6 @@
     }
 
     setupScrollToTop() {
-      // Add scroll to top button
       const scrollToTopBtn = document.createElement('button');
       scrollToTopBtn.className = 'scroll-to-top';
       scrollToTopBtn.innerHTML = '↑';
@@ -137,8 +121,6 @@
       `;
 
       document.body.appendChild(scrollToTopBtn);
-
-      // Show/hide scroll to top button
       window.addEventListener('scroll', () => {
         if (window.pageYOffset > 300) {
           scrollToTopBtn.style.opacity = '1';
@@ -148,8 +130,6 @@
           scrollToTopBtn.style.visibility = 'hidden';
         }
       });
-
-      // Scroll to top functionality
       scrollToTopBtn.addEventListener('click', () => {
         window.scrollTo({
           top: 0,
@@ -159,12 +139,9 @@
     }
 
     setupInfiniteScroll() {
-      // Auto-scroll to bottom for chat threads
       const chatThreads = document.querySelectorAll('.chat-thread');
       chatThreads.forEach(thread => {
         this.scrollToBottom(thread);
-        
-        // Watch for new messages
         const observer = new MutationObserver(() => {
           this.scrollToBottom(thread);
         });
@@ -182,8 +159,6 @@
       }
     }
   }
-
-  // Professional Interaction Manager
   class InteractionManager {
     constructor() {
       this.init();
@@ -197,7 +172,6 @@
     }
 
     setupHoverEffects() {
-      // Enhanced hover effects for cards
       const cards = document.querySelectorAll('.card');
       cards.forEach(card => {
         card.addEventListener('mouseenter', () => {
@@ -208,8 +182,6 @@
           card.style.transform = 'translateY(0)';
         });
       });
-
-      // Enhanced hover effects for navigation items
       const navItems = document.querySelectorAll('.sidebar .nav a');
       navItems.forEach(item => {
         item.addEventListener('mouseenter', () => {
@@ -223,7 +195,6 @@
     }
 
     setupClickEffects() {
-      // Add click ripple effect to buttons
       const buttons = document.querySelectorAll('button');
       buttons.forEach(button => {
         button.addEventListener('click', (e) => {
@@ -262,9 +233,7 @@
     }
 
     setupKeyboardNavigation() {
-      // Enhanced keyboard navigation
       document.addEventListener('keydown', (e) => {
-        // Escape key to close modals
         if (e.key === 'Escape') {
           const modals = document.querySelectorAll('.modal, .day-modal');
           modals.forEach(modal => {
@@ -273,8 +242,6 @@
             }
           });
         }
-
-        // Enter key to submit forms
         if (e.key === 'Enter' && e.target.tagName === 'INPUT') {
           const form = e.target.closest('form');
           if (form) {
@@ -288,7 +255,6 @@
     }
 
     setupFormValidation() {
-      // Enhanced form validation with real-time feedback
       const forms = document.querySelectorAll('form');
       forms.forEach(form => {
         const inputs = form.querySelectorAll('input, textarea, select');
@@ -312,14 +278,10 @@
       const type = field.type;
       let isValid = true;
       let errorMessage = '';
-
-      // Required field validation
       if (field.required && !value) {
         isValid = false;
         errorMessage = 'This field is required';
       }
-
-      // Email validation
       if (type === 'email' && value) {
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         if (!emailRegex.test(value)) {
@@ -327,8 +289,6 @@
           errorMessage = 'Please enter a valid email address';
         }
       }
-
-      // URL validation
       if (type === 'url' && value) {
         try {
           new URL(value);
@@ -337,8 +297,6 @@
           errorMessage = 'Please enter a valid URL';
         }
       }
-
-      // Update field appearance
       if (isValid) {
         field.classList.remove('error');
         field.classList.add('valid');
@@ -375,8 +333,6 @@
       }
     }
   }
-
-  // Professional Animation Manager
   class AnimationManager {
     constructor() {
       this.init();
@@ -388,7 +344,6 @@
     }
 
     setupIntersectionObserver() {
-      // Animate elements when they come into view
       const observer = new IntersectionObserver((entries) => {
         entries.forEach(entry => {
           if (entry.isIntersecting) {
@@ -407,7 +362,6 @@
     }
 
     addCSSAnimations() {
-      // Add CSS animations if not already present
       if (!document.getElementById('enhancement-styles')) {
         const style = document.createElement('style');
         style.id = 'enhancement-styles';
@@ -458,8 +412,6 @@
       }
     }
   }
-
-  // Lightweight Parallax Manager for landing sections
   class ParallaxManager {
     constructor() {
       this.items = [];
@@ -471,11 +423,8 @@
       document.addEventListener('DOMContentLoaded', () => {
         this.items = Array.from(document.querySelectorAll('[data-parallax-speed]'));
         if (!this.items.length) return;
-        // Determine the active scroll container (window/document/body fallback)
         this.scroller = document.scrollingElement || document.documentElement || document.body;
-        this.onScroll(); // initial paint
-        // Listen to both window and the scroller element to be safe across browsers/CSS
-        window.addEventListener('scroll', () => this.requestTick(), { passive: true });
+        this.onScroll();        window.addEventListener('scroll', () => this.requestTick(), { passive: true });
         this.scroller.addEventListener && this.scroller.addEventListener('scroll', () => this.requestTick(), { passive: true });
         window.addEventListener('resize', () => this.onScroll(), { passive: true });
       });
@@ -495,7 +444,6 @@
       this.items.forEach(el => {
         const speed = parseFloat(el.getAttribute('data-parallax-speed')) || 0.3;
         const rect = el.getBoundingClientRect();
-        // Convert rect.top (relative to viewport) to a stable offset using current scroll
         const elementCenterY = scrollTop + rect.top + rect.height / 2;
         const viewportCenterY = scrollTop + (viewportH / 2);
         const centerOffset = viewportCenterY - elementCenterY;
@@ -504,15 +452,12 @@
       });
     }
   }
-
-  // Initialize all managers when DOM is ready
   document.addEventListener('DOMContentLoaded', () => {
     new LoadingManager();
     new ScrollManager();
     new InteractionManager();
     new AnimationManager();
     new ParallaxManager();
-    // Global graceful error UX: fetch wrapper + error listeners
     try {
       const originalFetch = window.fetch;
       window.fetch = async function(input, init) {
@@ -542,8 +487,6 @@
       if (window.Toast) Toast.show('A request failed unexpectedly. Please try again.', 'warning', 4000);
     });
   });
-
-  // Export for potential external use
   window.WhatsAppAgentEnhancements = {
     LoadingManager,
     ScrollManager,

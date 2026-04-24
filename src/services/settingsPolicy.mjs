@@ -9,13 +9,11 @@ const PLAN_WEIGHTS = {
 };
 
 const FIELD_POLICIES = {
-  // Bookings and related controls should be available from Starter and up
   bookings_enabled: { minPlan: "starter" },
   reminders_enabled: { minPlan: "starter" },
   reschedule_min_lead_minutes: { minPlan: "starter" },
   cancel_min_lead_minutes: { minPlan: "starter" },
   reminder_windows: { minPlan: "starter" },
-  // Messaging template and SMTP customization remain higher-tier
   wa_template_name: { minPlan: "pro" },
   wa_template_language: { minPlan: "pro" },
   smtp_host: { minPlan: "pro" },

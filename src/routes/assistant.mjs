@@ -222,7 +222,6 @@ export default function registerAssistantRoutes(app) {
     try {
       const titles = (await KBItem.find({ user_id: userId, title: { $ne: null } }).select('title').lean()).map(r => r.title);
       const history = state.transcript || "";
-      // Apply AI preferences from settings
       const prefs = await getSettingsForUser(userId);
       let coach = await onboardingCoachReply(userMsg, titles, history, {
         tone: prefs?.ai_tone,
@@ -232,15 +231,12 @@ export default function registerAssistantRoutes(app) {
       coach = coach || "Got it.";
 
       const directives = parseDirectives(coach);
-      // Preserve askLine and setLines for follow-up logic below
       const lines = coach.split('\n');
       const trimmed = lines.map(l => l.trim());
       const askLine = trimmed.find(l => /^ASK_MORE\|/.test(l));
       const setLines = trimmed.filter(l => /^SET\|/.test(l));
       const { summaries: savedSummaries, visible: appliedVisible } = await applyDirectives(userId, directives);
       let visible = appliedVisible;
-
-      // Heuristics for common statements
       try {
         const lower = userMsg.toLowerCase();
         const extractSentence = (text, kw) => { try { const parts = text.split(/[.!?]/); const hit = parts.find(p => p.toLowerCase().includes(kw)); return (hit || '').trim() ? (hit.trim() + '.') : ''; } catch { return ''; } };
@@ -284,5 +280,4 @@ export default function registerAssistantRoutes(app) {
     return res.redirect("/assistant");
   });
 }
-
 
