@@ -13,7 +13,7 @@ export default function registerAssistantRoutes(app) {
     const userId = token ? verifySessionToken(token) : (req.query?.uid || getCurrentUserId(req));
     if (!userId) {
       res.setHeader("Content-Type", "text/html; charset=utf-8");
-      return res.end(`<html><head><link rel="stylesheet" href="/styles.css">${getVercelWebAnalyticsSnippet()}</head><body><div class="small" style="padding:12px;">Please open the dashboard to sign in.</div></body></html>`);
+      return res.end(`<html><head><link rel="stylesheet" href="/styles.css">${getVercelWebAnalyticsSnippet()}</head><body><div class="small" style="padding:12px;">Please sign in to use the assistant.</div></body></html>`);
     }
     const state = getOnboarding(userId) || setOnboarding(userId, { step: 0, transcript: '' });
     const chat = renderTranscriptAsBubbles(state.transcript);

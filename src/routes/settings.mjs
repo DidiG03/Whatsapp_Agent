@@ -1,12 +1,10 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail, clerkClient } from "../middleware/auth.mjs";
 import { wrapAsync } from "../middleware/errors.mjs";
-import { getOnboarding } from "../services/onboarding.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
-import { getVercelWebAnalyticsSnippet, renderSidebar, renderTopbar } from "../utils.mjs";
+import { getVercelWebAnalyticsSnippet, renderSidebar, renderTopbar, escapeHtml, getProfessionalHead, renderPageHeader } from "../utils.mjs";
 import { wipeUserData } from "../services/userDeletion.mjs";
 import { cancelBillingForUserDeletion } from "../services/stripe.mjs";
 import {
-  Calendar,
   Staff,
   KBItem,
   Message,
@@ -28,6 +26,9 @@ import { getUserPlan, isPlanUpgraded } from "../services/usage.mjs";
 import { validateSettingsPayload } from "../validators/settingsPayload.mjs";
 import { enforceSettingsPolicy } from "../services/settingsPolicy.mjs";
 import { recordSettingsAudit } from "../services/audit.mjs";
+import { autocompleteAddress, getPlaceDetails, autocompleteBusiness, isPlacesConfigured } from "../services/places.mjs";
+import { previewGoogleBusinessImport, applyGoogleBusinessImport } from "../services/googleBusinessImport.mjs";
+import { checkWhatsAppGroupsSupport } from "../services/staffGroupsSupport.mjs";
 
 export default function registerSettingsRoutes(app, options = {}) {
   const protect = options.csrfProtection || ((req, _res, next) => next());
@@ -40,40 +41,46 @@ export default function registerSettingsRoutes(app, options = {}) {
     const isUpgraded = isPlanUpgraded(plan);
     const allowFreeBookings = String(process.env.ALLOW_BOOKINGS_ON_FREE || '').toLowerCase() === 'true';
     const effectiveConversationMode = (isUpgraded || allowFreeBookings) ? (s.conversation_mode || 'full') : 'escalation';
-    const ob = await getOnboarding(userId);
+    const bookingsActive = effectiveConversationMode === 'full';
+    const bookingsLocked = !bookingsActive;
     const email = await getSignedInEmail(req);
     const q = req.query || {};
     const businessCategories = (() => { try { return JSON.parse(s.business_categories_json || '[]'); } catch { return []; } })();
     const businessCategoriesValue = Array.isArray(businessCategories) ? businessCategories.join(', ') : '';
-    const calendars = await Calendar.find({ user_id: userId }).select('_id display_name account_email calendar_id').sort({ _id: 1 }).lean();
-    const staff = await Staff.find({ user_id: userId }).select('_id name timezone slot_minutes calendar_id working_hours_json').sort({ _id: -1 }).limit(50).lean();
+    const bookingMaxPerDay = Number(s?.booking_max_per_day || 0);
+    const bookingDaysAhead = Number(s?.booking_days_ahead || 60);
+    const displayInterval = Number(s?.booking_display_interval_minutes || 30);
+    const capacityWindow = Number(s?.booking_capacity_window_minutes || 60);
+    const capacityLimit = Number(s?.booking_capacity_limit || 0);
+    const waitlistEnabled = !!s?.waitlist_enabled;
+    const servicesJson = String(s?.services_json || '[]');
+    const staff = await Staff.find({ user_id: userId }).select('_id name timezone slot_minutes working_hours_json').sort({ _id: -1 }).limit(50).lean();
     const staffToEdit = (q.edit_staff ? await Staff.findOne({ _id: String(q.edit_staff), user_id: userId }).lean().catch(() => null) : null);
     const quickReplies = await getQuickReplies(userId);
     const quickReplyCategories = await getQuickReplyCategories(userId);
-    const smtpEnvConfigured = !!(process.env.SMTP_USER && process.env.SMTP_PASS);
     const csrfToken = res.locals.csrfToken || '';
     const csrfField = `<input type="hidden" name="_csrf" value="${escapeAttr(csrfToken)}">`;
     const csrfTokenJson = JSON.stringify(csrfToken);
+    const placesConfigured = isPlacesConfigured();
+    const businessAddressValue = escapeAttr(s.business_address || "");
+    const businessLatValue = s.business_latitude != null && s.business_latitude !== "" ? escapeAttr(String(s.business_latitude)) : "";
+    const businessLngValue = s.business_longitude != null && s.business_longitude !== "" ? escapeAttr(String(s.business_longitude)) : "";
+    const businessPlaceIdValue = escapeAttr(s.business_place_id || "");
+    let googleProfileSyncedAt = "";
+    let googleProfileName = "";
+    try {
+      if (s.google_business_json) {
+        const snap = JSON.parse(s.google_business_json);
+        googleProfileSyncedAt = snap?.syncedAt ? String(snap.syncedAt).slice(0, 10) : "";
+        googleProfileName = snap?.profile?.name ? String(snap.profile.name) : "";
+      }
+    } catch {}
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     res.end(`
-      <html><head><title>Code Orbit - Settings</title><link rel="stylesheet" href="/styles.css">${getVercelWebAnalyticsSnippet()}
-        <style>
-          /* Lightweight accordion styling, clean white cards with no borders */
-          .section { border: none; background:#ffffff; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
-          .section h3 { margin: 0 0 8px 0; display:flex; align-items:center; gap:8px; cursor:pointer; }
-          .section .section-body { margin-top: 8px; }
-          .section.collapsed .section-body { display: none; }
-          .caret { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 7px solid #6b7280; transition: transform .15s ease; }
-          .section:not(.collapsed) .caret { transform: rotate(180deg); }
-          .toolbar-btn { background:#f3f4f6; border:none; border-radius:9999px; padding:6px 10px; font-size:12px; cursor:pointer; }
-          .toolbar-btn:hover { background:#e5e7eb; }
-        </style>
-      </head><body>
-        
-        <script src="/auth-utils.js"></script>
+      <html>${getProfessionalHead("Settings")}<body>
         <script>
           window.__CSRF_TOKEN__ = ${csrfTokenJson};
           document.addEventListener('DOMContentLoaded', function(){
@@ -149,56 +156,50 @@ export default function registerSettingsRoutes(app, options = {}) {
           window.addEventListener('DOMContentLoaded', initAccordions);
         </script>
         <div class="container">
-          ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Settings`, email)}
+          ${renderTopbar('Settings', email)}
           <div class="layout">
             ${renderSidebar('settings', { showBookings: !!isUpgraded, isUpgraded })}
             <main class="main">
-            <div class="main-content">
-              <div id="settings-nav" style="position:sticky; top:0; z-index:5; padding:8px; margin-bottom:12px;">
-                <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
-                  <a href="#account" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Account</a>
-                  <a href="#business" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Business</a>
-                  <a href="#whatsapp" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">WhatsApp</a>
-                  <a href="#conversation" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Conversation</a>
-                  <a href="#greeting" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Greeting</a>
-                  <a href="#holidays" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Holidays</a>
-                  <a href="#bookings_section" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Bookings</a>
-                  <a href="#email" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Email</a>
-                  <a href="#staff" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Staff</a>
-                  <a href="#quick-replies" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Quick Replies</a>
-                  <a href="#danger" style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;">Danger</a>
-                  <button style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;" type="button" onclick="expandAll()">Expand all</button>
-                  <button style="text-decoration:none; background:#f3f4f6; border:none; padding:6px 10px; border-radius:9999px; color:#111827; font-size:12px;" type="button" onclick="collapseAll()">Collapse all</button>
-                  <button style="margin-left:auto; background:#2563eb; border:none; padding:6px 16px; border-radius:9999px; color:white; font-size:12px; font-weight:500; cursor:pointer;" type="submit" form="settings-main-form">Save</button>
+            <div class="main-content settings-page">
+              <div class="settings-shell">
+              <div id="settings-nav" class="settings-nav">
+                <div class="settings-nav__inner">
+                  <a href="#account" class="settings-nav__link">Account</a>
+                  <a href="#business" class="settings-nav__link">Business</a>
+                  <a href="#whatsapp" class="settings-nav__link">WhatsApp</a>
+                  <a href="#conversation" class="settings-nav__link">Conversation</a>
+                  <a href="#holidays" class="settings-nav__link">Holidays</a>
+                  <a href="#bookings_section" class="settings-nav__link">Reservations</a>
+                  <a href="#staff" class="settings-nav__link">Staff</a>
+                  <a href="#quick-replies" class="settings-nav__link">Quick Replies</a>
+                  <a href="#danger" class="settings-nav__link">Danger</a>
+                  <button class="settings-nav__utility" type="button" onclick="expandAll()">Expand all</button>
+                  <button class="settings-nav__utility" type="button" onclick="collapseAll()">Collapse all</button>
+                  <button class="settings-nav__save btn btn-primary" type="submit" form="settings-main-form">Save changes</button>
                 </div>
               </div>
-                <div class="chat-box-settings">
+              <div class="settings-shell__body">
                 <form id="settings-main-form" method="post" action="/settings" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;">
                   ${csrfField}
                   <div class="section" id="account">
-                    <h3>Personal Information</h3>
-                    <div class="grid-2">
-                      <label>Name
-                        <input placeholder="John Doe" class="settings-field" name="name" value="${s.name || ''}"/>
-                      </label>
-                      <label>Email
-                        <div style="display: flex; align-items: center; gap: 8px;">
-                          <input type="email" name="new_email" value="${email}" class="settings-field" form="email-start-form" required />
-                          <button type="submit" form="email-start-form" class="btn-primary">Update</button>
-                        </div>
-                      </label>
-                        ${q.email_update === 'sent' ? `
-                        <form method="post" action="/settings/email/verify" style="display:flex; gap:8px; align-items:center; margin-top:6px;">
-                          <input type="hidden" name="email_id" value="${q.email_id || ''}"/>
-                          <input type="text" name="code" placeholder="6-digit code" class="settings-field" required />
-                          <button type="submit" class="btn-primary">Verify & set as primary</button>
-                          <button type="submit" class="btn-ghost" formaction="/settings/email/resend">Resend code</button>
-                        </form>
-                        ` : ''}
-                        ${q.email_update === 'done' ? `<div class="small" style="color:#065f46; margin-top:6px;">Email updated successfully.</div>` : ''}
-                        ${q.email_error ? `<div class="small" style="color:#991b1b; margin-top:6px;">${q.email_error}</div>` : ''}
+                    <h3>Account</h3>
+                    <label>Email
+                      <div style="display: flex; align-items: center; gap: 8px;">
+                        <input type="email" name="new_email" value="${email}" class="settings-field" form="email-start-form" required />
+                        <button type="submit" form="email-start-form" class="btn-primary">Update</button>
                       </div>
-                    </div>
+                    </label>
+                    ${q.email_update === 'sent' ? `
+                    <form method="post" action="/settings/email/verify" style="display:flex; gap:8px; align-items:center; margin-top:6px;">
+                      <input type="hidden" name="email_id" value="${q.email_id || ''}"/>
+                      <input type="text" name="code" placeholder="6-digit code" class="settings-field" required />
+                      <button type="submit" class="btn-primary">Verify & set as primary</button>
+                      <button type="submit" class="btn-ghost" formaction="/settings/email/resend">Resend code</button>
+                    </form>
+                    ` : ''}
+                    ${q.email_update === 'done' ? `<div class="small" style="color:#065f46; margin-top:6px;">Email updated successfully.</div>` : ''}
+                    ${q.email_error ? `<div class="small" style="color:#991b1b; margin-top:6px;">${q.email_error}</div>` : ''}
+                  </div>
                   <div class="section" id="business">
                     <h3>Business Information</h3>
                     <label>Business Name
@@ -228,6 +229,280 @@ export default function registerSettingsRoutes(app, options = {}) {
                     <label style="margin-top:8px;">Website URL
                       <input placeholder="https://www.example.com" class="settings-field" name="website_url" value="${s.website_url || ''}"/>
                     </label>
+                    <label style="margin-top:8px;">Business Address
+                      <div id="address-autocomplete-wrap" style="position:relative;">
+                        <input id="business_address_input" placeholder="Start typing your address..." class="settings-field" name="business_address" value="${businessAddressValue}" autocomplete="off"/>
+                        <div id="address-suggestions" style="display:none; position:absolute; left:0; right:0; top:100%; z-index:20; background:#fff; border:1px solid #e2e8f0; border-radius:8px; box-shadow:0 8px 24px rgba(15,23,42,.12); max-height:240px; overflow:auto;"></div>
+                      </div>
+                      <input type="hidden" name="business_latitude" id="business_latitude" value="${businessLatValue}"/>
+                      <input type="hidden" name="business_longitude" id="business_longitude" value="${businessLngValue}"/>
+                      <input type="hidden" name="business_place_id" id="business_place_id" value="${businessPlaceIdValue}"/>
+                      <div class="small" style="color:#64748b; margin-top:4px;">
+                        ${placesConfigured
+                          ? "Type your address and pick a suggestion. Customers who ask for directions will receive a WhatsApp map pin."
+                          : "Set GOOGLE_MAPS_API_KEY in your environment to enable address search and map pins for customers."}
+                      </div>
+                      <div id="address-selected-hint" class="small" style="color:#065f46; margin-top:4px; display:${businessLatValue && businessLngValue ? 'block' : 'none'};">Map pin saved for this address.</div>
+                    </label>
+                    ${placesConfigured ? `<script>
+                      (function(){
+                        const input = document.getElementById('business_address_input');
+                        const list = document.getElementById('address-suggestions');
+                        const latField = document.getElementById('business_latitude');
+                        const lngField = document.getElementById('business_longitude');
+                        const placeField = document.getElementById('business_place_id');
+                        const hint = document.getElementById('address-selected-hint');
+                        if (!input || !list) return;
+                        let timer = null;
+                        let sessionToken = crypto.randomUUID();
+                        let selecting = false;
+
+                        function clearCoords(){
+                          if (selecting) return;
+                          latField.value = '';
+                          lngField.value = '';
+                          placeField.value = '';
+                          if (hint) hint.style.display = 'none';
+                        }
+
+                        function hideList(){
+                          list.style.display = 'none';
+                          list.innerHTML = '';
+                        }
+
+                        function showSuggestions(items){
+                          if (!items.length) { hideList(); return; }
+                          list.innerHTML = items.map(function(item){
+                            return '<button type="button" class="address-suggestion" data-place-id="' + item.placeId.replace(/"/g, '&quot;') + '" style="display:block;width:100%;text-align:left;padding:10px 12px;border:0;background:#fff;cursor:pointer;border-bottom:1px solid #f1f5f9;">' + item.description.replace(/</g, '&lt;') + '</button>';
+                          }).join('');
+                          list.style.display = 'block';
+                        }
+
+                        async function fetchSuggestions(q){
+                          try {
+                            const resp = await fetch('/api/places/autocomplete?q=' + encodeURIComponent(q) + '&session=' + encodeURIComponent(sessionToken), { headers: { 'Accept': 'application/json' } });
+                            const data = await resp.json();
+                            if (!data.success) throw new Error(data.error || 'Autocomplete failed');
+                            showSuggestions(Array.isArray(data.predictions) ? data.predictions : []);
+                          } catch (err) {
+                            console.error('Address autocomplete failed', err);
+                            hideList();
+                          }
+                        }
+
+                        async function selectPlace(placeId, label){
+                          selecting = true;
+                          try {
+                            const resp = await fetch('/api/places/details?place_id=' + encodeURIComponent(placeId) + '&session=' + encodeURIComponent(sessionToken), { headers: { 'Accept': 'application/json' } });
+                            const data = await resp.json();
+                            if (!data.success || !data.place) throw new Error(data.error || 'Details failed');
+                            input.value = data.place.address || label || input.value;
+                            latField.value = String(data.place.latitude);
+                            lngField.value = String(data.place.longitude);
+                            placeField.value = data.place.placeId || placeId;
+                            if (hint) hint.style.display = 'block';
+                            sessionToken = crypto.randomUUID();
+                          } catch (err) {
+                            console.error('Address details failed', err);
+                          } finally {
+                            selecting = false;
+                            hideList();
+                          }
+                        }
+
+                        input.addEventListener('input', function(){
+                          clearCoords();
+                          const q = input.value.trim();
+                          clearTimeout(timer);
+                          if (q.length < 2) { hideList(); return; }
+                          timer = setTimeout(function(){ fetchSuggestions(q); }, 250);
+                        });
+
+                        input.addEventListener('focus', function(){
+                          const q = input.value.trim();
+                          if (q.length >= 2) fetchSuggestions(q);
+                        });
+
+                        list.addEventListener('click', function(ev){
+                          const btn = ev.target.closest('.address-suggestion');
+                          if (!btn) return;
+                          const placeId = btn.getAttribute('data-place-id');
+                          const label = btn.textContent || '';
+                          if (placeId) selectPlace(placeId, label);
+                        });
+
+                        document.addEventListener('click', function(ev){
+                          if (!document.getElementById('address-autocomplete-wrap')?.contains(ev.target)) hideList();
+                        });
+                      })();
+                    </script>` : ''}
+                    ${placesConfigured ? `
+                    <div class="google-business-import" style="margin-top:16px; padding:16px; border:1px solid #e2e8f0; border-radius:12px; background:#f8fafc;">
+                      <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+                        <div>
+                          <div style="font-weight:600; color:#0f172a; margin-bottom:4px;">Import from Google Business</div>
+                          <div class="small" style="color:#64748b; max-width:520px;">
+                            Search your listing on Google to import name, address, phone, website, hours, categories, and reviews into settings and your Knowledge Base.
+                          </div>
+                          ${googleProfileSyncedAt ? `<div class="small" style="color:#065f46; margin-top:8px;">Last imported${googleProfileName ? ` (${escapeHtml(googleProfileName)})` : ""}: ${escapeHtml(googleProfileSyncedAt)}</div>` : ""}
+                        </div>
+                      </div>
+                      <div style="position:relative; margin-top:12px;">
+                        <input id="google-business-search" class="settings-field" placeholder="Search your business on Google..." autocomplete="off" />
+                        <div id="google-business-suggestions" style="display:none; position:absolute; left:0; right:0; top:100%; z-index:25; background:#fff; border:1px solid #e2e8f0; border-radius:8px; box-shadow:0 8px 24px rgba(15,23,42,.12); max-height:260px; overflow:auto;"></div>
+                      </div>
+                      <div id="google-business-preview" style="display:none; margin-top:14px; padding:14px; border:1px solid #dbeafe; border-radius:10px; background:#eff6ff;">
+                        <div style="font-weight:600; color:#1e3a8a; margin-bottom:8px;">Preview</div>
+                        <div id="google-business-preview-body" class="small" style="color:#1e3a8a; white-space:pre-wrap;"></div>
+                        <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
+                          <button type="button" class="btn-primary" id="google-business-import-btn">Import to bot</button>
+                          <button type="button" class="btn-ghost" id="google-business-cancel-btn">Cancel</button>
+                        </div>
+                      </div>
+                      <div id="google-business-status" class="small" style="margin-top:8px; color:#64748b;"></div>
+                    </div>
+                    <script>
+                      (function(){
+                        const search = document.getElementById('google-business-search');
+                        const list = document.getElementById('google-business-suggestions');
+                        const preview = document.getElementById('google-business-preview');
+                        const previewBody = document.getElementById('google-business-preview-body');
+                        const importBtn = document.getElementById('google-business-import-btn');
+                        const cancelBtn = document.getElementById('google-business-cancel-btn');
+                        const statusEl = document.getElementById('google-business-status');
+                        if (!search || !list || !preview) return;
+                        let timer = null;
+                        let sessionToken = crypto.randomUUID();
+                        let selectedPlaceId = null;
+
+                        function setStatus(msg, tone){
+                          if (!statusEl) return;
+                          statusEl.textContent = msg || '';
+                          statusEl.style.color = tone === 'error' ? '#991b1b' : tone === 'success' ? '#065f46' : '#64748b';
+                        }
+
+                        function hideSuggestions(){
+                          list.style.display = 'none';
+                          list.innerHTML = '';
+                        }
+
+                        function hidePreview(){
+                          preview.style.display = 'none';
+                          selectedPlaceId = null;
+                          if (previewBody) previewBody.textContent = '';
+                        }
+
+                        function renderPreview(data){
+                          if (!data) return;
+                          const lines = [];
+                          if (data.name) lines.push('Name: ' + data.name);
+                          if (data.address) lines.push('Address: ' + data.address);
+                          if (data.phone) lines.push('Phone: ' + data.phone);
+                          if (data.website) lines.push('Website: ' + data.website);
+                          if (data.rating != null) lines.push('Rating: ' + data.rating + (data.ratingCount ? ' (' + data.ratingCount + ' reviews)' : ''));
+                          if (data.inferredBusinessType) lines.push('Business type: ' + data.inferredBusinessType);
+                          if (Array.isArray(data.categories) && data.categories.length) lines.push('Categories: ' + data.categories.join(', '));
+                          if (data.description) lines.push('\\nAbout:\\n' + data.description);
+                          if (Array.isArray(data.openingHours) && data.openingHours.length) lines.push('\\nHours:\\n' + data.openingHours.join('\\n'));
+                          if (Array.isArray(data.kbArticles) && data.kbArticles.length) {
+                            lines.push('\\nKnowledge Base articles to update:\\n' + data.kbArticles.map(function(a){ return '- ' + a.title; }).join('\\n'));
+                          }
+                          previewBody.textContent = lines.join('\\n');
+                          preview.style.display = 'block';
+                        }
+
+                        async function fetchBusinessSuggestions(q){
+                          try {
+                            const resp = await fetch('/api/google-business/search?q=' + encodeURIComponent(q) + '&session=' + encodeURIComponent(sessionToken), { headers: { 'Accept': 'application/json' } });
+                            const data = await resp.json();
+                            if (!data.success) throw new Error(data.error || 'Search failed');
+                            const items = Array.isArray(data.predictions) ? data.predictions : [];
+                            if (!items.length) { hideSuggestions(); return; }
+                            list.innerHTML = items.map(function(item){
+                              const label = (item.mainText || item.description || '').replace(/</g, '&lt;');
+                              const sub = (item.secondaryText || '').replace(/</g, '&lt;');
+                              return '<button type="button" class="google-business-suggestion" data-place-id="' + item.placeId.replace(/"/g, '&quot;') + '" style="display:block;width:100%;text-align:left;padding:10px 12px;border:0;background:#fff;cursor:pointer;border-bottom:1px solid #f1f5f9;"><div style="font-weight:600;color:#0f172a;">' + label + '</div>' + (sub ? '<div class="small" style="color:#64748b;">' + sub + '</div>' : '') + '</button>';
+                            }).join('');
+                            list.style.display = 'block';
+                          } catch (err) {
+                            console.error('Google business search failed', err);
+                            hideSuggestions();
+                            setStatus('Could not search Google. Try again.', 'error');
+                          }
+                        }
+
+                        async function loadPreview(placeId){
+                          setStatus('Loading business details...');
+                          try {
+                            const resp = await fetch('/api/google-business/preview?place_id=' + encodeURIComponent(placeId) + '&session=' + encodeURIComponent(sessionToken), { headers: { 'Accept': 'application/json' } });
+                            const data = await resp.json();
+                            if (!data.success || !data.preview) throw new Error(data.error || 'Preview failed');
+                            selectedPlaceId = placeId;
+                            renderPreview(data.preview);
+                            setStatus('Review the preview, then import to update your bot.');
+                          } catch (err) {
+                            console.error('Google business preview failed', err);
+                            hidePreview();
+                            setStatus(err.message || 'Could not load business details.', 'error');
+                          }
+                        }
+
+                        search.addEventListener('input', function(){
+                          hidePreview();
+                          selectedPlaceId = null;
+                          const q = search.value.trim();
+                          clearTimeout(timer);
+                          if (q.length < 2) { hideSuggestions(); return; }
+                          timer = setTimeout(function(){ fetchBusinessSuggestions(q); }, 250);
+                        });
+
+                        list.addEventListener('click', function(ev){
+                          const btn = ev.target.closest('.google-business-suggestion');
+                          if (!btn) return;
+                          const placeId = btn.getAttribute('data-place-id');
+                          if (!placeId) return;
+                          search.value = btn.querySelector('div')?.textContent || search.value;
+                          hideSuggestions();
+                          loadPreview(placeId);
+                        });
+
+                        if (cancelBtn) cancelBtn.addEventListener('click', function(){
+                          hidePreview();
+                          setStatus('');
+                        });
+
+                        if (importBtn) importBtn.addEventListener('click', async function(){
+                          if (!selectedPlaceId) return;
+                          importBtn.disabled = true;
+                          setStatus('Importing...');
+                          try {
+                            const resp = await fetch('/api/google-business/import', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                              body: JSON.stringify({ place_id: selectedPlaceId, session: sessionToken })
+                            });
+                            const data = await resp.json();
+                            if (!data.success) throw new Error(data.error || 'Import failed');
+                            setStatus('Imported successfully. Reloading...', 'success');
+                            sessionToken = crypto.randomUUID();
+                            setTimeout(function(){ window.location.href = '/settings?saved=1&google_import=1#business'; }, 700);
+                          } catch (err) {
+                            console.error('Google business import failed', err);
+                            setStatus(err.message || 'Import failed.', 'error');
+                          } finally {
+                            importBtn.disabled = false;
+                          }
+                        });
+
+                        document.addEventListener('click', function(ev){
+                          if (!search.contains(ev.target) && !list.contains(ev.target)) hideSuggestions();
+                        });
+                      })();
+                    </script>
+                    ` : `
+                    <div class="small" style="margin-top:12px; color:#64748b;">
+                      Set <code>GOOGLE_MAPS_API_KEY</code> to enable Google Business import.
+                    </div>`}
                   </div>
                   <div class="section" id="whatsapp">
                     <h3>WhatsApp Setup</h3>
@@ -261,6 +536,94 @@ export default function registerSettingsRoutes(app, options = {}) {
                     <label>Verify Token
                       <input placeholder="***************" class="settings-field" name="verify_token" value="${s.verify_token || ''}"/>
                     </label>
+
+                    <div style="margin-top:20px; padding:16px; background:#f8fafc; border-radius:8px;">
+                      <h4 style="margin:0 0 8px 0;">Staff WhatsApp Group</h4>
+                      <p class="small" style="margin:0 0 12px 0; color:#64748b;">
+                        Post new reservations to a staff group. The bot ignores all other group messages.
+                        Requires Meta <strong>Groups API</strong> (Official Business Account, Cloud API-only number).
+                      </p>
+                      <label style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
+                        <input type="hidden" name="staff_whatsapp_group_enabled" value="0"/>
+                        <input type="checkbox" name="staff_whatsapp_group_enabled" value="1" ${s.staff_whatsapp_group_enabled ? 'checked' : ''}/>
+                        Enable staff group booking alerts
+                      </label>
+                      <div class="small" style="margin-bottom:8px;">
+                        <strong>Status:</strong>
+                        ${s.staff_whatsapp_group_id
+                          ? `<span style="color:#065f46;">Connected</span> — <code style="font-size:11px;">${String(s.staff_whatsapp_group_id).slice(0, 24)}${String(s.staff_whatsapp_group_id).length > 24 ? '…' : ''}</code>`
+                          : `<span style="color:#92400e;">Not connected</span>`}
+                      </div>
+                      <div id="staff-group-support" class="small" style="margin-bottom:12px; color:#64748b;"></div>
+                      <button type="button" class="btn-ghost" id="staff-group-check" style="margin-bottom:12px;">Check Groups API support</button>
+                      <div class="small" style="margin-bottom:12px; padding:10px 12px; background:#eff6ff; border-radius:6px; color:#1e40af;">
+                        <strong>Coexistence (WhatsApp app + bot):</strong> When staff reply from the WhatsApp Business app,
+                        Code Orbit auto-enables <strong>Live mode</strong> for that customer (bot stays quiet).
+                        Subscribe to <code>smb_message_echoes</code> (and optionally <code>message_echoes</code>) in Meta → Webhooks.
+                      </div>
+                      <div class="small" style="margin-bottom:12px; padding:10px 12px; background:#fff7ed; border-radius:6px; color:#9a3412;">
+                        <strong>Important:</strong> Your business number (${s.business_phone ? `+${String(s.business_phone).replace(/\D/g, '')}` : 'configure Business Phone above'}) must appear as a <em>member</em> in the group before CONNECT works.
+                        If the group shows only <strong>1 member</strong>, the bot is not in the group yet and CONNECT will do nothing.
+                        A single grey checkmark on your message also means it was not delivered to the bot.
+                      </div>
+                      <ol class="small" style="margin:0 0 12px 18px; color:#64748b; padding:0;">
+                        <li>Create or use a group where your business number is actually joined (2+ members)</li>
+                        <li>Send <code>CONNECT</code> in that group</li>
+                        <li>The bot replies once and saves the group ID automatically</li>
+                      </ol>
+                      <script>
+                      (function(){
+                        const statusEl = document.getElementById('staff-group-support');
+                        const checkBtn = document.getElementById('staff-group-check');
+                        if (!checkBtn || !statusEl) return;
+                        checkBtn.addEventListener('click', async function(){
+                          checkBtn.disabled = true;
+                          statusEl.textContent = 'Checking Groups API…';
+                          try {
+                            const resp = await fetch('/api/settings/staff-group/support', { headers: { 'Accept': 'application/json' } });
+                            const data = await resp.json();
+                            if (!resp.ok) throw new Error(data.error || data.message || 'Check failed');
+                            statusEl.innerHTML = data.supported
+                              ? '<span style="color:#065f46;">✓ ' + (data.message || 'Groups API supported') + '</span>'
+                              : '<span style="color:#991b1b;">✗ ' + (data.message || 'Groups API not available on this number') + '</span>';
+                          } catch (err) {
+                            statusEl.innerHTML = '<span style="color:#991b1b;">✗ ' + (err.message || 'Check failed') + '</span>';
+                          } finally {
+                            checkBtn.disabled = false;
+                          }
+                        });
+                      })();
+                      </script>
+                      ${s.staff_whatsapp_group_id ? `
+                      <button type="button" class="btn-ghost" id="staff-group-disconnect" style="margin-top:4px;">Disconnect group</button>
+                      <script>
+                      (function(){
+                        const btn = document.getElementById('staff-group-disconnect');
+                        if (!btn) return;
+                        btn.addEventListener('click', async function(){
+                          if (!confirm('Disconnect staff group notifications?')) return;
+                          btn.disabled = true;
+                          try {
+                            const resp = await fetch('/api/settings/staff-group/disconnect', { method: 'POST', headers: { 'Accept': 'application/json' } });
+                            const data = await resp.json();
+                            if (!data.success) throw new Error(data.error || 'Disconnect failed');
+                            window.location.href = '/settings?saved=1#whatsapp';
+                          } catch (err) {
+                            alert(err.message || 'Could not disconnect group');
+                            btn.disabled = false;
+                          }
+                        });
+                      })();
+                      </script>
+                      ` : ''}
+                      <details style="margin-top:12px;">
+                        <summary class="small" style="cursor:pointer; color:#64748b;">Advanced: paste group ID manually</summary>
+                        <label style="display:block; margin-top:8px;">
+                          Group ID
+                          <input class="settings-field" name="staff_whatsapp_group_id" value="${(s.staff_whatsapp_group_id || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}" placeholder="Paste group_id from webhook logs"/>
+                        </label>
+                      </details>
+                    </div>
                   </div>
 
                   <!-- Website section removed (Website URL moved to Business Information) -->
@@ -293,7 +656,7 @@ export default function registerSettingsRoutes(app, options = {}) {
                         </svg>
                         Upgrade to enable
                       </span>` : ''}
-                      <div class="small" style="margin-top:4px; margin-left:24px;">The chatbot uses your knowledge base to answer questions and handles reservations, bookings, and complex interactions automatically.</div>
+                      <div class="small" style="margin-top:4px; margin-left:24px;">Answers from your knowledge base and handles reservations in natural conversation — the bot collects date, time, name, and party size without forms or slot menus.</div>
                     </label>
                     <label style="display:block; margin-bottom:12px; padding:12px; border:none; border-radius:8px; cursor:pointer; ${effectiveConversationMode === 'escalation' ? 'background:#f0f9ff;' : ''}">
                       <input type="radio" name="conversation_mode" value="escalation" ${effectiveConversationMode === 'escalation' ? 'checked' : ''} style="margin-right:8px;"/>
@@ -311,7 +674,7 @@ export default function registerSettingsRoutes(app, options = {}) {
             <label style="display:block; margin-bottom:8px;">
               <div class="small" style="margin-bottom:4px;">Additional Message (during working hours)</div>
               <input class="settings-field" type="text" name="escalation_additional_message" placeholder="Got it. I'm connecting you with a human. Please wait a moment." value="${s.escalation_additional_message || ''}" style="margin-bottom:8px;"/>
-              <div class="small" style="color:#6b7280;">This message will be sent after the greeting when support is available.</div>
+              <div class="small" style="color:#6b7280;">This message is sent when support is available during escalation.</div>
             </label>
             
             <label style="display:block; margin-bottom:8px;">
@@ -334,20 +697,14 @@ export default function registerSettingsRoutes(app, options = {}) {
             </label>
           </div>
                   </div>
-                  <div class="section" id="greeting">
-                    <h3>Greeting</h3>
-                    <label>Entry Greeting
-                      <input placeholder="Hello! How can I help you today?" class="settings-field" name="entry_greeting" value="${s.entry_greeting || 'Hello! How can I help you today?'}"/>
-                    </label>
-                  </div>
                   <div class="section" id="holidays">
                     <h3>Holidays & Closures</h3>
                     <div class="small" style="margin-bottom:8px;">Add holiday name, date and business closed time window.</div>
                     <div id="holiday-rows" style="display:grid; grid-template-columns: 1.2fr 0.8fr 0.5fr 0.5fr auto; gap:8px; align-items:center;">
-                      <div style="font-size:12px; color:#6b7280;">Name</div>
-                      <div style="font-size:12px; color:#6b7280;">Date (YYYY-MM-DD)</div>
-                      <div style="font-size:12px; color:#6b7280;">Start (HH:MM)</div>
-                      <div style="font-size:12px; color:#6b7280;">End (HH:MM)</div>
+                      <div class="text-xs" style="color:#6b7280;">Name</div>
+                      <div class="text-xs" style="color:#6b7280;">Date (YYYY-MM-DD)</div>
+                      <div class="text-xs" style="color:#6b7280;">Start (HH:MM)</div>
+                      <div class="text-xs" style="color:#6b7280;">End (HH:MM)</div>
                       <div></div>
                       ${(() => { 
                         let rules=[]; 
@@ -429,84 +786,151 @@ export default function registerSettingsRoutes(app, options = {}) {
                     </script>
                   </div>
                   <div class="section" id="bookings_section">
-                    <h3>Bookings</h3>
-                    ${effectiveConversationMode === 'escalation' ? `
-                      <div class="small" style="margin:8px 0 12px 0; padding:10px 12px; border:1px dashed #fecaca; background:#fff1f2; color:#991b1b; border-radius:8px;">
-                        Bookings are locked in Escalation mode. Upgrade your plan to enable Full conversation mode and unlock bookings.
-                        Go to <a href="/plan">Plan</a> to upgrade.
+                    <h3>Reservations</h3>
+                    ${bookingsLocked ? `
+                      <div class="small" style="margin:0 0 16px 0; padding:12px 14px; border:1px dashed #fecaca; background:#fff1f2; color:#991b1b; border-radius:8px; line-height:1.5;">
+                        Reservations are available in <strong>Full AI Assistant</strong> mode only. Switch conversation mode above, or <a href="/plan">upgrade your plan</a> if Full mode is locked.
                       </div>
-                    ` : ''}
-                    <label>
                       <input type="hidden" name="bookings_enabled" value="0"/>
-                      <input type="checkbox" name="bookings_enabled" value="1" ${s.bookings_enabled ? 'checked' : ''} ${effectiveConversationMode === 'escalation' ? 'disabled' : ''}/> Enable bookings via WhatsApp & dashboard
-                    </label>
-                    <div class="grid-2" style="margin-top:8px;">
-                      <label>Reschedule min lead (minutes)
-                        <input class="settings-field" type="number" min="0" step="5" name="reschedule_min_lead_minutes" value="${Number(s.reschedule_min_lead_minutes||60)}" ${effectiveConversationMode === 'escalation' ? 'disabled' : ''}/>
-                      </label>
-                      <label>Cancel min lead (minutes)
-                        <input class="settings-field" type="number" min="0" step="5" name="cancel_min_lead_minutes" value="${Number(s.cancel_min_lead_minutes||60)}" ${effectiveConversationMode === 'escalation' ? 'disabled' : ''}/>
-                      </label>
-                    </div>
-                    <div class="section" style="margin-top:8px;">
-                      <h4 style="margin:0 0 6px 0;">Reminders</h4>
-                      <label>
-                        <input type="hidden" name="reminders_enabled" value="0"/>
-                        <input type="checkbox" name="reminders_enabled" value="1" ${s.reminders_enabled && s.bookings_enabled ? 'checked' : ''} ${(!s.bookings_enabled || effectiveConversationMode === 'escalation') ? 'disabled' : ''}/> Enable reminders (requires bookings)
-                      </label>
-                      <div class="small">Choose one or more windows. If booking is the same day and window is 1D, no reminder is sent.</div>
-                      <div style="display:flex; gap:12px; margin-top:6px;">
-                        ${['2h','4h','1d'].map(w => {
-                          const current = (() => { try { return JSON.parse(s.reminder_windows||'[]'); } catch { return []; } })();
-                          const on = current.includes(w);
-                          return `<label><input type="checkbox" name="reminder_windows" value="${w}" ${on ? 'checked' : ''} ${(!s.bookings_enabled || effectiveConversationMode === 'escalation') ? 'disabled' : ''}/> ${w.toUpperCase()}</label>`;
-                        }).join('')}
+                    ` : `
+                      <input type="hidden" name="bookings_enabled" value="1"/>
+                      <p class="small" style="margin:0 0 16px 0; color:#374151; line-height:1.55;">
+                        Customers book by chatting naturally (e.g. &ldquo;nesër në orën 8&rdquo;). The AI confirms availability, then collects name, party size, and occasion — no scripted questions or slot pickers.
+                      </p>
+
+                      <div style="padding:14px; background:#f8fafc; border-radius:10px; margin-bottom:18px;">
+                        <div class="text-sm" style="font-weight:600; margin-bottom:10px;">Setup checklist</div>
+                        <ul class="text-sm" style="margin:0; padding-left:18px; color:#374151; line-height:var(--line-height-relaxed);">
+                          <li>${staff.length ? `${staff.length} staff member${staff.length === 1 ? '' : 's'} configured` : '<strong>Add staff</strong> with working hours in the <a href="#staff">Staff</a> section below'}</li>
+                        </ul>
                       </div>
-                    </div>
-                  </div>
-                  <div class="section" id="email">
-                    <h3>Email Notifications</h3>
-                    <label>
-                      <input type="hidden" name="escalation_email_enabled" value="0"/>
-                      <input type="checkbox" name="escalation_email_enabled" value="1" ${s.escalation_email_enabled ? 'checked' : ''}/> Send email when customer escalates to support
-                    </label>
-                    <div style="margin-top:8px;">
-                      <h4 style="margin:0 0 8px 0;">SMTP Configuration</h4>
-                      ${smtpEnvConfigured ? `
-                        <div class="small" style="margin-bottom:12px;">
-                          Email is configured by the workspace. Messages will be sent from
-                          <strong>${s.smtp_user || process.env.SMTP_USER || 'configured sender'}</strong>.
-                          To change the sender, update environment variables on the server.
-                        </div>
-                      ` : `
-                        <div class="small" style="margin-bottom:12px;">Configure your email provider settings. For Gmail, use an App Password.</div>
-                        <div class="grid-2" style="gap:12px;">
-                          <label>SMTP Host
-                            <input placeholder="smtp.gmail.com" class="settings-field" name="smtp_host" value="${s.smtp_host || ''}"/>
-                          </label>
-                          <label>SMTP Port
-                            <input type="number" placeholder="587" class="settings-field" name="smtp_port" value="${s.smtp_port || '587'}"/>
-                          </label>
-                        </div>
-                        <label style="margin-top:12px;">
-                          <input type="hidden" name="smtp_secure" value="0"/>
-                          <input type="checkbox" name="smtp_secure" value="1" ${Number(s.smtp_secure) === 1 ? 'checked' : ''}/> Use secure connection (SSL/TLS - port 465)
+
+                      <h4 class="text-sm" style="margin:0 0 10px 0;">Scheduling rules</h4>
+                      <div class="grid-2" style="gap:12px;">
+                        <label>How far ahead customers can book (days)
+                          <input type="number" min="1" max="365" step="1" class="settings-field" name="booking_days_ahead" value="${bookingDaysAhead}" />
+                          <span class="small" style="color:#6b7280;">e.g. 60 = up to two months ahead</span>
                         </label>
-                        <div class="small">Check this if using port 465. Leave unchecked for port 587 (STARTTLS).</div>
-                        <label style="margin-top:12px;">SMTP Username/Email
-                          <input placeholder="your-email@gmail.com" class="settings-field" name="smtp_user" value="${s.smtp_user || ''}"/>
+                        <label>Max reservations per staff per day
+                          <input type="number" min="0" max="500" step="1" class="settings-field" name="booking_max_per_day" value="${bookingMaxPerDay}" />
+                          <span class="small" style="color:#6b7280;">0 = unlimited</span>
                         </label>
-                        <label style="margin-top:12px;">SMTP Password
-                          <div style="position:relative;">
-                            <input type="password" id="smtp_pass" placeholder="App Password or SMTP password" class="settings-field" name="smtp_pass" value="${s.smtp_pass || ''}" style="padding-right:80px;"/>
-                            <button type="button" onclick="toggleReveal('smtp_pass')" class="btn-ghost" style="position:absolute; right:8px; top:50%; transform:translateY(-50%); padding:4px 8px; font-size:12px;">Show</button>
+                        <label style="grid-column: 1 / -1;">Time slot step (for availability checks)
+                          <select name="booking_display_interval_minutes" class="settings-field">
+                            ${[15,20,30,40,60,90,120].map(v=>`<option value="${v}" ${displayInterval===v?'selected':''}>${v===60?'1 hour':(v===120?'2 hours':v+' minutes')}</option>`).join('')}
+                          </select>
+                          <span class="small" style="color:#6b7280;">Should match your typical appointment length. Staff slot minutes also apply.</span>
+                        </label>
+                      </div>
+
+                      <details class="booking-advanced" style="margin-top:18px; padding:12px 14px; border:1px solid #e5e7eb; border-radius:10px; background:#fff;">
+                        <summary class="text-sm" style="cursor:pointer; font-weight:600;">Advanced options</summary>
+                        <div style="margin-top:14px; display:grid; gap:16px;">
+                          <div>
+                            <div class="text-sm" style="font-weight:600; margin-bottom:8px;">Capacity limits</div>
+                            <p class="small" style="margin:0 0 10px 0; color:#6b7280;">Optional caps for busy periods (e.g. restaurant covers per hour).</p>
+                            <div class="grid-2" style="gap:12px;">
+                              <label>Time window
+                                <select name="booking_capacity_window_minutes" class="settings-field">
+                                  ${[30,60,90,120].map(v=>`<option value="${v}" ${capacityWindow===v?'selected':''}>${v===60?'1 hour':(v+' minutes')}</option>`).join('')}
+                                </select>
+                              </label>
+                              <label>Max bookings in window
+                                <input type="number" min="0" step="1" class="settings-field" name="booking_capacity_limit" value="${capacityLimit}" />
+                                <span class="small" style="color:#6b7280;">0 = no limit</span>
+                              </label>
+                            </div>
                           </div>
-                        </label>
-                        <div class="small">
-                          For Gmail: Create an App Password at <a href="https://myaccount.google.com/apppasswords" target="_blank" style="color:#4F46E5;">myaccount.google.com/apppasswords</a>
+
+                          <label style="display:flex; gap:8px; align-items:flex-start;">
+                            <input type="hidden" name="waitlist_enabled" value="0"/>
+                            <input type="checkbox" name="waitlist_enabled" value="1" ${waitlistEnabled ? 'checked' : ''} style="margin-top:3px;" />
+                            <span>
+                              <strong>Waitlist</strong>
+                              <span class="small" style="display:block; color:#6b7280; margin-top:2px;">Notify customers if an earlier slot opens after a cancellation.</span>
+                            </span>
+                          </label>
+
+                          <div>
+                            <div class="text-sm" style="font-weight:600; margin-bottom:8px;">Changes &amp; cancellations</div>
+                            <div class="grid-2" style="gap:12px;">
+                              <label>Minimum notice to reschedule (minutes)
+                                <input class="settings-field" type="number" min="0" step="5" name="reschedule_min_lead_minutes" value="${Number(s.reschedule_min_lead_minutes||60)}"/>
+                              </label>
+                              <label>Minimum notice to cancel (minutes)
+                                <input class="settings-field" type="number" min="0" step="5" name="cancel_min_lead_minutes" value="${Number(s.cancel_min_lead_minutes||60)}"/>
+                              </label>
+                            </div>
+                          </div>
+
+                          <div>
+                            <div class="text-sm" style="font-weight:600; margin-bottom:8px;">Service menu (optional)</div>
+                            <p class="small" style="margin:0 0 8px 0; color:#6b7280;">If you offer named services, the AI can mention them when customers ask about options.</p>
+                            <div id="servicesList" class="list" style="display:flex; flex-direction:column; gap:6px; margin-bottom:8px;"></div>
+                            <div class="input-inline" style="display:flex; gap:8px; flex-wrap:wrap;">
+                              <input type="text" id="serviceName" class="settings-field" placeholder="Name (e.g. Agrotourism lunch)" />
+                              <input type="number" id="serviceMinutes" class="settings-field" placeholder="Minutes" min="5" step="5" style="max-width:120px;" />
+                              <input type="text" id="servicePrice" class="settings-field" placeholder="Price (optional)" style="max-width:140px;" />
+                              <button type="button" class="btn" id="addServiceBtn">Add</button>
+                            </div>
+                            <textarea name="services_json" id="services_json" rows="2" style="display:none;">${escapeHtml(servicesJson)}</textarea>
+                          </div>
+
+                          <div>
+                            <div class="text-sm" style="font-weight:600; margin-bottom:8px;">Appointment reminders</div>
+                            <label style="display:flex; gap:8px; align-items:flex-start; margin-bottom:8px;">
+                              <input type="hidden" name="reminders_enabled" value="0"/>
+                              <input type="checkbox" name="reminders_enabled" value="1" ${s.reminders_enabled ? 'checked' : ''} style="margin-top:3px;" />
+                              <span class="small" style="color:#374151;">Send WhatsApp reminders before confirmed appointments</span>
+                            </label>
+                            <div class="small" style="margin-bottom:6px; color:#6b7280;">Reminder windows (same-day 1D reminders are skipped if too late):</div>
+                            <div style="display:flex; gap:12px; flex-wrap:wrap;">
+                              ${['2h','4h','1d'].map(w => {
+                                const current = (() => { try { return JSON.parse(s.reminder_windows||'[]'); } catch { return []; } })();
+                                const on = current.includes(w);
+                                return `<label class="small"><input type="checkbox" name="reminder_windows" value="${w}" ${on ? 'checked' : ''}/> ${w.toUpperCase()}</label>`;
+                              }).join('')}
+                            </div>
+                          </div>
                         </div>
-                      `}
-                    </div>
+                      </details>
+
+                      <script>
+                        (function(){
+                          function parseJson(v, def){ try { return JSON.parse(String(v||'').trim()||'[]'); } catch(_) { return def; } }
+                          function setHidden(id, arr){ var el=document.getElementById(id); if(el) el.value = JSON.stringify(arr||[]); }
+                          var sArr = parseJson(document.getElementById('services_json')?.value, []);
+                          var sList = document.getElementById('servicesList');
+                          function renderSvcs(){
+                            if(!sList) return;
+                            sList.innerHTML='';
+                            (sArr||[]).forEach(function(svc, idx){
+                              var row=document.createElement('div'); row.style.display='flex'; row.style.gap='8px'; row.style.alignItems='center';
+                              var span=document.createElement('div');
+                              span.textContent=(svc.name||'') + (svc.minutes?(' · '+svc.minutes+' min'):'') + (svc.price?(' · '+svc.price):'');
+                              span.style.flex='1'; span.className='kb-item';
+                              var del=document.createElement('button'); del.type='button'; del.className='btn-ghost'; del.textContent='Remove';
+                              del.onclick=function(){ sArr.splice(idx,1); renderSvcs(); };
+                              row.appendChild(span); row.appendChild(del); sList.appendChild(row);
+                            });
+                            setHidden('services_json', sArr);
+                          }
+                          var addS=document.getElementById('addServiceBtn');
+                          if(addS) addS.onclick=function(){
+                            var n=document.getElementById('serviceName').value.trim();
+                            var m=parseInt(document.getElementById('serviceMinutes').value,10);
+                            var p=document.getElementById('servicePrice').value.trim();
+                            if(!n || !m || m<=0) return;
+                            sArr.push({ name:n, minutes:m, price:p||null });
+                            document.getElementById('serviceName').value='';
+                            document.getElementById('serviceMinutes').value='';
+                            document.getElementById('servicePrice').value='';
+                            renderSvcs();
+                          };
+                          renderSvcs();
+                        })();
+                      </script>
+                    `}
                   </div>
                 </form>
                 <!-- Separate email form (not nested) to avoid interfering with settings submission -->
@@ -524,17 +948,11 @@ export default function registerSettingsRoutes(app, options = {}) {
                       <label>Slot Minutes
                         <input class="settings-field" type="number" min="5" max="240" step="5" name="slot_minutes" value="30" />
                       </label>
-                      <label>Calendar
-                        <select class="settings-field" name="calendar_id">
-                          <option value="">— None (local only) —</option>
-                          ${(calendars||[]).map(c => `<option value="${String(c._id)}">${(c.display_name||c.account_email||c.calendar_id||('Calendar'))}</option>`).join('')}
-                        </select>
-                      </label>
                       <div style="grid-column: 1 / -1; display:grid; gap:6px;">
                         <div class="small" style="margin:0 0 6px 0;">Working Hours (use HH:MM-HH:MM, comma-separated)</div>
                         ${['mon','tue','wed','thu','fri','sat','sun'].map((d,i)=>`
                           <div style=\"display:grid; grid-template-columns: 72px 1fr; gap:8px; align-items:center;\">
-                            <div style=\"text-transform:uppercase; font-size:12px; color:#6b7280;\">${['MON','TUE','WED','THU','FRI','SAT','SUN'][i]}</div>
+                            <div class=\"text-xs\" style=\"text-transform:uppercase; color:#6b7280;\">${['MON','TUE','WED','THU','FRI','SAT','SUN'][i]}</div>
                             <input class=\"settings-field\" name=\"hours_${d}\" placeholder=\"09:00-17:00, 18:00-20:00\" />
                           </div>
                         `).join('')}
@@ -552,7 +970,7 @@ export default function registerSettingsRoutes(app, options = {}) {
                         <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
                           <div>
                             <div class="wa-top"><div class="wa-name">${r.name}</div></div>
-                            <div class="item-preview small">${r.timezone || 'UTC'} · ${r.slot_minutes||30}m ${r.calendar_id ? '(Calendar linked)' : ''}</div>
+                            <div class="item-preview small">${r.timezone || 'UTC'} · ${r.slot_minutes||30}m</div>
                           </div>
                           <div style="display:flex; gap:8px;">
                             <a href="/settings?edit_staff=${String(r._id)}" class="btn-ghost" style="background:#f3f4f6; padding:8px; border-radius:6px; cursor:pointer;">
@@ -579,15 +997,9 @@ export default function registerSettingsRoutes(app, options = {}) {
                       <label>Slot Minutes
                         <input class="settings-field" type="number" min="5" max="240" step="5" name="slot_minutes" value="${Number(staffToEdit.slot_minutes||30)}" />
                       </label>
-                      <label>Calendar
-                        <select class="settings-field" name="calendar_id">
-                          <option value="">— None (local only) —</option>
-                          ${(calendars||[]).map(c => `<option value="${String(c._id)}" ${String(staffToEdit.calendar_id||'')===String(c._id)?'selected':''}>${(c.display_name||c.account_email||c.calendar_id||('Calendar'))}</option>`).join('')}
-                        </select>
-                      </label>
                       <div style="grid-column: 1 / -1; display:grid; gap:6px;">
                         <div class="small" style="margin:0 0 6px 0;">Working Hours (use HH:MM-HH:MM, comma-separated)</div>
-                        ${(()=>{ let wh={}; try{wh=JSON.parse(staffToEdit.working_hours_json||'{}')}catch{}; const days=['mon','tue','wed','thu','fri','sat','sun']; const labels=['MON','TUE','WED','THU','FRI','SAT','SUN']; return days.map((d,i)=>{ const v=Array.isArray(wh[d])?wh[d].join(', '):''; return `<div style=\"display:grid; grid-template-columns: 72px 1fr; gap:8px; align-items:center;\"><div style=\"text-transform:uppercase; font-size:12px; color:#6b7280;\">${labels[i]}</div><input class=\"settings-field\" name=\"hours_${d}\" value=\"${v}\" placeholder=\"09:00-17:00, 18:00-20:00\" /></div>`}).join(''); })()}
+                        ${(()=>{ let wh={}; try{wh=JSON.parse(staffToEdit.working_hours_json||'{}')}catch{}; const days=['mon','tue','wed','thu','fri','sat','sun']; const labels=['MON','TUE','WED','THU','FRI','SAT','SUN']; return days.map((d,i)=>{ const v=Array.isArray(wh[d])?wh[d].join(', '):''; return `<div style=\"display:grid; grid-template-columns: 72px 1fr; gap:8px; align-items:center;\"><div class=\"text-xs\" style=\"text-transform:uppercase; color:#6b7280;\">${labels[i]}</div><input class=\"settings-field\" name=\"hours_${d}\" value=\"${v}\" placeholder=\"09:00-17:00, 18:00-20:00\" /></div>`}).join(''); })()}
                         <div class="small" style="margin-top:6px; color:#6b7280;">Examples: 09:00-14:00 or 09:00-12:00, 13:00-17:00</div>
                       </div>
                       <div style="grid-column: 1 / -1; display:flex; gap:8px; justify-content:flex-end;">
@@ -827,11 +1239,11 @@ export default function registerSettingsRoutes(app, options = {}) {
                       <div class="quick-replies-list">
                         ${quickReplyCategories.length > 0 ? `
                           <div class="quick-replies-categories" style="margin-bottom: 12px;">
-                            <button type="button" class="btn-ghost active" onclick="filterQuickRepliesSettings('All')" style="background: #007bff; color: white; border: none; padding: 4px 8px; margin-right: 4px; border-radius: 4px; font-size: 0.8em; cursor: pointer;">
+                            <button type="button" class="btn-ghost text-2xs active" onclick="filterQuickRepliesSettings('All')" style="background: #007bff; color: white; border: none; padding: 4px 8px; margin-right: 4px; border-radius: 4px; cursor: pointer;">
                               All (${quickReplies.length})
                             </button>
                             ${quickReplyCategories.map(cat => `
-                              <button type="button" class="btn-ghost" onclick="filterQuickRepliesSettings('${cat.category}')" style="background: #e9ecef; color: #495057; border: none; padding: 4px 8px; margin-right: 4px; border-radius: 4px; font-size: 0.8em; cursor: pointer;">
+                              <button type="button" class="btn-ghost text-2xs" onclick="filterQuickRepliesSettings('${cat.category}')" style="background: #e9ecef; color: #495057; border: none; padding: 4px 8px; margin-right: 4px; border-radius: 4px; cursor: pointer;">
                                 ${cat.category} (${cat.count})
                               </button>
                             `).join('')}
@@ -843,8 +1255,8 @@ export default function registerSettingsRoutes(app, options = {}) {
                               <div style="display: flex; justify-content: between; align-items: start; gap: 8px;">
                                 <div style="flex: 1;">
                                   <div style="font-weight: 500; color: #495057; margin-bottom: 4px;">${reply.category || 'General'}</div>
-                                  <div style="color: #666; font-size: 0.9em; line-height: 1.4;">${reply.text}</div>
-                                  ${reply.usage_count > 0 ? `<div style="font-size: 0.8em; color: #6c757d; margin-top: 4px;">Used ${reply.usage_count} times</div>` : ''}
+                                  <div class="text-sm" style="color: #666; line-height: var(--line-height-snug);">${reply.text}</div>
+                                  ${reply.usage_count > 0 ? `<div class="text-2xs" style="color: #6c757d; margin-top: 4px;">Used ${reply.usage_count} times</div>` : ''}
                                 </div>
                                 <div style="display: flex; gap: 4px;">
                                   <button type="button" onclick="editQuickReply(${reply.id}, '${encodeURIComponent(reply.text)}', '${reply.category || 'General'}')" style="background:#f0f9ff; padding:8px; border-radius:6px; cursor:pointer;" class="btn-ghost">
@@ -862,173 +1274,11 @@ export default function registerSettingsRoutes(app, options = {}) {
                     ` : '<div class="small">No quick replies yet. Add your first one above!</div>'}
                   </div>
                 </div>
-                <!-- Integrations Section -->
-                <div class="section" id="integrations" style="margin-top:16px;">
-                  <h3 style="margin-top:0; display:flex; align-items:center; gap:8px;">
-                    🔗 Integrations
-                  </h3>
-                  <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px;">
-                    <!-- Shopify Integration -->
-                    <div style="border:1px solid #e5e7eb; border-radius:12px; padding:20px; background:white;" id="shopifyIntegrationCard">
-                      <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
-                        <img src="/shopify-icon.png" alt="Shopify" style="width:32px; height:32px;"/>
-                        <div>
-                          <h4 style="margin:0; font-size:16px;">Shopify</h4>
-                          <div class="small" style="color:#6b7280;" id="shopifyStatusText">E-commerce integration</div>
-                        </div>
-                      </div>
-                      <p class="small" style="margin:0 0 16px 0; color:#4b5563;">
-                        Connect your Shopify store to let customers browse products, place orders, and receive updates via WhatsApp.
-                      </p>
-                      <div id="shopifyActions" style="display:flex; gap:10px; flex-wrap:wrap;">
-                        <a href="/settings/shopify" class="btn-primary" id="shopifyConnectBtn" style="display:inline-block; text-decoration:none; padding:10px 16px; border-radius:6px;">
-                          Configure Shopify →
-                        </a>
-                        <a href="/dashboard/shopify" class="btn-primary" id="shopifyDashboardBtn" style="display:none; text-decoration:none; padding:10px 16px; border-radius:6px;">
-                          Open dashboard →
-                        </a>
-                        <button id="shopifyDisconnectBtn" class="btn-ghost" style="display:none; padding:10px 16px; background:#fee2e2; color:#b91c1c;">
-                          Uninstall
-                        </button>
-                      </div>
-                    </div>
-                    <!-- Google Calendar -->
-                    <div style="border:1px solid #e5e7eb; border-radius:12px; padding:20px; background:white;">
-                      <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
-                        <img src="/google-calendar-icon.png" alt="Google Calendar" style="width:32px; height:32px;" onerror="this.style.display='none'"/>
-                        <div>
-                          <h4 style="margin:0; font-size:16px;">Google Calendar</h4>
-                          <div class="small" style="color:#6b7280;">Calendar sync</div>
-                        </div>
-                      </div>
-                      <p class="small" style="margin:0 0 16px 0; color:#4b5563;">
-                        Sync appointments with Google Calendar for automatic availability management.
-                      </p>
-                      <a href="/google/connect" class="btn-primary" style="display:inline-block; text-decoration:none; padding:10px 16px; border-radius:6px;">
-                        Connect Calendar →
-                      </a>
-                    </div>
-                    <!-- Stripe Payments -->
-                    <div style="border:1px solid #e5e7eb; border-radius:12px; padding:20px; background:white;" id="stripeIntegrationCard">
-                      <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
-                        <img src="/stripe-icon.svg" alt="Stripe" style="width:32px; height:32px;" onerror="this.style.display='none'"/>
-                        <div>
-                          <h4 style="margin:0; font-size:16px;">Stripe Payments</h4>
-                          <div class="small" style="color:#6b7280;" id="stripeStatusText">Payment processing</div>
-                        </div>
-                      </div>
-                      <p class="small" style="margin:0 0 16px 0; color:#4b5563;">
-                        Send payment links directly from conversations. Accept payments via credit cards, Apple Pay, and more.
-                      </p>
-                      <div id="stripeActions">
-                        <a href="/stripe/connect/start?redirect=/settings" class="btn-primary" id="stripeConnectBtn" style="display:inline-block; text-decoration:none; padding:10px 16px; border-radius:6px;">
-                          Connect Stripe →
-                        </a>
-                        <button id="stripeDisconnectBtn" class="btn-ghost" style="display:none; padding:10px 16px;">
-                          Disconnect
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                <script>
-                  (function(){
-                    const shopifyStatusText = document.getElementById('shopifyStatusText');
-                    const shopifyConnectBtn = document.getElementById('shopifyConnectBtn');
-                    const shopifyDashboardBtn = document.getElementById('shopifyDashboardBtn');
-                    const shopifyDisconnectBtn = document.getElementById('shopifyDisconnectBtn');
-                    async function fetchShopifyStatus(){
-                      try {
-                        const resp = await fetch('/api/shopify/status', { headers: { 'Accept':'application/json' } });
-                        const data = await resp.json();
-                        const connected = !!data?.connected;
-                        if (shopifyConnectBtn) shopifyConnectBtn.style.display = connected ? 'none' : 'inline-block';
-                        if (shopifyDashboardBtn) shopifyDashboardBtn.style.display = connected ? 'inline-block' : 'none';
-                        if (shopifyDisconnectBtn) shopifyDisconnectBtn.style.display = connected ? 'inline-block' : 'none';
-                        if (shopifyStatusText) {
-                          if (connected) {
-                            shopifyStatusText.textContent = '✓ Connected (' + (data.shop_domain || 'store') + ')';
-                            shopifyStatusText.style.color = '#059669';
-                          } else {
-                            shopifyStatusText.textContent = 'E-commerce integration';
-                            shopifyStatusText.style.color = '#6b7280';
-                          }
-                        }
-
-                        // If Shopify was uninstalled/revoked on Shopify side, inform the user.
-                        if (!connected && data?.disconnected_reason === 'uninstalled_or_revoked') {
-                          if (window.Toast && typeof window.Toast.warning === 'function') {
-                            window.Toast.warning('Shopify was disconnected (app uninstalled or access revoked). Please reconnect.');
-                          }
-                        }
-                      } catch (err) {
-                        console.error('Shopify status load failed', err);
-                      }
-                    }
-                    shopifyDisconnectBtn?.addEventListener('click', async () => {
-                      if (!confirm('Uninstall Shopify connection? This will disconnect your store from the app.')) return;
-                      shopifyDisconnectBtn.disabled = true;
-                      try {
-                        const resp = await fetch('/api/shopify/disconnect', { method: 'POST' });
-                        if (!resp.ok) throw new Error('Disconnect failed');
-                        await fetchShopifyStatus();
-                      } catch (err) {
-                        console.error('Shopify disconnect failed', err);
-                      } finally {
-                        shopifyDisconnectBtn.disabled = false;
-                      }
-                    });
-                    fetchShopifyStatus();
-
-                    const statusText = document.getElementById('stripeStatusText');
-                    const connectBtn = document.getElementById('stripeConnectBtn');
-                    const disconnectBtn = document.getElementById('stripeDisconnectBtn');
-                    async function fetchStripeStatus(){
-                      try {
-                        const resp = await fetch('/api/payments/stripe/status', { headers: { 'Accept':'application/json' } });
-                        const data = await resp.json();
-                        if (!data.success) throw new Error('Failed to load status');
-                        const connected = !!data.connected;
-                        connectBtn.style.display = connected ? 'none' : 'inline-block';
-                        disconnectBtn.style.display = connected ? 'inline-block' : 'none';
-                        if (connected) {
-                          const acc = data.account || {};
-                          statusText.textContent = acc.charges_enabled ? '✓ Connected & ready' : 'Connected - finish onboarding in Stripe';
-                          statusText.style.color = acc.charges_enabled ? '#059669' : '#d97706';
-                        } else {
-                          statusText.textContent = data.available ? 'Payment processing' : 'Not configured';
-                          statusText.style.color = '#6b7280';
-                        }
-                      } catch (err) {
-                        console.error('Stripe status load failed', err);
-                      }
-                    }
-                    disconnectBtn?.addEventListener('click', async () => {
-                      if (!confirm('Disconnect Stripe? You will not be able to send payment links until you reconnect.')) return;
-                      disconnectBtn.disabled = true;
-                      try {
-                        const resp = await fetch('/api/payments/stripe/disconnect', { method: 'POST' });
-                        if (!resp.ok) throw new Error('Disconnect failed');
-                        await fetchStripeStatus();
-                      } catch (err) {
-                        console.error('Stripe disconnect failed', err);
-                      } finally {
-                        disconnectBtn.disabled = false;
-                      }
-                    });
-                    fetchStripeStatus();
-                  })();
-                </script>
                 <!-- Danger Section -->
-                <div class="section" id="danger" style="margin-top:16px; border:1px solid #fee2e2; background:#fef2f2;">
-                  <h3 style="margin-top:0; display:flex; align-items:center; gap:8px; color:#b91c1c;">
-                    <span style="width:8px;height:8px;border-radius:999px;background:#ef4444;"></span>
-                    Danger zone
-                  </h3>
-                  <div class="small" style="margin-bottom:8px; color:#7f1d1d;">
-                    These actions are irreversible. Please proceed with caution.
-                  </div>
-                  <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                <div class="section section--danger" id="danger">
+                  <h3 class="settings-section__title settings-section__title--danger">Danger zone</h3>
+                  <p class="settings-section__lead settings-section__lead--danger">These actions are irreversible. Please proceed with caution.</p>
+                  <div class="settings-danger-actions">
                     <form method="post" action="/kb/clear" style="margin:0;display:inline;">
                       <button type="submit" class="btn-danger">Clear Knowledge Base</button>
                     </form>
@@ -1041,6 +1291,7 @@ export default function registerSettingsRoutes(app, options = {}) {
                   </div>
                 </div>
                 </div>
+              </div>
               </div>
               
             </main>
@@ -1111,13 +1362,11 @@ export default function registerSettingsRoutes(app, options = {}) {
     if (!name) return res.redirect(303, '/settings');
     let timezone = normalizeTimezoneLabel(String(req.body?.timezone || '').trim() || null);
     const slotMinutes = Number(req.body?.slot_minutes || 30) || 30;
-    const calIdRaw = (req.body?.calendar_id || '').toString().trim();
-    const calendarId = calIdRaw ? String(calIdRaw) : null;
     const workingJson = parseWorkingHoursFromFields(req.body);
     try {
-      const exists = await Staff.findOne({ user_id: userId, name, timezone, slot_minutes: slotMinutes, calendar_id: calendarId, working_hours_json: workingJson || '{}' }).lean();
+      const exists = await Staff.findOne({ user_id: userId, name, timezone, slot_minutes: slotMinutes, working_hours_json: workingJson || '{}' }).lean();
       if (!exists) {
-        await Staff.create({ user_id: userId, name, calendar_id: calendarId, timezone, slot_minutes: slotMinutes, working_hours_json: workingJson || '{}' });
+        await Staff.create({ user_id: userId, name, timezone, slot_minutes: slotMinutes, working_hours_json: workingJson || '{}' });
       }
     } catch {}
     return res.redirect(303, '/settings');
@@ -1131,11 +1380,9 @@ export default function registerSettingsRoutes(app, options = {}) {
     if (!name) return res.redirect(303, '/settings');
     let timezone = normalizeTimezoneLabel(String(req.body?.timezone || '').trim() || null);
     const slotMinutes = Number(req.body?.slot_minutes || 30) || 30;
-    const calIdRaw = (req.body?.calendar_id || '').toString().trim();
-    const calendarId = calIdRaw ? String(calIdRaw) : null;
     const workingJson = parseWorkingHoursFromFields(req.body);
     try {
-      await Staff.findOneAndUpdate({ _id: id, user_id: userId }, { name, calendar_id: calendarId, timezone, slot_minutes: slotMinutes, working_hours_json: workingJson || '{}' }, { new: true });
+      await Staff.findOneAndUpdate({ _id: id, user_id: userId }, { name, timezone, slot_minutes: slotMinutes, working_hours_json: workingJson || '{}' }, { new: true });
     } catch {}
     return res.redirect(303, '/settings?edit_staff=');
   }));
@@ -1233,6 +1480,94 @@ export default function registerSettingsRoutes(app, options = {}) {
 
     res.redirect(303, "/settings?saved=1");
   }));
+
+  app.get("/api/places/autocomplete", ensureAuthed, wrapAsync(async (req, res) => {
+    if (!isPlacesConfigured()) {
+      return res.status(503).json({ success: false, error: "Google Maps is not configured" });
+    }
+    const q = String(req.query.q || "").trim();
+    if (q.length < 2) {
+      return res.json({ success: true, predictions: [] });
+    }
+    try {
+      const predictions = await autocompleteAddress(q, { sessionToken: req.query.session });
+      return res.json({ success: true, predictions });
+    } catch (error) {
+      console.error("[GET /api/places/autocomplete]", error?.message || error);
+      return res.status(500).json({ success: false, error: "Autocomplete failed" });
+    }
+  }));
+
+  app.get("/api/places/details", ensureAuthed, wrapAsync(async (req, res) => {
+    if (!isPlacesConfigured()) {
+      return res.status(503).json({ success: false, error: "Google Maps is not configured" });
+    }
+    const placeId = String(req.query.place_id || "").trim();
+    if (!placeId) {
+      return res.status(400).json({ success: false, error: "place_id is required" });
+    }
+    try {
+      const place = await getPlaceDetails(placeId, { sessionToken: req.query.session });
+      return res.json({ success: true, place });
+    } catch (error) {
+      console.error("[GET /api/places/details]", error?.message || error);
+      return res.status(500).json({ success: false, error: "Place details failed" });
+    }
+  }));
+
+  app.get("/api/google-business/search", ensureAuthed, wrapAsync(async (req, res) => {
+    if (!isPlacesConfigured()) {
+      return res.status(503).json({ success: false, error: "Google Maps is not configured" });
+    }
+    const q = String(req.query.q || "").trim();
+    if (q.length < 2) {
+      return res.json({ success: true, predictions: [] });
+    }
+    try {
+      const predictions = await autocompleteBusiness(q, { sessionToken: req.query.session });
+      return res.json({ success: true, predictions });
+    } catch (error) {
+      console.error("[GET /api/google-business/search]", error?.message || error);
+      return res.status(500).json({ success: false, error: error?.message || "Business search failed" });
+    }
+  }));
+
+  app.get("/api/google-business/preview", ensureAuthed, wrapAsync(async (req, res) => {
+    if (!isPlacesConfigured()) {
+      return res.status(503).json({ success: false, error: "Google Maps is not configured" });
+    }
+    const userId = getCurrentUserId(req);
+    const placeId = String(req.query.place_id || "").trim();
+    if (!placeId) {
+      return res.status(400).json({ success: false, error: "place_id is required" });
+    }
+    try {
+      const preview = await previewGoogleBusinessImport(userId, placeId, { sessionToken: req.query.session });
+      return res.json({ success: true, preview });
+    } catch (error) {
+      console.error("[GET /api/google-business/preview]", error?.message || error);
+      return res.status(500).json({ success: false, error: error?.message || "Preview failed" });
+    }
+  }));
+
+  app.post("/api/google-business/import", ensureAuthed, wrapAsync(async (req, res) => {
+    if (!isPlacesConfigured()) {
+      return res.status(503).json({ success: false, error: "Google Maps is not configured" });
+    }
+    const userId = getCurrentUserId(req);
+    const placeId = String(req.body?.place_id || "").trim();
+    if (!placeId) {
+      return res.status(400).json({ success: false, error: "place_id is required" });
+    }
+    try {
+      const result = await applyGoogleBusinessImport(userId, placeId, { sessionToken: req.body?.session });
+      return res.json({ success: true, result });
+    } catch (error) {
+      console.error("[POST /api/google-business/import]", error?.message || error);
+      return res.status(500).json({ success: false, error: error?.message || "Import failed" });
+    }
+  }));
+
   app.get("/api/settings/wa-token/status", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     try {
@@ -1312,6 +1647,20 @@ export default function registerSettingsRoutes(app, options = {}) {
       return res.status(500).json({ success: false, error: 'Failed to save settings' });
     }
   });
+  app.post("/api/settings/staff-group/disconnect", ensureAuthed, protect, wrapAsync(async (req, res) => {
+    const userId = getCurrentUserId(req);
+    await upsertSettingsForUser(userId, {
+      staff_whatsapp_group_id: null,
+      staff_whatsapp_group_enabled: false,
+    });
+    return res.json({ success: true });
+  }));
+  app.get("/api/settings/staff-group/support", ensureAuthed, wrapAsync(async (req, res) => {
+    const userId = getCurrentUserId(req);
+    const settings = await getSettingsForUser(userId);
+    const result = await checkWhatsAppGroupsSupport(settings);
+    return res.json(result);
+  }));
   app.post("/settings/email/start", ensureAuthed, protect, async (req, res) => {
     const userId = getCurrentUserId(req);
     const newEmail = String(req.body?.new_email || '').trim();

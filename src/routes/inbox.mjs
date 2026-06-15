@@ -1,5 +1,5 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
-import { renderSidebar, normalizePhone, escapeHtml, renderTopbar, getProfessionalHead, getVercelWebAnalyticsSnippet } from "../utils.mjs";
+import { renderSidebar, normalizePhone, escapeHtml, renderTopbar, getProfessionalHead, renderPageHeader } from "../utils.mjs";
 import { listContactsForUser, listMessagesForThread } from "../services/conversations.mjs";
 import { db, getDB } from "../db-mongodb.mjs";
 import { Customer, Handoff, Message, MessageStatus } from '../schemas/mongodb.mjs';
@@ -8,8 +8,9 @@ import { sendWhatsAppText, sendWhatsAppTemplate, sendWhatsappImage, sendWhatsapp
 import { getQuickReplies } from "../services/quickReplies.mjs";
 import { getMessageReactions, toggleReaction, removeReaction, getMessagesReactions, getUserReactionsForMessages } from "../services/reactions.mjs";
 import { createReply, getMessagesReplies, getReplyOriginals } from "../services/replies.mjs";
-import { getUserPlan, getPlanStatus, isPlanUpgraded } from "../services/usage.mjs";
-import { updateContactActivity, upsertContactProfile } from "../services/contacts.mjs";
+import { getUserPlan, getPlanStatus, isPlanUpgraded, isUsageExceeded } from "../services/usage.mjs";
+import { updateContactActivity } from "../services/contacts.mjs";
+import { canonicalContactId, findHandoffForContact, resolveHumanMode, upsertHandoffForContact } from "../services/handoff.mjs";
 import { recordOutboundMessage } from "../services/messages.mjs";
 import { 
   getConversationStatus, 
@@ -32,23 +33,8 @@ import {
 import { broadcastReaction, broadcastMessageStatus } from "./realtime.mjs";
 import multer from 'multer';
 import { selectStorage } from '../services/uploads.mjs';
-function cleanContactId(contactId) {
-  if (!contactId) return contactId;
-  let cleaned = contactId.toString();
-  cleaned = cleaned.replace(/[?&]type=[^&]*/g, '');
-  cleaned = cleaned.replace(/[?&]status=[^&]*/g, '');
-  cleaned = cleaned.replace(/[?&]state=[^&]*/g, '');
-  cleaned = cleaned.replace(/[?&]code=[^&]*/g, '');
-  const questionMarkIndex = cleaned.indexOf('?');
-  if (questionMarkIndex !== -1) {
-    cleaned = cleaned.substring(0, questionMarkIndex);
-  }
-  const ampersandIndex = cleaned.indexOf('&');
-  if (ampersandIndex !== -1) {
-    cleaned = cleaned.substring(0, ampersandIndex);
-  }
-  
-  return cleaned;
+function parseRouteContact(raw) {
+  return canonicalContactId(raw);
 }
 function formatTimestampForDisplay(unixTs){
   const ts = Number(unixTs || 0);
@@ -65,12 +51,48 @@ function formatTimestampForDisplay(unixTs){
     return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   }
   if (d >= startYesterday) {
-    return 'yesterday';
+    return 'Yesterday';
   }
   if (d >= startWeekAgo) {
     return d.toLocaleDateString([], { weekday: 'long' });
   }
   return d.toLocaleDateString();
+}
+function formatPhoneLabel(contact) {
+  if (!contact) return '';
+  return `+${String(contact).replace(/^\+/, '')}`;
+}
+function contactInitials(displayName, contact) {
+  const name = String(displayName || '').trim();
+  if (name && !name.startsWith('+') && !/^\d+$/.test(name.replace(/\s/g, ''))) {
+    const parts = name.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+    if (parts[0]?.length >= 2) return parts[0].slice(0, 2).toUpperCase();
+    if (parts[0]?.length === 1) return parts[0].toUpperCase();
+  }
+  const digits = String(contact || '').replace(/\D/g, '');
+  return digits.slice(-2) || '??';
+}
+function buildInboxQuery(params = {}) {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value != null && value !== '' && value !== false) qs.set(key, String(value));
+  });
+  const out = qs.toString();
+  return out ? `?${out}` : '';
+}
+const CHAT_HEADER_SVG = {
+  back: '<svg class="chat-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>',
+  bot: '<svg class="chat-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"/><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M9 13v2M15 13v2"/><path d="M9 17h6"/></svg>',
+  hand: '<svg class="chat-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 11V6a2 2 0 1 1 4 0v3"/><path d="M11 10V5a2 2 0 1 1 4 0v6"/><path d="M15 11V7a2 2 0 1 1 4 0v8a8 8 0 0 1-16 0v-5a2 2 0 1 1 4 0"/></svg>',
+  renew: '<svg class="chat-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>',
+  archive: '<svg class="chat-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>',
+  clear: '<svg class="chat-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+  trash: '<svg class="chat-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>',
+  chevron: '<svg class="chat-header-icon chat-header-icon--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>',
+};
+function chatHeaderIcon(key) {
+  return CHAT_HEADER_SVG[key] || '';
 }
 const storage = selectStorage('inbox');
 const uploadImage = multer({ 
@@ -145,7 +167,7 @@ async function performAdvancedSearch(userId, filters) {
   
   const searchResults = db.prepare(searchQuery).all(...queryParams);
   return searchResults.map(result => ({
-    contact: cleanContactId(result.contact),
+    contact: parseRouteContact(result.contact),
     last_message_ts: result.last_message_ts,
     message_count: result.message_count
   }));
@@ -231,8 +253,8 @@ async function performMessageSearch(userId, filters) {
 }
 async function ensureInProgressIfHuman(userId, phone) {
   try {
-    const handoff = await Handoff.findOne({ user_id: userId, contact_id: phone }).select('is_human');
-    if (!handoff?.is_human) return;
+    const handoff = await findHandoffForContact(userId, phone, 'is_human human_expires_ts');
+    if (!resolveHumanMode(handoff).isHuman) return;
     const current = await getConversationStatus(userId, phone);
     if (current !== CONVERSATION_STATUSES.IN_PROGRESS && current !== CONVERSATION_STATUSES.RESOLVED) {
       await updateConversationStatus(userId, phone, CONVERSATION_STATUSES.IN_PROGRESS, 'agent_first_message');
@@ -263,7 +285,7 @@ async function listArchivedContacts(userId, { page = 1, pageSize = 20 } = {}) {
       { $limit: Math.max(10, Math.min(50, parseInt(pageSize,10))) },
       { $project: { _id: 0, contact: '$_id', last_ts: 1, last_text: 1 } }
     ]);
-    return contacts.map(c => ({ ...c, contact: cleanContactId(c.contact) }));
+    return contacts.map(c => ({ ...c, contact: parseRouteContact(c.contact) }));
   } catch (e) {
     console.error('Archived list error:', e);
     return [];
@@ -279,12 +301,16 @@ export default function registerInboxRoutes(app) {
     const dateFrom = (req.query.date_from || "").toString().trim();
     const dateTo = (req.query.date_to || "").toString().trim();
     const showArchived = ['1','true','yes'].includes(String(req.query.archived||'').toLowerCase());
+    const inboxFilter = ['all', 'unread', 'live'].includes(String(req.query.filter || 'all'))
+      ? String(req.query.filter || 'all')
+      : 'all';
+    const page = Math.max(1, parseInt(req.query.page||'1', 10) || 1);
+    const pageSize = Math.min(50, Math.max(10, parseInt(req.query.page_size||'20', 10) || 20));
+    const isSearchMode = !showArchived && (q || messageType || direction || dateFrom || dateTo);
     let contacts;
-    if (!showArchived && (q || messageType || direction || dateFrom || dateTo)) {
+    if (isSearchMode) {
       contacts = await performAdvancedSearch(userId, { q, messageType, direction, dateFrom, dateTo });
     } else {
-      const page = Math.max(1, parseInt(req.query.page||'1', 10) || 1);
-      const pageSize = Math.min(50, Math.max(10, parseInt(req.query.page_size||'20', 10) || 20));
       contacts = showArchived
         ? await listArchivedContacts(userId, { page, pageSize })
         : await listContactsForUser(userId, { page, pageSize });
@@ -352,112 +378,193 @@ export default function registerInboxRoutes(app) {
         escalationByContact.set(contactId, row.escalation_reason);
       }
     });
-    const list = contacts.map(c => {
+    const enrichedContacts = (contacts || []).map((c) => {
+      const contactId = String(c.contact || '');
+      const seenTs = lastSeenByContact.get(contactId) || 0;
+      const lastTs = Number(c.last_ts || 0);
+      const unreadCount = unreadCounts.get(contactId) || 0;
+      const hasNew = lastTs > seenTs;
+      const hasEscalation = escalationByContact.has(contactId);
+      return {
+        ...c,
+        unreadCount,
+        hasNew,
+        hasEscalation,
+        conversationStatus: statusByContact.get(contactId) || CONVERSATION_STATUSES.NEW,
+      };
+    });
+    const filteredContacts = enrichedContacts.filter((c) => {
+      if (inboxFilter === 'unread') return (c.unreadCount || 0) > 0 || c.hasNew;
+      if (inboxFilter === 'live') return c.hasEscalation;
+      return true;
+    });
+    const filterCounts = {
+      all: enrichedContacts.length,
+      unread: enrichedContacts.filter((c) => (c.unreadCount || 0) > 0 || c.hasNew).length,
+      live: enrichedContacts.filter((c) => c.hasEscalation).length,
+    };
+    const list = filteredContacts.map(c => {
       const lastTs = Number(c.last_ts||0);
       const ts = formatTimestampForDisplay(lastTs);
       const rawPreview = (c.last_text || "").toString();
       const shortened = rawPreview.length > 60 ? rawPreview.slice(0, 57) + "..." : rawPreview;
       const preview = shortened.replace(/</g,'&lt;');
-      const initials = String(c.contact||'').slice(-2);
-      const displayDefault = c.contact ? `+${String(c.contact).replace(/^\+/, '')}` : '';
-      const displayName = displayDefault;
+      const phoneLabel = formatPhoneLabel(c.contact);
+      const savedName = customerNameByContact.get(String(c.contact));
+      const displayName = savedName || phoneLabel;
+      const initials = contactInitials(savedName, c.contact);
+      const phoneSubline = savedName
+        ? `<div class="inbox-item__phone">${escapeHtml(phoneLabel)}</div>`
+        : '';
       const seenTs = lastSeenByContact.get(String(c.contact)) || 0;
       const hasNew = lastTs > seenTs;
-      const hasEscalation = escalationByContact.has(String(c.contact));
-      const unreadCount = unreadCounts.get(String(c.contact)) || 0;
-      const conversationStatus = statusByContact.get(String(c.contact)) || CONVERSATION_STATUSES.NEW;
+      const hasEscalation = c.hasEscalation;
+      const unreadCount = c.unreadCount || 0;
+      const conversationStatus = c.conversationStatus || CONVERSATION_STATUSES.NEW;
       const statusDisplay = STATUS_DISPLAY_NAMES[conversationStatus];
       const statusColor = STATUS_COLORS[conversationStatus];
           const dropdownId = `menu_${c.contact}`;
           const menu = `
-        <div class="dropdown" style="position:relative; overflow:visible;">
-          <button type="button" class="btn btn-ghost" style="position:relative; z-index:10000;" onclick="return toggleMenu('${dropdownId}', event)">
-            <img src="/menu-icon.svg" alt="Menu" style="width:20px;height:20px;vertical-align:middle;border:none;"/>
+        <div class="inbox-dropdown">
+          <button type="button" class="inbox-dropdown__trigger" aria-label="Conversation actions" onclick="return toggleMenu('${dropdownId}', event)">
+            <svg class="inbox-dropdown__trigger-icon" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M7 4c0-.139 0-.209.008-.267a.85.85 0 0 1 .724-.724c.059-.008.128-.008.267-.008s.21 0 .267.008a.85.85 0 0 1 .724.724c.008.058.008.128.008.267s0 .209-.008.267a.85.85 0 0 1-.724.724c-.058.008-.128.008-.267.008s-.209 0-.267-.008a.85.85 0 0 1-.724-.724C7 4.209 7 4.139 7 4m0 4c0-.139 0-.209.008-.267a.85.85 0 0 1 .724-.724c.059-.008.128-.008.267-.008s.21 0 .267.008a.85.85 0 0 1 .724.724c.008.058.008.128.008.267s0 .209-.008.267a.85.85 0 0 1-.724.724c-.058.008-.128.008-.267.008s-.209 0-.267-.008a.85.85 0 0 1-.724-.724C7 8.209 7 8.139 7 8m0 4c0-.139 0-.209.008-.267a.85.85 0 0 1 .724-.724c.059-.008.128-.008.267-.008s.21 0 .267.008a.85.85 0 0 1 .724.724c.008.058.008.128.008.267s0 .209-.008.268a.85.85 0 0 1-.724.724C8.208 13 8.138 13 8 13s-.209 0-.267-.008a.85.85 0 0 1-.724-.724C7 12.21 7 12.14 7 12"/></svg>
           </button>
-          <div id="${dropdownId}" class="dropdown-menu" style="position:absolute; right:0; top:36px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:6px; min-width:180px; display:none; box-shadow:0 10px 30px rgba(0,0,0,0.18); z-index:10001;" onclick="event.stopPropagation()">
+          <div id="${dropdownId}" class="inbox-dropdown-menu" onclick="event.stopPropagation()">
             ${showArchived ? `
-            <form method=\"post\" action=\"/inbox/${encodeURIComponent(c.contact)}/unarchive\" onsubmit=\"event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;\" style=\"margin:0;\">
-              <button type="submit" class="btn btn-ghost btn-full" style="display:flex; align-items:center; gap:8px; justify-content:flex-start;">
-                <img src="/archive-icon.svg" alt="Unarchive"/> Unarchive
+            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/unarchive" onsubmit="event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;">
+              <button type="submit" class="inbox-dropdown-item">
+                <img src="/archive-icon.svg" alt="" class="inbox-dropdown-item__icon" aria-hidden="true" /> Unarchive
               </button>
             </form>` : `
-            <form method=\"post\" action=\"/inbox/${encodeURIComponent(c.contact)}/archive\" onsubmit=\"event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;\" style=\"margin:0;\">
-              <button type="submit" class="btn btn-ghost btn-full" style="display:flex; align-items:center; gap:8px; justify-content:flex-start;">
-                <img src="/archive-icon.svg" alt="Archive"/> Archive
+            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/archive" onsubmit="event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;">
+              <button type="submit" class="inbox-dropdown-item">
+                <img src="/archive-icon.svg" alt="" class="inbox-dropdown-item__icon" aria-hidden="true" /> Archive
               </button>
             </form>`}
-            <form method=\"post\" action=\"/inbox/${encodeURIComponent(c.contact)}/clear\" onsubmit=\"event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;\" style=\"margin:0;\">
-              <button type="submit" class="btn btn-ghost btn-full" style="display:flex; align-items:center; gap:8px; justify-content:flex-start;">
-                <img src="/clear-icon.svg" alt="Clear"/> Clear
+            <button type="button" class="inbox-dropdown-item" onclick="openNameModal('${encodeURIComponent(c.contact)}'); return false;">
+              <span class="inbox-dropdown-item__emoji" aria-hidden="true">✏️</span> Name customer
+            </button>
+            <div class="inbox-dropdown-divider" role="separator"></div>
+            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/clear" onsubmit="event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;">
+              <button type="submit" class="inbox-dropdown-item">
+                <img src="/clear-icon.svg" alt="" class="inbox-dropdown-item__icon" aria-hidden="true" /> Clear chat
               </button>
             </form>
-            <form method=\"post\" action=\"/inbox/${encodeURIComponent(c.contact)}/delete\" onsubmit=\"event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;\" style=\"margin:0;\">
-              <button type="submit" class="btn btn-ghost btn-full" style="display:flex; align-items:center; gap:8px; justify-content:flex-start; color:#c00;">
-                <img src="/delete-icon.svg" alt="Delete"/> Delete
+            <div class="inbox-dropdown-divider" role="separator"></div>
+            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/block24h" onsubmit="event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;">
+              <button type="submit" class="inbox-dropdown-item">
+                <span class="inbox-dropdown-item__emoji" aria-hidden="true">⛔</span> Block 24h
               </button>
             </form>
-            <form method=\"post\" action=\"/inbox/${encodeURIComponent(c.contact)}/block24h\" onsubmit=\"event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;\" style=\"margin:0;\">
-              <button type="submit" class="btn btn-ghost btn-full" style="display:flex; align-items:center; gap:8px; justify-content:flex-start;">
-                ⛔ Block
+            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/delete" onsubmit="event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;">
+              <button type="submit" class="inbox-dropdown-item inbox-dropdown-item--danger">
+                <img src="/delete-icon.svg" alt="" class="inbox-dropdown-item__icon" aria-hidden="true" /> Delete
               </button>
             </form>
           </div>
         </div>
       `;
+      const unreadBadge = unreadCount > 0
+        ? `<span class="inbox-item__unread">${unreadCount > 99 ? '99+' : unreadCount}</span>`
+        : (hasNew ? '<span class="inbox-item__dot" aria-label="Unread"></span>' : '');
+      const chips = [
+        hasEscalation ? '<span class="live-chip">Live</span>' : '',
+        conversationStatus !== CONVERSATION_STATUSES.NEW
+          ? `<span class="status-chip" style="background-color:${statusColor}">${statusDisplay}</span>`
+          : '',
+      ].filter(Boolean).join('');
+      const metaHtml = chips ? `<div class="inbox-item__meta">${chips}</div>` : '';
       return `
-        <li class="inbox-item">
-          <a href="/inbox/${encodeURIComponent(c.contact)}">
-            <div class="wa-row">
-              <div class="wa-avatar">${initials}</div>
-              <div class="wa-col">
-                <div class="wa-name">
-                  ${escapeHtml(displayName || '')}
-                  ${unreadCount > 0 ? `<span class="badge-count" style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;background:#22c55e;color:#fff;border-radius:999px;font-size:10px;font-weight:600;vertical-align:middle;">${unreadCount>99?'99+':unreadCount}</span>` : (hasNew ? '<span class="badge-dot"></span>' : '')}
-                  ${hasEscalation ? '<span class="live-chip">live</span>' : ''}
-                  ${hasEscalation ? '<span class="escalation-chip">Agent Escalation</span>' : ''}
-                  <span class="status-chip" style="background-color: ${statusColor}; color: white; font-size: 10px; padding: 2px 6px; border-radius: 10px; margin-left: 6px;">${statusDisplay}</span>
+        <li class="inbox-item${hasNew || unreadCount > 0 ? ' inbox-item--unread' : ''}">
+          <a class="inbox-item__link" href="/inbox/${encodeURIComponent(c.contact)}">
+            <div class="inbox-item__avatar" aria-hidden="true">${escapeHtml(initials)}</div>
+            <div class="inbox-item__body">
+              <div class="inbox-item__header">
+                <div class="inbox-item__title">
+                  <span class="inbox-item__name">${escapeHtml(displayName || '')}</span>
+                  ${unreadBadge}
                 </div>
-                <div class="wa-top">
-                  <div class="item-preview small">${preview}</div>
-                  <div style="display:flex; align-items:center; gap:8px;">
-                    <div class="item-ts small">${ts}</div>
-                    <div class="dropdown-icon">
-                      ${menu}
-                    </div>
-                  </div>
-                </div>
+                <time class="inbox-item__time">${ts}</time>
               </div>
+              ${phoneSubline}
+              ${metaHtml}
+              <p class="inbox-item__preview">${preview || '<span class="inbox-item__preview-empty">No messages yet</span>'}</p>
             </div>
           </a>
+          <div class="inbox-item__actions">
+            ${menu}
+          </div>
         </li>
       `;
     }).join("");
-    const searchResultsCount = (q || messageType || direction || dateFrom || dateTo) ? 
-      `<div class="search-result-count">Found ${contacts.length} conversation${contacts.length !== 1 ? 's' : ''} matching your search criteria</div>` : '';
+    const searchResultsCount = isSearchMode ?
+      `<div class="search-result-count">Found ${filteredContacts.length} conversation${filteredContacts.length !== 1 ? 's' : ''} matching your search criteria</div>` : '';
+    const filterBase = {
+      archived: showArchived ? '1' : '',
+      q: q || '',
+      type: messageType || '',
+      direction: direction || '',
+      date_from: dateFrom || '',
+      date_to: dateTo || '',
+    };
+    const inboxTabHref = (filterValue) => {
+      const params = { ...filterBase };
+      if (filterValue && filterValue !== 'all') params.filter = filterValue;
+      return `/inbox${buildInboxQuery(params)}`;
+    };
+    const filterTabs = showArchived ? '' : `
+      <div class="inbox-filter-tabs" role="tablist" aria-label="Filter conversations">
+        <a class="inbox-filter-tab${inboxFilter === 'all' ? ' is-active' : ''}" href="${inboxTabHref('all')}">All<span class="inbox-filter-tab__count">${filterCounts.all}</span></a>
+        <a class="inbox-filter-tab${inboxFilter === 'unread' ? ' is-active' : ''}" href="${inboxTabHref('unread')}">Unread<span class="inbox-filter-tab__count">${filterCounts.unread}</span></a>
+        <a class="inbox-filter-tab${inboxFilter === 'live' ? ' is-active' : ''}" href="${inboxTabHref('live')}">Live<span class="inbox-filter-tab__count">${filterCounts.live}</span></a>
+      </div>`;
+    const paginationNav = (!isSearchMode && !showArchived && (page > 1 || (contacts || []).length >= pageSize)) ? (() => {
+      const prevParams = { ...filterBase };
+      if (inboxFilter !== 'all') prevParams.filter = inboxFilter;
+      if (page > 1) prevParams.page = page - 1;
+      const nextParams = { ...filterBase };
+      if (inboxFilter !== 'all') nextParams.filter = inboxFilter;
+      if ((contacts || []).length >= pageSize) nextParams.page = page + 1;
+      return `
+      <div class="inbox-pagination">
+        ${page > 1 ? `<a class="btn btn-ghost" href="/inbox${buildInboxQuery(prevParams)}">← Previous</a>` : '<span></span>'}
+        <span class="inbox-pagination__info">Page ${page}</span>
+        ${(contacts || []).length >= pageSize ? `<a class="btn btn-ghost" href="/inbox${buildInboxQuery(nextParams)}">Next →</a>` : '<span></span>'}
+      </div>`;
+    })() : '';
+    const listContent = list || (inboxFilter !== 'all' && enrichedContacts.length > 0 ? `
+                  <li style="border:0;">
+                    <div class="empty-state-pro">
+                      <h3 class="empty-state-pro__title">No ${inboxFilter === 'live' ? 'live' : inboxFilter} conversations here</h3>
+                      <p class="empty-state-pro__copy">Nothing on this page matches the filter. Try another tab or <a href="/inbox${buildInboxQuery(filterBase)}">view all conversations</a>.</p>
+                    </div>
+                  </li>
+                ` : `
+                  <li style="border:0;">
+                  <div class="empty-state-pro">
+                    <h3 class="empty-state-pro__title">No conversations yet</h3>
+                    <p class="empty-state-pro__copy">
+                      WhatsApp conversations will appear here once customers message your business number.
+                    </p>
+                    <div class="empty-state-pro__tips">
+                      <div class="empty-state-pro__tips-title">Getting started</div>
+                      <ul>
+                        <li>Share your WhatsApp Business number with customers</li>
+                        <li>Customers can start conversations by sending any message</li>
+                        <li>The assistant responds automatically from your knowledge base</li>
+                        <li>Your team can take over anytime for human support</li>
+                      </ul>
+                    </div>
+                  </div>
+                  </li>
+                `);
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     res.end(`
       <html>${getProfessionalHead('Inbox')}<body>
-        <!-- Loading Overlay -->
-        <div id="loadingOverlay" class="loading-overlay">
-          <div class="loading-container">
-            <div class="loading-spinner"></div>
-            <div class="loading-text">Loading conversations...</div>
-            <div class="loading-progress">
-              <div class="loading-progress-bar"></div>
-            </div>
-            <div class="loading-dots">
-              <div class="loading-dot"></div>
-              <div class="loading-dot"></div>
-              <div class="loading-dot"></div>
-            </div>
-          </div>
-        </div>
-        
         <script src="/toast.js"></script>
-        <script src="/auth-utils.js"></script>
         <script>
           // WhatsApp token check and modal
           async function checkWaTokenAndPrompt(){
@@ -516,35 +623,6 @@ export default function registerInboxRoutes(app) {
               } catch(_) {}
             }
           }
-          // Loading management
-          let loadingComplete = false;
-          let pageReady = false;
-          
-          function hideLoading() {
-            if (loadingComplete) return;
-            loadingComplete = true;
-            
-            const overlay = document.getElementById('loadingOverlay');
-            if (overlay) {
-              overlay.classList.add('hidden');
-              setTimeout(() => {
-                overlay.style.display = 'none';
-              }, 300);
-            }
-          }
-          
-          function showPageContent() {
-            pageReady = true;
-            
-            // Ensure loading is hidden after a minimum time
-            setTimeout(() => {
-              hideLoading();
-              // Add loaded class to page transition elements
-              const pageElements = document.querySelectorAll('.page-transition');
-              pageElements.forEach(el => el.classList.add('loaded'));
-            }, 500);
-          }
-          
           // Check authentication on page load
           (async function checkAuthOnLoad(){
             try{ 
@@ -558,77 +636,72 @@ export default function registerInboxRoutes(app) {
               // Don't force a relogin on transient network/auth-status failures.
               console.warn('Auth status check failed (non-fatal):', e);
             }
-            
-            // Auth check complete, show content
-            showPageContent();
-            // After showing content, check token health and prompt if needed
             setTimeout(checkWaTokenAndPrompt, 150);
           })();
-          
-          // Fallback: hide loading after maximum time
-          setTimeout(() => {
-            if (!loadingComplete) {
-              hideLoading();
-              // Add loaded class to page transition elements
-              const pageElements = document.querySelectorAll('.page-transition');
-              pageElements.forEach(el => el.classList.add('loaded'));
-            }
-          }, 3000);
         </script>
-        <div class="container page-transition">
-          ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Inbox`, email)}
+        <div class="container">
+          ${renderTopbar('Inbox', email)}
           <div class="layout">
             ${renderSidebar('inbox', { showBookings: !!isUpgraded, isUpgraded })}
             <main class="main">
               <div class="main-content">
+                <div class="inbox-workspace">
+                <div class="inbox-toolbar">
+                  <div class="inbox-toolbar__top">
+                    ${filterTabs}
+                    <div class="inbox-toolbar__links">
+                      ${showArchived ? `
+                        <a href="/inbox" class="btn btn-ghost btn-sm inbox-toolbar__link-btn" title="Back to Inbox">
+                          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M22 12H2"/><path d="M9 5l-7 7 7 7"/></svg>
+                          Inbox
+                        </a>
+                      ` : `
+                        <a href="/inbox?archived=1" class="btn btn-ghost btn-sm inbox-toolbar__link-btn" title="View archived">
+                          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 8v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>
+                          Archived
+                        </a>
+                      `}
+                    </div>
+                  </div>
                   <form method="get" action="/inbox" class="search-form">
-                  <div class="search-input-group">
-                    <input class="search-input" type="text" name="q" placeholder='Search conversations...' value="${q}"/>
-                    <button type="submit" class="btn btn-primary">
-                      <img src="/search-icon.svg" alt="Search" width="20" height="20">
-                    </button>
-                  </div>
-                  <div class="search-filters" id="searchFilters" style="display: none;">
-                    <div class="filter-group">
-                      <label>Message Type:</label>
-                      <select name="type" class="filter-select">
-                        <option value="">All Types</option>
-                        <option value="text" ${req.query.type === 'text' ? 'selected' : ''}>Text</option>
-                        <option value="image" ${req.query.type === 'image' ? 'selected' : ''}>Images</option>
-                        <option value="document" ${req.query.type === 'document' ? 'selected' : ''}>Documents</option>
-                        <option value="interactive" ${req.query.type === 'interactive' ? 'selected' : ''}>Interactive</option>
-                      </select>
+                    <div class="search-input-group">
+                      <input class="search-input" type="text" name="q" placeholder="Search conversations..." value="${q}"/>
+                      <button type="button" class="btn btn-ghost inbox-filters-toggle" onclick="toggleSearchFilters()" title="Advanced filters">Filters</button>
+                      <button type="submit" class="btn btn-primary" aria-label="Search">
+                        <img src="/search-icon.svg" alt="" width="18" height="18">
+                      </button>
                     </div>
-                    <div class="filter-group">
-                      <label>Direction:</label>
-                      <select name="direction" class="filter-select">
-                        <option value="">All Messages</option>
-                        <option value="inbound" ${req.query.direction === 'inbound' ? 'selected' : ''}>Incoming</option>
-                        <option value="outbound" ${req.query.direction === 'outbound' ? 'selected' : ''}>Outgoing</option>
-                      </select>
+                    <div class="search-filters" id="searchFilters" style="display: ${(messageType || direction || dateFrom || dateTo) ? 'grid' : 'none'};">
+                      <div class="filter-group">
+                        <label>Message Type:</label>
+                        <select name="type" class="filter-select">
+                          <option value="">All Types</option>
+                          <option value="text" ${req.query.type === 'text' ? 'selected' : ''}>Text</option>
+                          <option value="image" ${req.query.type === 'image' ? 'selected' : ''}>Images</option>
+                          <option value="document" ${req.query.type === 'document' ? 'selected' : ''}>Documents</option>
+                          <option value="interactive" ${req.query.type === 'interactive' ? 'selected' : ''}>Interactive</option>
+                        </select>
+                      </div>
+                      <div class="filter-group">
+                        <label>Direction:</label>
+                        <select name="direction" class="filter-select">
+                          <option value="">All Messages</option>
+                          <option value="inbound" ${req.query.direction === 'inbound' ? 'selected' : ''}>Incoming</option>
+                          <option value="outbound" ${req.query.direction === 'outbound' ? 'selected' : ''}>Outgoing</option>
+                        </select>
+                      </div>
+                      <div class="filter-group">
+                        <label>Date Range:</label>
+                        <input type="date" name="date_from" class="filter-date" value="${req.query.date_from || ''}" placeholder="From"/>
+                        <input type="date" name="date_to" class="filter-date" value="${req.query.date_to || ''}" placeholder="To"/>
+                      </div>
+                      <div class="filter-actions">
+                        <button type="button" onclick="clearFilters()" class="btn btn-ghost">Clear</button>
+                        <button type="submit" class="btn btn-primary">Search</button>
+                      </div>
                     </div>
-                    <div class="filter-group">
-                      <label>Date Range:</label>
-                      <input type="date" name="date_from" class="filter-date" value="${req.query.date_from || ''}" placeholder="From"/>
-                      <input type="date" name="date_to" class="filter-date" value="${req.query.date_to || ''}" placeholder="To"/>
-                    </div>
-                    <div class="filter-actions">
-                      <button type="button" onclick="clearFilters()" class="btn btn-ghost">Clear</button>
-                      <button type="submit" class="btn btn-primary">Search</button>
-                    </div>
-                  </div>
-                  <div class="search-actions">
-                    ${showArchived ? `
-                      <a href="/inbox" class="btn btn-ghost" title="Back to Inbox" style="display:inline-flex;align-items:center;gap:6px;">
-                        <img src="/inbox-icon.svg" alt="Inbox" width="18" height="18"> Inbox
-                      </a>
-                    ` : `
-                      <a href="/inbox?archived=1" class="btn btn-ghost" title="View Archived" style="display:inline-flex;align-items:center;gap:6px;">
-                        <img src="/archive-icon.svg" alt="Archived" width="18" height="18"> 
-                      </a>
-                    `}
-                  </div>
-                </form>
+                  </form>
+                </div>
               <div id="nameModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.35); z-index:1000; align-items:center; justify-content:center;">
                 <div class="card" style="width:420px; max-width:95vw;">
                   <div class="small" style="margin-bottom:8px;">Name Customer</div>
@@ -643,6 +716,7 @@ export default function registerInboxRoutes(app) {
                   
                   
                 </div>
+              </div>
                 <!-- WhatsApp Token Modal -->
                 <div id="waTokenModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.35); z-index:1100; align-items:center; justify-content:center;">
                   <div class="card" style="width:480px; max-width:95vw;">
@@ -657,39 +731,8 @@ export default function registerInboxRoutes(app) {
                     </div>
                   </div>
                 </div>
-                <div id="paymentModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:1150; align-items:center; justify-content:center;">
-                  <div class="card" style="width:420px; max-width:95vw;">
-                    <div class="small" style="margin-bottom:8px;">Request payment</div>
-                    <form id="paymentForm" onsubmit="submitPaymentRequest(event)" style="display:grid; gap:10px;">
-                      <label class="small" style="display:flex; flex-direction:column; gap:4px;">
-                        Amount
-                        <input type="number" name="amount" min="1" step="0.01" required class="settings-field" placeholder="49.00"/>
-                      </label>
-                      <label class="small" style="display:flex; flex-direction:column; gap:4px;">
-                        Currency
-                        <select name="currency" class="settings-field">
-                          <option value="usd">USD</option>
-                          <option value="eur">EUR</option>
-                          <option value="gbp">GBP</option>
-                          <option value="cad">CAD</option>
-                          <option value="aud">AUD</option>
-                        </select>
-                      </label>
-                      <label class="small" style="display:flex; flex-direction:column; gap:4px;">
-                        Description <span class="small" style="color:#94a3b8;">Optional</span>
-                        <input type="text" name="description" maxlength="120" class="settings-field" placeholder="Deposit, invoice, etc."/>
-                      </label>
-                      <div class="small" style="color:#64748b;">The customer receives a secure Stripe Checkout link inside WhatsApp.</div>
-                      <div style="display:flex; gap:8px; justify-content:flex-end;">
-                        <button type="button" class="btn btn-ghost" onclick="closePaymentModal()">Cancel</button>
-                        <button type="submit" class="btn btn-primary" id="paymentSubmitBtn">Send link</button>
-                      </div>
-                    </form>
-                  </div>
-                </div>
-              </div>
-              <script>
-                function openNameModal(contactId){
+                <script>
+                  function openNameModal(contactId){
                   var f = document.getElementById('nameForm');
                   if (f) f.action = '/inbox/' + encodeURIComponent(contactId) + '/nameCustomer';
                   var m = document.getElementById('nameModal');
@@ -709,11 +752,9 @@ export default function registerInboxRoutes(app) {
                 }
                 function toggleSearchFilters(){
                   var filters = document.getElementById('searchFilters');
-                  if (filters.style.display === 'none') {
-                    filters.style.display = 'block';
-                  } else {
-                    filters.style.display = 'none';
-                  }
+                  if (!filters) return;
+                  const open = filters.style.display === 'none' || filters.style.display === '';
+                  filters.style.display = open ? 'grid' : 'none';
                 }
                 function clearFilters(){
                   document.querySelector('input[name="q"]').value = '';
@@ -829,57 +870,57 @@ export default function registerInboxRoutes(app) {
                 });
               </script>
               <script>
+                function closeInboxMenu(menu) {
+                  if (!menu) return;
+                  menu.classList.remove('is-open');
+                  menu.style.position = '';
+                  menu.style.left = '';
+                  menu.style.top = '';
+                  menu.style.zIndex = '';
+                  menu.style.display = '';
+                }
+                function openInboxMenu(menu, trigger) {
+                  const rect = (trigger && trigger.getBoundingClientRect()) || menu.getBoundingClientRect();
+                  menu.classList.add('is-open');
+                  menu.style.position = 'fixed';
+                  menu.style.left = Math.max(8, rect.right - 208) + 'px';
+                  menu.style.top = (rect.bottom + 6) + 'px';
+                  menu.style.zIndex = '100000';
+                  menu.style.display = 'block';
+                }
                 function toggleMenu(id, evt){
                   if(evt){ try{ evt.preventDefault(); evt.stopPropagation(); }catch(_){} }
                   try{
-                    document.querySelectorAll('.dropdown-menu').forEach(el=>{ if(el.id!==id){ el.style.display='none'; if(el.__portal){ try{el.__portal.remove()}catch{}; el.__portal=null; } } });
-                    const origin = document.getElementById(id);
-                    if(!origin) return false;
-                    // Portal clone attached to body to defeat clipping
-                    if(!origin.__portal){
-                      const rect = (evt && (evt.currentTarget||evt.target).getBoundingClientRect()) || origin.getBoundingClientRect();
-                      const portal = origin.cloneNode(true);
-                      portal.id = id + '_p';
-                      portal.style.position = 'fixed';
-                      portal.style.left = Math.max(8, rect.right - 180) + 'px';
-                      portal.style.top = (rect.bottom + 8) + 'px';
-                      portal.style.display = 'block';
-                      portal.style.zIndex = 100000;
-                      portal.onclick = function(e){ e.stopPropagation(); };
-                      document.body.appendChild(portal);
-                      origin.style.display='none';
-                      origin.__portal = portal;
-                      window.addEventListener('click', function onClose(){
-                        if(origin.__portal){ try{ origin.__portal.remove(); }catch{} origin.__portal=null; }
-                        window.removeEventListener('click', onClose);
-                      });
+                    const menu = document.getElementById(id);
+                    if(!menu) return false;
+                    const trigger = menu.closest('.inbox-dropdown')?.querySelector('.inbox-dropdown__trigger');
+                    const isOpen = menu.classList.contains('is-open');
+                    document.querySelectorAll('.inbox-dropdown-menu.is-open').forEach(el => {
+                      if (el !== menu) closeInboxMenu(el);
+                    });
+                    if (isOpen) {
+                      closeInboxMenu(menu);
                     } else {
-                      try{ origin.__portal.remove(); }catch{} origin.__portal=null;
+                      openInboxMenu(menu, trigger);
                     }
                   }catch(_){ }
                   return false;
                 }
-                document.addEventListener('click', function(){
-                  document.querySelectorAll('.dropdown-menu').forEach(el=>{ el.style.display='none'; });
+                document.addEventListener('click', function(evt){
+                  if (evt.target.closest('.inbox-dropdown')) return;
+                  document.querySelectorAll('.inbox-dropdown-menu.is-open').forEach(closeInboxMenu);
+                });
+                document.addEventListener('keydown', function(evt){
+                  if (evt.key === 'Escape') {
+                    document.querySelectorAll('.inbox-dropdown-menu.is-open').forEach(closeInboxMenu);
+                  }
                 });
               </script>
-                <ul class="list">${searchResultsCount}${list || `
-                  <div class="empty-state" style="text-align:center; padding:60px 20px; color:#666;">
-                    <h3 style="margin:0 0 12px 0; color:#333; font-size:20px; font-weight:500;">No conversations yet</h3>
-                    <p style="margin:0 0 24px 0; font-size:14px; line-height:1.5; max-width:400px; margin-left:auto; margin-right:auto;">
-                      Your WhatsApp conversations will appear here once customers start messaging your business number.
-                    </p>
-                    <div style="background:#f8f9fa; border-radius:12px; padding:20px; margin:0 auto; max-width:400px; border:1px solid #e9ecef;">
-                      <div style="font-size:13px; color:#666; margin-bottom:12px; font-weight:500;">💡 Getting Started:</div>
-                      <ul style="text-align:left; font-size:13px; color:#666; margin:0; padding-left:20px; line-height:1.6;">
-                        <li>Share your WhatsApp Business number with customers</li>
-                        <li>Customers can start conversations by sending any message</li>
-                        <li>AI will automatically respond and manage conversations</li>
-                        <li>You can take over anytime for human support</li>
-                      </ul>
-                    </div>
-                  </div>
-                `}</ul>
+                <div class="conversation-list-shell">
+                <ul class="list">${searchResultsCount}${listContent}</ul>
+                ${paginationNav}
+                </div>
+                </div>
               </div>
             </main>
           </div>
@@ -992,8 +1033,7 @@ export default function registerInboxRoutes(app) {
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     res.end(`
-      <html><head><title>Code Orbit - Search Results</title><link rel="stylesheet" href="/styles.css">${getVercelWebAnalyticsSnippet()}</head>
-      <body>
+      <html>${getProfessionalHead('Search Results')}<body>
         <script>
           // Check authentication on page load
           (async function checkAuthOnLoad(){
@@ -1008,7 +1048,7 @@ export default function registerInboxRoutes(app) {
           })();
         </script>
         <div class="container">
-          ${renderTopbar(`<a href="/dashboard">Dashboard</a> / <a href="/inbox">Inbox</a> / Search Results`, email)}
+          ${renderTopbar(`<a href="/inbox">Inbox</a> / Search Results`, email)}
           <div class="layout">
             ${renderSidebar('inbox', { showBookings: !!isUpgraded, isUpgraded })}
             <main class="main">
@@ -1101,7 +1141,7 @@ export default function registerInboxRoutes(app) {
   });
 
   app.get("/inbox/:phone", ensureAuthed, async (req, res) => {
-    const phone = req.params.phone.split('?')[0];    const userId = getCurrentUserId(req);
+    const phone = parseRouteContact(req.params.phone);    const userId = getCurrentUserId(req);
     try {
       const digits = normalizePhone(phone);
       const [custRow, handoffRow, msgRow] = await Promise.all([
@@ -1124,7 +1164,7 @@ export default function registerInboxRoutes(app) {
         return res.end(`
           <html>${getProfessionalHead('Not Found')}<body>
             <div class="container">
-              ${renderTopbar(`<a href="/dashboard">Dashboard</a> / <a href="/inbox">Inbox</a>`, email404)}
+              ${renderTopbar(`<a href="/inbox">Inbox</a>`, email404)}
               <div class="layout">
                 ${renderSidebar('inbox', { showBookings: !!isUpgraded404, isUpgraded: !!isUpgraded404 })}
                 <main class="main">
@@ -1137,7 +1177,7 @@ export default function registerInboxRoutes(app) {
                       </p>
                       <div style="display:flex; gap:8px; flex-wrap:wrap;">
                         <a class="btn btn-primary" href="/inbox">Back to Inbox</a>
-                        <a class="btn btn-ghost" href="/dashboard">Go to Dashboard</a>
+                        <a class="btn btn-ghost" href="/inbox">Go to Inbox</a>
                       </div>
                     </div>
                   </div>
@@ -1191,14 +1231,11 @@ export default function registerInboxRoutes(app) {
     const phoneDigits = normalizePhone(phone);
     try {
       const nowSec = Math.floor(Date.now()/1000);
-      await Handoff.findOneAndUpdate(
-        { contact_id: phone, user_id: userId },
-        { $set: { last_seen_ts: nowSec, updatedAt: new Date() } },
-        { upsert: true }
-      );
+      await upsertHandoffForContact(userId, phone, { last_seen_ts: nowSec });
     } catch {}
     const cust = await Customer.findOne({ user_id: userId, contact_id: phone }).select('display_name');
     const headerName = cust?.display_name || ('+' + String(phone).replace(/^\+/, ''));
+    const headerInitials = contactInitials(cust?.display_name, phone);
     let msgs = await Message.aggregate([
       {
         $match: {
@@ -1249,11 +1286,12 @@ export default function registerInboxRoutes(app) {
     const userReactionsByMessage = await getUserReactionsForMessages(messageIds, userId);
     const repliesByMessage = await getMessagesReplies(messageIds);
     const replyOriginals = await getReplyOriginals(messageIds);
-    const status = await Handoff.findOne({ contact_id: phone, user_id: userId }).select('is_human human_expires_ts');
-    let isHuman = !!status?.is_human;
-    const expTs = Number(status?.human_expires_ts || 0);
+    const status = await findHandoffForContact(userId, phone, 'is_human human_expires_ts');
+    const humanMode = resolveHumanMode(status);
+    let isHuman = humanMode.isHuman;
+    const expTs = humanMode.expTs;
     const nowSec = Math.floor(Date.now()/1000);
-    const remain = expTs > nowSec ? (expTs - nowSec) : 0;
+    const remain = humanMode.remain;
     let lastInboundTs = 0;
     try {
       for (const m of msgs) {
@@ -1264,9 +1302,11 @@ export default function registerInboxRoutes(app) {
       }
     } catch {}
     const over24h = lastInboundTs && (nowSec - lastInboundTs) > 24*3600;
-    if (isHuman && remain <= 0) {
+    if (humanMode.expired) {
       isHuman = false;
-      try { await Handoff.findOneAndUpdate({ contact_id: phone, user_id: userId }, { $set: { is_human: false, human_expires_ts: 0, updatedAt: new Date() } }, { upsert: true }); } catch {}
+      try {
+        await upsertHandoffForContact(userId, phone, { is_human: false, human_expires_ts: 0 });
+      } catch {}
     }
     const conversationStatus = await getConversationStatus(userId, phone);
     const statusKey = conversationStatus || 'new';
@@ -1450,71 +1490,12 @@ export default function registerInboxRoutes(app) {
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     res.end(`
-      <html><head><title>Code Orbit - Chat +${String(phone).replace(/^\+/, '')}</title><link rel="stylesheet" href="/styles.css">${getVercelWebAnalyticsSnippet()}</head>
-        <body>
-          <!-- Loading Overlay -->
-          <div id="loadingOverlay" class="loading-overlay">
-            <div class="loading-container">
-              <div class="loading-spinner"></div>
-              <div class="loading-text">Loading conversation...</div>
-              <div class="loading-progress">
-                <div class="loading-progress-bar"></div>
-              </div>
-              <div class="loading-dots">
-                <div class="loading-dot"></div>
-                <div class="loading-dot"></div>
-                <div class="loading-dot"></div>
-              </div>
-            </div>
-          </div>
+      <html>${getProfessionalHead(`Chat +${String(phone).replace(/^\+/, '')}`)}<body>
           <script src="/toast.js"></script>
-          <script src="/auth-utils.js"></script>
           <script>
-            let loadingComplete = false;
-            let pageReady = false;
-            
-            function hideLoading() {
-              if (loadingComplete) return;
-              loadingComplete = true;
-              
-              const overlay = document.getElementById('loadingOverlay');
-              if (overlay) {
-                overlay.classList.add('hidden');
-                setTimeout(() => {
-                  overlay.style.display = 'none';
-                }, 300);
-              }
-            }
-            
-            function showPageContent() {
-              pageReady = true;
-              
-              // Ensure loading is hidden after a minimum time
-              setTimeout(() => {
-                hideLoading();
-                // Add loaded class to page transition elements
-                const pageElements = document.querySelectorAll('.page-transition');
-                pageElements.forEach(el => el.classList.add('loaded'));
-              }, 500);
-            }
-
-            // Enhanced authentication check on page load
             (async function checkAuthOnLoad(){
               await window.authManager.checkAuthOnLoad();
-              
-              // Auth check complete, show content
-              showPageContent();
             })();
-
-            // Fallback: hide loading after maximum time
-            setTimeout(() => {
-              if (!loadingComplete) {
-                hideLoading();
-                // Add loaded class to page transition elements
-                const pageElements = document.querySelectorAll('.page-transition');
-                pageElements.forEach(el => el.classList.add('loaded'));
-              }
-            }, 3000);
 
             let realtimeManager = null;
             const phone = '${phone}'.split('?')[0]; // Clean phone number to remove query parameters
@@ -1594,37 +1575,35 @@ export default function registerInboxRoutes(app) {
                 });
               }
             }
-            function toggleHandoffMode() {
+            function applyHandoffUi(isHumanMode) {
               const handoffBtn = document.getElementById('handoffToggleBtn');
-              if (!handoffBtn) return;
-              const isCurrentlyHuman = handoffBtn.getAttribute('data-is-human') === 'true';
-              const newHumanMode = !isCurrentlyHuman;
-              
-              // Update UI immediately
-              const img = handoffBtn.querySelector('img');
-              if (img) {
-              img.src = newHumanMode ? '/raise-hand-icon.svg' : '/bot-icon.svg';
-              img.alt = newHumanMode ? 'Human handling' : 'AI handling';
+              if (handoffBtn) {
+                handoffBtn.classList.toggle('is-human', isHumanMode);
+                handoffBtn.setAttribute('data-is-human', isHumanMode ? 'true' : 'false');
+                handoffBtn.title = isHumanMode ? 'Switch to AI' : 'Take over conversation';
+                const hiddenInput = handoffBtn.closest('form')?.querySelector('input[name="is_live"]');
+                if (hiddenInput) {
+                  hiddenInput.value = isHumanMode ? '0' : '1';
+                }
               }
-              handoffBtn.setAttribute('data-is-human', newHumanMode);
-              
-              // Update the hidden input
-              const form = handoffBtn.closest('form');
-              const hiddenInput = form && form.querySelector('input[name="is_human"]');
-              if (hiddenInput) {
-              hiddenInput.value = newHumanMode ? '1' : '';
+              const modePill = document.querySelector('.wa-chat-header__mode');
+              if (modePill) {
+                modePill.classList.toggle('is-human', isHumanMode);
+                modePill.classList.toggle('is-ai', !isHumanMode);
+                modePill.textContent = isHumanMode ? 'Human' : 'AI';
               }
+              applyComposerLiveMode(isHumanMode);
+            }
 
-              // Update composer controls immediately so the agent doesn't need to refresh
+            function applyComposerLiveMode(isHumanMode) {
               try {
                 const sendButton = document.getElementById('sendButton');
                 const messageInput = document.getElementById('messageInput');
                 const attachBtn = document.querySelector('.wa-attach-btn');
                 const emojiBtn = document.querySelector('.wa-emoji-btn');
-                const paymentBtn = document.getElementById('paymentRequestBtn');
 
                 if (sendButton) {
-                  if (newHumanMode) {
+                  if (isHumanMode) {
                     sendButton.setAttribute('data-original-disabled', 'false');
                   } else {
                     sendButton.setAttribute('data-original-disabled', 'true');
@@ -1632,64 +1611,74 @@ export default function registerInboxRoutes(app) {
                   }
                 }
                 if (messageInput) {
-                  messageInput.disabled = !newHumanMode;
+                  messageInput.disabled = !isHumanMode;
                 }
                 if (attachBtn) {
-                  attachBtn.disabled = !newHumanMode;
+                  attachBtn.disabled = !isHumanMode;
                 }
                 if (emojiBtn) {
-                  emojiBtn.disabled = !newHumanMode;
-                }
-                if (paymentBtn) {
-                  paymentBtn.setAttribute('data-human', newHumanMode ? '1' : '0');
-                  // paymentsAvailable is resolved asynchronously; here we just respect human/AI state
-                  if (!newHumanMode) {
-                    paymentBtn.disabled = true;
-                  }
+                  emojiBtn.disabled = !isHumanMode;
                 }
                 if (typeof updateSendButtonState === 'function') {
                   updateSendButtonState();
                 }
-              } catch(_) {}
-              
-              // Send via real-time if available
-              if (realtimeManager && realtimeManager.isConnected) {
-                realtimeManager.toggleLiveMode(phoneDigits, newHumanMode);
-              }
-              
-              // Submit the form with authentication (AuthManager will call form.submit on success)
-              if (form && typeof checkAuthThenSubmit === 'function') {
-              checkAuthThenSubmit(form).then(valid => {
-                  if (!valid) {
-                  // Revert UI on auth failure
-                    if (img) {
-                  img.src = isCurrentlyHuman ? '/raise-hand-icon.svg' : '/bot-icon.svg';
-                  img.alt = isCurrentlyHuman ? 'Human handling' : 'AI handling';
-                    }
-                  handoffBtn.setAttribute('data-is-human', isCurrentlyHuman);
-                    if (hiddenInput) hiddenInput.value = isCurrentlyHuman ? '1' : '';
-                    try {
-                      if (typeof updateSendButtonState === 'function') {
-                        updateSendButtonState();
-                }
-                    } catch(_) {}
-                  }
-                }).catch(() => {
-                  // On unexpected error, also revert the UI
-                  if (img) {
-                    img.src = isCurrentlyHuman ? '/raise-hand-icon.svg' : '/bot-icon.svg';
-                    img.alt = isCurrentlyHuman ? 'Human handling' : 'AI handling';
-                  }
-                  handoffBtn.setAttribute('data-is-human', isCurrentlyHuman);
-                  if (hiddenInput) hiddenInput.value = isCurrentlyHuman ? '1' : '';
-                  try {
-                    if (typeof updateSendButtonState === 'function') {
-                      updateSendButtonState();
-                    }
-                  } catch(_) {}
+              } catch (_) {}
+            }
+            window.applyComposerLiveMode = applyComposerLiveMode;
+
+            async function prepareHandoffToggle() {
+              const form = document.getElementById('handoffToggleForm');
+              const btn = document.getElementById('handoffToggleBtn');
+
+              if (!form || !btn || btn.disabled || btn.dataset.busy === '1') return;
+
+              const isHuman = btn.getAttribute('data-is-human') === 'true';
+              const isLive = !isHuman;
+              btn.dataset.busy = '1';
+
+              try {
+                const body = new URLSearchParams();
+                body.set('is_live', isLive ? '1' : '0');
+
+                const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+                const timeoutId = controller ? setTimeout(function() { controller.abort(); }, 15000) : null;
+
+                const resp = await fetch(form.action, {
+                  method: 'POST',
+                  credentials: 'include',
+                  headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    Accept: 'application/json'
+                  },
+                  body: body.toString(),
+                  signal: controller ? controller.signal : undefined
                 });
+
+                if (timeoutId) clearTimeout(timeoutId);
+
+                let data = {};
+                try { data = await resp.json(); } catch (_) {}
+
+                if (!resp.ok || data?.error) {
+                  const msg = data?.error || 'Failed to update live mode';
+                  if (window.Toast?.error) window.Toast.error(msg);
+                  else if (window.Toast?.show) window.Toast.show(msg, 'error');
+                  return;
+                }
+
+                window.location.href = '/inbox/' + encodeURIComponent(phone);
+              } catch (err) {
+                const msg = (err && err.name === 'AbortError')
+                  ? 'Live mode request timed out. Please try again.'
+                  : (err?.message || 'Failed to update live mode');
+                if (window.Toast?.error) window.Toast.error(msg);
+                else if (window.Toast?.show) window.Toast.show(msg, 'error');
+              } finally {
+                btn.dataset.busy = '0';
               }
             }
+            window.prepareHandoffToggle = prepareHandoffToggle;
+
             function setupComposer(){
               const ta=document.querySelector('#messageInput');
               if(!ta) return; 
@@ -1742,7 +1731,7 @@ export default function registerInboxRoutes(app) {
             }
             
             function scrollToBottom() {
-              const chatContainer = document.querySelector('.chat-thread');
+              const chatContainer = document.querySelector('.chat-thread-messages') || document.querySelector('.chat-thread');
               if (chatContainer) {
                 chatContainer.scrollTop = chatContainer.scrollHeight;
                 // Force a reflow to ensure scroll happens
@@ -1752,7 +1741,7 @@ export default function registerInboxRoutes(app) {
 
             function scrollToBottomAfterImages() {
               // Wait for all images to load before scrolling
-              const images = document.querySelectorAll('.chat-thread img');
+              const images = document.querySelectorAll('.chat-thread-messages img, .chat-thread img');
               let loadedImages = 0;
               
               if (images.length === 0) {
@@ -2293,6 +2282,13 @@ export default function registerInboxRoutes(app) {
             function handleFormSubmit(event){
               const imagePreview = document.getElementById('imagePreview');
               const documentPreview = document.getElementById('documentPreview');
+              const sendButton = document.getElementById('sendButton');
+              const messageInput = document.getElementById('messageInput');
+              const inHumanMode = sendButton && sendButton.getAttribute('data-original-disabled') !== 'true';
+
+              if (!inHumanMode || (sendButton && sendButton.disabled)) {
+                return false;
+              }
               
               if (imagePreview && imagePreview.style.display !== 'none') {
                 // If image preview is visible, send the image
@@ -2345,69 +2341,56 @@ export default function registerInboxRoutes(app) {
                   }
                 });
               } else {
-                // Send text message via real-time system (no page refresh)
-                const textarea = document.getElementById('messageInput');
+                const textarea = messageInput || document.getElementById('messageInput');
                 const message = textarea ? textarea.value.trim() : '';
                 
                 if (!message) {
-                  if (window?.ENV?.DEBUG_LOGS === '1') console.log('No message to send');
-                  return;
+                  return false;
                 }
-                
-                // Ensure real-time is connected (attempt quick connect if needed)
-                const ensureConnected = async () => {
-                  try {
-                    if (!realtimeManager) return false;
-                    if (realtimeManager.isConnected) return true;
-                    await realtimeManager.connect();
-                    realtimeManager.joinChat(phoneDigits);
-                    await new Promise(r => setTimeout(r, 500));
-                    return realtimeManager.isConnected;
-                  } catch(_) { return false; }
-                };
-                
+
+                const mgr = window.realtimeManager || realtimeManager;
                 (async () => {
-                  const ok = await ensureConnected();
-                  if (!ok) {
-                    console.error('Real-time connection unavailable. Message not sent.');
-                    try {
-                      if (window.Toast && typeof window.Toast.error === 'function') {
-                        window.Toast.error('Connection issue: message not sent. Please try again.');
-                      }
-                    } catch(_) {}
-                    return;
-                  }
-                  if (window?.ENV?.DEBUG_LOGS === '1') console.log('📤 Sending message via real-time:', message);
-                  const success = realtimeManager.sendMessage(phoneDigits, message, 'text', currentReplyToMessageId);
-                  if (success) {
-                    textarea.value = '';
-                    clearReply();
-                  } else {
-                    console.error('Failed to send message via real-time');
-                    try {
-                      if (window.Toast && typeof window.Toast.error === 'function') {
-                        window.Toast.error('Failed to send message. Please try again.');
-                      }
-                    } catch(_) {}
+                  try {
+                    if (!mgr || typeof mgr.sendMessage !== 'function') {
+                      throw new Error('Messaging is not ready yet. Please refresh and try again.');
+                    }
+                    const success = await mgr.sendMessage(phoneDigits, message, 'text', currentReplyToMessageId);
+                    if (success) {
+                      textarea.value = '';
+                      textarea.style.height = 'auto';
+                      updateSendButtonState();
+                      clearReply();
+                      setTimeout(scrollToBottom, 100);
+                    }
+                  } catch (err) {
+                    console.error('Failed to send message:', err);
                   }
                 })();
               }
               return false;
             }
+            window.handleFormSubmit = handleFormSubmit;
 
             window.addEventListener('DOMContentLoaded', function() {
               setupComposer();
               
               // Setup attachment menu
-              document.getElementById('attachDocumentBtn').addEventListener('click', function() {
-                document.getElementById('documentFileInput').click();
-                document.getElementById('attachMenu').style.display = 'none';
-              });
-              
-              document.getElementById('attachImageBtn').addEventListener('click', function() {
-                document.getElementById('imageFileInput').click();
-                document.getElementById('attachMenu').style.display = 'none';
-              });
+              const attachDocumentBtn = document.getElementById('attachDocumentBtn');
+              const attachImageBtn = document.getElementById('attachImageBtn');
+              if (attachDocumentBtn) {
+                attachDocumentBtn.addEventListener('click', function() {
+                  document.getElementById('documentFileInput')?.click();
+                  const menu = document.getElementById('attachMenu');
+                  if (menu) menu.style.display = 'none';
+                });
+              }
+              if (attachImageBtn) {
+                attachImageBtn.addEventListener('click', function() {
+                  document.getElementById('imageFileInput')?.click();
+                  const menu = document.getElementById('attachMenu');
+                  if (menu) menu.style.display = 'none';
+                });
+              }
               
               // Auto-scroll to bottom on page load with multiple attempts
               setTimeout(scrollToBottom, 100);
@@ -2447,34 +2430,32 @@ export default function registerInboxRoutes(app) {
             // Status Management Functions
             function toggleStatusDropdown() {
               const dropdown = document.getElementById('statusDropdown');
+              const trigger = document.querySelector('.chat-header-status');
               if (!dropdown) return;
-              
-              // Close other dropdowns
-              document.querySelectorAll('.dropdown-menu').forEach(el => {
-                if (el.id !== 'statusDropdown') el.style.display = 'none';
+              document.querySelectorAll('.status-dropdown-menu.is-open').forEach(el => {
+                if (el !== dropdown) el.classList.remove('is-open');
               });
-              
-              // Toggle status dropdown
-              dropdown.style.display = dropdown.style.display === 'block' ? 'none' : 'block';
+              const open = !dropdown.classList.contains('is-open');
+              dropdown.classList.toggle('is-open', open);
+              if (trigger) trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
             }
             
             function updateConversationStatus(status) {
-              // Capture previous UI state so we can revert on failure
-              const statusChip = document.querySelector('.status-chip');
-              const prevText = statusChip ? statusChip.textContent : null;
-              const prevBg = statusChip ? statusChip.style.backgroundColor : null;
+              const statusLabel = document.querySelector('.chat-header-status__label');
+              const statusDot = document.querySelector('.chat-header-status__dot');
+              const prevText = statusLabel ? statusLabel.textContent : null;
+              const prevBg = statusDot ? statusDot.style.backgroundColor : null;
 
-              // Update UI immediately
               const statusDisplay = getStatusDisplayName(status);
               const statusColor = getStatusColor(status);
               
-              if (statusChip) {
-                statusChip.textContent = statusDisplay;
-                statusChip.style.backgroundColor = statusColor;
-              }
+              if (statusLabel) statusLabel.textContent = statusDisplay;
+              if (statusDot) statusDot.style.backgroundColor = statusColor;
               
-              // Close dropdown
-              document.getElementById('statusDropdown').style.display = 'none';
+              const dropdown = document.getElementById('statusDropdown');
+              if (dropdown) dropdown.classList.remove('is-open');
+              const trigger = document.querySelector('.chat-header-status');
+              if (trigger) trigger.setAttribute('aria-expanded', 'false');
               
               // Submit status update via fetch API
               const encodedPhone = encodeURIComponent(phone);
@@ -2488,7 +2469,10 @@ export default function registerInboxRoutes(app) {
               .then(response => {
                 if (response.ok) {
                   // Show success message
-                  window.location.href = '/inbox/' + encodedPhone + '?toast=' + encodeURIComponent('Status updated to ' + statusDisplay) + '&type=success';
+                  const nextUrl = new URL('/inbox/' + encodedPhone, window.location.origin);
+                  nextUrl.searchParams.set('toast', 'Status updated to ' + statusDisplay);
+                  nextUrl.searchParams.set('type', 'success');
+                  window.location.href = nextUrl.toString();
                 } else {
                   throw new Error('Status update failed');
                 }
@@ -2503,10 +2487,10 @@ export default function registerInboxRoutes(app) {
                   }
                 } catch (_) {}
                 // Revert UI changes on error
-                if (statusChip) {
-                  if (prevText != null) statusChip.textContent = prevText;
-                  if (prevBg != null) statusChip.style.backgroundColor = prevBg;
+                if (statusLabel) {
+                  if (prevText != null) statusLabel.textContent = prevText;
                 }
+                if (statusDot && prevBg != null) statusDot.style.backgroundColor = prevBg;
               });
             }
             
@@ -2531,12 +2515,13 @@ export default function registerInboxRoutes(app) {
             // Close status dropdown when clicking outside
             document.addEventListener('click', function(e) {
               const statusDropdown = document.getElementById('statusDropdown');
-              const statusButton = document.querySelector('.status-dropdown button');
+              const statusButton = document.querySelector('.chat-header-status');
               
               if (statusDropdown && statusButton && 
                   !statusDropdown.contains(e.target) && 
                   !statusButton.contains(e.target)) {
-                statusDropdown.style.display = 'none';
+                statusDropdown.classList.remove('is-open');
+                statusButton.setAttribute('aria-expanded', 'false');
               }
             });
           </script>
@@ -2555,90 +2540,75 @@ export default function registerInboxRoutes(app) {
           // Expose plan capability so realtime appends can mirror server-rendered actions
           window.IS_UPGRADED = ${isUpgraded ? 'true' : 'false'};
         </script>
-          <div class="container page-transition">
-            ${renderTopbar(`<a href="/dashboard">Dashboard</a> / <a href="/inbox">Inbox</a> / +${String(phone).replace(/^\+/, '')}`, email)}
+          <div class="container">
+            ${renderTopbar(`<a href="/inbox">Inbox</a> / +${String(phone).replace(/^\+/, '')}`, email)}
             <div class="layout">
               ${renderSidebar('inbox', { showBookings: !!isUpgraded, isUpgraded })}
               <main class="main">
                 <div class="main-content chat-view">
                   <div class="wa-chat-header">
-                    <a href="/inbox" style="margin-right:20px;">
-                      <img src="/left-arrow-icon.svg" alt="Back" style="width:10px;height:10px;vertical-align:middle;"/>
-                    </a>
-                    <div class="wa-avatar">${String(phone).slice(-2)}</div>
-                      <div style="flex:1;">
-                        <div class="wa-name">${headerName}</div>
-                    <div class="small">
-                          ${isHuman ? ('Human' + (remain ? ' • <span id="exp_remain"></span> left' : '')) : 'AI'}
-                          ${over24h ? ' • 24h window expired' : ''}
+                    <div class="wa-chat-header__lead">
+                      <a href="/inbox" class="chat-header-btn chat-header-btn--back" aria-label="Back to inbox">${chatHeaderIcon('back')}</a>
+                      <div class="wa-avatar wa-chat-header__avatar" aria-hidden="true">${escapeHtml(headerInitials)}</div>
+                      <div class="wa-chat-header__identity">
+                        <div class="wa-name">${escapeHtml(headerName)}</div>
+                        <div class="wa-chat-header__status">
+                          <span class="wa-chat-header__mode ${isHuman ? 'is-human' : 'is-ai'}">${isHuman ? 'Human' : 'AI'}</span>
+                          ${over24h ? '<span class="wa-chat-header__flag">24h expired</span>' : ''}
+                          ${isHuman && remain ? '<span class="wa-chat-header__timer"><span id="exp_remain"></span> left</span>' : ''}
                         </div>
+                      </div>
                     </div>
-                    <!-- Use GET for handoff so Clerk's session refresh/handshake can treat it as a normal navigation -->
-                    ${over24h ? `
-                      <button type="button" class="btn-ghost handoff-toggle-btn" id="handoffToggleBtn" title="Live mode disabled after 24h" style="opacity:0.6; cursor:not-allowed;">
-                        <img 
-                          src="${isHuman ? '/raise-hand-icon.svg' : '/bot-icon.svg'}"
-                          alt="Live mode disabled after 24h" 
-                          style="width:26px;height:26px;vertical-align:middle;margin-right:6px; cursor:not-allowed;"
-                        />
-                      </button>
-                    ` : `
-                      <form method="get" action="/handoff/${phone}" onsubmit="event.preventDefault(); toggleHandoffMode(); return false;">
-                        <input type="hidden" name="is_human" value="${isHuman ? '' : '1'}"/>
-                        <button type="submit" class="btn-ghost handoff-toggle-btn" id="handoffToggleBtn" data-is-human="${isHuman}">
-                          <img 
-                            src="${isHuman ? '/raise-hand-icon.svg' : '/bot-icon.svg'}"
-                            alt="${isHuman ? 'Human handling' : 'AI handling'}" 
-                            style="width:26px;height:26px;vertical-align:middle;margin-right:6px; cursor:pointer;"
-                          />
+                    <div class="wa-chat-header__actions">
+                      ${over24h ? `
+                        <button type="button" class="chat-header-btn chat-header-btn--handoff" id="handoffToggleBtn" disabled title="Live mode disabled after 24h">
+                          ${chatHeaderIcon('bot')}
                         </button>
+                      ` : `
+                        <form method="post" action="/inbox/${phone}/handoff" class="chat-header-form" id="handoffToggleForm" onsubmit="event.preventDefault(); prepareHandoffToggle(); return false;">
+                          <input type="hidden" name="is_live" value="${isHuman ? '0' : '1'}"/>
+                          <button type="submit" class="chat-header-btn chat-header-btn--handoff${isHuman ? ' is-human' : ''}" id="handoffToggleBtn" data-is-human="${isHuman ? 'true' : 'false'}" title="${isHuman ? 'Switch to AI' : 'Take over conversation'}">
+                            <span class="chat-header-btn__icon chat-header-btn__icon--bot">${chatHeaderIcon('bot')}</span>
+                            <span class="chat-header-btn__icon chat-header-btn__icon--hand">${chatHeaderIcon('hand')}</span>
+                          </button>
+                        </form>
+                      `}
+                      ${isHuman ? `
+                        <form method="post" action="/inbox/${phone}/renew" class="chat-header-form" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;">
+                          <button type="submit" class="chat-header-btn" title="Renew 5 minutes">${chatHeaderIcon('renew')}</button>
+                        </form>
+                      ` : ''}
+                      <span class="wa-chat-header__divider" aria-hidden="true"></span>
+                      <form method="post" action="/inbox/${phone}/archive" class="chat-header-form" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;">
+                        <button type="submit" class="chat-header-btn" title="Archive conversation">${chatHeaderIcon('archive')}</button>
                       </form>
-                    `}
-                    ${isHuman ? `<form method="post" action="/inbox/${phone}/renew" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
-                      <button type="submit" class="btn-ghost" title="Renew 5 minutes"><img src="/restart-onboarding.svg" alt="Renew" style="width:20px;height:20px;vertical-align:middle;"/></button>
-                    </form>` : ''}
-                    <form method="post" action="/inbox/${phone}/archive" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
-                      <button type="submit" class="btn-ghost"><img src="/archive-icon.svg" alt="Archive" style="width:20px;height:20px;vertical-align:middle;"/></button>
-                    </form>
-                    <form method="post" action="/inbox/${phone}/clear" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
-                      <button type="submit" class="btn-ghost"><img src="/clear-icon.svg" alt="Clear" style="width:24px;height:24px;vertical-align:middle;"/></button>
-                    </form>
-                    <form method="post" action="/inbox/${phone}/delete" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;" style="margin-left:8px;">
-                      <button type="submit" class="btn-ghost"><img src="/delete-icon.svg" alt="Delete" style="width:20px;height:20px;vertical-align:middle;"/></button>
-                    </form>
-                    <!-- Conversation Status Management -->
-                    <div class="status-dropdown" style="position:relative; margin-left:8px; margin-bottom:8px;">
-                      <button type="button" class="btn-ghost" onclick="toggleStatusDropdown()" style="padding:4px 8px; border-radius:6px; display:flex; align-items:center; gap:4px;">
-                        <span class="status-chip" style="background-color: ${statusColor}; color: white; font-size: 11px; padding: 3px 8px; border-radius: 12px;">${statusDisplay}</span>
-                        <span style="font-size:12px; color:#666;">▼</span>
-                      </button>
-                      <div id="statusDropdown" class="status-dropdown-menu" style="position:absolute; right:0; top:32px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:8px; min-width:160px; display:none; box-shadow:0 6px 20px rgba(0,0,0,0.12); z-index:10;">
-                        <div style="font-size:12px; color:#666; margin-bottom:6px; padding-bottom:4px; border-bottom:1px solid #eee;">Change Status</div>
-                        ${Object.entries(CONVERSATION_STATUSES).map(([key, value]) => {
-                          const isActive = conversationStatus === value;
-                          const disableOption = statusLocked && value !== CONVERSATION_STATUSES.RESOLVED;
-                          const disabledAttr = disableOption ? 'disabled' : '';
-                          const extraStyle = disableOption ? 'opacity:0.5; cursor:not-allowed;' : '';
-                          return `
-                          <button type="button" class="status-option ${isActive ? 'active' : ''}" ${disabledAttr} onclick="${disableOption ? 'return false;' : `updateConversationStatus('${value}')`}" style="display:flex; align-items:center; gap:8px; width:100%; justify-content:flex-start; border:none; background:transparent; padding:6px 8px; border-radius:4px; font-size:13px; ${isActive ? 'background:#f0f9ff; color:#0369a1;' : ''} ${extraStyle}">
-                            <span style="width:8px; height:8px; border-radius:50%; background-color: ${STATUS_COLORS[value]};"></span>
+                      <form method="post" action="/inbox/${phone}/clear" class="chat-header-form" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;">
+                        <button type="submit" class="chat-header-btn" title="Clear chat">${chatHeaderIcon('clear')}</button>
+                      </form>
+                      <form method="post" action="/inbox/${phone}/delete" class="chat-header-form" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;">
+                        <button type="submit" class="chat-header-btn chat-header-btn--danger" title="Delete conversation">${chatHeaderIcon('trash')}</button>
+                      </form>
+                      <div class="status-dropdown wa-chat-header__status-menu">
+                        <button type="button" class="chat-header-status" onclick="toggleStatusDropdown()" aria-haspopup="true" aria-expanded="false">
+                          <span class="chat-header-status__dot" style="background-color:${statusColor};"></span>
+                          <span class="chat-header-status__label">${statusDisplay}</span>
+                          ${chatHeaderIcon('chevron')}
+                        </button>
+                        <div id="statusDropdown" class="status-dropdown-menu">
+                          <div class="status-dropdown-menu__title">Change status</div>
+                          ${Object.entries(CONVERSATION_STATUSES).map(([key, value]) => {
+                            const isActive = conversationStatus === value;
+                            const disableOption = statusLocked && value !== CONVERSATION_STATUSES.RESOLVED;
+                            const disabledAttr = disableOption ? 'disabled' : '';
+                            return `
+                          <button type="button" class="status-option ${isActive ? 'active' : ''}" ${disabledAttr} onclick="${disableOption ? 'return false;' : `updateConversationStatus('${value}')`}">
+                            <span class="status-option__dot" style="background-color: ${STATUS_COLORS[value]};"></span>
                             ${STATUS_DISPLAY_NAMES[value]}
                             ${conversationStatus === value ? '✓' : ''}
                           </button>
                         `;
-                        }).join('')}
-                      </div>
-                    </div>
-                    <!-- Payments dropdown -->
-                    <div class="payment-dropdown" style="position:relative; margin-left:8px; margin-bottom:8px;">
-                      <button type="button" class="btn-ghost" onclick="togglePaymentDropdown()" id="paymentDropdownBtn" style="padding:4px 8px; border-radius:6px; display:flex; align-items:center; gap:6px;">
-                        <span style="font-size:14px;">💳</span>
-                        <span class="small">Payments</span>
-                        <span style="font-size:12px; color:#666;">▼</span>
-                      </button>
-                      <div id="paymentDropdownMenu" style="position:absolute; right:0; top:32px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:8px; min-width:220px; max-width:260px; display:none; box-shadow:0 6px 20px rgba(0,0,0,0.12); z-index:15;">
-                        <div class="small" style="margin-bottom:6px; padding-bottom:4px; border-bottom:1px solid #eee;">Payment requests</div>
-                        <div id="paymentDropdownList" class="payment-requests-list small"></div>
+                          }).join('')}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -2711,9 +2681,11 @@ export default function registerInboxRoutes(app) {
                     `.replace('inputsitation_placeholder', inputsHtml + '<div style="margin-top:8px;"><button class="btn-primary" type="submit">Send template</button></div>');
                   })()}
                   <div class="chat-thread">
-                    ${items || '<div class="small" style="text-align:center;padding:16px;">No messages</div>'}
-                    <div data-thread-anchor="true"></div>
-                    <div>
+                    <div class="chat-thread-messages">
+                      ${items || '<div class="chat-empty-state">No messages</div>'}
+                      <div data-thread-anchor="true"></div>
+                    </div>
+                    <div class="chat-composer">
                       <div id="imagePreview" style="display:none; margin-bottom:8px; padding:8px; background:#f0f0f0; border-radius:8px;">
                         <div style="display:flex; gap:8px; align-items:center;">
                           <img id="previewImg" style="width:60px; height:60px; object-fit:cover; border-radius:8px;" />
@@ -2766,8 +2738,7 @@ export default function registerInboxRoutes(app) {
                           <button type="button" class="reaction-option" onclick="addReaction('👏')">👏</button>
                         </div>
                       </div>
-                  </div>
-                  <form method="post" action="/send/${phone}" onsubmit="event.preventDefault(); handleFormSubmit(event); return false;" style="margin-top: 8px;">
+                  <form method="post" action="/send/${phone}" onsubmit="event.preventDefault(); handleFormSubmit(event); return false;">
                     <div class="wa-attach-menu" id="attachMenu" style="display: none;">
                       <button type="button" class="wa-attach-option" id="attachDocumentBtn" title="Send document">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -2793,20 +2764,6 @@ export default function registerInboxRoutes(app) {
                       <button type="button" ${!isHuman ? 'disabled' : ''} onclick="toggleAttachmentMenu()" class="wa-attach-btn" title="Attach">
                         <svg viewBox="0 0 24 24" fill="currentColor">
                           <path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/>
-                        </svg>
-                      </button>
-                      <button type="button"
-                        id="paymentRequestBtn"
-                        data-human="${isHuman ? '1' : '0'}"
-                        class="wa-payment-btn"
-                        title="Request payment"
-                        ${!isHuman ? 'disabled data-original-disabled="true"' : ''}
-                        onclick="openPaymentModal()">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                          <rect x="3" y="5" width="18" height="14" rx="2" ry="2"></rect>
-                          <line x1="3" y1="10" x2="21" y2="10"></line>
-                          <circle cx="8" cy="15" r="1"></circle>
-                          <circle cx="12" cy="15" r="1"></circle>
                         </svg>
                       </button>
                       
@@ -2846,263 +2803,134 @@ export default function registerInboxRoutes(app) {
                     </div>
                   </div>
                   ` : ''}
-                  <div id="paymentRequestsPanel" class="card" style="margin-top:16px; display:none;">
-                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-                      <div class="small" style="font-weight:600;">Payment requests</div>
-                    </div>
-                    <div id="paymentRequestsList" class="payment-requests-list small"></div>
-                  </div>
-                  <div id="paymentModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:1150; align-items:center; justify-content:center;">
-                    <div class="card" style="width:420px; max-width:95vw;">
-                      <div class="small" style="margin-bottom:8px;">Request payment</div>
-                      <form id="paymentForm" onsubmit="submitPaymentRequest(event)" style="display:grid; gap:10px;">
-                        <label class="small" style="display:flex; flex-direction:column; gap:4px;">
-                          Amount
-                          <input type="number" name="amount" min="1" step="0.01" required class="settings-field" placeholder="49.00"/>
-                        </label>
-                        <label class="small" style="display:flex; flex-direction:column; gap:4px;">
-                          Currency
-                          <select name="currency" class="settings-field">
-                            <option value="usd">USD</option>
-                            <option value="eur">EUR</option>
-                            <option value="gbp">GBP</option>
-                            <option value="cad">CAD</option>
-                            <option value="aud">AUD</option>
-                          </select>
-                        </label>
-                        <label class="small" style="display:flex; flex-direction:column; gap:4px;">
-                          Description <span class="small" style="color:#94a3b8;">Optional</span>
-                          <input type="text" name="description" maxlength="120" class="settings-field" placeholder="Deposit, invoice, etc."/>
-                        </label>
-                        <div class="small" style="color:#64748b;">The customer receives a secure Stripe Checkout link inside WhatsApp.</div>
-                        <div style="display:flex; gap:8px; justify-content:flex-end;">
-                          <button type="button" class="btn-ghost" onclick="closePaymentModal()">Cancel</button>
-                          <button type="submit" class="btn-primary" id="paymentSubmitBtn">Send link</button>
-                        </div>
-                      </form>
                     </div>
                   </div>
                 </div>
               </main>
             </div>  
           </div>
-        <script>
-          (function(){
-            const phone = '${phone}'.split('?')[0];
-            const paymentBtn = document.getElementById('paymentRequestBtn');
-            const panel = document.getElementById('paymentRequestsPanel');
-            const listEl = document.getElementById('paymentRequestsList');
-            let paymentsAvailable = false;
-
-            function escapeHtmlText(str){
-              return String(str || '').replace(/[&<>"]/g, function(c){
-                return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]) || c;
-              });
-            }
-
-            function humanCurrency(amount, currency){
-              try {
-                return new Intl.NumberFormat('en', { style: 'currency', currency: (currency || 'usd').toUpperCase() }).format(Number(amount || 0));
-              } catch {
-                return (currency || 'USD').toUpperCase() + ' ' + Number(amount || 0).toFixed(2);
-              }
-            }
-
-            function statusLabel(status){
-              switch(status){
-                case 'paid': return 'Paid';
-                case 'failed': return 'Failed';
-                case 'expired': return 'Expired';
-                case 'canceled': return 'Canceled';
-                default: return 'Pending';
-              }
-            }
-
-            function updatePaymentButton(){
-              if (!paymentBtn) return;
-              const humanEnabled = paymentBtn.getAttribute('data-human') === '1';
-              paymentBtn.disabled = !(paymentsAvailable && humanEnabled);
-              if (!paymentsAvailable) {
-                paymentBtn.title = 'Connect Stripe in Dashboard to request payments';
-              } else if (!humanEnabled) {
-                paymentBtn.title = 'Switch to Live mode to request payments';
-              } else {
-                paymentBtn.title = 'Request payment';
-              }
-            }
-
-            async function loadStripeStatus(){
-              try {
-                const resp = await fetch('/api/payments/stripe/status', { headers: { 'Accept':'application/json' } });
-                const data = await resp.json();
-                paymentsAvailable = data.success && !!data.connected;
-              } catch {
-                paymentsAvailable = false;
-              }
-              updatePaymentButton();
-            }
-
-            async function loadPaymentRequestsPanel(){
-              const dropdownList = document.getElementById('paymentDropdownList');
-              const dropdownBtn = document.getElementById('paymentDropdownBtn');
-              try {
-                const resp = await fetch('/api/payments/requests?contact=' + encodeURIComponent(phone), { headers: { 'Accept':'application/json' } });
-                const data = await resp.json();
-                const hasData = data.success && Array.isArray(data.requests) && data.requests.length > 0;
-
-                // Old panel (kept hidden) – keep list synced but never show panel
-                if (panel && listEl) {
-                  panel.style.display = 'none';
-                  listEl.innerHTML = hasData ? data.requests.map(req => {
-                    const amount = humanCurrency(req.amount, req.currency);
-                    const desc = req.description ? ' • ' + escapeHtmlText(req.description) : '';
-                    const ts = req.created_at ? new Date(req.created_at).toLocaleString() : '';
-                    const meta = statusLabel(req.status) + (ts ? ' · ' + escapeHtmlText(ts) : '');
-                    return '<div class="payment-request-row">'
-                      + '<div><strong>' + amount + '</strong>' + desc + '</div>'
-                      + '<div class="payment-request-meta">' + meta + '</div>'
-                      + '</div>';
-                  }).join('') : '';
-                }
-
-                // New navbar dropdown
-                if (dropdownList) {
-                  if (!hasData) {
-                    dropdownList.innerHTML = '<div class="small" style="color:#6b7280;">No payment requests yet.</div>';
-                  } else {
-                    dropdownList.innerHTML = data.requests.map(req => {
-                      const amount = humanCurrency(req.amount, req.currency);
-                      const desc = req.description ? ' • ' + escapeHtmlText(req.description) : '';
-                      const ts = req.created_at ? new Date(req.created_at).toLocaleString() : '';
-                      const meta = statusLabel(req.status) + (ts ? ' · ' + escapeHtmlText(ts) : '');
-                      return '<div class="payment-request-row">'
-                        + '<div><strong>' + amount + '</strong>' + desc + '</div>'
-                        + '<div class="payment-request-meta">' + meta + '</div>'
-                        + '</div>';
-                    }).join('');
-                  }
-                }
-
-                if (dropdownBtn) {
-                  dropdownBtn.style.opacity = hasData ? '1' : '0.6';
-                }
-              } catch (err) {
-                console.error('Failed to load payment requests', err);
-              }
-            }
-
-            window.togglePaymentDropdown = function() {
-              const menu = document.getElementById('paymentDropdownMenu');
-              if (!menu) return;
-              const isOpen = menu.style.display === 'block';
-              menu.style.display = isOpen ? 'none' : 'block';
-            };
-
-            // Close payments dropdown when clicking outside
-            document.addEventListener('click', function(e) {
-              const menu = document.getElementById('paymentDropdownMenu');
-              const btn = document.getElementById('paymentDropdownBtn');
-              if (!menu || !btn) return;
-              if (!menu.contains(e.target) && !btn.contains(e.target)) {
-                menu.style.display = 'none';
-              }
-            });
-
-            window.openPaymentModal = function(){
-              // Check if button is disabled
-              const btn = document.getElementById('paymentRequestBtn');
-              if (btn && btn.disabled) {
-                const title = btn.getAttribute('title') || 'Button disabled';
-                if (window.Toast?.error) {
-                  window.Toast.error(title);
-                } else {
-                  alert(title);
-                }
-                return;
-              }
-              
-              if (!paymentsAvailable) {
-                const msg = 'Connect Stripe in the dashboard first.';
-                if (window.Toast?.error) {
-                  window.Toast.error(msg);
-                } else {
-                  alert(msg);
-                }
-                return;
-              }
-              
-              const modal = document.getElementById('paymentModal');
-              if (!modal) {
-                console.error('Payment modal not found');
-                alert('Payment modal not found. Please refresh the page.');
-                return;
-              }
-              
-              modal.style.display = 'flex';
-            };
-
-            window.closePaymentModal = function(){
-              const modal = document.getElementById('paymentModal');
-              if (modal) modal.style.display = 'none';
-            };
-
-            window.submitPaymentRequest = async function(event){
-              event.preventDefault();
-              const form = event.target;
-              const submitBtn = document.getElementById('paymentSubmitBtn');
-              if (submitBtn) submitBtn.disabled = true;
-              try {
-                const payload = {
-                  contact: phone,
-                  amount: form.amount.value,
-                  currency: form.currency.value,
-                  description: form.description.value
-                };
-                const resp = await fetch('/api/payments/request', {
-                  method: 'POST',
-                  headers: { 'Content-Type':'application/json', 'Accept':'application/json' },
-                  credentials: 'include',
-                  body: JSON.stringify(payload)
-                });
-                const data = await resp.json().catch(() => ({}));
-                if (!resp.ok || !data.success) throw new Error(data?.error || 'Failed to send payment link');
-                if (window.Toast?.success) window.Toast.success('Payment link sent to the customer.');
-                form.reset();
-                window.closePaymentModal();
-                loadPaymentRequestsPanel();
-              } catch (err) {
-                const msg = err?.message || 'Failed to send payment link';
-                if (window.Toast?.error) window.Toast.error(msg); else alert(msg);
-              } finally {
-                if (submitBtn) submitBtn.disabled = false;
-              }
-            };
-
-            // Attach event listener to button as backup
-            if (paymentBtn) {
-              paymentBtn.addEventListener('click', function(e) {
-                e.preventDefault();
-                e.stopPropagation();
-                if (window.openPaymentModal) {
-                  window.openPaymentModal();
-                } else {
-                  console.error('openPaymentModal function not defined');
-                  alert('Payment feature not ready. Please refresh the page.');
-                }
-              });
-            }
-            
-            loadStripeStatus();
-            loadPaymentRequestsPanel();
-          })();
-        </script>
         </body>
       </html>
     `);
   });
 
+  async function sendLiveModeWelcomeMessage(userId, phone, cfg, agentName) {
+    if (!cfg?.whatsapp_token || !cfg?.phone_number_id || !agentName) return;
+    try {
+      const text = `You are connected with ${agentName}.`;
+      const resp = await sendWhatsAppText(phone, text, cfg);
+      const outboundId = resp?.messages?.[0]?.id;
+      if (!outboundId) return;
+      try {
+        await recordOutboundMessage({
+          messageId: outboundId,
+          userId,
+          cfg,
+          to: phone,
+          type: 'text',
+          text,
+          raw: { to: phone, text, context: 'live_mode_connect' }
+        });
+      } catch (err) {
+        console.warn('Live mode welcome message record failed:', err?.message || err);
+      }
+      try {
+        const { broadcastNewMessage } = await import('../routes/realtime.mjs');
+        const nowTs = Math.floor(Date.now() / 1000);
+        broadcastNewMessage(userId, String(phone), {
+          id: outboundId,
+          direction: 'outbound',
+          type: 'text',
+          text_body: text,
+          timestamp: nowTs,
+          from_digits: (cfg.business_phone || '').replace(/\D/g, '') || null,
+          to_digits: String(phone),
+          contact_name: null,
+          contact: String(phone),
+          formatted_time: formatTimestampForDisplay(nowTs),
+          delivery_status: 'sent',
+          read_status: 'unread'
+        });
+      } catch (err) {
+        console.warn('Broadcast live mode welcome message failed:', err?.message || err);
+      }
+    } catch (err) {
+      console.warn('Live mode welcome message failed:', err?.message || err);
+    }
+  }
+
+  async function isConversationOver24h(userId, phone) {
+    try {
+      const digits = normalizePhone(phone);
+      const lastMsg = await Message.findOne({
+        user_id: userId,
+        direction: 'inbound',
+        $or: [{ from_id: phone }, { from_digits: digits }]
+      }).sort({ timestamp: -1 }).select('timestamp').lean();
+      const lastInbound = Number(lastMsg?.timestamp || 0);
+      const now = Math.floor(Date.now() / 1000);
+      return !!(lastInbound && (now - lastInbound) > 24 * 3600);
+    } catch {
+      return false;
+    }
+  }
+
+  app.post("/inbox/:phone/handoff", ensureAuthed, async (req, res) => {
+    const phone = parseRouteContact(req.params.phone);
+    const userId = getCurrentUserId(req);
+    const wantsJson = String(req.headers.accept || '').includes('application/json');
+    const raw = req.body?.is_live ?? req.body?.isLive ?? req.body?.is_human;
+    const isLive = raw === '1' || raw === 1 || raw === true || raw === 'true';
+
+    const fail = (status, message) => {
+      if (wantsJson) return res.status(status).json({ error: message });
+      return res.redirect(`/inbox/${encodeURIComponent(phone)}?toast=${encodeURIComponent(message)}&type=error`);
+    };
+
+    try {
+      if (isLive) {
+        if (await isUsageExceeded(userId)) {
+          return fail(403, 'You have exceeded your monthly message limit. Please upgrade your plan.');
+        }
+        if (await isConversationOver24h(userId, phone)) {
+          return fail(400, 'Live mode is disabled because the last customer message is older than 24 hours.');
+        }
+        const cfg = await getSettingsForUser(userId);
+        const agentName = String(cfg?.name || '').trim();
+        if (!agentName) {
+          return fail(400, 'Please set your Name in Settings before enabling Live mode.');
+        }
+
+        const now = Math.floor(Date.now() / 1000);
+        await upsertHandoffForContact(userId, phone, {
+          is_human: true,
+          human_expires_ts: now + 5 * 60
+        });
+        sendLiveModeWelcomeMessage(userId, phone, cfg, agentName);
+      } else {
+        await upsertHandoffForContact(userId, phone, {
+          is_human: false,
+          human_expires_ts: 0
+        });
+      }
+
+      try {
+        const { broadcastLiveModeChange } = await import('../routes/realtime.mjs');
+        await broadcastLiveModeChange(userId, canonicalContactId(phone), isLive);
+      } catch {}
+
+      if (wantsJson) {
+        return res.json({ success: true, isLive: !!isLive });
+      }
+      return res.redirect(`/inbox/${encodeURIComponent(phone)}`);
+    } catch (error) {
+      console.error('Error updating handoff mode:', error);
+      return fail(500, 'Failed to update live mode');
+    }
+  });
+
   async function handleHandoff(req, res) {
-    const phone = req.params.phone;
+    const phone = parseRouteContact(req.params.phone);
     const userId = getCurrentUserId(req);
     const source = req.method === 'GET' ? (req.query || {}) : (req.body || {});
     const isHuman = source?.is_human ? 1 : 0;
@@ -3110,16 +2938,10 @@ export default function registerInboxRoutes(app) {
     const exp = isHuman ? (now + 5*60) : 0;
     try {
       if (isHuman) {
-        try {
-          const dbNative = getDB();
-          const row = dbNative.prepare(`SELECT MAX(timestamp) AS ts FROM messages WHERE user_id = ? AND from_id = ? AND direction = 'inbound'`).get(userId, phone) || {};
-          const lastInbound = Number(row.ts || 0);
-          const over24h = lastInbound && (now - lastInbound) > 24*3600;
-          if (over24h) {
-            const msg = encodeURIComponent('Live mode is disabled because the last customer message is older than 24 hours.');
-            return res.redirect(`/inbox/${encodeURIComponent(phone)}?toast=${msg}&type=error`);
-          }
-        } catch {}
+        if (await isConversationOver24h(userId, phone)) {
+          const msg = encodeURIComponent('Live mode is disabled because the last customer message is older than 24 hours.');
+          return res.redirect(`/inbox/${encodeURIComponent(phone)}?toast=${msg}&type=error`);
+        }
 
         const cfg = await getSettingsForUser(userId);
         const agentName = String(cfg?.name || '').trim();
@@ -3128,66 +2950,12 @@ export default function registerInboxRoutes(app) {
           return res.redirect(`/inbox/${encodeURIComponent(phone)}?toast=${msg}&type=error`);
         }
         try {
-          await Handoff.findOneAndUpdate(
-            { contact_id: phone, user_id: userId },
-            { $set: { is_human: true, human_expires_ts: exp, updatedAt: new Date() } },
-            { upsert: true }
-          );
+          await upsertHandoffForContact(userId, phone, { is_human: true, human_expires_ts: exp });
         } catch {}
-        (async () => {
-          try {
-            if (cfg?.whatsapp_token && cfg?.phone_number_id) {
-              const text = `You are connected with ${agentName}.`;
-              const resp = await sendWhatsAppText(phone, text, cfg);
-              const outboundId = resp?.messages?.[0]?.id;
-              if (outboundId) {
-                try {
-                  await recordOutboundMessage({
-                    messageId: outboundId,
-                    userId,
-                    cfg,
-                    to: phone,
-                    type: 'text',
-                    text,
-                    raw: { to: phone, text, context: 'live_mode_connect' }
-                  });
-                } catch (err) {
-                  console.warn('Live mode welcome message record failed:', err?.message || err);
-                }
-                try {
-                  const { broadcastNewMessage } = await import('../routes/realtime.mjs');
-                  const nowTs = Math.floor(Date.now() / 1000);
-                  const messageData = {
-                    id: outboundId,
-                    direction: 'outbound',
-                    type: 'text',
-                    text_body: text,
-                    timestamp: nowTs,
-                    from_digits: (cfg.business_phone || '').replace(/\D/g, '') || null,
-                    to_digits: String(phone),
-                    contact_name: null,
-                    contact: String(phone),
-                    formatted_time: formatTimestampForDisplay(nowTs),
-                    delivery_status: 'sent',
-                    read_status: 'unread'
-                  };
-                  broadcastNewMessage(userId, String(phone), messageData);
-                } catch (err) {
-                  console.warn('Broadcast live mode welcome message failed:', err?.message || err);
-                }
-              }
-            }
-          } catch (err) {
-            console.warn('Live mode welcome message failed:', err?.message || err);
-          }
-        })();
+        sendLiveModeWelcomeMessage(userId, phone, cfg, agentName);
       } else {
         try {
-          await Handoff.findOneAndUpdate(
-            { contact_id: phone, user_id: userId },
-            { $set: { is_human: false, human_expires_ts: 0, updatedAt: new Date() } },
-            { upsert: true }
-          );
+          await upsertHandoffForContact(userId, phone, { is_human: false, human_expires_ts: 0 });
         } catch {}
       }
     } catch {}
@@ -3196,7 +2964,7 @@ export default function registerInboxRoutes(app) {
   app.post("/handoff/:phone", ensureAuthed, handleHandoff);
   app.get("/handoff/:phone", ensureAuthed, handleHandoff);
   app.post("/inbox/:phone/simulate-status", ensureAuthed, (req, res) => {
-    const phone = req.params.phone.split('?')[0];
+    const phone = parseRouteContact(req.params.phone);
     const userId = getCurrentUserId(req);
     const { messageId, status } = req.body;
     
@@ -3218,7 +2986,7 @@ export default function registerInboxRoutes(app) {
     }
   });
   app.post("/inbox/:phone/status", ensureAuthed, async (req, res) => {
-    const phone = req.params.phone.split('?')[0];    const userId = getCurrentUserId(req);
+    const phone = parseRouteContact(req.params.phone);    const userId = getCurrentUserId(req);
     const { status, reason } = req.body;
     
     try {
@@ -3228,7 +2996,7 @@ export default function registerInboxRoutes(app) {
       
       await updateConversationStatus(userId, phone, status, reason);
       if (status === CONVERSATION_STATUSES.RESOLVED) {
-        try { await Handoff.findOneAndUpdate({ contact_id: phone, user_id: userId }, { $set: { is_human: false, human_expires_ts: 0, updatedAt: new Date() } }, { upsert: true }); } catch {}
+        try { await upsertHandoffForContact(userId, phone, { is_human: false, human_expires_ts: 0 }); } catch {}
         try {
           const cfg = await getSettingsForUser(userId);
           if (cfg?.whatsapp_token && cfg?.phone_number_id) {
@@ -3338,45 +3106,45 @@ export default function registerInboxRoutes(app) {
     }
   });
   app.post("/inbox/:phone/renew", ensureAuthed, async (req, res) => {
-    const phone = req.params.phone;
+    const phone = parseRouteContact(req.params.phone);
     const userId = getCurrentUserId(req);
     try {
       const now = Math.floor(Date.now()/1000);
-      const row = await Handoff.findOne({ contact_id: phone, user_id: userId }).select('human_expires_ts');
+      const row = await findHandoffForContact(userId, phone, 'human_expires_ts');
       const base = Number(row?.human_expires_ts || 0) > now ? Number(row?.human_expires_ts || 0) : now;
       const next = base + 5*60;
-      await Handoff.findOneAndUpdate({ contact_id: phone, user_id: userId }, { $set: { is_human: true, human_expires_ts: next, updatedAt: new Date() } }, { upsert: true });
+      await upsertHandoffForContact(userId, phone, { is_human: true, human_expires_ts: next });
     } catch {}
     res.redirect(`/inbox/${phone}`);
   });
   app.post("/inbox/:phone/archive", ensureAuthed, async (req, res) => {
-    const phone = req.params.phone;
+    const phone = parseRouteContact(req.params.phone);
     const userId = getCurrentUserId(req);
     try { await Handoff.findOneAndUpdate({ contact_id: phone, user_id: userId }, { $set: { is_archived: true, updatedAt: new Date() } }, { upsert: true }); } catch {}
     res.redirect(`/inbox`);
   });
   app.post("/inbox/:phone/unarchive", ensureAuthed, async (req, res) => {
-    const phone = req.params.phone;
+    const phone = parseRouteContact(req.params.phone);
     const userId = getCurrentUserId(req);
     try { await Handoff.findOneAndUpdate({ contact_id: phone, user_id: userId }, { $set: { is_archived: false, updatedAt: new Date() } }, { upsert: true }); } catch {}
     res.redirect(`/inbox?archived=1`);
   });
   app.post("/inbox/:phone/optout", ensureAuthed, async (req, res) => {
-    const phone = req.params.phone;
+    const phone = parseRouteContact(req.params.phone);
     const userId = getCurrentUserId(req);
     const { Customer } = await import('../schemas/mongodb.mjs');
     try { await Customer.findOneAndUpdate({ user_id: userId, contact_id: phone }, { $set: { opted_out: true, updatedAt: new Date() } }, { upsert: true }); } catch {}
     res.redirect(`/inbox/${encodeURIComponent(phone)}`);
   });
   app.post("/inbox/:phone/unoptout", ensureAuthed, async (req, res) => {
-    const phone = req.params.phone;
+    const phone = parseRouteContact(req.params.phone);
     const userId = getCurrentUserId(req);
     const { Customer } = await import('../schemas/mongodb.mjs');
     try { await Customer.updateOne({ user_id: userId, contact_id: phone }, { $set: { opted_out: false, updatedAt: new Date() } }); } catch {}
     res.redirect(`/inbox/${encodeURIComponent(phone)}`);
   });
   app.post("/inbox/:phone/block24h", ensureAuthed, async (req, res) => {
-    const phone = req.params.phone;
+    const phone = parseRouteContact(req.params.phone);
     const userId = getCurrentUserId(req);
     const { Customer } = await import('../schemas/mongodb.mjs');
     const until = Math.floor(Date.now()/1000) + 24*3600;
@@ -3384,7 +3152,7 @@ export default function registerInboxRoutes(app) {
     res.redirect(`/inbox/${encodeURIComponent(phone)}`);
   });
   app.post("/inbox/:phone/clear", ensureAuthed, async (req, res) => {
-    const phone = req.params.phone;
+    const phone = parseRouteContact(req.params.phone);
     const userId = getCurrentUserId(req);
     const digits = normalizePhone(phone);
     try {
@@ -3420,7 +3188,7 @@ export default function registerInboxRoutes(app) {
     return res.redirect(`/inbox/${encodeURIComponent(phone)}`);
   });
   app.post("/inbox/:phone/delete", ensureAuthed, async (req, res) => {
-    const phone = req.params.phone;
+    const phone = parseRouteContact(req.params.phone);
     const userId = getCurrentUserId(req);
     const digits = normalizePhone(phone);
     try {
@@ -3493,7 +3261,7 @@ export default function registerInboxRoutes(app) {
   }
 
   app.post("/send/:phone", ensureAuthed, async (req, res) => {
-    const to = req.params.phone;
+    const to = parseRouteContact(req.params.phone);
     const userId = getCurrentUserId(req);
     const expectJson = wantsJsonResponse(req);
     const redirectToThread = `/inbox/${encodeURIComponent(to)}`;
@@ -3720,7 +3488,7 @@ export default function registerInboxRoutes(app) {
     }
   });
   app.post("/upload-image/:phone", ensureAuthed, uploadImage.single('image'), async (req, res) => {
-    const to = req.params.phone;
+    const to = parseRouteContact(req.params.phone);
     const userId = getCurrentUserId(req);
     const cfg = await getSettingsForUser(userId);
     const caption = (req.body?.caption || "").toString().trim();
@@ -3819,7 +3587,7 @@ export default function registerInboxRoutes(app) {
     res.redirect(`/inbox/${encodeURIComponent(to)}`);
   });
   app.post("/upload-document/:phone", ensureAuthed, uploadDocument.single('document'), async (req, res) => {
-    const to = req.params.phone;
+    const to = parseRouteContact(req.params.phone);
     const userId = getCurrentUserId(req);
     const cfg = await getSettingsForUser(userId);
     const caption = (req.body?.caption || "").toString().trim();
@@ -3941,7 +3709,7 @@ export default function registerInboxRoutes(app) {
   });
 
   app.post("/inbox/:phone/send-template", ensureAuthed, async (req, res) => {
-    const to = req.params.phone;
+    const to = parseRouteContact(req.params.phone);
     const userId = getCurrentUserId(req);
     const cfg = await getSettingsForUser(userId);
     const tname = (cfg.wa_template_name || '').toString().trim();
@@ -3993,7 +3761,7 @@ export default function registerInboxRoutes(app) {
   });
 
   app.post("/inbox/:phone/nameCustomer", ensureAuthed, (req, res) => {
-    const phone = req.params.phone;
+    const phone = parseRouteContact(req.params.phone);
     const userId = getCurrentUserId(req);
     const name = (req.body?.display_name || "").toString().trim().slice(0, 80);
     const notes = (req.body?.notes || "").toString().trim().slice(0, 400);

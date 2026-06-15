@@ -1,7 +1,7 @@
 
 
 import { ensureAuthed, ensureAdmin, getCurrentUserId, getSignedInEmail } from '../middleware/auth.mjs';
-import { renderSidebar, renderTopbar, getProfessionalHead } from '../utils.mjs';
+import { renderSidebar, renderTopbar, getProfessionalHead, renderPageHeader } from '../utils.mjs';
 import { getHealthStatus } from '../monitoring/health.mjs';
 import { getAllMetrics } from '../monitoring/metrics.mjs';
 import { logHelpers } from '../monitoring/logger.mjs';
@@ -54,8 +54,6 @@ export default function registerMonitoringRoutes(app) {
       res.end(`
         <html>${getProfessionalHead('Monitoring Dashboard')}<body>
           <script src="/toast.js"></script>
-          
-          <script src="/auth-utils.js"></script>
           <script>
             // Enhanced authentication check on page load
             (async function checkAuthOnLoad(){
@@ -68,10 +66,11 @@ export default function registerMonitoringRoutes(app) {
               ${renderSidebar('monitoring', { isUpgraded })}
               <main class="main">
                 <div class="main-content">
-                  
+                  ${renderPageHeader("Monitoring", "Review platform health, request volume, and error signals.")}
+
                   <!-- System Overview -->
-                  <div class="card">
-                    <h2>System Overview</h2>
+                  <div class="card workspace-panel">
+                    <h2 class="workspace-panel__title">System overview</h2>
                     <div class="grid-3">
                       <div class="metric-card">
                         <div class="metric-value">${formattedMetrics.system.uptime}s</div>

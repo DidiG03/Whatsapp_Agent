@@ -45,10 +45,6 @@ function createTransporter(userSettings = {}) {
 export async function sendEscalationNotification(userId, escalationData) {
   try {
     const settings = await getSettingsForUser(userId);
-    if (!settings?.escalation_email_enabled) {
-      console.log('[Email] Escalation notifications disabled for user:', userId);
-      return { success: false, reason: 'disabled' };
-    }
     let notificationEmail = settings?.escalation_email;
     if (!notificationEmail) {
       notificationEmail = await getPrimaryEmailFromClerk(userId);
@@ -201,10 +197,6 @@ export async function sendEscalationPingToAccount(userId, escalationData = {}) {
 export async function sendBookingNotification(userId, bookingData) {
   try {
     const settings = await getSettingsForUser(userId);
-    if (!settings?.escalation_email_enabled) {
-      console.log('[Email] Email notifications disabled for user:', userId);
-      return { success: false, reason: 'disabled' };
-    }
     let notificationEmail = settings?.escalation_email;
     if (!notificationEmail) {
       notificationEmail = await getPrimaryEmailFromClerk(userId);
@@ -286,8 +278,8 @@ export async function sendBookingNotification(userId, bookingData) {
               <div>${notes.replace(/\|/g, '<br>')}</div>
             </div>
             ` : ''}
-            <a href="${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/dashboard" class="action-button">
-              View Dashboard →
+            <a href="${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/bookings" class="action-button">
+              View Bookings →
             </a>
           </div>
           <div class="footer">
@@ -312,7 +304,7 @@ End Time: ${formattedEnd}
 ${staffName ? `Staff Member: ${staffName}` : ''}
 ${notes ? `Details: ${notes}` : ''}
 
-View dashboard: ${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/dashboard
+View bookings: ${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/bookings
 
 ---
 This is an automated notification from ${businessName} WhatsApp Agent.

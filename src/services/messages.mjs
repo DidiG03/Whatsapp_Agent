@@ -1,5 +1,6 @@
 import { db, getDB } from "../db-mongodb.mjs";
 import { normalizePhone } from "../utils.mjs";
+import { canonicalContactId } from "./handoff.mjs";
 import { Customer } from "../schemas/mongodb.mjs";
 export async function recordOutboundMessage({
   messageId,
@@ -11,9 +12,10 @@ export async function recordOutboundMessage({
   raw
 }) {
   if (!messageId || !userId || !to) return false;
+  const contactId = canonicalContactId(to);
   try {
     try {
-      const customer = await Customer.findOne({ user_id: String(userId), contact_id: String(to) }).lean();
+      const customer = await Customer.findOne({ user_id: String(userId), contact_id: contactId }).lean();
       const now = Math.floor(Date.now()/1000);
       if (customer?.opted_out) return false;
       if (customer?.blocked_until_ts && customer.blocked_until_ts > now) return false;
@@ -26,13 +28,15 @@ export async function recordOutboundMessage({
       user_id: String(userId),
       direction: 'outbound',
       from_id: fromBiz,
-      to_id: String(to),
+      to_id: contactId,
       from_digits: normalizePhone(fromBiz) || null,
-      to_digits: normalizePhone(String(to)) || null,
+      to_digits: normalizePhone(contactId) || null,
       type: type || 'text',
       text_body: text || null,
       timestamp: Math.floor(Date.now() / 1000),
-      raw: raw || null
+      raw: raw || null,
+      delivery_status: 'sent',
+      read_status: 'unread'
     };
     const res = await messages.updateOne(
       { id: doc.id },

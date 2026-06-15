@@ -1,5 +1,5 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
-import { renderSidebar, renderTopbar, escapeHtml, getVercelWebAnalyticsSnippet } from "../utils.mjs";
+import { renderSidebar, renderTopbar, escapeHtml, getProfessionalHead, renderPageHeader } from "../utils.mjs";
 import { getSettingsForUser } from "../services/settings.mjs";
 import { getCurrentUsage, getUserPlan, getUsageHistory, getPlanPricing, updateUserPlan, isPlanUpgraded, getCurrentMonthPaygOutstanding, recordPaygCharge } from "../services/usage.mjs";
 import { isStripeEnabled, getStripePublishableKey, getSubscription, getSubscriptionScheduleForSubscription, ensureCustomerForUser, createPayAsYouGoSetupSession, hasDefaultPaymentMethod, chargePayAsYouGo } from "../services/stripe.mjs";
@@ -96,7 +96,7 @@ export default function registerPlanRoutes(app) {
     const paygTotalFormatted = (()=>{ try { return new Intl.NumberFormat('en-US',{style:'currency', currency: paygCurrencyCode}).format(paygTotalCents/100); } catch { return `$${(paygTotalCents/100).toFixed(2)}`; } })();
     const paygOutstandingFormatted = (()=>{ try { return new Intl.NumberFormat('en-US',{style:'currency', currency: paygCurrencyCode}).format(paygOutstandingCents/100); } catch { return `$${(paygOutstandingCents/100).toFixed(2)}`; } })();
     res.end(`
-      <html><head><title>WhatsApp Agent - Plan & Usage</title><link rel="stylesheet" href="/styles.css">${getVercelWebAnalyticsSnippet()}</head><body>
+      <html>${getProfessionalHead("Plan & Usage")}<body>
         <script>
           // Check authentication on page load
           (async function checkAuthOnLoad(){
@@ -132,8 +132,8 @@ export default function registerPlanRoutes(app) {
                     </div>
                   </div>
                 </div>
-                <section class="plan-card-shell">
-                  <h2 style="margin:0 0 12px 0;">Current Plan: ${currentPlanDetails.name}</h2>
+                <section class="plan-card-shell card">
+                  <h2 class="workspace-panel__title" style="margin-bottom:12px;">Current plan: ${currentPlanDetails.name}</h2>
                   <div class="plan-stats-grid">
                     <div class="plan-stat ">
                       <div class="plan-stat-label">Monthly Messages</div>
@@ -181,7 +181,7 @@ export default function registerPlanRoutes(app) {
                     </div>
                     <div>
                       <label style="display:inline-flex; align-items:center; gap:8px; cursor:pointer;">
-                        <span style="font-size:12px; color:#374151;">${paygEnabled ? 'Enabled' : 'Disabled'}</span>
+                        <span class="text-xs" style="color:#374151;">${paygEnabled ? 'Enabled' : 'Disabled'}</span>
                         <input id="paygToggle" type="checkbox" ${paygEnabled ? 'checked' : ''} ${stripeEnabled ? '' : 'disabled'} style="width:36px; height:20px; accent-color:#111827;" />
                       </label>
                     </div>
@@ -244,13 +244,13 @@ export default function registerPlanRoutes(app) {
                   <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px;">
                     <h3 style="margin:0;">Available Plans</h3>
                     <div style="display:inline-flex; border:1px solid var(--border); border-radius:9999px; overflow:hidden;">
-                      <button id="billMonthly" type="button" style="padding:6px 12px; font-size:12px; border:none; background:#111827; color:#fff; cursor:pointer;">Monthly</button>
-                      <button id="billYearly" type="button" style="padding:6px 12px; font-size:12px; border:none; background:transparent; color:#111827; cursor:pointer;">Yearly</button>
+                      <button id="billMonthly" type="button" class="text-xs" style="padding:6px 12px; border:none; background:#111827; color:#fff; cursor:pointer;">Monthly</button>
+                      <button id="billYearly" type="button" class="text-xs" style="padding:6px 12px; border:none; background:transparent; color:#111827; cursor:pointer;">Yearly</button>
                     </div>
                   </div>
                   <div style="display:flex; align-items:center; gap:8px; margin:8px 0 16px;">
                     <input id="promoCodeInput" class="settings-field" placeholder="Promo code (optional)" style="max-width:200px;" />
-                    <span style="font-size:12px; color:#6b7280;">Coupons will be applied in Stripe Checkout</span>
+                    <span class="text-xs" style="color:#6b7280;">Coupons will be applied in Stripe Checkout</span>
                   </div>
                   <div class="plans-grid">
                     ${Object.entries(pricing).map(([planKey, planDetails]) => `
@@ -274,8 +274,8 @@ export default function registerPlanRoutes(app) {
                             ${planKey === 'starter' ? `
                               <div style="display:flex; align-items:center; gap:8px;">
                                 <span style="text-decoration:line-through; color:#9ca3af;">$348</span>
-                                <strong style="font-size:18px;">$299</strong><span class="plan-price-period">/year</span>
-                                <span style="background:#d1fae5; color:#065f46; border:1px solid #a7f3d0; border-radius:9999px; padding:2px 8px; font-size:11px; font-weight:600;">Discounted</span>
+                                <strong class="text-lg">$299</strong><span class="plan-price-period">/year</span>
+                                <span class="text-2xs" style="background:#d1fae5; color:#065f46; border:1px solid #a7f3d0; border-radius:9999px; padding:2px 8px; font-weight:600;">Discounted</span>
                               </div>
                             ` : `
                               $0<span class="plan-price-period">/year</span>

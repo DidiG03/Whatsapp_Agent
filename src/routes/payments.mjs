@@ -12,8 +12,8 @@ import {
 } from "../services/agentPayments.mjs";
 
 function safeRedirectPath(input) {
-  if (!input || typeof input !== 'string') return '/dashboard';
-  if (!input.startsWith('/')) return '/dashboard';
+  if (!input || typeof input !== 'string') return '/inbox';
+  if (!input.startsWith('/')) return '/inbox';
   return input;
 }
 
@@ -61,7 +61,7 @@ export default function registerPaymentRoutes(app) {
   });
   app.get("/stripe/connect/start", ensureAuthed, (req, res) => {
     try {
-      const redirectTo = safeRedirectPath(req.query.redirect || '/dashboard');
+      const redirectTo = safeRedirectPath(req.query.redirect || '/inbox');
       const userId = getCurrentUserId(req);
       if (!isStripeConnectAvailable()) {
         return res.redirect(`${redirectTo}?stripe_error=unavailable`);
@@ -70,12 +70,12 @@ export default function registerPaymentRoutes(app) {
       return res.redirect(url);
     } catch (err) {
       console.error('Stripe connect start error:', err?.message || err);
-      return res.redirect('/dashboard?stripe_error=start_failed');
+      return res.redirect('/inbox?stripe_error=start_failed');
     }
   });
   app.get("/stripe/connect/callback", ensureAuthed, async (req, res) => {
     const { code, state, error, error_description } = req.query;
-    const fallback = '/dashboard';
+    const fallback = '/inbox';
     const payload = parseConnectState(state);
     const redirectTo = safeRedirectPath(payload?.redirect || fallback);
     const userId = getCurrentUserId(req);

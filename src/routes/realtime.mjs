@@ -2,6 +2,7 @@ import Ably from "ably";
 import { ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
 import { isUsageExceeded } from "../services/usage.mjs";
 import { Handoff, Notification } from "../schemas/mongodb.mjs";
+import { canonicalContactId, upsertHandoffForContact } from "../services/handoff.mjs";
 
 const ABLY_API_KEY = process.env.ABLY_API_KEY || "";
 const ABLY_TOKEN_TTL_MS = Math.max(
@@ -226,24 +227,27 @@ export default function registerRealtimeRoutes(app) {
       return res.status(400).json({ error: "Phone number required" });
     }
 
+    const contactId = canonicalContactId(phone);
+
     try {
       const overLimit = await isUsageExceeded(userId);
       if (overLimit && isLive) {
         return res.status(403).json({ error: "You have exceeded your monthly message limit. Please upgrade your plan." });
       }
 
-      await Handoff.findOneAndUpdate(
-        { user_id: userId, contact_id: phone },
-        { $set: { is_human: !!isLive, updatedAt: new Date() } },
-        { upsert: true }
-      );
+      const now = Math.floor(Date.now() / 1000);
+      const update = isLive
+        ? { is_human: true, human_expires_ts: now + 5 * 60 }
+        : { is_human: false, human_expires_ts: 0 };
 
-      await broadcastLiveModeChange(userId, phone, !!isLive);
+      await upsertHandoffForContact(userId, phone, update);
+
+      await broadcastLiveModeChange(userId, contactId, !!isLive);
 
       res.json({
         success: true,
         message: `Live mode ${isLive ? "enabled" : "disabled"}`,
-        phone,
+        phone: contactId,
         isLive: !!isLive
       });
     } catch (error) {

@@ -3,269 +3,211 @@ import { getAuth, clerkClient } from "@clerk/express";
 import { signSessionToken } from "../middleware/auth.mjs";
 import { getVercelWebAnalyticsSnippet } from "../utils.mjs";
 
+function clearClerkCookies(req, res) {
+  const names = new Set([
+    "__session",
+    "__refresh",
+    "__client_uat",
+    "__clerk_handshake",
+    "__clerk_db_jwt",
+    "__clerk_redirect_count",
+    "__clerk_handshake_nonce",
+    "__clerk_synced",
+    "__clerk_redirect_url",
+    "__clerk_help",
+    "__clerk_hs_reason",
+    "__dev_session",
+  ]);
+
+  for (const name of Object.keys(req.cookies || {})) {
+    if (/^__(session|refresh|client_uat|clerk|dev_)/.test(name)) {
+      names.add(name);
+    }
+  }
+
+  const clearOpts = [
+    { path: "/" },
+    { path: "/", httpOnly: true },
+    { path: "/", httpOnly: true, sameSite: "lax" },
+    { path: "/", httpOnly: true, secure: true, sameSite: "lax" },
+    { path: "/", httpOnly: true, secure: true, sameSite: "none" },
+  ];
+
+  for (const name of names) {
+    for (const opts of clearOpts) {
+      res.clearCookie(name, opts);
+    }
+  }
+}
+
+const CLERK_JS_VERSION = (process.env.CLERK_JS_VERSION || '5').toString().trim() || '5';
+
+function authPageShell({ pageTitle, mountId, switchPrompt, switchHref, switchLabel, clerkInitScript }) {
+  return `<!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+        <title>${pageTitle} — Code Orbit Agent</title>
+        <link rel="stylesheet" href="/styles.css">
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+        ${getVercelWebAnalyticsSnippet()}
+        <link rel="icon" href="/logo-icon.png" type="image/png">
+        <script src="https://unpkg.com/@clerk/clerk-js@${CLERK_JS_VERSION}/dist/clerk.browser.js" data-clerk-publishable-key="${CLERK_PUBLISHABLE}"></script>
+      </head>
+      <body class="auth-page">
+        <main class="auth-page__shell">
+          <div class="auth-page__panel">
+            <a href="/auth/signin" class="auth-page__brand">
+              <img src="/logo-icon.png" alt="" class="auth-page__logo" width="32" height="32" />
+              <span>Code Orbit Agent</span>
+            </a>
+            <div id="${mountId}" class="auth-page__clerk"></div>
+            <p class="auth-page__switch">
+              ${switchPrompt}
+              <a href="${switchHref}" class="auth-page__link">${switchLabel}</a>
+            </p>
+          </div>
+        </main>
+        <script>${clerkInitScript}</script>
+      </body>
+      </html>`;
+}
+
+const CLERK_APPEARANCE = {
+  variables: {
+    colorPrimary: '#4338ca',
+    colorText: '#0f172a',
+    colorTextSecondary: '#64748b',
+    colorInputText: '#0f172a',
+    colorBackground: '#ffffff',
+    borderRadius: '10px',
+    fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+    fontSize: '0.9375rem',
+  },
+  layout: {
+    socialButtonsPlacement: 'top',
+    socialButtonsVariant: 'blockButton',
+    showOptionalFields: false,
+  },
+  elements: {
+    rootBox: 'auth-clerk-root',
+    card: 'auth-clerk-card',
+    header: 'auth-clerk-header',
+    headerTitle: 'auth-clerk-title',
+    headerSubtitle: 'auth-clerk-subtitle',
+    logoBox: 'auth-clerk-logo',
+    logoImage: 'auth-clerk-logo-img',
+    socialButtonsBlockButton: 'auth-clerk-social',
+    dividerLine: 'auth-clerk-divider-line',
+    dividerText: 'auth-clerk-divider-text',
+    formFieldLabel: 'auth-clerk-label',
+    formFieldInput: 'auth-clerk-input',
+    formButtonPrimary: 'auth-clerk-submit',
+    footer: 'auth-clerk-footer',
+    footerAction: 'auth-clerk-footer-action',
+    formFieldErrorText: 'auth-clerk-error',
+    alertText: 'auth-clerk-error',
+  },
+};
+
 export default function registerAuthRoutes(app) {
-  const CLERK_JS_VERSION = (process.env.CLERK_JS_VERSION || '5').toString().trim() || '5';
   app.get("/auth", (_req, res) => {
     res.redirect("/auth/signin");
   });
+
+  const clerkBootstrap = `
+    const clerkPublishableKey = '${CLERK_PUBLISHABLE}';
+    function safeRedirectUrl() {
+      const raw = new URLSearchParams(window.location.search).get('redirect_url') || '';
+      if (!raw) return '/inbox';
+      try {
+        if (raw.startsWith('/') && !raw.startsWith('//') && !raw.includes('://')) return raw;
+        const u = new URL(raw, window.location.origin);
+        if (u.origin === window.location.origin) return u.pathname + u.search + u.hash;
+      } catch {}
+      return '/inbox';
+    }
+    function showAuthError(mountId, message) {
+      const el = document.getElementById(mountId);
+      if (el) el.innerHTML = '<div class="error-message">' + message + '</div>';
+    }
+    function waitForClerk(mountId, onReady) {
+      let retryCount = 0;
+      const maxRetries = 50;
+      function tick() {
+        if (window.Clerk && window.Clerk.load) {
+          window.Clerk.load().then(onReady).catch(function(error) {
+            console.error('Failed to load Clerk:', error);
+            showAuthError(mountId, 'Failed to load authentication. Please refresh the page.');
+          });
+          return;
+        }
+        retryCount++;
+        if (retryCount >= maxRetries) {
+          showAuthError(mountId, 'Failed to load authentication. Please refresh the page.');
+          return;
+        }
+        setTimeout(tick, 100);
+      }
+      tick();
+    }
+  `;
+
+  const clerkAppearanceJson = JSON.stringify(CLERK_APPEARANCE);
+
   app.get("/auth/signup", (_req, res) => {
     res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.end(`
-      <!DOCTYPE html>
-      <html lang="en">
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Sign Up - WhatsApp Agent</title>
-        <link rel="stylesheet" href="/styles.css">
-        ${getVercelWebAnalyticsSnippet()}
-        <link rel="icon" href="/logo-icon.png" type="image/png">
-        <script src="https://unpkg.com/@clerk/clerk-js@${CLERK_JS_VERSION}/dist/clerk.browser.js" data-clerk-publishable-key="${CLERK_PUBLISHABLE}"></script>
-      </head>
-      <body class="auth-aurora auth-dark">
-        <div class="auth-shell">
-          <aside class="brand-pane">
-            <div class="brand-inner">
-              <img src="/logo-icon.png" alt="WhatsApp Agent" class="brand-logo">
-              <h2 class="brand-title"><span>WhatsApp Agent</span></h2>
-              <p class="brand-tagline">Automate chats, bookings and your inbox — effortlessly.</p>
-              <ul class="brand-list">
-                <li>AI replies and smart triage</li>
-                <li>One‑tap booking links</li>
-                <li>Secure and privacy‑first</li>
-              </ul>
-            </div>
-          </aside>
-          <main class="form-pane">
-            <div class="form-card">
-              <div class="auth-header">
-                <h1 class="auth-title">Create Account</h1>
-                <p class="auth-subtitle">Join WhatsApp Agent and start automating your conversations</p>
-              </div>
-              <div id="signup-component"></div>
-              <div class="auth-footer">
-                <p class="auth-switch">
-                  Already have an account? 
-                  <a href="/auth/signin" class="auth-link">Sign in</a>
-                </p>
-              </div>
-            </div>
-          </main>
-        </div>
-        
-        <script>
-          const clerkPublishableKey = '${CLERK_PUBLISHABLE}';
-
-          function safeRedirectUrl() {
-            const raw = new URLSearchParams(window.location.search).get('redirect_url') || '';
-            if (!raw) return '/dashboard';
-            try {
-              // Allow relative paths only (prevents open redirects).
-              if (raw.startsWith('/') && !raw.startsWith('//') && !raw.includes('://')) return raw;
-              // Allow absolute URLs only if same-origin.
-              const u = new URL(raw, window.location.origin);
-              if (u.origin === window.location.origin) return u.pathname + u.search + u.hash;
-            } catch {}
-            return '/dashboard';
-          }
-          
-          if (!clerkPublishableKey || clerkPublishableKey === 'undefined' || clerkPublishableKey === 'null') {
-            document.getElementById('signup-component').innerHTML = 
-              '<div class="error-message">Authentication is not configured. Please contact support.</div>';
-          } else {
-            // Wait for Clerk to be available, then initialize
-            let retryCount = 0;
-            const maxRetries = 50; // 5 seconds max
-            function initializeClerk() {
-              if (window.Clerk && window.Clerk.load) {
-                // Wait for Clerk to be fully ready
-                window.Clerk.load().then(() => {
-                  // Mount the SignUp component
-                  window.Clerk.mountSignUp(document.getElementById('signup-component'), {
-                  appearance: {
-                    elements: {
-                      rootBox: 'clerk-signup-root',
-                      card: 'clerk-signup-card',
-                      headerTitle: 'clerk-signup-title',
-                      headerSubtitle: 'clerk-signup-subtitle',
-                      socialButtonsBlockButton: 'clerk-social-button',
-                      formButtonPrimary: 'btn btn-primary btn-full',
-                      formFieldInput: 'form-input',
-                      formFieldLabel: 'form-label',
-                      footerActionLink: 'auth-link',
-                      identityPreviewText: 'form-text',
-                      formFieldInputShowPasswordButton: 'password-toggle',
-                      formFieldInputShowPasswordIcon: 'eye-icon',
-                      formFieldSuccessText: 'form-success',
-                      formFieldErrorText: 'form-error',
-                      alertText: 'form-error',
-                      formHeaderTitle: 'auth-title',
-                      formHeaderSubtitle: 'auth-subtitle'
-                    },
-                    layout: {
-                      socialButtonsPlacement: 'bottom',
-                      socialButtonsVariant: 'blockButton'
-                    }
-                    },
-                    afterSignUpUrl: '/dashboard',
-                    signInUrl: '/auth/signin',
-                    redirectUrl: safeRedirectUrl()
-                });
-                }).catch(error => {
-                  console.error('Failed to load Clerk:', error);
-                  document.getElementById('signup-component').innerHTML = 
-                    '<div class="error-message">Failed to load authentication. Please refresh the page.</div>';
-                });
-              } else {
-                retryCount++;
-                if (retryCount >= maxRetries) {
-                  console.error('Clerk failed to load after', maxRetries, 'retries');
-                  document.getElementById('signup-component').innerHTML = 
-                    '<div class="error-message">Failed to load authentication. Please refresh the page.</div>';
-                  return;
-                }
-                setTimeout(initializeClerk, 100);
-              }
-            }
-            
-            // Start initialization
-            initializeClerk();
-          }
-        </script>
-      </body>
-      </html>
-    `);
+    res.end(authPageShell({
+      pageTitle: 'Sign Up',
+      mountId: 'signup-component',
+      switchPrompt: 'Already have an account?',
+      switchHref: '/auth/signin',
+      switchLabel: 'Sign in',
+      clerkInitScript: clerkBootstrap + `
+        const clerkAppearance = ${clerkAppearanceJson};
+        if (!clerkPublishableKey || clerkPublishableKey === 'undefined' || clerkPublishableKey === 'null') {
+          showAuthError('signup-component', 'Authentication is not configured. Please contact support.');
+        } else {
+          waitForClerk('signup-component', function() {
+            window.Clerk.mountSignUp(document.getElementById('signup-component'), {
+              appearance: clerkAppearance,
+              afterSignUpUrl: '/inbox',
+              signInUrl: '/auth/signin',
+              redirectUrl: safeRedirectUrl()
+            });
+          });
+        }
+      `
+    }));
   });
+
   app.get("/auth/signin", (_req, res) => {
     res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.end(`
-      <!DOCTYPE html>
-      <html lang="en">
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Sign In - WhatsApp Agent</title>
-        <link rel="stylesheet" href="/styles.css">
-        ${getVercelWebAnalyticsSnippet()}
-        <link rel="icon" href="/logo-icon.png" type="image/png">
-        <script src="https://unpkg.com/@clerk/clerk-js@${CLERK_JS_VERSION}/dist/clerk.browser.js" data-clerk-publishable-key="${CLERK_PUBLISHABLE}"></script>
-      </head>
-      <body class="auth-aurora auth-dark">
-        <div class="auth-shell">
-          <aside class="brand-pane">
-            <div class="brand-inner">
-              <img src="/logo-icon.png" alt="WhatsApp Agent" class="brand-logo">
-              <h2 class="brand-title"><span>WhatsApp Agent</span></h2>
-              <p class="brand-tagline">Operate faster with an AI‑assisted, unified WhatsApp inbox.</p>
-              <ul class="brand-list">
-                <li>Unified threads and analytics</li>
-                <li>Faster responses with AI assist</li>
-                <li>Notifications that matter</li>
-              </ul>
-            </div>
-          </aside>
-          <main class="form-pane">
-            <div class="form-card">
-              <div class="auth-header">
-                <h1 class="auth-title">Welcome Back</h1>
-                <p class="auth-subtitle">Sign in to your WhatsApp Agent account</p>
-              </div>
-              <div id="signin-component"></div>
-              <div class="auth-footer">
-                <p class="auth-switch">
-                  Don't have an account? 
-                  <a href="/auth/signup" class="auth-link">Sign up</a>
-                </p>
-              </div>
-            </div>
-          </main>
-        </div>
-        
-        <script>
-          const clerkPublishableKey = '${CLERK_PUBLISHABLE}';
-
-          function safeRedirectUrl() {
-            const raw = new URLSearchParams(window.location.search).get('redirect_url') || '';
-            if (!raw) return '/dashboard';
-            try {
-              // Allow relative paths only (prevents open redirects).
-              if (raw.startsWith('/') && !raw.startsWith('//') && !raw.includes('://')) return raw;
-              // Allow absolute URLs only if same-origin.
-              const u = new URL(raw, window.location.origin);
-              if (u.origin === window.location.origin) return u.pathname + u.search + u.hash;
-            } catch {}
-            return '/dashboard';
-          }
-          
-          if (!clerkPublishableKey || clerkPublishableKey === 'undefined' || clerkPublishableKey === 'null') {
-            document.getElementById('signin-component').innerHTML = 
-              '<div class="error-message">Authentication is not configured. Please contact support.</div>';
-          } else {
-            // Wait for Clerk to be available, then initialize
-            let retryCount = 0;
-            const maxRetries = 50; // 5 seconds max
-            
-            function initializeClerk() {
-              if (window.Clerk && window.Clerk.load) {
-                // Wait for Clerk to be fully ready
-                window.Clerk.load().then(() => {
-                  // Mount the SignIn component
-                  window.Clerk.mountSignIn(document.getElementById('signin-component'), {
-                    appearance: {
-                      elements: {
-                        rootBox: 'clerk-signin-root',
-                        card: 'clerk-signin-card',
-                        headerTitle: 'clerk-signin-title',
-                        headerSubtitle: 'clerk-signin-subtitle',
-                        socialButtonsBlockButton: 'clerk-social-button',
-                        formButtonPrimary: 'btn btn-primary btn-full',
-                        formFieldInput: 'form-input',
-                        formFieldLabel: 'form-label',
-                        footerActionLink: 'auth-link',
-                        identityPreviewText: 'form-text',
-                        formFieldInputShowPasswordButton: 'password-toggle',
-                        formFieldInputShowPasswordIcon: 'eye-icon',
-                        formFieldSuccessText: 'form-success',
-                        formFieldErrorText: 'form-error',
-                        alertText: 'form-error',
-                        formHeaderTitle: 'auth-title',
-                        formHeaderSubtitle: 'auth-subtitle'
-                      },
-                      layout: {
-                        socialButtonsPlacement: 'bottom',
-                        socialButtonsVariant: 'blockButton'
-                        
-                      }
-                    },
-                    afterSignInUrl: '/dashboard',
-                    signUpUrl: '/auth/signup',
-                    redirectUrl: safeRedirectUrl()
-                  });
-                }).catch(error => {
-                  console.error('Failed to load Clerk:', error);
-                  document.getElementById('signin-component').innerHTML = 
-                    '<div class="error-message">Failed to load authentication. Please refresh the page.</div>';
-                });
-              } else {
-                retryCount++;
-                if (retryCount >= maxRetries) {
-                  console.error('Clerk failed to load after', maxRetries, 'retries');
-                  document.getElementById('signin-component').innerHTML = 
-                    '<div class="error-message">Failed to load authentication. Please refresh the page.</div>';
-                  return;
-                }
-                console.log('Clerk not available yet, retrying...', retryCount);
-                setTimeout(initializeClerk, 100);
-              }
-            }
-            
-            // Start initialization
-            initializeClerk();
-          }
-        </script>
-      </body>
-      </html>
-    `);
+    res.end(authPageShell({
+      pageTitle: 'Sign In',
+      mountId: 'signin-component',
+      switchPrompt: "Don't have an account?",
+      switchHref: '/auth/signup',
+      switchLabel: 'Sign up',
+      clerkInitScript: clerkBootstrap + `
+        const clerkAppearance = ${clerkAppearanceJson};
+        if (!clerkPublishableKey || clerkPublishableKey === 'undefined' || clerkPublishableKey === 'null') {
+          showAuthError('signin-component', 'Authentication is not configured. Please contact support.');
+        } else {
+          waitForClerk('signin-component', function() {
+            window.Clerk.mountSignIn(document.getElementById('signin-component'), {
+              appearance: clerkAppearance,
+              afterSignInUrl: '/inbox',
+              signUpUrl: '/auth/signup',
+              redirectUrl: safeRedirectUrl()
+            });
+          });
+        }
+      `
+    }));
   });
 
   app.get("/auth/status", (req, res) => {
@@ -306,40 +248,55 @@ export default function registerAuthRoutes(app) {
     try {
       const auth = getAuth(req) || {};
       const { userId, sessionId } = auth;
-      
+
       if (!userId) {
-        return res.status(401).json({ 
-          success: false, 
+        return res.status(401).json({
+          success: false,
           error: 'No active session to refresh',
-          redirectTo: '/auth'
+          redirectTo: '/auth/signin'
         });
       }
-      return res.json({ 
-        success: true, 
+
+      if (sessionId) {
+        try {
+          await clerkClient.sessions.getSession(sessionId);
+        } catch {
+          return res.status(401).json({
+            success: false,
+            error: 'Session is no longer valid',
+            redirectTo: '/auth/signin'
+          });
+        }
+      }
+
+      return res.json({
+        success: true,
         message: 'Session is active',
         userId,
         sessionId: sessionId || null
       });
-      
+
     } catch (error) {
       console.error('Session refresh failed:', error);
-      return res.status(500).json({ 
-        success: false, 
+      return res.status(500).json({
+        success: false,
         error: 'Session refresh failed',
-        redirectTo: '/auth'
+        redirectTo: '/auth/signin'
       });
     }
   });
 
-  app.get("/logout", async (req, res) => {
+  app.get("/logout", (req, res) => {
     if (!CLERK_ENABLED) return res.redirect("/");
-    try {
-      const { sessionId } = getAuth(req) || {};
-      if (sessionId) await clerkClient.sessions.revokeSession(sessionId);
-    } catch {}
-    res.setHeader("Clear-Site-Data", '"cache", "cookies", "storage"');
+    const { sessionId } = getAuth(req) || {};
+    clearClerkCookies(req, res);
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
-    return res.redirect("/auth/signin");
+    res.redirect(303, "/auth/signin");
+    if (sessionId) {
+      clerkClient.sessions.revokeSession(sessionId).catch((error) => {
+        console.warn("[logout] revokeSession failed:", error?.message || error);
+      });
+    }
   });
 }
 

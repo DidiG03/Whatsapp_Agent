@@ -55,7 +55,10 @@ const kbItemSchema = new mongoose.Schema({
   file_mime: String,
   file_id: String,
   file_text: String,
-  show_in_menu: { type: Boolean, default: false }
+  show_in_menu: { type: Boolean, default: false },
+  embedding: { type: [Number], default: undefined },
+  embedding_model: String,
+  embedding_updated_at: Date,
 }, {
   timestamps: true,
   collection: 'kb_items'
@@ -105,6 +108,11 @@ const settingsMultiSchema = new mongoose.Schema({
   business_type: String,
   business_categories_json: String,
   website_url: String,
+  business_address: String,
+  business_latitude: Number,
+  business_longitude: Number,
+  business_place_id: String,
+  google_business_json: String,
   ai_tone: String,
   ai_blocked_topics: String,
   ai_style: String,
@@ -133,6 +141,8 @@ const settingsMultiSchema = new mongoose.Schema({
   booking_capacity_limit: { type: Number, default: 0 },
   services_json: String,
   waitlist_enabled: { type: Boolean, default: false },
+  staff_whatsapp_group_id: String,
+  staff_whatsapp_group_enabled: { type: Boolean, default: false },
   smtp_host: String,
   smtp_port: { type: Number, default: 587 },
   smtp_secure: { type: Boolean, default: false },
@@ -178,6 +188,7 @@ const staffSchema = new mongoose.Schema({
 });
 const appointmentSchema = new mongoose.Schema({
   user_id: { type: String, required: true },
+  id: { type: Number, index: true },
   staff_id: { type: mongoose.Schema.Types.ObjectId, required: true },
   contact_phone: String,
   start_ts: { type: Number, required: true },
@@ -401,188 +412,6 @@ const settingsAuditSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'settings_audit'
 });
-const shopifyStoreSchema = new mongoose.Schema({
-  user_id: { type: String, required: true, unique: true },
-  shop_domain: { type: String, required: true },
-  access_token: { type: String, required: true },
-  api_version: { type: String, default: '2024-01' },
-  scopes: [String],
-  is_active: { type: Boolean, default: true },
-  store_info: mongoose.Schema.Types.Mixed,  webhook_id: String,  last_sync_ts: { type: Number, default: 0 },
-  sync_enabled: { type: Boolean, default: true },
-  inventory_sync_enabled: { type: Boolean, default: false },
-  abandoned_cart_enabled: { type: Boolean, default: false },
-  order_notifications_enabled: { type: Boolean, default: true }
-}, {
-  timestamps: true,
-  collection: 'shopify_stores'
-});
-const shopifyProductSchema = new mongoose.Schema({
-  user_id: { type: String, required: true },
-  shopify_id: { type: String, required: true },
-  title: { type: String, required: true },
-  handle: String,
-  product_type: String,
-  vendor: String,
-  tags: [String],
-  variants: [{
-    id: String,
-    title: String,
-    price: String,
-    compare_at_price: String,
-    inventory_quantity: Number,
-    sku: String,
-    barcode: String,
-    weight: Number,
-    weight_unit: String,
-    option1: String,
-    option2: String,
-    option3: String,
-    taxable: Boolean,
-    requires_shipping: Boolean,
-    inventory_policy: String,
-    inventory_management: String
-  }],
-  images: [{
-    id: String,
-    src: String,
-    alt: String,
-    width: Number,
-    height: Number
-  }],
-  options: [{
-    name: String,
-    values: [String]
-  }],
-  status: { type: String, default: 'active' },
-  published_at: Date,
-  created_at_shopify: Date,
-  updated_at_shopify: Date,
-  body_html: String,
-  metafields: mongoose.Schema.Types.Mixed,
-  last_sync_ts: { type: Number, default: 0 },
-  is_available: { type: Boolean, default: true }
-}, {
-  timestamps: true,
-  collection: 'shopify_products'
-});
-const shopifyOrderSchema = new mongoose.Schema({
-  user_id: { type: String, required: true },
-  shopify_id: { type: String, required: true },
-  order_number: { type: Number, required: true },
-  email: String,
-  contact_id: String,  phone: String,
-  customer: mongoose.Schema.Types.Mixed,
-  billing_address: mongoose.Schema.Types.Mixed,
-  shipping_address: mongoose.Schema.Types.Mixed,
-  line_items: [{
-    id: String,
-    variant_id: String,
-    product_id: String,
-    title: String,
-    variant_title: String,
-    quantity: Number,
-    price: String,
-    total_discount: String,
-    sku: String,
-    vendor: String,
-    properties: mongoose.Schema.Types.Mixed
-  }],
-  shipping_lines: [{
-    title: String,
-    price: String,
-    code: String,
-    source: String
-  }],
-  tax_lines: [{
-    title: String,
-    price: String,
-    rate: Number
-  }],
-  discount_codes: [{
-    code: String,
-    amount: String,
-    type: String
-  }],
-  total_price: String,
-  subtotal_price: String,
-  total_tax: String,
-  total_discounts: String,
-  total_shipping_price: String,
-  currency: { type: String, default: 'USD' },
-  financial_status: { type: String, default: 'pending' },
-  fulfillment_status: String,
-  order_status_url: String,
-  tags: [String],
-  note: String,
-  created_at_shopify: Date,
-  updated_at_shopify: Date,
-  processed_at: Date,
-  closed_at: Date,
-  cancelled_at: Date,
-  cancel_reason: String,
-  last_sync_ts: { type: Number, default: 0 },
-  whatsapp_notifications_sent: { type: [String], default: [] },  tracking_numbers: [String],
-  tracking_urls: [String]
-}, {
-  timestamps: true,
-  collection: 'shopify_orders'
-});
-const shopifyCustomerSchema = new mongoose.Schema({
-  user_id: { type: String, required: true },
-  shopify_id: { type: String, required: true },
-  email: String,
-  phone: String,
-  first_name: String,
-  last_name: String,
-  contact_id: String,  accepts_marketing: { type: Boolean, default: false },
-  accepts_marketing_updated_at: Date,
-  marketing_opt_in_level: String,
-  tax_exempt: { type: Boolean, default: false },
-  verified_email: { type: Boolean, default: true },
-  addresses: mongoose.Schema.Types.Mixed,
-  default_address: mongoose.Schema.Types.Mixed,
-  orders_count: { type: Number, default: 0 },
-  total_spent: String,
-  last_order_id: String,
-  last_order_name: String,
-  tags: [String],
-  note: String,
-  created_at_shopify: Date,
-  updated_at_shopify: Date,
-  last_sync_ts: { type: Number, default: 0 },
-  metafields: mongoose.Schema.Types.Mixed
-}, {
-  timestamps: true,
-  collection: 'shopify_customers'
-});
-const shopifyCartSchema = new mongoose.Schema({
-  user_id: { type: String, required: true },
-  contact_id: String,
-  cart_token: { type: String, required: true },
-  line_items: [{
-    variant_id: String,
-    product_id: String,
-    title: String,
-    variant_title: String,
-    quantity: Number,
-    price: String,
-    image_url: String
-  }],
-  total_price: String,
-  currency: { type: String, default: 'USD' },
-  created_at_shopify: Date,
-  updated_at_shopify: Date,
-  abandoned_at: Date,
-  recovered: { type: Boolean, default: false },
-  recovery_attempts: { type: Number, default: 0 },
-  last_recovery_attempt: Date,
-  whatsapp_message_sent: { type: Boolean, default: false },
-  checkout_url: String
-}, {
-  timestamps: true,
-  collection: 'shopify_carts'
-});
 const createIndexes = async () => {
   try {
     await Message.collection.createIndex({ user_id: 1, timestamp: -1 });
@@ -625,40 +454,14 @@ const createIndexes = async () => {
       }
     } catch {}
     await Appointment.collection.createIndex({ user_id: 1, contact_phone: 1, start_ts: 1 }, { name: 'user_phone_startTs' });
+    await Appointment.collection.createIndex({ user_id: 1, id: 1 }, { name: 'user_legacy_appt_id', unique: true, sparse: true });
     await SettingsAudit.collection.createIndex({ user_id: 1, createdAt: -1 }, { name: 'settings_audit_user' });
-    await ShopifyStore.collection.createIndex({ user_id: 1 }, { unique: true, name: 'shopify_store_user' });
-    await ShopifyStore.collection.createIndex({ shop_domain: 1 }, { unique: true, sparse: true, name: 'shopify_store_domain' });
-
-    await ShopifyProduct.collection.createIndex({ user_id: 1, shopify_id: 1 }, { unique: true, name: 'shopify_product_user_id' });
-    await ShopifyProduct.collection.createIndex({ user_id: 1, handle: 1 }, { name: 'shopify_product_user_handle' });
-    await ShopifyProduct.collection.createIndex({ user_id: 1, 'variants.sku': 1 }, { name: 'shopify_product_sku' });
-    await ShopifyProduct.collection.createIndex({ user_id: 1, status: 1, is_available: 1 }, { name: 'shopify_product_status' });
-
-    await ShopifyOrder.collection.createIndex({ user_id: 1, shopify_id: 1 }, { unique: true, name: 'shopify_order_user_id' });
-    await ShopifyOrder.collection.createIndex({ user_id: 1, order_number: 1 }, { unique: true, name: 'shopify_order_user_number' });
-    await ShopifyOrder.collection.createIndex({ user_id: 1, contact_id: 1 }, { name: 'shopify_order_contact' });
-    await ShopifyOrder.collection.createIndex({ user_id: 1, financial_status: 1 }, { name: 'shopify_order_status' });
-    await ShopifyOrder.collection.createIndex({ user_id: 1, created_at_shopify: -1 }, { name: 'shopify_order_created' });
-
-    await ShopifyCustomer.collection.createIndex({ user_id: 1, shopify_id: 1 }, { unique: true, name: 'shopify_customer_user_id' });
-    await ShopifyCustomer.collection.createIndex({ user_id: 1, email: 1 }, { name: 'shopify_customer_email' });
-    await ShopifyCustomer.collection.createIndex({ user_id: 1, phone: 1 }, { name: 'shopify_customer_phone' });
-    await ShopifyCustomer.collection.createIndex({ user_id: 1, contact_id: 1 }, { name: 'shopify_customer_contact' });
-
-    await ShopifyCart.collection.createIndex({ user_id: 1, cart_token: 1 }, { unique: true, name: 'shopify_cart_user_token' });
-    await ShopifyCart.collection.createIndex({ user_id: 1, contact_id: 1 }, { name: 'shopify_cart_contact' });
-    await ShopifyCart.collection.createIndex({ user_id: 1, recovered: 1, createdAt: -1 }, { name: 'shopify_cart_recovery' });
 
     console.log('MongoDB indexes created successfully');
   } catch (error) {
     logHelpers.logError(error, { component: 'mongodb', operation: 'create_indexes' });
   }
 };
-export const ShopifyStore = mongoose.model('ShopifyStore', shopifyStoreSchema);
-export const ShopifyProduct = mongoose.model('ShopifyProduct', shopifyProductSchema);
-export const ShopifyOrder = mongoose.model('ShopifyOrder', shopifyOrderSchema);
-export const ShopifyCustomer = mongoose.model('ShopifyCustomer', shopifyCustomerSchema);
-export const ShopifyCart = mongoose.model('ShopifyCart', shopifyCartSchema);
 export const Message = mongoose.model('Message', messageSchema);
 export const MessageStatus = mongoose.model('MessageStatus', messageStatusSchema);
 export const MessageReaction = mongoose.model('MessageReaction', messageReactionSchema);
@@ -713,10 +516,5 @@ export default {
   QuickReply,
   Guide,
   Enquiry,
-  SettingsAudit,
-  ShopifyStore,
-  ShopifyProduct,
-  ShopifyOrder,
-  ShopifyCustomer,
-  ShopifyCart
+  SettingsAudit
 };

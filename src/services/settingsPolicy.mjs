@@ -15,12 +15,7 @@ const FIELD_POLICIES = {
   cancel_min_lead_minutes: { minPlan: "starter" },
   reminder_windows: { minPlan: "starter" },
   wa_template_name: { minPlan: "pro" },
-  wa_template_language: { minPlan: "pro" },
-  smtp_host: { minPlan: "pro" },
-  smtp_port: { minPlan: "pro" },
-  smtp_secure: { minPlan: "pro" },
-  smtp_user: { minPlan: "pro" },
-  smtp_pass: { minPlan: "pro" }
+  wa_template_language: { minPlan: "pro" }
 };
 
 function planRank(planName) {

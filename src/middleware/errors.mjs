@@ -61,7 +61,7 @@ export function errorHandler(err, req, res, next) {
               <h3 style="margin-top:0;">Oops</h3>
               <p>${escapeHtmlSafe(friendly)}</p>
               ${cid ? `<div class="small" style="color:#6b7280;">Reference: ${escapeHtmlSafe(String(cid))}</div>` : ""}
-              <a href="/" class="btn btn-ghost" style="margin-top:8px;">Back to Home</a>
+              <a href="/inbox" class="btn btn-ghost" style="margin-top:8px;">Go to Inbox</a>
             </div>
           </div></main></div>
         </div>
@@ -79,7 +79,7 @@ export function notFoundHandler(req, res) {
       <div class="container">
         ${renderTopbar('Not Found', '')}
         <div class="layout">
-          ${renderSidebar('dashboard', {})}
+          ${renderSidebar('inbox', {})}
           <main class="main">
             <div class="main-content">
               <div class="card" style="max-width:720px;margin:20px auto;">
@@ -89,8 +89,7 @@ export function notFoundHandler(req, res) {
                   The page you were looking for doesn’t exist or may have moved.
                 </p>
                 <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                  <a class="btn btn-primary" href="/dashboard">Go to Dashboard</a>
-                  <a class="btn btn-ghost" href="/">Home</a>
+                  <a class="btn btn-primary" href="/inbox">Go to Inbox</a>
                 </div>
               </div>
             </div>

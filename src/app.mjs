@@ -15,7 +15,6 @@ import { scalabilityManager, createPerformanceMiddleware, scalabilityHealthCheck
 import { initMongoDB, isMongoConnected } from "./db-mongodb.mjs";
 import registerHomeRoutes from "./routes/home.mjs";
 import registerAuthRoutes from "./routes/auth.mjs";
-import registerDashboardRoutes from "./routes/dashboard.mjs";
 import registerInboxRoutes from "./routes/inbox.mjs";
 import registerSettingsRoutes from "./routes/settings.mjs";
 import registerKbRoutes from "./routes/kb.mjs";
@@ -25,18 +24,12 @@ import registerWebhookRoutes from "./routes/webhook.mjs";
 import registerMiscRoutes from "./routes/misc.mjs";
 import registerBookingRoutes from "./routes/booking.mjs";
 import registerAssistantRoutes from "./routes/assistant.mjs";
-import registerGuideRoutes from "./routes/guide.mjs";
 import registerNotificationRoutes from "./routes/notifications.mjs";
 import registerPlanRoutes from "./routes/plan.mjs";
 import registerStripeRoutes from "./routes/stripe.mjs";
-import registerPaymentRoutes from "./routes/payments.mjs";
 import registerRealtimeRoutes from "./routes/realtime.mjs";
 import registerMonitoringRoutes from "./routes/monitoring.mjs";
-import { signMediaPath } from "./utils.mjs";
-import registerMetricsRoutes from "./routes/metrics.mjs";
-import registerGoogleRoutes from "./routes/google.mjs";
 import registerUsageRoutes from "./routes/usage.mjs";
-import registerShopifyRoutes from "./routes/shopify.mjs";
 import { initOutboundQueue } from "./jobs/outboundQueue.mjs";
 
 export async function createApp() {
@@ -154,7 +147,7 @@ export async function createApp() {
           <div class="lock-icon">🔒</div>
           <h1>Webhooks Feature Disabled</h1>
           <p>This feature is currently under development and has been temporarily disabled. It will be available in a future update.</p>
-          <a href="/dashboard" class="btn">Return to Dashboard</a>
+          <a href="/inbox" class="btn">Return to Inbox</a>
         </div>
       </body>
       </html>
@@ -184,7 +177,7 @@ export async function createApp() {
           <div class="lock-icon">🔒</div>
           <h1>API Management Feature Disabled</h1>
           <p>This feature is currently under development and has been temporarily disabled. It will be available in a future update.</p>
-          <a href="/dashboard" class="btn">Return to Dashboard</a>
+          <a href="/inbox" class="btn">Return to Inbox</a>
         </div>
       </body>
       </html>
@@ -213,7 +206,7 @@ export async function createApp() {
           <div class="lock-icon">🔒</div>
           <h1>Contacts Feature Disabled</h1>
           <p>This feature is currently under development and has been temporarily disabled. It will be available in a future update.</p>
-          <a href="/dashboard" class="btn">Return to Dashboard</a>
+          <a href="/inbox" class="btn">Return to Inbox</a>
         </div>
       </body>
       </html>
@@ -228,10 +221,10 @@ export async function createApp() {
   });
   registerHomeRoutes(app);
   registerAuthRoutes(app);
-  registerDashboardRoutes(app);
+  app.use('/dashboard', (_req, res) => res.redirect(301, '/inbox'));
+  app.use('/guide', (_req, res) => res.redirect(301, '/settings'));
   registerInboxRoutes(app);
   registerSettingsRoutes(app, { csrfProtection, csrfTokenMiddleware: attachCsrfToken });
-  registerGuideRoutes(app);
   registerKbRoutes(app);
   registerCampaignRoutes(app);
   registerBookingsTab(app);
@@ -240,13 +233,9 @@ export async function createApp() {
   registerNotificationRoutes(app);
   registerPlanRoutes(app);
   registerStripeRoutes(app);
-  registerPaymentRoutes(app);
   registerRealtimeRoutes(app);
   registerMonitoringRoutes(app);
-  registerMetricsRoutes(app);
-  registerGoogleRoutes(app);
   registerUsageRoutes(app);
-  registerShopifyRoutes(app);
   registerWebhookRoutes(app);
   registerMiscRoutes(app);
   app.use('/webhook', webhookLimiter);

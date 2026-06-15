@@ -63,11 +63,12 @@ function renderNotifications(notifications) {
   }
   
   list.innerHTML = notifications.map(notif => {
-    const timeAgo = formatTimeAgo(notif.created_at);
+    const notifId = String(notif._id || notif.id || '');
+    const timeAgo = formatTimeAgo(notif.created_at || notif.createdAt);
     const unreadClass = notif.is_read ? '' : 'notification-unread';
     
     return `
-      <div class="notification-item ${unreadClass}" onclick="handleNotificationClick(${notif.id}, '${escapeHtml(notif.link || '')}', event)">
+      <div class="notification-item ${unreadClass}" onclick="handleNotificationClick('${escapeHtml(notifId)}', '${escapeHtml(notif.link || '')}', event)">
         <div class="notification-content">
           <div class="notification-title">${escapeHtml(notif.title)}</div>
           <div class="notification-message">${escapeHtml(notif.message || '')}</div>
@@ -124,15 +125,36 @@ async function markAllAsRead(event) {
   }
 }
 function formatTimeAgo(timestamp) {
+  const ts = parseNotificationTimestamp(timestamp);
+  if (ts == null) return '';
   const now = Math.floor(Date.now() / 1000);
-  const seconds = now - timestamp;
+  const seconds = now - ts;
   
   if (seconds < 60) return 'Just now';
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
   if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
-  const date = new Date(timestamp * 1000);
-  return date.toLocaleDateString();
+  const date = new Date(ts * 1000);
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString();
+}
+function parseNotificationTimestamp(value) {
+  if (value == null) return null;
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value > 1e12 ? Math.floor(value / 1000) : Math.floor(value);
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (/^\d+$/.test(trimmed)) {
+      const n = Number(trimmed);
+      return n > 1e12 ? Math.floor(n / 1000) : Math.floor(n);
+    }
+    const ms = Date.parse(trimmed);
+    if (Number.isFinite(ms)) return Math.floor(ms / 1000);
+  }
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return Math.floor(value.getTime() / 1000);
+  }
+  return null;
 }
 function escapeHtml(text) {
   const div = document.createElement('div');

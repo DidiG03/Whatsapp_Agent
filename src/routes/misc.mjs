@@ -289,12 +289,12 @@ export default function registerMiscRoutes(app) {
       let openaiResult;
       try {
         const client = new OpenAI({ apiKey: rawKey });
-        const resp = await client.chat.completions.create({
-          model: 'gpt-4o-mini',
-          messages: [{ role: 'user', content: 'ping' }],
-          max_tokens: 5,
-          temperature: 0
-        });
+        const diagModel = process.env.OPENAI_MODEL || 'gpt-5.4-mini';
+        const isReasoning = /^(gpt-5|o[1-9])/i.test(diagModel);
+        const reqBody = isReasoning
+          ? { model: diagModel, messages: [{ role: 'user', content: 'ping' }], max_completion_tokens: 16, reasoning_effort: process.env.OPENAI_REASONING_EFFORT || 'low' }
+          : { model: diagModel, messages: [{ role: 'user', content: 'ping' }], max_tokens: 5, temperature: 0 };
+        const resp = await client.chat.completions.create(reqBody);
         openaiResult = {
           ok: true,
           content: resp?.choices?.[0]?.message?.content || '',

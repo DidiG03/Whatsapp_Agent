@@ -3,71 +3,17 @@
 (function() {
   'use strict';
   class LoadingManager {
-    constructor() {
-      this.loadingElements = new Set();
-      this.init();
-    }
+    constructor() {}
 
-    init() {
-      this.setupPageTransition();
-      this.setupLoadingStates();
-    }
+    init() {}
 
-    setupPageTransition() {
-      document.addEventListener('DOMContentLoaded', () => {
-        document.body.style.opacity = '0';
-        document.body.style.transition = 'opacity 0.3s ease-in-out';
-        
-        setTimeout(() => {
-          document.body.style.opacity = '1';
-        }, 100);
-      });
-    }
+    setupPageTransition() {}
 
-    setupLoadingStates() {
-      const buttons = document.querySelectorAll('button');
-      buttons.forEach(button => {
-        if (!button.hasAttribute('data-loading')) {
-          button.addEventListener('click', (e) => {
-            if (button.hasAttribute('data-loading') || button.classList.contains('submit-btn')) {
-              this.showLoading(button);
-            }
-          });
-        }
-      });
-    }
+    setupLoadingStates() {}
 
-    showLoading(element) {
-      const originalText = element.textContent;
-      element.setAttribute('data-loading', 'true');
-      element.textContent = 'Loading...';
-      element.disabled = true;
-      const spinner = document.createElement('span');
-      spinner.className = 'loading-spinner';
-      spinner.innerHTML = '⟳';
-      spinner.style.cssText = `
-        display: inline-block;
-        margin-right: 8px;
-        animation: spin 1s linear infinite;
-        font-size: 14px;
-      `;
-      
-      element.insertBefore(spinner, element.firstChild);
-      element.dataset.originalText = originalText;
-    }
+    showLoading(_element) {}
 
-    hideLoading(element) {
-      if (element.hasAttribute('data-loading')) {
-        element.removeAttribute('data-loading');
-        element.disabled = false;
-        element.textContent = element.dataset.originalText || 'Submit';
-        
-        const spinner = element.querySelector('.loading-spinner');
-        if (spinner) {
-          spinner.remove();
-        }
-      }
-    }
+    hideLoading(_element) {}
   }
   class ScrollManager {
     constructor() {
@@ -139,7 +85,7 @@
     }
 
     setupInfiniteScroll() {
-      const chatThreads = document.querySelectorAll('.chat-thread');
+      const chatThreads = document.querySelectorAll('.chat-thread-messages, .chat-thread');
       chatThreads.forEach(thread => {
         this.scrollToBottom(thread);
         const observer = new MutationObserver(() => {
@@ -355,8 +301,10 @@
         rootMargin: '0px 0px -50px 0px'
       });
 
-      const animateElements = document.querySelectorAll('.card, .list li, .guide-card');
+      const animateElements = document.querySelectorAll('.card, .guide-card');
       animateElements.forEach(el => {
+        // Skip dashboard/workspace pages — fade-in on load feels wrong in the app UI
+        if (el.closest('.layout')) return;
         observer.observe(el);
       });
     }
@@ -412,6 +360,58 @@
       }
     }
   }
+  class MobileNavManager {
+    constructor() {
+      this.open = false;
+      this.init();
+    }
+
+    init() {
+      const layout = document.querySelector('.layout');
+      const sidebar = document.getElementById('app-sidebar');
+      const toggle = document.querySelector('.mobile-nav-toggle');
+      if (!layout || !sidebar || !toggle) return;
+
+      this.toggle = toggle;
+      this.sidebar = sidebar;
+      this.backdrop = document.createElement('div');
+      this.backdrop.className = 'mobile-nav-backdrop';
+      this.backdrop.hidden = true;
+      document.body.appendChild(this.backdrop);
+
+      toggle.addEventListener('click', () => {
+        if (this.open) this.close();
+        else this.openNav();
+      });
+      this.backdrop.addEventListener('click', () => this.close());
+      sidebar.querySelectorAll('.nav a, .logout').forEach((link) => {
+        link.addEventListener('click', () => this.close());
+      });
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && this.open) this.close();
+      });
+      window.matchMedia('(min-width: 901px)').addEventListener('change', (e) => {
+        if (e.matches) this.close();
+      });
+    }
+
+    openNav() {
+      this.open = true;
+      document.body.classList.add('mobile-nav-open');
+      this.toggle.setAttribute('aria-expanded', 'true');
+      this.toggle.setAttribute('aria-label', 'Close menu');
+      this.backdrop.hidden = false;
+    }
+
+    close() {
+      this.open = false;
+      document.body.classList.remove('mobile-nav-open');
+      this.toggle.setAttribute('aria-expanded', 'false');
+      this.toggle.setAttribute('aria-label', 'Open menu');
+      this.backdrop.hidden = true;
+    }
+  }
+
   class ParallaxManager {
     constructor() {
       this.items = [];
@@ -453,21 +453,30 @@
     }
   }
   document.addEventListener('DOMContentLoaded', () => {
-    new LoadingManager();
     new ScrollManager();
     new InteractionManager();
     new AnimationManager();
+    new MobileNavManager();
     new ParallaxManager();
     try {
-      const originalFetch = window.fetch;
-      window.fetch = async function(input, init) {
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = async function(input, init = {}) {
         try {
-          const resp = await originalFetch(input, init);
+          const url = typeof input === 'string' ? input : input?.url || '';
+          const useAuth = window.authManager?.authenticatedFetch && !init.skipAuthWrap;
+          const resp = useAuth
+            ? await window.authManager.authenticatedFetch(input, init)
+            : await originalFetch(input, init);
+
           if (!resp.ok && window.Toast) {
             const status = resp.status;
             const show = (msg) => Toast.show(msg, status >= 500 ? 'error' : 'warning', 4000);
-            if (status === 401) show('Please sign in to continue.');
-            else if (status === 403) show('Your session expired. Refresh and try again.');
+            if (status === 401) {
+              const suppress = window.authManager?.shouldSuppressAuthToast?.(url);
+              if (!suppress) {
+                window.authManager?.handleUnauthorized?.(url);
+              }
+            } else if (status === 403) show('Your session expired. Refresh and try again.');
             else if (status === 404) show('Not found.');
             else if (status === 413) show('That upload is too large.');
             else if (status === 429) show('Too many requests. Please slow down.');
@@ -492,6 +501,7 @@
     ScrollManager,
     InteractionManager,
     AnimationManager,
+    MobileNavManager,
     ParallaxManager
   };
 

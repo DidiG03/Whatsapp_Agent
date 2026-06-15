@@ -219,7 +219,7 @@ export const testNotifications = {
     type: 'booking',
     title: 'New Booking',
     message: 'Jane Smith booked an appointment for tomorrow at 2:00 PM',
-    link: '/dashboard',
+    link: '/inbox',
     metadata: JSON.stringify({
       contact_id: '+0987654321',
       contact_name: 'Jane Smith',

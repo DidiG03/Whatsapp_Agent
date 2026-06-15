@@ -9,8 +9,16 @@ const HolidayRuleSchema = z.object({
   end: z.string().regex(/^\d{2}:\d{2}$/)
 });
 
+const ServiceSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  minutes: z.number().int().min(5).max(480),
+  price: z.string().trim().max(40).nullable().optional()
+});
+
+const DISPLAY_INTERVALS = [15, 20, 30, 40, 60, 90, 120];
+const CAPACITY_WINDOWS = [30, 60, 90, 120];
+
 const SettingsSchema = z.object({
-  name: nullableString(120),
   business_type: nullableString(80),
   phone_number_id: nullableDigits(6, 32),
   waba_id: nullableDigits(6, 32),
@@ -21,10 +29,13 @@ const SettingsSchema = z.object({
   business_name: nullableString(160),
   business_categories: z.array(z.string().trim().max(50)).max(20),
   website_url: nullableUrl(),
+  business_address: nullableString(500),
+  business_latitude: nullableFloat(-90, 90),
+  business_longitude: nullableFloat(-180, 180),
+  business_place_id: nullableString(200),
   ai_tone: nullableString(160),
   ai_blocked_topics: nullableString(160),
   ai_style: nullableString(200),
-  entry_greeting: nullableString(280),
   conversation_mode: z.enum(["full", "escalation"]),
   bookings_enabled: z.boolean().default(false),
   reminders_enabled: z.boolean().default(false),
@@ -33,18 +44,21 @@ const SettingsSchema = z.object({
   reminder_windows: z.array(z.enum(reminderOptions)).max(reminderOptions.length),
   wa_template_name: nullableString(120),
   wa_template_language: nullableString(16),
-  escalation_email_enabled: z.boolean().default(false),
   escalation_additional_message: nullableString(280),
   escalation_out_of_hours_message: nullableString(280),
   escalation_questions: z.array(z.string().trim().max(280)).max(10),
   holidays_json_url: nullableUrl(),
   closed_dates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).max(365),
   holiday_rules: z.array(HolidayRuleSchema).max(64),
-  smtp_host: nullableString(160),
-  smtp_port: nullableNumber(1, 65535),
-  smtp_secure: z.boolean().default(false),
-  smtp_user: nullableString(160),
-  smtp_pass: nullableString(256)
+  booking_max_per_day: nullableNumber(0, 500),
+  booking_days_ahead: nullableNumber(1, 365),
+  booking_display_interval_minutes: z.number().int().refine((n) => DISPLAY_INTERVALS.includes(n)),
+  booking_capacity_window_minutes: z.number().int().refine((n) => CAPACITY_WINDOWS.includes(n)),
+  booking_capacity_limit: nullableNumber(0, 500),
+  waitlist_enabled: z.boolean().default(false),
+  staff_whatsapp_group_id: nullableString(256),
+  staff_whatsapp_group_enabled: z.boolean().default(false),
+  services: z.array(ServiceSchema).max(20)
 });
 
 function nullableString(max) {
@@ -89,6 +103,15 @@ function nullableNumber(min, max) {
     if (Number.isNaN(num)) return null;
     return num;
   }, z.number().int().min(min).max(max).nullable());
+}
+
+function nullableFloat(min, max) {
+  return z.preprocess((val) => {
+    if (val === undefined || val === null || val === "") return null;
+    const num = Number(val);
+    if (Number.isNaN(num)) return null;
+    return num;
+  }, z.number().min(min).max(max).nullable());
 }
 
 function coerceBoolean(value) {
@@ -180,9 +203,33 @@ function parseHolidayRules(body) {
   return rules;
 }
 
+function snapToAllowed(value, allowed, fallback) {
+  const num = Number(value);
+  if (Number.isNaN(num)) return fallback;
+  return allowed.includes(num) ? num : fallback;
+}
+
+function parseServicesJson(raw) {
+  const text = typeof raw === "string" ? raw : "";
+  if (!text.trim()) return [];
+  try {
+    const arr = JSON.parse(text);
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .map((x) => ({
+        name: String(x?.name || "").trim(),
+        minutes: Number(x?.minutes || 0),
+        price: x?.price ? String(x.price).trim() : null,
+      }))
+      .filter((x) => x.name && x.minutes > 0)
+      .slice(0, 20);
+  } catch {
+    return [];
+  }
+}
+
 function normalizePayload(raw = {}) {
   return {
-    name: raw.name,
     business_type: raw.business_type,
     phone_number_id: raw.phone_number_id,
     waba_id: raw.waba_id,
@@ -193,10 +240,13 @@ function normalizePayload(raw = {}) {
     business_name: raw.business_name,
     business_categories: parseCategories(raw.business_categories),
     website_url: raw.website_url,
+    business_address: raw.business_address,
+    business_latitude: raw.business_latitude,
+    business_longitude: raw.business_longitude,
+    business_place_id: raw.business_place_id,
     ai_tone: raw.ai_tone,
     ai_blocked_topics: raw.ai_blocked_topics,
     ai_style: raw.ai_style,
-    entry_greeting: raw.entry_greeting,
     conversation_mode: raw.conversation_mode === "escalation" ? "escalation" : "full",
     bookings_enabled: coerceBoolean(raw.bookings_enabled),
     reminders_enabled: coerceBoolean(raw.reminders_enabled),
@@ -205,18 +255,21 @@ function normalizePayload(raw = {}) {
     reminder_windows: parseReminderWindows(raw.reminder_windows),
     wa_template_name: raw.wa_template_name,
     wa_template_language: raw.wa_template_language,
-    escalation_email_enabled: coerceBoolean(raw.escalation_email_enabled),
     escalation_additional_message: raw.escalation_additional_message,
     escalation_out_of_hours_message: raw.escalation_out_of_hours_message,
     escalation_questions: parseEscalationQuestions(raw.escalation_questions_json),
     holidays_json_url: raw.holidays_json_url,
     closed_dates: parseClosedDates(raw.closed_dates_json),
     holiday_rules: parseHolidayRules(raw),
-    smtp_host: raw.smtp_host,
-    smtp_port: raw.smtp_port,
-    smtp_secure: coerceBoolean(raw.smtp_secure),
-    smtp_user: raw.smtp_user,
-    smtp_pass: raw.smtp_pass
+    booking_max_per_day: raw.booking_max_per_day,
+    booking_days_ahead: raw.booking_days_ahead,
+    booking_display_interval_minutes: snapToAllowed(raw.booking_display_interval_minutes, DISPLAY_INTERVALS, 30),
+    booking_capacity_window_minutes: snapToAllowed(raw.booking_capacity_window_minutes, CAPACITY_WINDOWS, 60),
+    booking_capacity_limit: raw.booking_capacity_limit,
+    waitlist_enabled: coerceBoolean(raw.waitlist_enabled),
+    staff_whatsapp_group_id: raw.staff_whatsapp_group_id,
+    staff_whatsapp_group_enabled: coerceBoolean(raw.staff_whatsapp_group_enabled),
+    services: parseServicesJson(raw.services_json)
   };
 }
 
@@ -228,11 +281,10 @@ export function validateSettingsPayload(rawBody = {}) {
   }
   const data = parsed.data;
 
-  const bookingsEnabled = data.conversation_mode === "escalation" ? false : data.bookings_enabled;
+  const bookingsEnabled = data.conversation_mode !== "escalation";
   const remindersEnabled = bookingsEnabled && data.reminders_enabled;
 
   const payload = {
-    name: data.name,
     business_type: data.business_type,
     phone_number_id: data.phone_number_id,
     waba_id: data.waba_id,
@@ -243,10 +295,13 @@ export function validateSettingsPayload(rawBody = {}) {
     business_name: data.business_name,
     business_categories_json: data.business_categories.length ? JSON.stringify(data.business_categories) : null,
     website_url: data.website_url,
+    business_address: data.business_address,
+    business_latitude: data.business_latitude,
+    business_longitude: data.business_longitude,
+    business_place_id: data.business_place_id,
     ai_tone: data.ai_tone,
     ai_blocked_topics: data.ai_blocked_topics,
     ai_style: data.ai_style,
-    entry_greeting: data.entry_greeting,
     conversation_mode: data.conversation_mode,
     bookings_enabled: bookingsEnabled,
     reminders_enabled: remindersEnabled,
@@ -255,18 +310,21 @@ export function validateSettingsPayload(rawBody = {}) {
     reminder_windows: data.reminder_windows.length ? JSON.stringify(data.reminder_windows) : null,
     wa_template_name: data.wa_template_name,
     wa_template_language: data.wa_template_language,
-    escalation_email_enabled: data.escalation_email_enabled,
     escalation_additional_message: data.escalation_additional_message,
     escalation_out_of_hours_message: data.escalation_out_of_hours_message,
     escalation_questions_json: data.escalation_questions.length ? JSON.stringify(data.escalation_questions) : null,
     holidays_json_url: data.holidays_json_url,
     closed_dates_json: JSON.stringify(data.closed_dates),
     holidays_rules_json: data.holiday_rules.length ? JSON.stringify(data.holiday_rules) : null,
-    smtp_host: data.smtp_host,
-    smtp_port: data.smtp_port ?? 587,
-    smtp_secure: data.smtp_secure,
-    smtp_user: data.smtp_user,
-    smtp_pass: data.smtp_pass
+    booking_max_per_day: data.booking_max_per_day ?? 0,
+    booking_days_ahead: data.booking_days_ahead ?? 60,
+    booking_display_interval_minutes: data.booking_display_interval_minutes,
+    booking_capacity_window_minutes: data.booking_capacity_window_minutes,
+    booking_capacity_limit: data.booking_capacity_limit ?? 0,
+    waitlist_enabled: data.waitlist_enabled,
+    staff_whatsapp_group_id: data.staff_whatsapp_group_id,
+    staff_whatsapp_group_enabled: data.staff_whatsapp_group_enabled,
+    services_json: data.services.length ? JSON.stringify(data.services) : null
   };
 
   return { success: true, data: payload };

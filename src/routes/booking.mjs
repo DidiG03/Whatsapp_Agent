@@ -1,9 +1,10 @@
 import { ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
-import { listAvailability, createBooking, cancelBooking, rescheduleBooking, getCalendarById } from "../services/booking.mjs";
+import { listAvailability, createBooking, cancelBooking, rescheduleBooking } from "../services/booking.mjs";
 import { sendBookingNotification } from "../services/email.mjs";
+import { sendStaffGroupBookingNotification } from "../services/staffGroupNotifications.mjs";
+import { getSettingsForUser } from "../services/settings.mjs";
 import { db } from "../db-mongodb.mjs";
 import mongoose from 'mongoose';
-import { Staff } from "../schemas/mongodb.mjs";
 
 export default function registerBookingRoutes(app) {
   app.get("/booking/availability", async (req, res) => {
@@ -26,9 +27,9 @@ export default function registerBookingRoutes(app) {
       const { staff_id, start, end, contact_phone, notes } = req.body || {};
       if (!staff_id || !start || !end) return res.status(400).json({ error: "staff_id, start, end required" });
       const r = await createBooking({ userId, staffId: Number(staff_id), startISO: String(start), endISO: String(end), contactPhone: contact_phone || null, notes: notes || null });
+      const staff = db.prepare(`SELECT name FROM staff WHERE id = ?`).get(staff_id);
+      const customerName = contact_phone || 'Customer';
       try {
-        const staff = db.prepare(`SELECT name FROM staff WHERE id = ?`).get(staff_id);
-        const customerName = contact_phone || 'Customer';
         await sendBookingNotification(userId, {
           customerName,
           customerPhone: contact_phone || 'N/A',
@@ -42,7 +43,20 @@ export default function registerBookingRoutes(app) {
         console.error('[Booking API] Failed to send booking email:', e.message);
       }
       try {
-        const customerName = contact_phone || 'Customer';
+        const settings = await getSettingsForUser(userId);
+        await sendStaffGroupBookingNotification(userId, {
+          customerName,
+          customerPhone: contact_phone || 'N/A',
+          startTime: start,
+          endTime: end,
+          notes: notes || '',
+          appointmentId: r.id,
+          staffName: staff?.name || null,
+        }, settings);
+      } catch (e) {
+        console.error('[Booking API] Failed to send staff group alert:', e.message);
+      }
+      try {
         const formattedTime = new Date(start).toLocaleString();
         db.prepare(`INSERT INTO notifications (user_id, type, title, message, link, metadata) 
           VALUES (?, ?, ?, ?, ?, ?)`).run(
@@ -50,7 +64,7 @@ export default function registerBookingRoutes(app) {
           'booking',
           'New Booking Confirmed',
           `${customerName} booked an appointment for ${formattedTime} (Ref #${r.id})`,
-          `/dashboard`,
+          `/bookings`,
           JSON.stringify({ 
             contact_phone: contact_phone || null, 
             appointment_id: r.id,
@@ -124,15 +138,6 @@ export default function registerBookingRoutes(app) {
         const appt = await mongo.collection('appointments').findOne({ user_id: String(userId), $or: or });
         if (!appt) { console.warn('[Bookings][DELETE] appointment not found for', { userId: String(userId), raw }); return res.json({ ok: false }); }
         console.log('[Bookings][DELETE] canceling appt', { _id: String(appt._id), id: appt.id });
-        try {
-          if (appt.gcal_event_id && appt.staff_id) {
-            const owner = await Staff.findOne({ _id: appt.staff_id }).lean();
-            if (owner?.calendar_id) {
-              const cal = await getCalendarById(owner.calendar_id, userId);
-              if (cal) { const { deleteEvent } = await import('../services/google.mjs'); try { await deleteEvent(cal, appt.gcal_event_id); console.log('[Bookings][DELETE] google event removed'); } catch (e) { console.warn('[Bookings][DELETE] google delete failed', e?.message || e); } }
-            }
-          }
-        } catch {}
         await mongo.collection('appointments').updateOne({ _id: appt._id }, { $set: { status: 'canceled', updatedAt: new Date() } });
         console.log('[Bookings][DELETE] marked canceled in DB');
         return res.json({ ok: true });
@@ -162,21 +167,7 @@ export default function registerBookingRoutes(app) {
         if (appt.id && Number(appt.id)) {
           await rescheduleBooking({ userId, appointmentId: Number(appt.id), startISO: String(start), endISO: String(end) });
         } else {
-          try {
-            if (appt.gcal_event_id && appt.staff_id) {
-              const owner = await Staff.findOne({ _id: appt.staff_id }).lean();
-              if (owner?.calendar_id) {
-                const cal = await getCalendarById(owner.calendar_id, userId);
-                if (cal) {
-                  const { updateEvent } = await import('../services/google.mjs');
-                  await updateEvent(cal, appt.gcal_event_id, { start: { dateTime: String(start) }, end: { dateTime: String(end) } });
-                }
-              }
-            }
-          } catch {}
-          const startTs = Math.floor(new Date(start).getTime() / 1000);
-          const endTs = Math.floor(new Date(end).getTime() / 1000);
-          await mongo.collection('appointments').updateOne({ _id }, { $set: { start_ts: startTs, end_ts: endTs, status: 'confirmed', updatedAt: new Date() } });
+          await rescheduleBooking({ userId, mongoId: raw, startISO: String(start), endISO: String(end) });
         }
       }
       return res.json({ ok: true });

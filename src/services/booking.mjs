@@ -2,9 +2,93 @@
 import { getDB } from "../db-mongodb.mjs";
 import { getSettingsForUser } from "./../services/settings.mjs";
 import mongoose from 'mongoose';
-import { Staff, Calendar, Appointment } from "../schemas/mongodb.mjs";
-import { freeBusy, createEvent, updateEvent, deleteEvent } from "./google.mjs";
-import { getYmdPartsInTimeZone } from "../utils.mjs";
+import { Staff, Appointment } from "../schemas/mongodb.mjs";
+import { getYmdPartsInTimeZone, buildUtcFromLocalWallTime } from "../utils.mjs";
+
+export function resolveAppointmentRefId(appt) {
+  const id = Number(appt?.id);
+  if (Number.isFinite(id) && id > 0) return id;
+  return null;
+}
+
+export async function ensureAppointmentLegacyId(appt, userId) {
+  if (!appt?._id) return null;
+  const existing = resolveAppointmentRefId(appt);
+  if (existing) return existing;
+  const db = getDB();
+  let legacyId = Number(appt.start_ts) || Math.floor(Date.now() / 1000);
+  try {
+    for (let i = 0; i < 5; i++) {
+      const clash = await db.collection('appointments').findOne({
+        user_id: String(userId),
+        id: legacyId,
+        _id: { $ne: appt._id },
+      });
+      if (!clash) break;
+      legacyId += 1;
+    }
+    await db.collection('appointments').updateOne(
+      { _id: appt._id },
+      { $set: { id: legacyId, updatedAt: new Date() } }
+    );
+    appt.id = legacyId;
+    return legacyId;
+  } catch {
+    return null;
+  }
+}
+
+export async function findAppointmentForUser({ userId, appointmentId, mongoId }) {
+  const db = getDB();
+  const uid = String(userId);
+  if (mongoId) {
+    try {
+      const oid = mongoose.Types.ObjectId.isValid(String(mongoId))
+        ? new mongoose.Types.ObjectId(String(mongoId))
+        : null;
+      if (oid) {
+        const row = await db.collection('appointments').findOne({ user_id: uid, _id: oid });
+        if (row) return row;
+      }
+    } catch {}
+  }
+  const num = Number(appointmentId);
+  if (Number.isFinite(num) && num > 0) {
+    const row = await db.collection('appointments').findOne({ user_id: uid, id: num });
+    if (row) return row;
+  }
+  return null;
+}
+
+function appointmentsToBusyBlocks(appts) {
+  return (appts || []).map((a) => ({
+    start: new Date((a.start_ts || 0) * 1000).toISOString(),
+    end: new Date(((a.end_ts || a.start_ts) || 0) * 1000).toISOString(),
+  }));
+}
+
+async function findOverlappingAppointments(userId, startISO, endISO, { excludeId = null, excludeMongoId = null, staffId = null } = {}) {
+  const db = getDB();
+  const startSec = Math.floor(new Date(startISO).getTime() / 1000);
+  const endSec = Math.floor(new Date(endISO).getTime() / 1000);
+  const query = {
+    user_id: String(userId),
+    status: 'confirmed',
+    start_ts: { $lt: endSec },
+    end_ts: { $gt: startSec },
+  };
+  if (excludeId != null) {
+    const num = Number(excludeId);
+    if (Number.isFinite(num) && num > 0) query.id = { $ne: num };
+  }
+  if (excludeMongoId && mongoose.Types.ObjectId.isValid(String(excludeMongoId))) {
+    query._id = { $ne: new mongoose.Types.ObjectId(String(excludeMongoId)) };
+  }
+  if (staffId && mongoose.Types.ObjectId.isValid(String(staffId))) {
+    query.staff_id = new mongoose.Types.ObjectId(String(staffId));
+  }
+  return db.collection('appointments').find(query).project({ start_ts: 1, end_ts: 1, id: 1 }).toArray();
+}
 
 function localMinutesOfDay(dateObj, timeZone) {
   try {
@@ -32,13 +116,14 @@ function computeDaySlots(dayDate, slotMinutes, tz, workingHours, busyBlocks) {
   if (process.env.DEBUG_BOOKINGS === '1') try { console.log('[availability] spans', { date: dayDate.toISOString().slice(0,10), dow, spans }); } catch {}
   const slots = [];
   const { year: y, month: m, day: d } = getYmdPartsInTimeZone(dayDate, tz || 'UTC');
+  const dateISO = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
   for (const span of spans) {
     const [startStr, endStr] = String(span||"").split("-");
     if (!startStr || !endStr) continue;
     const [sh, sm] = startStr.split(":").map(n => Number(n||0));
     const [eh, em] = endStr.split(":").map(n => Number(n||0));
-    const start = new Date(Date.UTC(y, m-1, d, sh, sm||0, 0, 0));
-    const end = new Date(Date.UTC(y, m-1, d, eh, em||0, 0, 0));
+    const start = buildUtcFromLocalWallTime(dateISO, sh, sm || 0, tz || 'UTC');
+    const end = buildUtcFromLocalWallTime(dateISO, eh, em || 0, tz || 'UTC');
     for (let t = new Date(start); t < end; t = new Date(t.getTime() + slotMinutes*60000)) {
       const next = new Date(t.getTime() + slotMinutes*60000);
       if (next > end) break;
@@ -62,26 +147,10 @@ export function getStaffById(staffId, userId) {
   } catch { return null; }
 }
 
-export function getCalendarById(calendarId, userId) {
-  try {
-    if (mongoose.Types.ObjectId.isValid(String(calendarId))) {
-      return Calendar.findOne({ _id: new mongoose.Types.ObjectId(String(calendarId)), user_id: String(userId) }).lean();
-    }
-    return Calendar.findOne({ legacy_id: Number(calendarId), user_id: String(userId) }).lean();
-  } catch { return null; }
-}
-
 export async function listAvailability({ userId, staffId, dateISO, days = 1, slotMinutes }) {
   const staff = await getStaffById(staffId, userId);
   if (!staff) return [];
-  let calendar = staff.calendar_id ? await getCalendarById(staff.calendar_id, userId) : null;
-  if (!calendar) {
-    try {
-      const db = getDB();
-      calendar = await db.collection('calendars').findOne({ user_id: String(userId) });
-    } catch {}
-  }
-  const tz = staff.timezone || calendar?.timezone || "UTC";
+  const tz = staff.timezone || "UTC";
   const settings = await (async () => { try { return await getSettingsForUser(userId); } catch { return {}; } })();
 
   const minutes = Number(slotMinutes || settings?.booking_display_interval_minutes || staff.slot_minutes || 30);
@@ -110,6 +179,9 @@ export async function listAvailability({ userId, staffId, dateISO, days = 1, slo
       return Array.isArray(arr) ? arr : [];
     } catch { return []; }
   })();
+  const staffOid = mongoose.Types.ObjectId.isValid(String(staffId))
+    ? new mongoose.Types.ObjectId(String(staffId))
+    : null;
 
   const startDay = new Date(dateISO);
   startDay.setHours(0,0,0,0);
@@ -128,17 +200,23 @@ export async function listAvailability({ userId, staffId, dateISO, days = 1, slo
     }
     const tMin = new Date(day); tMin.setHours(0,0,0,0);
     const tMax = new Date(day); tMax.setHours(23,59,59,999);
-    const busy = calendar ? await freeBusy(calendar, tMin.toISOString(), tMax.toISOString()) : [];
     let dayAppts = [];
     try {
       const db = getDB();
       const dayStartSec = Math.floor(tMin.getTime()/1000);
       const dayEndSec = Math.floor(tMax.getTime()/1000);
+      const apptQuery = {
+        user_id: String(userId),
+        status: 'confirmed',
+        start_ts: { $gte: dayStartSec, $lte: dayEndSec },
+      };
+      if (staffOid) apptQuery.staff_id = staffOid;
       dayAppts = await db.collection('appointments')
-        .find({ user_id: String(userId), status: 'confirmed', start_ts: { $gte: dayStartSec, $lte: dayEndSec } })
+        .find(apptQuery)
         .project({ start_ts: 1, end_ts: 1 })
         .toArray();
     } catch {}
+    const busy = appointmentsToBusyBlocks(dayAppts);
     const slots = computeDaySlots(day, minutes, tz, working, busy);
     try { if (!slots.length) console.log('availability-debug', { userId, staffId, tz, date: day.toISOString().slice(0,10), minutes, spans: (working && working[getDowKeyInTz(day, tz)] || []).length, busy: busy.length }); } catch {}
     let mapped = slots.map(s => ({ start: s.start.toISOString(), end: s.end.toISOString() }));
@@ -193,27 +271,8 @@ export async function listAvailability({ userId, staffId, dateISO, days = 1, slo
 export async function createBooking({ userId, staffId, startISO, endISO, contactPhone, notes, replaceExistingForContact = true }) {
   const staff = await getStaffById(staffId, userId);
   if (!staff) throw new Error("staff not found");
-  const calendar = staff.calendar_id ? await getCalendarById(staff.calendar_id, userId) : null;
-  if (calendar) {
-    const busy = await freeBusy(calendar, startISO, endISO);
-    const overlaps = (Array.isArray(busy) ? busy : []).some(b => {
-      const bs = new Date(b.start); const be = new Date(b.end);
-      const ss = new Date(startISO); const ee = new Date(endISO);
-      return ss < be && ee > bs;
-    });
-    if (overlaps) throw new Error("time slot no longer available");
-  }
-  let gcalId = null;
-  if (calendar) {
-    const evt = {
-      summary: notes ? `Appointment (${notes.slice(0, 60)})` : "Appointment",
-      description: notes || undefined,
-      start: { dateTime: startISO },
-      end: { dateTime: endISO }
-    };
-    const r = await createEvent(calendar, evt);
-    gcalId = r?.id || null;
-  }
+  const overlaps = await findOverlappingAppointments(userId, startISO, endISO, { staffId });
+  if (overlaps.length) throw new Error("time slot no longer available");
   try {
     if (replaceExistingForContact && contactPhone) {
       const db = getDB();
@@ -226,17 +285,10 @@ export async function createBooking({ userId, staffId, startISO, endISO, contact
           start_ts: { $gte: nowSec },
           $or: [ { contact_phone: digits }, { contact_phone: '+' + digits } ]
         })
-        .project({ _id: 1, gcal_event_id: 1, staff_id: 1 })
+        .project({ _id: 1 })
         .toArray();
       for (const ex of (existing || [])) {
         try {
-          if (ex.gcal_event_id && ex.staff_id) {
-            const calOwner = await Staff.findOne({ _id: ex.staff_id }).lean();
-            if (calOwner?.calendar_id) {
-              const cal = await getCalendarById(calOwner.calendar_id, userId);
-              if (cal) { try { await deleteEvent(cal, ex.gcal_event_id); } catch {} }
-            }
-          }
           await Appointment.updateOne({ _id: ex._id }, { $set: { status: 'canceled', updatedAt: new Date() } });
         } catch {}
       }
@@ -255,56 +307,71 @@ export async function createBooking({ userId, staffId, startISO, endISO, contact
   } catch {}
   const apptDoc = await Appointment.create({
     user_id: String(userId),
+    id: legacyId,
     staff_id: mongoose.Types.ObjectId.isValid(String(staffId)) ? new mongoose.Types.ObjectId(String(staffId)) : undefined,
     contact_phone: contactPhone || null,
     start_ts: startTs,
     end_ts: endTs,
-    gcal_event_id: gcalId,
+    gcal_event_id: null,
     status: 'confirmed',
     notes: notes || null,
     notify_24h_sent: false,
     notify_4h_sent: false,
     notify_2h_sent: false,
-    id: legacyId
   });
-  return { id: legacyId, gcal_event_id: gcalId, _id: apptDoc._id };
+  await db.collection('appointments').updateOne(
+    { _id: apptDoc._id },
+    { $set: { id: legacyId, updatedAt: new Date() } }
+  );
+  return { id: legacyId, gcal_event_id: null, _id: apptDoc._id };
 }
 
-export async function cancelBooking({ userId, appointmentId }) {
-  const db = getDB();
-  const appt = await db.collection('appointments').findOne({ user_id: String(userId), id: Number(appointmentId) });
+export function parseNameFromAppointmentNotes(notes) {
+  const match = /Name:\s*([^|]+)/i.exec(String(notes || ""));
+  return match ? match[1].trim() : null;
+}
+
+export function rebuildNotesWithName(notes, newName) {
+  const safeName = String(newName || "").trim().slice(0, 80);
+  if (!safeName) return String(notes || "").trim() || null;
+  const current = String(notes || "").trim();
+  if (/Name:\s*/i.test(current)) {
+    return current.replace(/Name:\s*.+?(?=\s*\||$)/i, `Name: ${safeName}`);
+  }
+  const partyMatch = /Party size:\s*\d+/i.exec(current);
+  const parts = [`Name: ${safeName}`];
+  if (partyMatch) parts.push(partyMatch[0]);
+  else if (current) parts.push(current);
+  return parts.join(" | ");
+}
+
+export async function updateBookingName({ userId, appointmentId, mongoId, newName }) {
+  const appt = await findAppointmentForUser({ userId, appointmentId, mongoId });
+  if (!appt) throw new Error("appointment not found");
+  const trimmed = String(newName || "").trim().slice(0, 80);
+  if (!trimmed) throw new Error("name required");
+  const notes = rebuildNotesWithName(appt.notes, trimmed);
+  await Appointment.updateOne({ _id: appt._id }, { $set: { notes, updatedAt: new Date() } });
+  return { notes, name: trimmed };
+}
+
+export async function cancelBooking({ userId, appointmentId, mongoId }) {
+  const appt = await findAppointmentForUser({ userId, appointmentId, mongoId });
   if (!appt) return false;
-  try {
-    if (appt.gcal_event_id && appt.staff_id) {
-      const calOwner = await Staff.findOne({ _id: appt.staff_id }).lean();
-      if (calOwner?.calendar_id) {
-        const cal = await getCalendarById(calOwner.calendar_id, userId);
-        if (cal) { try { await deleteEvent(cal, appt.gcal_event_id); } catch {} }
-      }
-    }
-  } catch {}
   await Appointment.updateOne({ _id: appt._id }, { $set: { status: 'canceled', updatedAt: new Date() } });
   return true;
 }
 
-export async function rescheduleBooking({ userId, appointmentId, startISO, endISO }) {
+export async function rescheduleBooking({ userId, appointmentId, startISO, endISO, mongoId }) {
   const db = getDB();
-  const appt = await db.collection('appointments').findOne({ user_id: String(userId), id: Number(appointmentId) });
+  const appt = await findAppointmentForUser({ userId, appointmentId, mongoId });
   if (!appt) throw new Error("appointment not found");
-  const calOwner = appt.staff_id ? await Staff.findOne({ _id: appt.staff_id }).lean() : null;
-  const cal = calOwner?.calendar_id ? await getCalendarById(calOwner.calendar_id, userId) : null;
-  if (cal) {
-    const busy = await freeBusy(cal, startISO, endISO);
-    const overlaps = (Array.isArray(busy) ? busy : []).some(b => {
-      const bs = new Date(b.start); const be = new Date(b.end);
-      const ss = new Date(startISO); const ee = new Date(endISO);
-      return ss < be && ee > bs;
-    });
-    if (overlaps) throw new Error("time slot no longer available");
-  }
-  if (cal && appt.gcal_event_id) {
-    await updateEvent(cal, appt.gcal_event_id, { start: { dateTime: startISO }, end: { dateTime: endISO } });
-  }
+  const overlaps = await findOverlappingAppointments(userId, startISO, endISO, {
+    excludeId: appt.id,
+    excludeMongoId: appt._id,
+    staffId: appt.staff_id,
+  });
+  if (overlaps.length) throw new Error("time slot no longer available");
   const startTs = Math.floor(new Date(startISO).getTime() / 1000);
   const endTs = Math.floor(new Date(endISO).getTime() / 1000);
   await Appointment.updateOne({ _id: appt._id }, { $set: { start_ts: startTs, end_ts: endTs, status: 'confirmed', updatedAt: new Date() } });
@@ -319,17 +386,10 @@ export async function rescheduleBooking({ userId, appointmentId, startISO, endIS
         start_ts: { $gte: nowSec },
         $or: [ { contact_phone: digits }, { contact_phone: '+' + digits } ]
       })
-      .project({ _id: 1, gcal_event_id: 1, staff_id: 1 })
+      .project({ _id: 1 })
       .toArray();
     for (const ex of (others || [])) {
       try {
-        if (ex.gcal_event_id && ex.staff_id) {
-          const owner = await Staff.findOne({ _id: ex.staff_id }).lean();
-          if (owner?.calendar_id) {
-            const c = await getCalendarById(owner.calendar_id, userId);
-            if (c) { try { await deleteEvent(c, ex.gcal_event_id); } catch {} }
-          }
-        }
         await Appointment.updateOne({ _id: ex._id }, { $set: { status: 'canceled', updatedAt: new Date() } });
       } catch {}
     }
@@ -347,18 +407,60 @@ export function buildDayRows(staffId, apptId = null) {
     return { id, title: d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }), description: 'Tap to view times' };
   });
 }
-export async function buildTimeRows({ userId, staffId, dateISO, limit = 10, apptId = null, slotMinutes = undefined }) {
+function getLocalHourInTimeZone(isoString, timeZone = "UTC") {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hour: "numeric",
+      hour12: false,
+    }).formatToParts(new Date(isoString));
+    return Number(parts.find((p) => p.type === "hour")?.value || 0);
+  } catch {
+    return new Date(isoString).getUTCHours();
+  }
+}
+
+export function filterSlotsByTimeOfDay(slots, tod, timeZone = "UTC") {
+  if (!tod || !Array.isArray(slots)) return slots || [];
+  return slots.filter((slot) => {
+    const hour = getLocalHourInTimeZone(slot.start, timeZone);
+    return hour >= tod.startHour && hour < tod.endHour;
+  });
+}
+
+export async function buildTimeRows({
+  userId,
+  staffId,
+  dateISO,
+  limit = 10,
+  apptId = null,
+  slotMinutes = undefined,
+  timezone = null,
+  tod = null,
+  lang = null,
+}) {
+  const staff = await getStaffById(staffId, userId);
+  const tz = timezone || staff?.timezone || "UTC";
+  const locale = lang === "sq" ? "sq-AL" : undefined;
   const avail = await listAvailability({ userId, staffId, dateISO, days: 1, slotMinutes });
-  const slots = Array.isArray(avail) ? (avail[0]?.slots || []) : [];
-  const upcoming = slots.filter(s => new Date(s.start).getTime() > Date.now()).slice(0, Number(limit||10));
-  const rows = upcoming.map(s => ({
+  let slots = Array.isArray(avail) ? (avail[0]?.slots || []) : [];
+  const minLeadMs = Math.max(1, Number(process.env.BOOKING_MIN_LEAD_MINUTES || 5)) * 60000;
+  const cutoff = Date.now() + minLeadMs;
+  slots = slots.filter((s) => new Date(s.start).getTime() >= cutoff);
+  if (tod) slots = filterSlotsByTimeOfDay(slots, tod, tz);
+  const upcoming = slots.slice(0, Number(limit || 10));
+  const rows = upcoming.map((s) => ({
     id: apptId
       ? `RESCHED_PICK_TIME_${apptId}_${staffId}_${s.start}_${s.end}`
       : `BOOK_SLOT_${s.start}_${s.end}_${staffId}`,
-    title: apptId
-      ? new Date(s.start).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
-      : new Date(s.start).toLocaleString(),
-    description: apptId ? 'Tap to confirm' : 'Tap to book'
+    title: new Date(s.start).toLocaleTimeString(locale, {
+      hour: "numeric",
+      minute: "2-digit",
+      timeZone: tz,
+    }),
+    description: apptId
+      ? (lang === "sq" ? "Prek për të konfirmuar" : "Tap to confirm")
+      : (lang === "sq" ? "Prek për të rezervuar" : "Tap to book"),
   }));
   return rows;
 }
@@ -366,4 +468,3 @@ export function isTooCloseToStart(nowSecs, startTs, minLeadMinutes) {
   const minsToStart = Math.floor(((startTs||0) - (nowSecs||0)) / 60);
   return minsToStart < Number(minLeadMinutes || 60);
 }
-

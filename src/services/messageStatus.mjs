@@ -31,26 +31,26 @@ export async function updateMessageDeliveryStatus(messageId, status, timestamp =
     }
     return false;
   }
+
+  const existing = await db.collection('messages').findOne(
+    { id: messageId },
+    { projection: { delivery_status: 1 } }
+  );
+  const currentRank = rank[existing?.delivery_status] || 0;
+  const nextRank = rank[status] || 0;
+  if (existing && currentRank >= nextRank) {
+    return false;
+  }
+
   const res = await db.collection('messages').updateOne(
-    { id: messageId, $or: [ { delivery_status: { $exists: false } }, { delivery_status: null }, { delivery_status: { $in: [MESSAGE_STATUS.SENT, MESSAGE_STATUS.DELIVERED] } } ] },
-    [
-      {
-        $set: {
-          delivery_status: {
-            $cond: [
-              { $or: [
-                { $eq: ['$delivery_status', null] },
-                { $lt: [ { $ifNull: [ { $getField: { field: '$delivery_status', input: { sent: 1, delivered: 2, read: 3 } } }, 0 ] }, rank[status] ] }
-              ] },
-              status,
-              '$delivery_status'
-            ]
-          },
-          delivery_timestamp: now,
-          read_status: { $ifNull: ['$read_status', 'unread'] }
-        }
+    { id: messageId },
+    {
+      $set: {
+        delivery_status: status,
+        delivery_timestamp: now,
+        read_status: status === MESSAGE_STATUS.READ ? READ_STATUS.READ : (existing?.read_status || READ_STATUS.UNREAD)
       }
-    ]
+    }
   );
   if (res.modifiedCount > 0) {
     console.log(`📤 Message ${messageId} delivery status updated to: ${status}`);

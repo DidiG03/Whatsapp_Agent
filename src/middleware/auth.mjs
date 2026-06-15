@@ -1,7 +1,7 @@
 
 import { clerkMiddleware, getAuth, clerkClient } from "@clerk/express";
 import crypto from "node:crypto";
-import { CLERK_AUTHORIZED_PARTIES, CLERK_ENABLED, CLERK_JWT_KEY, CLERK_PUBLISHABLE, CLERK_SECRET, CLERK_SIGN_IN_URL, CLERK_SIGN_UP_URL, PUBLIC_BASE_URL } from "../config.mjs";
+import { CLERK_AUTHORIZED_PARTIES, CLERK_ENABLED, CLERK_JWT_KEY, CLERK_PUBLISHABLE, CLERK_SECRET, CLERK_SIGN_IN_URL, CLERK_SIGN_UP_URL, PORT, PUBLIC_BASE_URL } from "../config.mjs";
 const SESSION_TOKEN_SECRET = process.env.SESSION_TOKEN_SECRET || CLERK_SECRET || "dev-secret-change";
 const WS_TOKEN_TTL_SECONDS = parseInt(process.env.WS_TOKEN_TTL_SECONDS || '7200', 10);
 function clerkEnabledRuntime() {
@@ -41,7 +41,13 @@ const _emailCache = new Map();const EMAIL_CACHE_TTL_MS = Math.max(30_000, Number
       .map(s => s.trim())
       .filter(Boolean);
     if (fromEnv.length) return fromEnv;
-    return undefined;
+    const defaults = new Set();
+    const base = (PUBLIC_BASE_URL || '').replace(/\/$/, '');
+    if (base) defaults.add(base);
+    const localPort = PORT || 3000;
+    defaults.add(`http://localhost:${localPort}`);
+    defaults.add(`http://127.0.0.1:${localPort}`);
+    return defaults.size ? [...defaults] : undefined;
   })();
   const clerkMW = clerkMiddleware({
     publishableKey: CLERK_PUBLISHABLE,
@@ -50,8 +56,8 @@ const _emailCache = new Map();const EMAIL_CACHE_TTL_MS = Math.max(30_000, Number
     ...(authorizedParties ? { authorizedParties } : {}),
     signInUrl,
     signUpUrl,
-    afterSignInUrl: '/dashboard',
-    afterSignUpUrl: '/dashboard',
+    afterSignInUrl: '/inbox',
+    afterSignUpUrl: '/inbox',
   });
   app.use(clerkMW);
 }

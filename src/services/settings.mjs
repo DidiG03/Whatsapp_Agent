@@ -1,13 +1,15 @@
 
 import { SettingsMulti } from "../schemas/mongodb.mjs";
 import { dataCache } from "../scalability/redis.mjs";
+import { buildGoogleBusinessContextLines, parseGoogleBusinessSnapshot } from "./googleBusinessImport.mjs";
 export async function getSettingsForUser(userId) {
   if (!userId) return {};
   const cacheKey = `settings:${userId}`;
   const cached = await dataCache.getUserData(cacheKey);
   if (cached) return cached;
   const row = await SettingsMulti.findOne({ user_id: userId }).lean();
-  const value = row || {};
+  const value = row ? { ...row } : {};
+  delete value.entry_greeting;
   try { await dataCache.cacheUserData(cacheKey, value, 300); } catch {}
   return value;
 }
@@ -27,10 +29,14 @@ export async function upsertSettingsForUser(userId, values) {
     business_name: values.business_name ?? current.business_name ?? null,
     business_categories_json: values.business_categories_json ?? current.business_categories_json ?? null,
     website_url: values.website_url ?? current.website_url ?? null,
+    business_address: values.business_address ?? current.business_address ?? null,
+    business_latitude: values.business_latitude ?? current.business_latitude ?? null,
+    business_longitude: values.business_longitude ?? current.business_longitude ?? null,
+    business_place_id: values.business_place_id ?? current.business_place_id ?? null,
+    google_business_json: values.google_business_json ?? current.google_business_json ?? null,
     ai_tone: values.ai_tone ?? current.ai_tone ?? null,
     ai_blocked_topics: values.ai_blocked_topics ?? current.ai_blocked_topics ?? null,
     ai_style: values.ai_style ?? current.ai_style ?? null,
-    entry_greeting: values.entry_greeting ?? current.entry_greeting ?? null,
     bookings_enabled: values.bookings_enabled ?? current.bookings_enabled ?? 0,
     booking_questions_json: values.booking_questions_json ?? current.booking_questions_json ?? null,
     reschedule_min_lead_minutes: values.reschedule_min_lead_minutes ?? current.reschedule_min_lead_minutes ?? 60,
@@ -58,6 +64,10 @@ export async function upsertSettingsForUser(userId, values) {
     booking_display_interval_minutes: values.booking_display_interval_minutes ?? current.booking_display_interval_minutes ?? 30,
     booking_capacity_window_minutes: values.booking_capacity_window_minutes ?? current.booking_capacity_window_minutes ?? 60,
     booking_capacity_limit: values.booking_capacity_limit ?? current.booking_capacity_limit ?? 0,
+    services_json: values.services_json ?? current.services_json ?? null,
+    waitlist_enabled: values.waitlist_enabled ?? current.waitlist_enabled ?? false,
+    staff_whatsapp_group_id: values.staff_whatsapp_group_id ?? current.staff_whatsapp_group_id ?? null,
+    staff_whatsapp_group_enabled: values.staff_whatsapp_group_enabled ?? current.staff_whatsapp_group_enabled ?? false,
   };
   try {
     const res = await SettingsMulti.findOneAndUpdate(
@@ -87,5 +97,73 @@ export async function findSettingsByBusinessPhone(digits) {
     { business_phone: new RegExp(`\\+?${digits}$`) }
   ];
   return (await SettingsMulti.findOne({ $or: or }).lean()) || null;
+}
+
+/** Structured snippet injected into AI context so the bot can answer from dashboard settings. */
+export function buildBusinessSettingsSnippet(cfg = {}) {
+  const lines = [];
+  const name = String(cfg.business_name || "").trim();
+  const type = String(cfg.business_type || "").trim();
+  const website = String(cfg.website_url || "").trim();
+  let categories = [];
+  try {
+    const arr = JSON.parse(cfg.business_categories_json || "[]");
+    categories = Array.isArray(arr) ? arr.map((c) => String(c || "").trim()).filter(Boolean) : [];
+  } catch {}
+
+  if (name) lines.push(`Business name: ${name}`);
+  if (type) lines.push(`Business type: ${type}`);
+  if (categories.length) lines.push(`Categories: ${categories.join(", ")}`);
+  if (website) lines.push(`Website: ${website}`);
+  const address = String(cfg.business_address || "").trim();
+  if (address) lines.push(`Address: ${address}`);
+
+  for (const line of buildGoogleBusinessContextLines(cfg)) {
+    if (line && !lines.includes(line)) lines.push(line);
+  }
+
+  try {
+    const snap = typeof cfg.google_business_json === "string" ? JSON.parse(cfg.google_business_json) : cfg.google_business_json;
+    if (snap?.syncedAt) lines.push(`Google profile last synced: ${String(snap.syncedAt).slice(0, 10)}`);
+  } catch {}
+
+  if (cfg.bookings_enabled) lines.push("Bookings: enabled");
+  if (cfg.reminders_enabled) lines.push("Appointment reminders: enabled");
+
+  try {
+    const services = JSON.parse(cfg.services_json || "[]");
+    if (Array.isArray(services) && services.length) {
+      const parts = services.slice(0, 12).map((s) => {
+        const n = String(s?.name || "").trim();
+        if (!n) return "";
+        const m = Number(s?.minutes || 0);
+        const p = String(s?.price || "").trim();
+        const bits = [];
+        if (m > 0) bits.push(`${m} min`);
+        if (p) bits.push(p);
+        return bits.length ? `${n} (${bits.join(", ")})` : n;
+      }).filter(Boolean);
+      if (parts.length) lines.push(`Services: ${parts.join("; ")}`);
+    }
+  } catch {}
+
+  if (!lines.length) return null;
+  return { title: "Business Settings", content: lines.join("\n") };
+}
+
+/** Parsed map pin from dashboard settings, or null if coordinates are missing/invalid. */
+export function getBusinessLocation(cfg = {}) {
+  const lat = Number(cfg.business_latitude);
+  const lng = Number(cfg.business_longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  const address = String(cfg.business_address || "").trim();
+  const name = String(cfg.business_name || "").trim();
+  return {
+    latitude: lat,
+    longitude: lng,
+    address: address || undefined,
+    name: name || undefined,
+  };
 }
 

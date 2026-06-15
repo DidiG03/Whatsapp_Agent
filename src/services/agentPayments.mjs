@@ -58,7 +58,7 @@ export function isStripeConnectAvailable() {
   return !!(baseStripe && CONNECT_CLIENT_ID);
 }
 
-export function buildConnectState(userId, redirectTo = '/dashboard') {
+export function buildConnectState(userId, redirectTo = '/inbox') {
   if (!userId) throw new Error('Missing user id');
   const payload = {
     uid: String(userId),
@@ -72,7 +72,7 @@ export function parseConnectState(stateToken) {
   return verifyStateToken(stateToken);
 }
 
-export function buildConnectAuthorizeUrl(userId, redirectTo = '/dashboard') {
+export function buildConnectAuthorizeUrl(userId, redirectTo = '/inbox') {
   ensureConnectConfigured();
   const state = buildConnectState(userId, redirectTo);
   const params = new URLSearchParams({

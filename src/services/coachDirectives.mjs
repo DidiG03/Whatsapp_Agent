@@ -43,6 +43,7 @@ export async function applyDirectives(userId, { adds = [], sets = {}, visible = 
     if (ok) summaries.push(`Saved “${a.title}” to KB.`);
   }
   if (Object.keys(sets).length) {
+    delete sets.entry_greeting;
     await upsertSettingsForUser(userId, sets);
     try {
       if (sets.business_name) summaries.push('Saved “Business Name” to KB.');
@@ -51,7 +52,7 @@ export async function applyDirectives(userId, { adds = [], sets = {}, visible = 
     } catch {}
     if (!visible) {
       const current = await getSettingsForUser(userId);
-      visible = sets.entry_greeting || `Updated settings for ${current?.business_name || 'your business'}.`;
+      visible = `Updated settings for ${current?.business_name || 'your business'}.`;
     }
   }
   return { summaries, visible };

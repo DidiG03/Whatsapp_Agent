@@ -1,5 +1,5 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
-import { renderSidebar, renderTopbar, escapeHtml, getVercelWebAnalyticsSnippet } from "../utils.mjs";
+import { renderSidebar, renderTopbar, escapeHtml, getProfessionalHead, renderPageHeader } from "../utils.mjs";
 import { getDB } from "../db-mongodb.mjs";
 import { Message, MessageStatus } from "../schemas/mongodb.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
@@ -126,7 +126,7 @@ export default function registerCampaignRoutes(app) {
         : `<form method="get" action="/campaigns/templates/default" style="margin:0;">
              <input type="hidden" name="name" value="${escapeHtml(name)}"/>
              <input type="hidden" name="language" value="${escapeHtml(lang)}"/>
-             <button class="meta-ghost" type="submit" style="font-size:12px;padding:4px 8px;">Use for 24h reopen</button>
+             <button class="meta-ghost text-xs" type="submit" style="padding:4px 8px;">Use for 24h reopen</button>
            </form>`;
       const nameCell = `
         <button type="button"
@@ -164,67 +164,44 @@ export default function registerCampaignRoutes(app) {
 
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.end(`
-      <html><head><title>Campaigns</title><link rel="stylesheet" href="/styles.css"><script src="/toast.js"></script>${getVercelWebAnalyticsSnippet()}
+      <html>${getProfessionalHead("Campaigns").replace("</head>", `
         <style>
-          /* Meta-like surface + controls */
           .meta-card { background:#ffffff; border:1px solid #e5e7eb; border-radius:10px; padding:16px; }
           .meta-form { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; margin-top:10px; }
-          .meta-input, .meta-select, .meta-textarea { height:38px; border:1px solid #e5e7eb; background:#f9fafb; border-radius:8px; padding:8px 10px; font-size:14px; outline:none; }
+          .meta-input, .meta-select, .meta-textarea { height:38px; border:1px solid #e5e7eb; background:#f9fafb; border-radius:8px; padding:8px 10px; font-size:var(--font-size-sm); font-family:inherit; outline:none; }
           .meta-textarea { height:auto; resize:vertical; min-height:82px; }
           .meta-input:focus, .meta-select:focus, .meta-textarea:focus { border-color:#93c5fd; box-shadow:0 0 0 3px rgba(59,130,246,0.15); background:#ffffff; }
           .meta-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
-          /* Buttons */
           .meta-form button { align-self:start; height:38px; }
-          .meta-primary { 
-            background:#2563eb; color:#fff; border:1px solid #1e40af; border-radius:8px; 
-            padding:0 16px; min-width:120px; height:38px; font-weight:600; 
-            display:inline-flex; align-items:center; justify-content:center; 
-            transition:background .15s ease, box-shadow .15s ease, transform .02s ease;
-          }
-          .meta-primary:hover { background:#1d4ed8; box-shadow:0 1px 2px rgba(0,0,0,.06); }
-          .meta-primary:active { transform:translateY(0.5px); }
-          .meta-primary:focus { outline:none; box-shadow:0 0 0 3px rgba(59,130,246,0.25); }
-          .meta-primary:disabled { opacity:.6; cursor:not-allowed; }
-          .meta-ghost { 
-            background:#ffffff; color:#111827; border:1px solid #e5e7eb; border-radius:8px; 
-            padding:0 12px; height:38px; display:inline-flex; align-items:center; justify-content:center;
-            transition:background .15s ease, border-color .15s ease;
-          }
-          .meta-ghost:hover { background:#f3f4f6; border-color:#d1d5db; }
+          .meta-primary { background:#2563eb; color:#fff; border:1px solid #1e40af; border-radius:8px; padding:0 16px; min-width:120px; height:38px; font-weight:600; display:inline-flex; align-items:center; justify-content:center; font-size:var(--font-size-sm); font-family:inherit; }
+          .meta-ghost { background:#ffffff; color:#111827; border:1px solid #e5e7eb; border-radius:8px; padding:0 12px; height:38px; display:inline-flex; align-items:center; justify-content:center; font-size:var(--font-size-sm); font-family:inherit; }
           .meta-table { width:100%; border-collapse:separate; border-spacing:0; }
-          .meta-table thead th { text-align:left; font-size:12px; color:#6b7280; background:#f8fafc; padding:10px; border-bottom:1px solid #e5e7eb; }
-          .meta-table tbody td { padding:10px; border-bottom:1px solid #eef2f7; font-size:14px; }
+          .meta-table thead th { text-align:left; font-size:var(--font-size-xs); color:#6b7280; background:#f8fafc; padding:10px; border-bottom:1px solid #e5e7eb; }
+          .meta-table tbody td { padding:10px; border-bottom:1px solid #eef2f7; font-size:var(--font-size-sm); }
           .meta-table tbody tr:hover { background:#f9fafb; }
-          .badge { padding:4px 8px; border-radius:9999px; font-size:12px; border:1px solid #e5e7eb; background:#f9fafb; }
+          .badge { padding:4px 8px; border-radius:9999px; font-size:var(--font-size-xs); border:1px solid #e5e7eb; background:#f9fafb; }
           .badge.APPROVED { background:#ecfdf5; color:#065f46; border-color:#a7f3d0; }
           .badge.submitted { background:#fef3c7; color:#92400e; border-color:#fde68a; }
           .small.muted { color:#64748b; }
         </style>
-      </head>
-      <body>
+      </head>`)}<body>
+        <script src="/toast.js"></script>
         <div class="container">
-        ${renderTopbar(`<a href="/dashboard">Dashboard</a> / Campaigns`, email)}
+        ${renderTopbar("Campaigns", email)}
           <div class="layout">
-            ${renderSidebar('campaigns', { showBookings: !!isUpgraded, isUpgraded })}
+            ${renderSidebar("campaigns", { showBookings: !!isUpgraded, isUpgraded })}
             <main class="main">
               <div class="main-content">
-                <div class="meta-card" style="margin-bottom:12px;">
-                  <div class="meta-toolbar" style="gap:8px;">
-                    <div style="display:flex; align-items:center; gap:8px;">
-                      <h3 style="margin:0;">Campaign Actions</h3>
-                      <div class="small muted">Templates are required for messages beyond 24h.</div>
-                    </div>
-                    <div style="display:flex; gap:8px;">
-                      <button id="openCreateCampaign" class="meta-primary" type="button">Create Campaign</button>
-                      <button id="openSubmitTemplate" class="meta-ghost" type="button">Submit Template</button>
-                      <!-- Use GET for sync so auth/session refresh flows (Clerk handshake) are eligible and play nicer with redirects -->
-                      <form method="get" action="/campaigns/templates/sync" style="margin:0;">
-                        <button class="meta-ghost" type="submit" title="Pull approved templates from Meta">Sync from Meta</button>
-                      </form>
-                    </div>
-                  </div>
+                ${renderPageHeader("Campaigns", "Send approved templates and manage outbound WhatsApp campaigns.", `
+                  <button id="openCreateCampaign" class="btn btn-primary" type="button">Create Campaign</button>
+                  <button id="openSubmitTemplate" class="btn btn-ghost" type="button">Submit Template</button>
+                  <form method="get" action="/campaigns/templates/sync" style="margin:0;">
+                    <button class="btn btn-ghost" type="submit" title="Pull approved templates from Meta">Sync from Meta</button>
+                  </form>
+                `)}
+                <div class="alert-banner alert-banner--info" style="margin-bottom:16px;">
+                  <p class="alert-banner__copy" style="margin:0;">Templates are required for messages sent outside the 24-hour customer care window.</p>
                 </div>
-
                 <!-- Modals (reuse global day-modal styles) -->
                 <style>.meta-form-vertical { display:grid; grid-template-columns: 1fr; gap:10px; }</style>
 
@@ -294,21 +271,21 @@ export default function registerCampaignRoutes(app) {
                       </div>
                       <div style="display:flex; gap:16px; margin-bottom:12px; flex-wrap:wrap;">
                         <div style="flex:1; min-width:140px;">
-                          <div class="small muted" style="font-size:11px; text-transform:uppercase; letter-spacing:.03em;">Messages sent</div>
-                          <div id="tplPreviewSent" style="font-size:16px; font-weight:600; margin-top:2px;">--</div>
+                          <div class="small muted text-2xs" style="text-transform:uppercase; letter-spacing:.03em;">Messages sent</div>
+                          <div id="tplPreviewSent" class="text-base" style="font-weight:600; margin-top:2px;">--</div>
                         </div>
                         <div style="flex:1; min-width:140px;">
-                          <div class="small muted" style="font-size:11px; text-transform:uppercase; letter-spacing:.03em;">Messages opened</div>
-                          <div id="tplPreviewOpened" style="font-size:16px; font-weight:600; margin-top:2px;">--</div>
+                          <div class="small muted text-2xs" style="text-transform:uppercase; letter-spacing:.03em;">Messages opened</div>
+                          <div id="tplPreviewOpened" class="text-base" style="font-weight:600; margin-top:2px;">--</div>
                         </div>
                       </div>
                       <div style="background:#e5ddd5; padding:18px; border-radius:12px; display:flex; justify-content:flex-start;">
-                        <div style="max-width:360px; background:#ffffff; border-radius:8px; padding:10px 12px; box-shadow:0 1px 1px rgba(0,0,0,0.15); font-size:14px; line-height:1.4;">
-                          <div class="small muted" style="font-size:11px; text-transform:uppercase; letter-spacing:.03em; margin-bottom:4px;">Your template</div>
+                        <div class="text-sm" style="max-width:360px; background:#ffffff; border-radius:8px; padding:10px 12px; box-shadow:0 1px 1px rgba(0,0,0,0.15); line-height:var(--line-height-snug);">
+                          <div class="small muted text-2xs" style="text-transform:uppercase; letter-spacing:.03em; margin-bottom:4px;">Your template</div>
                           <div id="tplPreviewBody" style="white-space:pre-wrap; color:#111b21;"></div>
                         </div>
                       </div>
-                      <div style="margin-top:10px; font-size:12px; color:#6b7280;">
+                      <div class="text-xs" style="margin-top:10px; color:#6b7280;">
                         <div>Quality: <span id="tplPreviewQuality">--</span></div>
                         <div>Status: <span id="tplPreviewStatus">--</span></div>
                       </div>

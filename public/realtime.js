@@ -19,6 +19,8 @@ class RealtimeManager {
     this.realtimeStatusPromise = null;
     this.realtimeStatusCache = null;
     this.reconnectIntervalId = null;
+    this.isTypingActive = false;
+    this.typingPhone = null;
     this.socket = {
       on: (eventName, handler) => this.onGlobal(eventName, handler),
       off: (eventName, handler) => this.offGlobal(eventName, handler)
@@ -221,6 +223,9 @@ class RealtimeManager {
   }
 
   leaveChat(phone) {
+    if (this.isTypingActive) {
+      try { this.stopTyping(phone || this.currentChat || this.typingPhone); } catch {}
+    }
     if (this.chatChannel) {
       this.publishChatEvent('user_offline', { userId: this.userId, phone });
       try { this.chatChannel.unsubscribe(); } catch {}
@@ -252,6 +257,12 @@ class RealtimeManager {
       case 'message_reaction':
         this.handleMessageReaction(data);
         break;
+      case 'typing_start':
+        this.handleTypingStart(data);
+        break;
+      case 'typing_stop':
+        this.handleTypingStop(data);
+        break;
       default:
         this.emitGlobal(name, data);
     }
@@ -266,8 +277,60 @@ class RealtimeManager {
     }
   }
 
+  normalizePhoneDigits(phone) {
+    return String(phone || '').replace(/[^0-9+]/g, '');
+  }
+
+  startTyping(phone) {
+    if (!phone || !this.isConnected || !this.chatChannel) return;
+    const normalized = this.normalizePhoneDigits(phone);
+    if (this.isTypingActive && this.typingPhone === normalized) return;
+    this.isTypingActive = true;
+    this.typingPhone = normalized;
+    this.publishChatEvent('typing_start', {
+      userId: this.userId,
+      phone: normalized,
+      timestamp: Date.now()
+    });
+  }
+
+  stopTyping(phone) {
+    if (!phone || !this.isConnected || !this.chatChannel) return;
+    if (!this.isTypingActive) return;
+    const normalized = this.normalizePhoneDigits(phone);
+    this.isTypingActive = false;
+    this.typingPhone = null;
+    this.publishChatEvent('typing_stop', {
+      userId: this.userId,
+      phone: normalized,
+      timestamp: Date.now()
+    });
+  }
+
+  handleTypingStart(data = {}) {
+    if (String(data.userId) === String(this.userId)) return;
+    if (data.phone && this.currentChat && !this.isSamePhone(data.phone, this.currentChat)) return;
+    this.emitGlobal('typing_start', data);
+    const indicator = document.getElementById('typingIndicator');
+    if (indicator) {
+      indicator.style.display = 'block';
+      this.scrollThreadToBottom(document.querySelector('.chat-thread-messages') || document.querySelector('.chat-thread'));
+    }
+  }
+
+  handleTypingStop(data = {}) {
+    if (String(data.userId) === String(this.userId)) return;
+    if (data.phone && this.currentChat && !this.isSamePhone(data.phone, this.currentChat)) return;
+    this.emitGlobal('typing_stop', data);
+    const indicator = document.getElementById('typingIndicator');
+    if (indicator) {
+      indicator.style.display = 'none';
+    }
+  }
+
   async sendMessage(phone, message, type = 'text', replyToMessageId = null) {
     try {
+      this.stopTyping(phone);
       const body = {
         text: message,
         type,
@@ -277,21 +340,36 @@ class RealtimeManager {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Accept': 'application/json',
+          Accept: 'application/json',
           'X-Requested-With': 'XMLHttpRequest'
         },
         credentials: 'include',
         body: JSON.stringify(body)
       });
       if (resp.status === 401) {
-        this.showToast('Session expired. Please sign in again.', 'error');
-        try { window.authManager?.checkAuthStatus?.(); } catch {}
+        window.authManager?.handleUnauthorized?.();
         return false;
       }
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok || !data?.success) {
         const msg = data?.error || `Failed to send message (status ${resp.status})`;
         throw new Error(msg);
+      }
+      if (data?.messageId) {
+        if (!this.currentChat) {
+          this.currentChat = this.normalizePhoneDigits(phone);
+        }
+        const nowTs = Math.floor(Date.now() / 1000);
+        this.handleNewMessage({
+          id: data.messageId,
+          direction: 'outbound',
+          type: 'text',
+          text_body: message,
+          timestamp: nowTs,
+          to_digits: String(phone),
+          contact: String(phone),
+          delivery_status: 'sent'
+        });
       }
       if (data?.templateSent) {
         this.showToast('24h window was closed. Sent template to reopen conversation.', 'info');
@@ -459,18 +537,12 @@ class RealtimeManager {
 
   async checkAuthAndMaybeRedirect() {
     try {
-      const resp = await fetch('/api/realtime/status', {
+      const fetchFn = window.authManager?.authenticatedFetch?.bind(window.authManager) || fetch;
+      const resp = await fetchFn('/api/realtime/status', {
         credentials: 'include'
       });
       if (resp.status === 401) {
-        this.showToast('Session expired. Please sign in again.', 'error');
-        try { window.authManager?.checkAuthStatus?.(); } catch {}
-        setTimeout(() => {
-          try {
-            const target = `/auth/signin?redirect_url=${encodeURIComponent(window.location.href)}`;
-            window.location.href = target;
-          } catch {}
-        }, 1500);
+        window.authManager?.handleUnauthorized?.();
         return false;
       }
     } catch {
@@ -495,13 +567,19 @@ class RealtimeManager {
     this.emitGlobal('new_message', data);
   }
 
+  getChatMessagesEl() {
+    return document.querySelector('.chat-thread-messages') || document.querySelector('.chat-thread');
+  }
+
   appendMessageToThread(message) {
     try {
-      const thread = document.querySelector('.chat-thread');
+      const thread = this.getChatMessagesEl();
       if (!thread) return false;
       if (message?.id && document.getElementById(`message-${message.id}`)) {
         return true;
       }
+      const emptyState = thread.querySelector('.chat-empty-state');
+      if (emptyState) emptyState.remove();
       const container = document.createElement('div');
       const direction = message?.direction === 'outbound' ? 'msg msg-out' : 'msg msg-in';
       container.className = `${direction} message-container`;
@@ -512,6 +590,10 @@ class RealtimeManager {
       const bubble = document.createElement('div');
       bubble.className = 'bubble';
       const meta = this.formatTimestamp(message?.timestamp);
+      const deliveryStatus = this.normalizeDeliveryStatus(message?.delivery_status || 'sent');
+      const ticksHtml = message?.direction === 'outbound'
+        ? `<div class="message-status-ticks message-status-${deliveryStatus}"><div class="message-tick"></div><div class="message-tick"></div></div>`
+        : '';
       const canActions = (typeof window !== 'undefined' && !!window.IS_UPGRADED && message?.id);
       const actionsHtml = canActions
         ? `<div class="message-actions">
@@ -521,7 +603,7 @@ class RealtimeManager {
         : '';
       bubble.innerHTML = `
         <div class="wa-message-body">${this.formatMessageBody(message)}</div>
-        <div class="meta">${meta}</div>
+        <div class="meta">${meta}${ticksHtml}</div>
         ${actionsHtml}
       `;
       container.appendChild(bubble);
@@ -597,25 +679,32 @@ class RealtimeManager {
     const isLive = !!data.isLive;
     const btn = document.getElementById('handoffToggleBtn');
     if (btn) {
-      btn.setAttribute('data-is-human', isLive);
-      const img = btn.querySelector('img');
-      if (img) {
-        img.src = isLive ? '/raise-hand-icon.svg' : '/bot-icon.svg';
-        img.alt = isLive ? 'Human handling' : 'AI handling';
-      }
+      btn.classList.toggle('is-human', isLive);
+      btn.setAttribute('data-is-human', isLive ? 'true' : 'false');
+      btn.title = isLive ? 'Switch to AI' : 'Take over conversation';
       const hiddenInput = btn.closest('form')?.querySelector('input[name="is_human"]');
       if (hiddenInput) {
         hiddenInput.value = isLive ? '1' : '';
       }
     }
-    this.showToast(isLive ? 'Live mode enabled' : 'Live mode disabled', 'info');
+    const modePill = document.querySelector('.wa-chat-header__mode');
+    if (modePill) {
+      modePill.classList.toggle('is-human', isLive);
+      modePill.classList.toggle('is-ai', !isLive);
+      modePill.textContent = isLive ? 'Human' : 'AI';
+    }
+    if (typeof window.applyComposerLiveMode === 'function') {
+      window.applyComposerLiveMode(isLive);
+    }
     this.emitGlobal('live_mode_changed', data);
   }
 
   scrollThreadToBottom(container) {
     if (!container) return;
     try {
-      const el = container.classList?.contains('chat-thread') ? container : container.closest('.chat-thread');
+      const el = container.classList?.contains('chat-thread-messages')
+        ? container
+        : (container.closest?.('.chat-thread-messages') || container.closest?.('.chat-thread') || container);
       if (el && el.scrollHeight) {
         el.scrollTop = el.scrollHeight;
       }
@@ -636,16 +725,34 @@ class RealtimeManager {
     this.emitGlobal('user_offline', data);
   }
 
+  normalizeDeliveryStatus(status) {
+    const value = String(status || '').toLowerCase();
+    if (value === 'read') return 'read';
+    if (value === 'delivered') return 'delivered';
+    if (value === 'failed') return 'failed';
+    return 'sent';
+  }
+
+  updateMessageStatusTicks(messageEl, status) {
+    const meta = messageEl.querySelector('.bubble .meta');
+    if (!meta) return;
+    const normalized = this.normalizeDeliveryStatus(status);
+    if (normalized === 'failed') return;
+    let ticks = meta.querySelector('.message-status-ticks');
+    if (!ticks) {
+      ticks = document.createElement('div');
+      ticks.innerHTML = '<div class="message-tick"></div><div class="message-tick"></div>';
+      meta.appendChild(ticks);
+    }
+    ticks.className = `message-status-ticks message-status-${normalized}`;
+    messageEl.setAttribute('data-status', normalized);
+  }
+
   handleMessageStatusUpdate(data = {}) {
     if (data?.messageId) {
       const el = document.getElementById(`message-${data.messageId}`);
       if (el) {
-        el.setAttribute('data-status', data.status || '');
-        const meta = el.querySelector('.meta');
-        if (meta && data.status) {
-          const base = meta.textContent?.split('•')[0]?.trim() || '';
-          meta.textContent = base ? `${base} • ${data.status}` : data.status;
-        }
+        this.updateMessageStatusTicks(el, data.status);
       }
     }
     this.emitGlobal('message_status_update', data);
@@ -674,11 +781,12 @@ class RealtimeManager {
       isLive: !!isLive
     };
     try {
-      const resp = await fetch('/api/realtime/live-mode', {
+      const fetchFn = window.authManager?.authenticatedFetch?.bind(window.authManager) || fetch;
+      const resp = await fetchFn('/api/realtime/live-mode', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Accept': 'application/json'
+          Accept: 'application/json'
         },
         credentials: 'include',
         body: JSON.stringify(payload)
@@ -688,12 +796,12 @@ class RealtimeManager {
       if (!resp.ok || data?.error) {
         const msg = data?.error || 'Failed to update live mode';
         this.showToast(msg, 'error');
-        return;
+        return false;
       }
     } catch (error) {
       console.warn('Live mode API call failed:', error?.message || error);
       this.showToast('Failed to update live mode', 'error');
-      return;
+      return false;
     }
     this.publishChatEvent('live_mode_changed', {
       userId: this.userId,
@@ -701,6 +809,7 @@ class RealtimeManager {
       isLive: !!isLive,
       timestamp: Date.now()
     });
+    return true;
   }
 }
 

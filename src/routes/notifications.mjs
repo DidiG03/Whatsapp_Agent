@@ -26,10 +26,11 @@ export default function registerNotificationRoutes(app) {
   });
   app.post("/api/notifications/:id/read", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
-    const notificationId = parseInt(req.params.id, 10);
+    const notificationId = String(req.params.id || '').trim();
+    if (!notificationId) return res.status(400).json({ success: false, error: 'invalid id' });
     
     try {
-      await Notification.findOneAndUpdate({ _id: String(notificationId), user_id: userId }, { $set: { is_read: true } });
+      await Notification.findOneAndUpdate({ _id: notificationId, user_id: userId }, { $set: { is_read: true } });
       res.json({ success: true });
     } catch (e) {
       console.error('[Notifications API] Error marking notification as read:', e.message);
@@ -49,10 +50,11 @@ export default function registerNotificationRoutes(app) {
   });
   app.delete("/api/notifications/:id", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
-    const notificationId = parseInt(req.params.id, 10);
+    const notificationId = String(req.params.id || '').trim();
+    if (!notificationId) return res.status(400).json({ success: false, error: 'invalid id' });
     
     try {
-      await Notification.findOneAndDelete({ _id: String(notificationId), user_id: userId });
+      await Notification.findOneAndDelete({ _id: notificationId, user_id: userId });
       res.json({ success: true });
     } catch (e) {
       console.error('[Notifications API] Error deleting notification:', e.message);

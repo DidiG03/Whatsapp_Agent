@@ -1,5 +1,6 @@
 
 import { getDB } from "../db-mongodb.mjs";
+import { ensureAppointmentLegacyId } from "./booking.mjs";
 function toObject(maybe) {
   return maybe && typeof maybe === 'object' && !Array.isArray(maybe) ? maybe : {};
 }
@@ -53,7 +54,7 @@ export async function buildCustomerProfileSnippet(userId, contactId) {
         { $addFields: { staff_name: { $arrayElemAt: ['$staff_docs.name', 0] } } },
         { $sort: { start_ts: 1 } },
         { $limit: 1 },
-        { $project: { start_ts: 1, staff_name: 1 } }
+        { $project: { id: 1, start_ts: 1, staff_name: 1 } }
       ])
       .toArray()
       .then(arr => arr[0] || null);
@@ -69,17 +70,20 @@ export async function buildCustomerProfileSnippet(userId, contactId) {
       .toArray()
       .then(arr => arr[0] || null);
 
+    if (upcoming) await ensureAppointmentLegacyId(upcoming, userId);
+
     const lines = [];
     const name = mem.display_name || [mem.first_name, mem.last_name].filter(Boolean).join(' ').trim();
     if (name) lines.push(`Name: ${name}`);
     if (mem.last_service_name) lines.push(`Last service: ${mem.last_service_name}${mem.last_service_minutes ? ` (${mem.last_service_minutes} min)` : ''}`);
-    if (upcoming?.start_ts) lines.push(`Upcoming: ${new Date((upcoming.start_ts||0)*1000).toLocaleString()}${upcoming.staff_name ? ` · ${upcoming.staff_name}` : ''}`);
+    if (upcoming?.start_ts) {
+      const when = new Date((upcoming.start_ts || 0) * 1000).toLocaleString();
+      const ref = upcoming.id ? ` · Ref #${upcoming.id}` : '';
+      const staff = upcoming.staff_name ? ` · ${upcoming.staff_name}` : '';
+      lines.push(`Upcoming: ${when}${ref}${staff}`);
+    }
     if (!upcoming && last?.start_ts) lines.push(`Last appointment: ${new Date((last.start_ts||0)*1000).toLocaleString()}${last.staff_name ? ` · ${last.staff_name}` : ''}`);
     if (mem.last_agent_name) lines.push(`Last agent: ${mem.last_agent_name}`);
-    if (Array.isArray(mem.last_answers) && mem.last_answers.length) {
-      const brief = mem.last_answers.slice(0, 3).map(p => `${p.q}: ${p.a}`).join(' | ');
-      if (brief) lines.push(`Last details: ${brief}`);
-    }
 
     const content = lines.join('\n').trim();
     if (!content) return null;
@@ -108,6 +112,12 @@ export async function rememberService(userId, contactId, { name, minutes }) {
 
 export async function rememberAgent(userId, contactId, agentName) {
   await updateContactMemory(userId, contactId, { last_agent_name: agentName ? String(agentName).slice(0, 120) : undefined });
+}
+
+export async function rememberPartySize(userId, contactId, partySize) {
+  const n = Number(partySize);
+  if (!Number.isFinite(n) || n < 1 || n > 100) return;
+  await updateContactMemory(userId, contactId, { last_party_size: n });
 }
 
 export async function rememberAppointment(userId, contactId, { startISO }) {

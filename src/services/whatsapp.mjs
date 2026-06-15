@@ -128,6 +128,82 @@ export async function sendWhatsAppText(to, body, cfg, replyToMessageId = null) {
   return result;
 }
 
+export async function sendWhatsAppGroupText(groupId, body, cfg) {
+  const to = String(groupId || "").trim();
+  if (!to) throw new Error("Group ID is required");
+
+  const payload = {
+    messaging_product: "whatsapp",
+    recipient_type: "group",
+    to,
+    type: "text",
+    text: { body: String(body || "") },
+  };
+
+  let result;
+  try {
+    result = await postWhatsAppMessage(cfg, payload, { retry: true });
+  } catch (e) {
+    console.error("[WA] Send group text error:", { message: e?.message || String(e) });
+    throw e;
+  }
+
+  if (cfg.user_id && result?.messages?.[0]?.id) {
+    try {
+      const { incrementUsage } = await import("./usage.mjs");
+      incrementUsage(cfg.user_id, "outbound_messages");
+    } catch (e) {
+      console.error("Failed to track outbound group message usage:", e.message);
+    }
+  }
+
+  return result;
+}
+
+export async function sendWhatsAppLocation(to, location, cfg, replyToMessageId = null) {
+  const lat = Number(location?.latitude);
+  const lng = Number(location?.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    throw new Error("Location latitude and longitude are required");
+  }
+
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "location",
+    location: {
+      latitude: lat,
+      longitude: lng,
+    },
+  };
+  const name = String(location?.name || "").trim();
+  const address = String(location?.address || "").trim();
+  if (name) payload.location.name = name.slice(0, 256);
+  if (address) payload.location.address = address.slice(0, 256);
+  if (replyToMessageId) {
+    payload.context = { message_id: replyToMessageId };
+  }
+
+  let result;
+  try {
+    result = await postWhatsAppMessage(cfg, payload, { retry: true });
+  } catch (e) {
+    console.error("[WA] Send location error:", { message: e?.message || String(e) });
+    throw e;
+  }
+
+  if (cfg.user_id && result?.messages?.[0]?.id) {
+    try {
+      const { incrementUsage } = await import("./usage.mjs");
+      incrementUsage(cfg.user_id, "outbound_messages");
+    } catch (e) {
+      console.error("Failed to track outbound message usage:", e.message);
+    }
+  }
+
+  return result;
+}
+
 export async function sendWhatsappButton(to, promptText, buttons, cfg) {
   const payload = {
     messaging_product: "whatsapp",

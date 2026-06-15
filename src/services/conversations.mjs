@@ -1,5 +1,7 @@
 
 import { Message, Handoff } from "../schemas/mongodb.mjs";
+import { canonicalContactId } from "./handoff.mjs";
+import { normalizePhone } from "../utils.mjs";
 export async function listContactsForUser(userId, opts = {}) {
   try {
     const page = Math.max(1, parseInt(opts.page||1,10));
@@ -61,13 +63,19 @@ export async function listContactsForUser(userId, opts = {}) {
       },
       {
         $match: {
-          $or: [
-            { 'handoff.is_archived': { $ne: true } },
-            { 'handoff.is_archived': { $exists: false } }
-          ],
-          $or: [
-            { 'handoff.deleted_at': { $exists: false } },
-            { 'handoff.deleted_at': null }
+          $and: [
+            {
+              $or: [
+                { 'handoff.is_archived': { $ne: true } },
+                { 'handoff.is_archived': { $exists: false } }
+              ]
+            },
+            {
+              $or: [
+                { 'handoff.deleted_at': { $exists: false } },
+                { 'handoff.deleted_at': null }
+              ]
+            }
           ]
         }
       },
@@ -84,7 +92,7 @@ export async function listContactsForUser(userId, opts = {}) {
       }
     ]);
 
-    contacts = contacts.map(row => ({ ...row, contact: cleanContactId(row.contact) }));
+    contacts = mergeContactsByDigits(contacts.map(row => ({ ...row, contact: canonicalContactId(row.contact) })));
     if (!contacts.length) {
       const recent = await Message.find({ user_id: userId })
         .select('direction from_id to_id from_digits to_digits text_body timestamp')
@@ -100,10 +108,10 @@ export async function listContactsForUser(userId, opts = {}) {
         const key = String(contact || '').trim();
         if (!key || seen.has(key)) continue;
         seen.add(key);
-        out.push({ contact: key, last_ts: m.timestamp || 0, last_text: m.text_body || '' });
+        out.push({ contact: canonicalContactId(key), last_ts: m.timestamp || 0, last_text: m.text_body || '' });
         if (out.length >= pageSize) break;
       }
-      contacts = out;
+      contacts = mergeContactsByDigits(out);
     }
 
     return contacts;
@@ -112,23 +120,18 @@ export async function listContactsForUser(userId, opts = {}) {
     return [];
   }
 }
-function cleanContactId(contactId) {
-  if (!contactId) return contactId;
-  let cleaned = contactId.toString();
-  cleaned = cleaned.replace(/[?&]type=[^&]*/g, '');
-  cleaned = cleaned.replace(/[?&]status=[^&]*/g, '');
-  cleaned = cleaned.replace(/[?&]state=[^&]*/g, '');
-  cleaned = cleaned.replace(/[?&]code=[^&]*/g, '');
-  const questionMarkIndex = cleaned.indexOf('?');
-  if (questionMarkIndex !== -1) {
-    cleaned = cleaned.substring(0, questionMarkIndex);
+function mergeContactsByDigits(contacts) {
+  const byDigits = new Map();
+  for (const row of contacts || []) {
+    const contact = canonicalContactId(row.contact);
+    const key = normalizePhone(contact) || contact;
+    if (!key) continue;
+    const existing = byDigits.get(key);
+    if (!existing || Number(row.last_ts || 0) >= Number(existing.last_ts || 0)) {
+      byDigits.set(key, { ...row, contact });
+    }
   }
-  const ampersandIndex = cleaned.indexOf('&');
-  if (ampersandIndex !== -1) {
-    cleaned = cleaned.substring(0, ampersandIndex);
-  }
-  
-  return cleaned;
+  return [...byDigits.values()].sort((a, b) => Number(b.last_ts || 0) - Number(a.last_ts || 0));
 }
 export async function listMessagesForThread(userId, phoneDigits) {
   try {
