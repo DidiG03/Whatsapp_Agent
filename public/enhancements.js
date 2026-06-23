@@ -463,7 +463,8 @@
       window.fetch = async function(input, init = {}) {
         try {
           const url = typeof input === 'string' ? input : input?.url || '';
-          const useAuth = window.authManager?.authenticatedFetch && !init.skipAuthWrap;
+          const isAppRequest = window.authManager?.isAppRequestUrl?.(url) ?? (url.startsWith('/') && !url.startsWith('//'));
+          const useAuth = window.authManager?.authenticatedFetch && !init.skipAuthWrap && isAppRequest;
           const resp = useAuth
             ? await window.authManager.authenticatedFetch(input, init)
             : await originalFetch(input, init);

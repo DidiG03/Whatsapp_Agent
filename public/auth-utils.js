@@ -162,19 +162,23 @@ class AuthManager {
 
   async authenticatedFetch(input, init = {}) {
     const url = typeof input === 'string' ? input : input?.url || '';
-    let sameOrigin = false;
-    try {
-      sameOrigin = url.startsWith('/') || new URL(url, window.location.origin).origin === window.location.origin;
-    } catch {
-      sameOrigin = url.startsWith('/');
-    }
-    if (!sameOrigin) {
+    if (!this.isAppRequestUrl(url)) {
       return this._rawFetch(input, init);
     }
 
     const perform = async () => {
       const headers = new Headers(init.headers || {});
       if (!headers.has('Accept')) headers.set('Accept', 'application/json');
+      const method = String(init.method || 'GET').toUpperCase();
+      const csrfToken = typeof window.__CSRF_TOKEN__ === 'string' ? window.__CSRF_TOKEN__ : '';
+      if (
+        csrfToken
+        && !['GET', 'HEAD', 'OPTIONS'].includes(method)
+        && !headers.has('X-CSRF-Token')
+        && !headers.has('x-csrf-token')
+      ) {
+        headers.set('X-CSRF-Token', csrfToken);
+      }
       // Same-origin browser requests use Clerk session cookies via credentials.
       // Do not add Authorization here — browsers send Origin automatically and
       // Clerk rejects requests that include both Origin and Authorization.
@@ -193,6 +197,18 @@ class AuthManager {
       }
     }
     return response;
+  }
+
+  isAppRequestUrl(url) {
+    const value = String(url || '').trim();
+    if (!value) return false;
+    if (value.startsWith('//')) return false;
+    if (value.startsWith('/') && !value.startsWith('//')) return true;
+    try {
+      return new URL(value, window.location.href).origin === window.location.origin;
+    } catch {
+      return false;
+    }
   }
 
   shouldSuppressAuthToast(url) {

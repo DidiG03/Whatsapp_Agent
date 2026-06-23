@@ -89,10 +89,12 @@ export default function registerSettingsRoutes(app, options = {}) {
       appId: META_APP_ID || "",
       configId: META_EMBEDDED_SIGNUP_CONFIG_ID || "",
       graphVersion: "v21.0",
+      publicBaseUrl: PUBLIC_BASE_URL || "",
     });
     const csrfToken = res.locals.csrfToken || '';
     const csrfField = `<input type="hidden" name="_csrf" value="${escapeAttr(csrfToken)}">`;
     const csrfTokenJson = JSON.stringify(csrfToken);
+    const assetVer = process.env.STATIC_ASSETS_VERSION || process.env.VERCEL_GIT_COMMIT_SHA || process.env.GIT_COMMIT || 'dev';
     const placesConfigured = isPlacesConfigured();
     const businessAddressValue = escapeAttr(s.business_address || "");
     const businessLatValue = s.business_latitude != null && s.business_latitude !== "" ? escapeAttr(String(s.business_latitude)) : "";
@@ -113,641 +115,10 @@ export default function registerSettingsRoutes(app, options = {}) {
     res.setHeader("Expires", "0");
     res.end(`
       <html>${getProfessionalHead("Settings")}<body>
-        <script>
-          window.__CSRF_TOKEN__ = ${csrfTokenJson};
-          document.addEventListener('DOMContentLoaded', function(){
-            if (!window.__CSRF_TOKEN__) return;
-            document.querySelectorAll('form').forEach(function(form){
-              if (form.querySelector('input[name="_csrf"]')) return;
-              const input = document.createElement('input');
-              input.type = 'hidden';
-              input.name = '_csrf';
-              input.value = window.__CSRF_TOKEN__;
-              form.appendChild(input);
-            });
-          });
-        </script>
-        <script>
-          // Enhanced authentication check on page load
-          (async function checkAuthOnLoad(){
-            await window.authManager.checkAuthOnLoad();
-          })();
-          
-          // Enhanced auth check for form submission
-          async function checkAuthThenSubmit(form){
-            return window.authManager.submitFormWithAuth(form);
-          }
-          function toggleReveal(id){
-            const el=document.getElementById(id);
-            if(!el) return; el.type = el.type === 'password' ? 'text' : 'password';
-          }
-          async function copyValue(id){
-            const el=document.getElementById(id); if(!el) return;
-            try{ await navigator.clipboard.writeText(el.value||''); }catch(e){}
-          }
-          // Settings panel navigation (one section visible at a time)
-          const SETTINGS_PANEL_KEY = 'settings:activePanel:v1';
-          function initSettingsPanels(){
-            const panels = document.querySelectorAll('.settings-panel');
-            const links = document.querySelectorAll('[data-settings-panel]');
-            const heading = document.getElementById('settings-panel-heading');
-
-            function showPanel(id){
-              if (!id) return;
-              const hasPanel = Array.from(panels).some((panel) => panel.id === id);
-              if (!hasPanel) return;
-
-              panels.forEach((panel) => {
-                panel.classList.toggle('is-active', panel.id === id);
-              });
-              links.forEach((link) => {
-                link.classList.toggle('is-active', link.getAttribute('data-settings-panel') === id);
-              });
-
-              const activeHeading = document.querySelector('.settings-panel.is-active h3, .settings-panel.is-active .settings-section__title');
-              if (heading) heading.textContent = activeHeading?.textContent?.trim() || 'Settings';
-
-              try { localStorage.setItem(SETTINGS_PANEL_KEY, id); } catch (_) {}
-              if (window.history && window.history.replaceState) {
-                window.history.replaceState(null, '', '#' + id);
-              }
-            }
-
-            links.forEach((link) => {
-              link.addEventListener('click', () => {
-                showPanel(link.getAttribute('data-settings-panel'));
-              });
-            });
-
-            window.addEventListener('hashchange', () => {
-              const hash = (location.hash || '').replace(/^#/, '');
-              if (hash) showPanel(hash);
-            });
-
-            const hash = (location.hash || '').replace(/^#/, '');
-            let stored = null;
-            try { stored = localStorage.getItem(SETTINGS_PANEL_KEY); } catch (_) {}
-            const initial = (hash && document.getElementById(hash)) ? hash : (stored || 'account');
-            showPanel(initial);
-          }
-          window.addEventListener('DOMContentLoaded', initSettingsPanels);
-
-          function clerkAccountErrorMessage(error, fallback) {
-            const errors = error?.errors;
-            if (Array.isArray(errors) && errors.length) {
-              const first = errors[0] || {};
-              const code = String(first.code || '').toLowerCase();
-              if (code.includes('reverification') || code === 'session_reverification_required') {
-                return 'For your security, please sign out and sign in again, then retry.';
-              }
-              if (code === 'form_identifier_exists') {
-                return 'That email is already linked to another account.';
-              }
-              return first.longMessage || first.message || fallback;
-            }
-            const message = String(error?.message || '').trim();
-            if (/reverification|verification required/i.test(message)) {
-              return 'For your security, please sign out and sign in again, then retry.';
-            }
-            return message || fallback;
-          }
-
-          function initAccountEmailForm() {
-            const form = document.getElementById('account-email-form');
-            if (!form) return;
-
-            const clerkEnabled = form.dataset.clerkEnabled === 'true';
-            const currentEmailInput = document.getElementById('account-current-email');
-            const newEmailInput = document.getElementById('account-new-email');
-            const codeInput = document.getElementById('account-email-code');
-            const verifyStep = document.getElementById('account-email-verify-step');
-            const verifyHint = document.getElementById('account-email-verify-hint');
-            const errorEl = document.getElementById('account-email-error');
-            const successEl = document.getElementById('account-email-success');
-            const submitBtn = document.getElementById('account-email-submit');
-            const resendBtn = document.getElementById('account-email-resend');
-            const cancelBtn = document.getElementById('account-email-cancel');
-            let pendingEmailAddress = null;
-            let verifyMode = false;
-
-            function setMessage(el, message) {
-              if (!el) return;
-              if (message) {
-                el.textContent = message;
-                el.hidden = false;
-              } else {
-                el.textContent = '';
-                el.hidden = true;
-              }
-            }
-
-            function setVerifyMode(enabled, targetEmail) {
-              verifyMode = enabled;
-              if (verifyStep) verifyStep.hidden = !enabled;
-              if (resendBtn) resendBtn.hidden = !enabled;
-              if (cancelBtn) cancelBtn.hidden = !enabled;
-              if (newEmailInput) newEmailInput.readOnly = enabled;
-              if (submitBtn) submitBtn.textContent = enabled ? 'Verify & set as primary' : 'Send verification code';
-              if (verifyHint && targetEmail) {
-                verifyHint.textContent = 'Enter the 6-digit code sent to ' + targetEmail + '.';
-              }
-              if (!enabled) {
-                pendingEmailAddress = null;
-                if (codeInput) codeInput.value = '';
-              }
-            }
-
-            function getCurrentPrimaryEmail(user) {
-              return String(user?.primaryEmailAddress?.emailAddress || currentEmailInput?.value || '').trim();
-            }
-
-            async function prepareEmailVerification(user, targetEmail) {
-              const normalizedTarget = targetEmail.toLowerCase();
-              const existing = (user.emailAddresses || []).find((entry) => {
-                return String(entry.emailAddress || '').trim().toLowerCase() === normalizedTarget;
-              });
-
-              let emailAddress = existing || null;
-              if (!emailAddress) {
-                const created = await user.createEmailAddress({ email: targetEmail });
-                await user.reload();
-                emailAddress = user.emailAddresses.find((entry) => entry.id === created.id) || null;
-              }
-
-              if (!emailAddress) {
-                throw new Error('Could not add the email address. Please try again.');
-              }
-
-              if (emailAddress.verification?.status === 'verified') {
-                await user.update({ primaryEmailAddressId: emailAddress.id });
-                await user.reload();
-                return { alreadyVerified: true, emailAddress };
-              }
-
-              await emailAddress.prepareVerification({ strategy: 'email_code' });
-              return { alreadyVerified: false, emailAddress };
-            }
-
-            cancelBtn?.addEventListener('click', () => {
-              setMessage(errorEl, '');
-              setMessage(successEl, '');
-              setVerifyMode(false);
-            });
-
-            resendBtn?.addEventListener('click', async () => {
-              setMessage(errorEl, '');
-              setMessage(successEl, '');
-              if (!pendingEmailAddress) return;
-              if (resendBtn) {
-                resendBtn.disabled = true;
-                resendBtn.textContent = 'Sending...';
-              }
-              try {
-                await window.authManager.initClerk();
-                await pendingEmailAddress.prepareVerification({ strategy: 'email_code' });
-                setMessage(successEl, 'Verification code resent.');
-              } catch (error) {
-                console.error('Email code resend failed:', error);
-                setMessage(errorEl, clerkAccountErrorMessage(error, 'Failed to resend verification code.'));
-              } finally {
-                if (resendBtn) {
-                  resendBtn.disabled = false;
-                  resendBtn.textContent = 'Resend code';
-                }
-              }
-            });
-
-            form.addEventListener('submit', async (event) => {
-              event.preventDefault();
-              setMessage(errorEl, '');
-              setMessage(successEl, '');
-
-              if (!clerkEnabled) {
-                setMessage(errorEl, 'Email changes require Clerk authentication.');
-                return;
-              }
-
-              const targetEmail = String(newEmailInput?.value || '').trim();
-              if (!targetEmail) {
-                setMessage(errorEl, 'Enter a new email address.');
-                newEmailInput?.focus();
-                return;
-              }
-
-              if (submitBtn) {
-                submitBtn.disabled = true;
-              }
-
-              try {
-                await window.authManager.initClerk();
-                const user = window.Clerk?.user;
-                if (!user) {
-                  window.authManager.handleUnauthorized();
-                  return;
-                }
-
-                const currentEmail = getCurrentPrimaryEmail(user);
-                if (targetEmail.toLowerCase() === currentEmail.toLowerCase()) {
-                  setMessage(errorEl, 'That is already your current email address.');
-                  return;
-                }
-
-                if (!verifyMode) {
-                  if (submitBtn) submitBtn.textContent = 'Sending...';
-                  const result = await prepareEmailVerification(user, targetEmail);
-                  if (result.alreadyVerified) {
-                    if (currentEmailInput) currentEmailInput.value = targetEmail;
-                    setVerifyMode(false);
-                    setMessage(successEl, 'Primary email updated successfully.');
-                    if (window.history?.replaceState) {
-                      window.history.replaceState(null, '', '/settings#account');
-                    }
-                    return;
-                  }
-                  pendingEmailAddress = result.emailAddress;
-                  setVerifyMode(true, targetEmail);
-                  setMessage(successEl, 'Verification code sent. Check your inbox.');
-                  codeInput?.focus();
-                  return;
-                }
-
-                const code = String(codeInput?.value || '').trim();
-                if (!code) {
-                  setMessage(errorEl, 'Enter the verification code from your email.');
-                  codeInput?.focus();
-                  return;
-                }
-                if (!pendingEmailAddress) {
-                  setMessage(errorEl, 'Verification expired. Send a new code to continue.');
-                  setVerifyMode(false);
-                  return;
-                }
-
-                if (submitBtn) submitBtn.textContent = 'Verifying...';
-                await pendingEmailAddress.attemptVerification({ code });
-                await user.update({ primaryEmailAddressId: pendingEmailAddress.id });
-                await user.reload();
-
-                const updatedEmail = getCurrentPrimaryEmail(user);
-                if (currentEmailInput && updatedEmail) currentEmailInput.value = updatedEmail;
-                if (newEmailInput) newEmailInput.value = '';
-                setVerifyMode(false);
-                setMessage(successEl, 'Primary email updated successfully.');
-                if (window.history?.replaceState) {
-                  window.history.replaceState(null, '', '/settings#account');
-                }
-              } catch (error) {
-                console.error('Email update failed:', error);
-                setMessage(errorEl, clerkAccountErrorMessage(error, verifyMode
-                  ? 'Verification failed. Check the code and try again.'
-                  : 'Failed to start email update.'));
-              } finally {
-                if (submitBtn) {
-                  submitBtn.disabled = false;
-                  submitBtn.textContent = verifyMode ? 'Verify & set as primary' : 'Send verification code';
-                }
-              }
-            });
-          }
-
-          function clerkPasswordErrorMessage(error) {
-            return clerkAccountErrorMessage(error, 'Failed to update password.');
-          }
-
-          function initAccountPasswordForm() {
-            const form = document.getElementById('account-password-form');
-            if (!form) return;
-
-            const passwordEnabled = form.dataset.passwordEnabled === 'true';
-            const clerkEnabled = form.dataset.clerkEnabled === 'true';
-            const errorEl = document.getElementById('account-password-error');
-            const successEl = document.getElementById('account-password-success');
-            const submitBtn = document.getElementById('account-password-submit');
-            const currentInput = document.getElementById('account-current-password');
-            const newInput = document.getElementById('account-new-password');
-            const confirmInput = document.getElementById('account-confirm-password');
-            const signOutCheckbox = document.getElementById('account-sign-out-sessions');
-
-            function setMessage(el, message) {
-              if (!el) return;
-              if (message) {
-                el.textContent = message;
-                el.hidden = false;
-              } else {
-                el.textContent = '';
-                el.hidden = true;
-              }
-            }
-
-            function clearPasswordFields() {
-              if (currentInput) currentInput.value = '';
-              if (newInput) newInput.value = '';
-              if (confirmInput) confirmInput.value = '';
-            }
-
-            form.addEventListener('submit', async (event) => {
-              event.preventDefault();
-              setMessage(errorEl, '');
-              setMessage(successEl, '');
-
-              if (!clerkEnabled) {
-                setMessage(errorEl, 'Password changes require Clerk authentication.');
-                return;
-              }
-
-              const newPassword = String(newInput?.value || '');
-              const confirmPassword = String(confirmInput?.value || '');
-              const currentPassword = String(currentInput?.value || '');
-
-              if (passwordEnabled && !currentPassword) {
-                setMessage(errorEl, 'Enter your current password.');
-                currentInput?.focus();
-                return;
-              }
-              if (!newPassword || newPassword.length < 8) {
-                setMessage(errorEl, 'New password must be at least 8 characters.');
-                newInput?.focus();
-                return;
-              }
-              if (newPassword !== confirmPassword) {
-                setMessage(errorEl, 'New password and confirmation do not match.');
-                confirmInput?.focus();
-                return;
-              }
-              if (passwordEnabled && currentPassword === newPassword) {
-                setMessage(errorEl, 'New password must be different from your current password.');
-                newInput?.focus();
-                return;
-              }
-
-              const signOutOfOtherSessions = signOutCheckbox ? signOutCheckbox.checked : true;
-              if (signOutOfOtherSessions && !window.confirm('You will be signed out of all other devices after this change. Continue?')) {
-                return;
-              }
-
-              if (submitBtn) {
-                submitBtn.disabled = true;
-                submitBtn.textContent = 'Updating...';
-              }
-
-              try {
-                await window.authManager.initClerk();
-                const user = window.Clerk?.user;
-                if (!user) {
-                  window.authManager.handleUnauthorized();
-                  return;
-                }
-
-                const params = { newPassword, signOutOfOtherSessions };
-                if (passwordEnabled) params.currentPassword = currentPassword;
-
-                await user.updatePassword(params);
-                clearPasswordFields();
-                setMessage(successEl, passwordEnabled
-                  ? 'Password updated successfully.'
-                  : 'Password set successfully. You can now sign in with email and password.');
-              } catch (error) {
-                console.error('Password update failed:', error);
-                setMessage(errorEl, clerkPasswordErrorMessage(error));
-              } finally {
-                if (submitBtn) {
-                  submitBtn.disabled = false;
-                  submitBtn.textContent = passwordEnabled ? 'Update password' : 'Set password';
-                }
-              }
-            });
-          }
-          window.addEventListener('DOMContentLoaded', initAccountPasswordForm);
-          window.addEventListener('DOMContentLoaded', initAccountEmailForm);
-
-          window.__META_WA_CONNECT__ = ${metaConnectConfigJson};
-
-          function initWhatsAppConnect() {
-            const card = document.getElementById('wa-connect-card');
-            if (!card) return;
-
-            const config = window.__META_WA_CONNECT__ || {};
-            const statusEl = document.getElementById('wa-connect-status');
-            const errorEl = document.getElementById('wa-connect-error');
-            const successEl = document.getElementById('wa-connect-success');
-            const connectBtn = document.getElementById('wa-connect-btn');
-            const disconnectBtn = document.getElementById('wa-connect-disconnect');
-            const testBtn = document.getElementById('wa-connect-test');
-            const detailsEl = document.getElementById('wa-connect-details');
-            let pendingSignup = null;
-            let pendingCode = null;
-
-            function setInlineMessage(el, message) {
-              if (!el) return;
-              if (message) {
-                el.textContent = message;
-                el.hidden = false;
-              } else {
-                el.textContent = '';
-                el.hidden = true;
-              }
-            }
-
-            function renderStatus(data) {
-              if (!data) return;
-              const connected = !!data.connected;
-              if (statusEl) {
-                statusEl.innerHTML = connected
-                  ? '<span class="wa-connect-status__dot wa-connect-status__dot--ok"></span><span><strong>Connected</strong></span>'
-                  : '<span class="wa-connect-status__dot"></span><span><strong>Not connected</strong></span>';
-              }
-              if (connectBtn) connectBtn.textContent = connected ? 'Reconnect WhatsApp' : 'Connect WhatsApp';
-              if (disconnectBtn) disconnectBtn.hidden = !connected;
-              if (testBtn) testBtn.hidden = !connected;
-              if (detailsEl) {
-                detailsEl.hidden = !connected;
-                const phoneId = document.getElementById('wa-connected-phone-id');
-                const wabaId = document.getElementById('wa-connected-waba-id');
-                const businessPhone = document.getElementById('wa-connected-business-phone');
-                if (phoneId) phoneId.textContent = data.phoneNumberId || '—';
-                if (wabaId) wabaId.textContent = data.wabaId || '—';
-                if (businessPhone) businessPhone.textContent = data.businessPhone ? ('+' + String(data.businessPhone).replace(/\\D/g, '')) : '—';
-              }
-            }
-
-            async function refreshStatus() {
-              try {
-                const resp = await window.authManager.authenticatedFetch('/api/settings/whatsapp/status', {
-                  headers: { Accept: 'application/json' }
-                });
-                const data = await resp.json();
-                if (resp.ok) renderStatus(data);
-              } catch (_) {}
-            }
-
-            async function completeConnection() {
-              if (!pendingCode || !pendingSignup?.phone_number_id) return;
-              setInlineMessage(errorEl, '');
-              setInlineMessage(successEl, '');
-              if (connectBtn) {
-                connectBtn.disabled = true;
-                connectBtn.textContent = 'Connecting...';
-              }
-              try {
-                const resp = await window.authManager.authenticatedFetch('/api/settings/whatsapp/connect', {
-                  method: 'POST',
-                  headers: {
-                    Accept: 'application/json',
-                    'Content-Type': 'application/json'
-                  },
-                  body: JSON.stringify({
-                    code: pendingCode,
-                    phone_number_id: pendingSignup.phone_number_id,
-                    waba_id: pendingSignup.waba_id || null,
-                    business_id: pendingSignup.business_id || null
-                  })
-                });
-                const data = await resp.json();
-                if (!resp.ok || !data.success) {
-                  throw new Error(data.error || 'Failed to connect WhatsApp');
-                }
-                pendingSignup = null;
-                pendingCode = null;
-                setInlineMessage(successEl, 'WhatsApp connected successfully.');
-                renderStatus(data.status || data);
-                await refreshStatus();
-                const verifyField = document.querySelector('input[name="verify_token"]');
-                if (verifyField && data.verify_token) verifyField.value = data.verify_token;
-                const phoneField = document.querySelector('input[name="phone_number_id"]');
-                if (phoneField && data.phone_number_id) phoneField.value = data.phone_number_id;
-                const wabaField = document.querySelector('input[name="waba_id"]');
-                if (wabaField && data.waba_id) wabaField.value = data.waba_id;
-                const businessPhoneField = document.querySelector('input[name="business_phone"]');
-                if (businessPhoneField && data.business_phone) businessPhoneField.value = data.business_phone;
-              } catch (error) {
-                console.error('WhatsApp connect failed:', error);
-                setInlineMessage(errorEl, error?.message || 'Failed to connect WhatsApp.');
-              } finally {
-                if (connectBtn) {
-                  connectBtn.disabled = false;
-                  connectBtn.textContent = 'Reconnect WhatsApp';
-                }
-              }
-            }
-
-            function tryCompleteConnection() {
-              if (pendingCode && pendingSignup?.phone_number_id) {
-                completeConnection();
-              }
-            }
-
-            window.addEventListener('message', (event) => {
-              if (!event.origin.endsWith('facebook.com')) return;
-              try {
-                const payload = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
-                if (payload?.type === 'WA_EMBEDDED_SIGNUP' && payload?.data) {
-                  pendingSignup = payload.data;
-                  tryCompleteConnection();
-                }
-              } catch (_) {}
-            });
-
-            function launchEmbeddedSignup() {
-              if (!config.enabled) {
-                setInlineMessage(errorEl, 'Embedded Signup is not configured. Add META_APP_ID, META_APP_SECRET, and META_EMBEDDED_SIGNUP_CONFIG_ID to your environment.');
-                return;
-              }
-              if (!window.FB) {
-                setInlineMessage(errorEl, 'Meta SDK is still loading. Please try again in a moment.');
-                return;
-              }
-              setInlineMessage(errorEl, '');
-              setInlineMessage(successEl, '');
-              pendingSignup = null;
-              pendingCode = null;
-              window.FB.login((response) => {
-                if (response?.authResponse?.code) {
-                  pendingCode = response.authResponse.code;
-                  tryCompleteConnection();
-                  return;
-                }
-                if (response?.status === 'not_authorized' || response?.status === 'unknown') {
-                  setInlineMessage(errorEl, 'Meta sign-in was cancelled.');
-                }
-              }, {
-                config_id: config.configId,
-                response_type: 'code',
-                override_default_response_type: true,
-                extras: { setup: {} }
-              });
-            }
-
-            function loadFacebookSdk() {
-              if (!config.enabled || !config.appId) return;
-              window.fbAsyncInit = function() {
-                window.FB.init({
-                  appId: config.appId,
-                  cookie: true,
-                  xfbml: false,
-                  version: config.graphVersion || 'v21.0'
-                });
-              };
-              if (document.getElementById('facebook-jssdk')) return;
-              const script = document.createElement('script');
-              script.id = 'facebook-jssdk';
-              script.async = true;
-              script.defer = true;
-              script.crossOrigin = 'anonymous';
-              script.src = 'https://connect.facebook.net/en_US/sdk.js';
-              document.body.appendChild(script);
-            }
-
-            connectBtn?.addEventListener('click', launchEmbeddedSignup);
-            disconnectBtn?.addEventListener('click', async () => {
-              if (!window.confirm('Disconnect WhatsApp from Code Orbit?')) return;
-              setInlineMessage(errorEl, '');
-              setInlineMessage(successEl, '');
-              try {
-                const resp = await window.authManager.authenticatedFetch('/api/settings/whatsapp/disconnect', {
-                  method: 'POST',
-                  headers: { Accept: 'application/json' }
-                });
-                const data = await resp.json();
-                if (!resp.ok || !data.success) throw new Error(data.error || 'Disconnect failed');
-                setInlineMessage(successEl, 'WhatsApp disconnected.');
-                await refreshStatus();
-              } catch (error) {
-                setInlineMessage(errorEl, error?.message || 'Failed to disconnect WhatsApp.');
-              }
-            });
-            testBtn?.addEventListener('click', async () => {
-              setInlineMessage(errorEl, '');
-              setInlineMessage(successEl, '');
-              if (testBtn) {
-                testBtn.disabled = true;
-                testBtn.textContent = 'Testing...';
-              }
-              try {
-                const resp = await window.authManager.authenticatedFetch('/api/settings/whatsapp/status?validate=1', {
-                  headers: { Accept: 'application/json' }
-                });
-                const data = await resp.json();
-                if (!resp.ok) throw new Error(data.error || 'Connection test failed');
-                if (data.tokenStatus === 'ok') {
-                  setInlineMessage(successEl, 'Connection is healthy.');
-                } else {
-                  throw new Error(data.tokenMessage || 'Token is invalid or expired. Try reconnecting.');
-                }
-              } catch (error) {
-                setInlineMessage(errorEl, error?.message || 'Connection test failed.');
-              } finally {
-                if (testBtn) {
-                  testBtn.disabled = false;
-                  testBtn.textContent = 'Test connection';
-                }
-              }
-            });
-
-            loadFacebookSdk();
-            refreshStatus();
-          }
-          window.addEventListener('DOMContentLoaded', initWhatsAppConnect);
-        </script>
+        <script src="/settings-panels.js?v=${assetVer}"></script>
+        <script>window.__CSRF_TOKEN__ = ${csrfTokenJson}; window.__META_WA_CONNECT__ = ${metaConnectConfigJson};</script>
+        <script src="/settings-page.js?v=${assetVer}"></script>
+        <script src="/settings-whatsapp-connect.js?v=${assetVer}"></script>
         <div class="container">
           ${renderTopbar('Settings', email)}
           <div class="layout">
@@ -1006,7 +377,8 @@ export default function registerSettingsRoutes(app, options = {}) {
                         });
 
                         document.addEventListener('click', function(ev){
-                          if (!document.getElementById('address-autocomplete-wrap')?.contains(ev.target)) hideList();
+                          var wrap = document.getElementById('address-autocomplete-wrap');
+                          if (!wrap || !wrap.contains(ev.target)) hideList();
                         });
                       })();
                     </script>` : ''}
@@ -1135,7 +507,7 @@ export default function registerSettingsRoutes(app, options = {}) {
                           if (!btn) return;
                           const placeId = btn.getAttribute('data-place-id');
                           if (!placeId) return;
-                          search.value = btn.querySelector('div')?.textContent || search.value;
+                          search.value = (btn.querySelector('div') && btn.querySelector('div').textContent) || search.value;
                           hideSuggestions();
                           loadPreview(placeId);
                         });
@@ -1207,6 +579,12 @@ export default function registerSettingsRoutes(app, options = {}) {
                         <button type="button" class="btn-ghost" id="wa-connect-test" ${waConnection.connected ? '' : 'hidden'}>Test connection</button>
                         <button type="button" class="btn-ghost" id="wa-connect-disconnect" ${waConnection.connected ? '' : 'hidden'}>Disconnect</button>
                       </div>
+
+                      <p class="small wa-connect-card__hint-next" id="wa-connect-next-step" ${waConnection.connected ? 'hidden' : ''}>
+                        No token paste needed here — click <strong>Connect WhatsApp</strong> and sign in with Meta.
+                        Meta requires <strong>HTTPS</strong> (use your ngrok or production URL, not <code>localhost</code>).
+                        To enter a token manually, open <strong>Advanced manual setup</strong> below, fill in the fields, then click <strong>Save changes</strong>.
+                      </p>
 
                       <div class="small wa-connect-card__setup-note">
                         Platform Meta app credentials (<code>META_APP_ID</code>, etc.) identify Code Orbit in Meta’s system only. Each customer still authorizes their own WhatsApp Business Account during connect.
@@ -1310,7 +688,10 @@ export default function registerSettingsRoutes(app, options = {}) {
                           if (!confirm('Disconnect staff group notifications?')) return;
                           btn.disabled = true;
                           try {
-                            const resp = await fetch('/api/settings/staff-group/disconnect', { method: 'POST', headers: { 'Accept': 'application/json' } });
+                            const resp = await window.authManager.authenticatedFetch('/api/settings/staff-group/disconnect', {
+                              method: 'POST',
+                              headers: { Accept: 'application/json' }
+                            });
                             const data = await resp.json();
                             if (!data.success) throw new Error(data.error || 'Disconnect failed');
                             window.location.href = '/settings?saved=1#whatsapp';
@@ -1605,7 +986,8 @@ export default function registerSettingsRoutes(app, options = {}) {
                         (function(){
                           function parseJson(v, def){ try { return JSON.parse(String(v||'').trim()||'[]'); } catch(_) { return def; } }
                           function setHidden(id, arr){ var el=document.getElementById(id); if(el) el.value = JSON.stringify(arr||[]); }
-                          var sArr = parseJson(document.getElementById('services_json')?.value, []);
+                          var servicesEl = document.getElementById('services_json');
+                          var sArr = parseJson(servicesEl ? servicesEl.value : '', []);
                           var sList = document.getElementById('servicesList');
                           function renderSvcs(){
                             if(!sList) return;
@@ -1759,7 +1141,7 @@ export default function registerSettingsRoutes(app, options = {}) {
                           if (data && data.success) {
                             location.reload();
                           } else {
-                            alert('Error: ' + (data?.error || 'Failed to add quick reply'));
+                            alert('Error: ' + ((data && data.error) || 'Failed to add quick reply'));
                           }
                         })
                         .catch(error => {
@@ -1823,7 +1205,7 @@ export default function registerSettingsRoutes(app, options = {}) {
                           if (data && data.success) {
                             location.reload();
                           } else {
-                            alert('Error: ' + (data?.error || 'Failed to update quick reply'));
+                            alert('Error: ' + ((data && data.error) || 'Failed to update quick reply'));
                           }
                         })
                         .catch(error => {
@@ -1864,7 +1246,7 @@ export default function registerSettingsRoutes(app, options = {}) {
                           if (data && data.success) {
                             location.reload();
                           } else {
-                            alert('Error: ' + (data?.error || 'Failed to delete quick reply'));
+                            alert('Error: ' + ((data && data.error) || 'Failed to delete quick reply'));
                           }
                         })
                         .catch(error => {
@@ -2279,10 +1661,15 @@ export default function registerSettingsRoutes(app, options = {}) {
     const userId = getCurrentUserId(req);
     const settings = await getSettingsForUser(userId);
     const status = buildConnectionStatus(settings);
-    if (req.query.validate === "1" && status.connected) {
-      const check = await validateWhatsAppToken(settings.phone_number_id, settings.whatsapp_token);
-      status.tokenStatus = check.valid ? "ok" : "invalid";
-      status.tokenMessage = check.valid ? null : `Token validation failed (${check.status || "unknown"})`;
+    if (req.query.validate === "1") {
+      if (!status.connected) {
+        status.tokenStatus = "not_connected";
+        status.tokenMessage = "WhatsApp is not connected.";
+      } else {
+        const check = await validateWhatsAppToken(settings.phone_number_id, settings.whatsapp_token);
+        status.tokenStatus = check.valid ? "ok" : "invalid";
+        status.tokenMessage = check.valid ? null : `Token validation failed (${check.status || "unknown"})`;
+      }
     }
     return res.json(status);
   }));

@@ -2,6 +2,13 @@
 import { SettingsMulti } from "../schemas/mongodb.mjs";
 import { dataCache } from "../scalability/redis.mjs";
 import { buildGoogleBusinessContextLines, parseGoogleBusinessSnapshot } from "./googleBusinessImport.mjs";
+
+function pickSetting(values, current, key, fallback = null) {
+  return Object.prototype.hasOwnProperty.call(values, key)
+    ? values[key]
+    : (current[key] ?? fallback);
+}
+
 export async function getSettingsForUser(userId) {
   if (!userId) return {};
   const cacheKey = `settings:${userId}`;
@@ -20,12 +27,12 @@ export async function upsertSettingsForUser(userId, values) {
     user_id: userId,
     name: values.name ?? current.name ?? null,
     business_type: values.business_type ?? current.business_type ?? null,
-    phone_number_id: values.phone_number_id ?? current.phone_number_id ?? null,
-    waba_id: values.waba_id ?? current.waba_id ?? null,
-    whatsapp_token: values.whatsapp_token ?? current.whatsapp_token ?? null,
-    verify_token: values.verify_token ?? current.verify_token ?? null,
-    app_secret: values.app_secret ?? current.app_secret ?? null,
-    business_phone: values.business_phone ?? current.business_phone ?? null,
+    phone_number_id: pickSetting(values, current, "phone_number_id"),
+    waba_id: pickSetting(values, current, "waba_id"),
+    whatsapp_token: pickSetting(values, current, "whatsapp_token"),
+    verify_token: pickSetting(values, current, "verify_token"),
+    app_secret: pickSetting(values, current, "app_secret"),
+    business_phone: pickSetting(values, current, "business_phone"),
     business_name: values.business_name ?? current.business_name ?? null,
     business_categories_json: values.business_categories_json ?? current.business_categories_json ?? null,
     website_url: values.website_url ?? current.website_url ?? null,

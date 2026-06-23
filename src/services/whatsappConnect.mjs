@@ -180,6 +180,7 @@ export async function disconnectWhatsApp(userId) {
     phone_number_id: null,
     waba_id: null,
     whatsapp_token: null,
+    business_phone: null,
   });
   return { success: true };
 }
