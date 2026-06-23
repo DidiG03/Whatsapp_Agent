@@ -321,7 +321,7 @@ export async function sendWhatsappImage(to, imageUrl, caption, cfg, replyToMessa
   return result;
 }
 
-export async function sendWhatsappImageBase64(to, imagePath, caption, cfg) {
+export async function sendWhatsappImageBase64(to, imagePath, caption, cfg, replyToMessageId = null) {
   try {
     const imageBuffer = await fs.promises.readFile(imagePath);
     const ext = path.extname(imagePath).toLowerCase();
@@ -394,6 +394,9 @@ export async function sendWhatsappImageBase64(to, imagePath, caption, cfg) {
         ...(caption ? { caption } : {})
       }
     };
+    if (replyToMessageId) {
+      payload.context = { message_id: replyToMessageId };
+    }
     
     const result = await postWhatsAppMessage(cfg, payload, { retry: true });
     if (cfg.user_id && result?.messages?.[0]?.id) {
@@ -438,7 +441,7 @@ export async function sendWhatsappDocument(to, documentUrl, filename, caption, c
   
   return result;
 }
-export async function sendWhatsappDocumentBase64(to, documentPath, filename, caption, cfg) {
+export async function sendWhatsappDocumentBase64(to, documentPath, filename, caption, cfg, replyToMessageId = null) {
   try {
     const documentBuffer = await fs.promises.readFile(documentPath);
     const ext = path.extname(documentPath).toLowerCase();
@@ -497,6 +500,9 @@ export async function sendWhatsappDocumentBase64(to, documentPath, filename, cap
         ...(caption ? { caption } : {})
       }
     };
+    if (replyToMessageId) {
+      payload.context = { message_id: replyToMessageId };
+    }
     
     const result = await postWhatsAppMessage(cfg, payload, { retry: true });
     if (cfg.user_id && result?.messages?.[0]?.id) {
@@ -655,4 +661,47 @@ export async function sendWhatsAppTemplate(to, templateName, language, component
   }
   
   return result;
+}
+
+export function buildWaMediaProxyUrl(userId, mediaId) {
+  if (!userId || !mediaId) return null;
+  return `/wa-media/${encodeURIComponent(String(userId))}/${encodeURIComponent(String(mediaId))}`;
+}
+
+export async function downloadWhatsAppMedia(mediaId, cfg) {
+  const token = cfg?.whatsapp_token || process.env.WHATSAPP_TOKEN || null;
+  if (!mediaId || !token) {
+    throw new Error("WhatsApp media download is not configured");
+  }
+  const metaResp = await fetch(`https://graph.facebook.com/v20.0/${encodeURIComponent(String(mediaId))}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    agent: keepAliveAgent,
+  });
+  if (!metaResp.ok) {
+    const body = await metaResp.text().catch(() => "");
+    throw new Error(`WhatsApp media metadata failed (${metaResp.status}): ${body.slice(0, 200)}`);
+  }
+  const meta = await metaResp.json();
+  const url = meta?.url;
+  if (!url) throw new Error("WhatsApp media URL missing");
+  const binResp = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+    agent: keepAliveAgent,
+  });
+  if (!binResp.ok) {
+    throw new Error(`WhatsApp media download failed (${binResp.status})`);
+  }
+  const buffer = Buffer.from(await binResp.arrayBuffer());
+  const rawMime = meta?.mime_type || binResp.headers.get("content-type") || "audio/ogg";
+  const mimeType = String(rawMime).split(";")[0].trim().toLowerCase() || "audio/ogg";
+  let ext = "ogg";
+  if (/mpeg|mp3/i.test(mimeType)) ext = "mp3";
+  else if (/mp4|m4a|aac/i.test(mimeType)) ext = "m4a";
+  else if (/wav/i.test(mimeType)) ext = "wav";
+  return {
+    buffer,
+    mimeType,
+    fileName: `voice.${ext}`,
+    sha256: meta?.sha256 || null,
+  };
 }

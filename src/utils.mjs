@@ -62,6 +62,34 @@ export function escapeHtml(text) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
 }
+
+export function renderVoiceMessageHtml({ audioUrl, transcript = '', messageId = '' } = {}) {
+  if (!audioUrl) return '';
+  const safeUrl = escapeHtml(audioUrl);
+  const safeId = escapeHtml(String(messageId || ''));
+  const bars = Array.from({ length: 14 }, (_, i) => {
+    const h = 6 + ((i * 7) % 18);
+    return `<span style="--vh:${h}px"></span>`;
+  }).join('');
+  const transcriptHtml = String(transcript || '').trim()
+    ? `<div class="voice-message__transcript">${escapeHtml(transcript).replace(/\n/g, '<br/>')}</div>`
+    : '';
+  return `
+    <div class="voice-message" data-message-id="${safeId}">
+      <button type="button" class="voice-message__play" aria-label="Play voice message" onclick="window.toggleVoiceMessage && window.toggleVoiceMessage(this)">&#9654;</button>
+      <div class="voice-message__track">
+        <div class="voice-message__wave" aria-hidden="true">${bars}</div>
+        <div class="voice-message__footer">
+          <span class="voice-message__label">Voice message</span>
+          <span class="voice-message__duration">--:--</span>
+        </div>
+      </div>
+      <audio class="voice-message__audio" preload="auto" src="${safeUrl}"></audio>
+    </div>
+    ${transcriptHtml}
+  `.trim();
+}
+
 export function renderTranscriptAsBubbles(transcript) {
   if (!transcript || !transcript.trim()) return '<div class="empty_chat" style="text-align:center;">How can I improve your KB?</div>';
   const lines = transcript.split('\n');
@@ -132,6 +160,7 @@ export function renderSidebar(activeKey, options = {}) {
       ${navLink("/inbox", "Inbox", "inbox", imgIcon("/inbox-icon.svg"))}
       ${showBookings ? navLink("/bookings", "Bookings", "bookings", svgIcon('<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>')) : ""}
       ${showKb ? navLink("/kb/ui", "Knowledge Base", "kb", imgIcon("/JSON-icon.svg")) : ""}
+      ${navLink("/refining", "Refining", "refining", svgIcon('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'))}
       ${navLink("/campaigns", "Campaigns", "campaigns", imgIcon("/send-whatsapp-icon.svg"))}
       ${navLink("/plan", "Plan", "plan", imgIcon("/plan-icon.svg"))}
       ${navLink("/settings", "Settings", "settings", imgIcon("/settings-icon.svg"))}

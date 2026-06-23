@@ -42,9 +42,53 @@ function clearClerkCookies(req, res) {
 
 const CLERK_JS_VERSION = (process.env.CLERK_JS_VERSION || '5').toString().trim() || '5';
 
-function authPageShell({ pageTitle, mountId, switchPrompt, switchHref, switchLabel, clerkInitScript }) {
+const AUTH_BUBBLE_DECOR = `
+        <div class="auth-page__bubbles" aria-hidden="true">
+          <div class="auth-page__bubble auth-page__bubble--1 auth-page__bubble--in">
+            <div class="auth-page__bubble-motion auth-page__bubble-motion--1">
+              <span>Hey, are you open today?</span>
+            </div>
+          </div>
+          <div class="auth-page__bubble auth-page__bubble--2 auth-page__bubble--out">
+            <div class="auth-page__bubble-motion auth-page__bubble-motion--2">
+              <span>Yes — how can we help?</span>
+            </div>
+          </div>
+          <div class="auth-page__bubble auth-page__bubble--3 auth-page__bubble--in">
+            <div class="auth-page__bubble-motion auth-page__bubble-motion--3">
+              <span>Can I book for tomorrow?</span>
+            </div>
+          </div>
+          <div class="auth-page__bubble auth-page__bubble--4 auth-page__bubble--out">
+            <div class="auth-page__bubble-motion auth-page__bubble-motion--4">
+              <span>Done! You're all set.</span>
+            </div>
+          </div>
+          <div class="auth-page__bubble auth-page__bubble--5 auth-page__bubble--in">
+            <div class="auth-page__bubble-motion auth-page__bubble-motion--5">
+              <span>What's your pricing?</span>
+            </div>
+          </div>
+          <div class="auth-page__bubble auth-page__bubble--6 auth-page__bubble--out">
+            <div class="auth-page__bubble-motion auth-page__bubble-motion--6">
+              <span>I'll send the details now.</span>
+            </div>
+          </div>
+          <div class="auth-page__bubble auth-page__bubble--7 auth-page__bubble--in">
+            <div class="auth-page__bubble-motion auth-page__bubble-motion--7">
+              <span>Perfect, thank you!</span>
+            </div>
+          </div>
+          <div class="auth-page__bubble auth-page__bubble--8 auth-page__bubble--out">
+            <div class="auth-page__bubble-motion auth-page__bubble-motion--8">
+              <span>Happy to help anytime.</span>
+            </div>
+          </div>
+        </div>`;
+
+function authPageShell({ pageTitle, heading, subheading, mountId, switchPrompt, switchHref, switchLabel, clerkInitScript }) {
   return `<!DOCTYPE html>
-      <html lang="en">
+      <html lang="en" class="auth-page-html">
       <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
@@ -58,12 +102,16 @@ function authPageShell({ pageTitle, mountId, switchPrompt, switchHref, switchLab
         <script src="https://unpkg.com/@clerk/clerk-js@${CLERK_JS_VERSION}/dist/clerk.browser.js" data-clerk-publishable-key="${CLERK_PUBLISHABLE}"></script>
       </head>
       <body class="auth-page">
+        ${AUTH_BUBBLE_DECOR}
         <main class="auth-page__shell">
           <div class="auth-page__panel">
-            <a href="/auth/signin" class="auth-page__brand">
-              <img src="/logo-icon.png" alt="" class="auth-page__logo" width="32" height="32" />
-              <span>Code Orbit Agent</span>
-            </a>
+            <div class="auth-page__intro">
+              <a href="/auth/signin" class="auth-page__brand" aria-label="Code Orbit Agent">
+                <img src="/logo-icon.png" alt="" class="auth-page__logo" />
+              </a>
+              <h1 class="auth-page__heading">${heading}</h1>
+              <p class="auth-page__lede">${subheading}</p>
+            </div>
             <div id="${mountId}" class="auth-page__clerk"></div>
             <p class="auth-page__switch">
               ${switchPrompt}
@@ -83,11 +131,12 @@ const CLERK_APPEARANCE = {
     colorTextSecondary: '#64748b',
     colorInputText: '#0f172a',
     colorBackground: '#ffffff',
-    borderRadius: '10px',
+    borderRadius: '12px',
     fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
     fontSize: '0.9375rem',
   },
   layout: {
+    logoPlacement: 'none',
     socialButtonsPlacement: 'top',
     socialButtonsVariant: 'blockButton',
     showOptionalFields: false,
@@ -95,16 +144,26 @@ const CLERK_APPEARANCE = {
   elements: {
     rootBox: 'auth-clerk-root',
     card: 'auth-clerk-card',
-    header: 'auth-clerk-header',
+    cardBox: 'auth-clerk-card-box',
+    main: 'auth-clerk-main',
+    header: 'auth-clerk-header auth-clerk-header--hidden',
     headerTitle: 'auth-clerk-title',
     headerSubtitle: 'auth-clerk-subtitle',
     logoBox: 'auth-clerk-logo',
     logoImage: 'auth-clerk-logo-img',
+    socialButtonsRoot: 'auth-clerk-social-root',
+    socialButtons: 'auth-clerk-social-list',
     socialButtonsBlockButton: 'auth-clerk-social',
+    lastAuthenticationStrategyBadge: 'auth-clerk-last-badge',
+    dividerRow: 'auth-clerk-divider-row',
     dividerLine: 'auth-clerk-divider-line',
     dividerText: 'auth-clerk-divider-text',
+    form: 'auth-clerk-form',
+    formFieldRow: 'auth-clerk-field-row',
     formFieldLabel: 'auth-clerk-label',
     formFieldInput: 'auth-clerk-input',
+    formFieldAction: 'auth-clerk-field-action',
+    formFieldActionLink: 'auth-clerk-field-action-link',
     formButtonPrimary: 'auth-clerk-submit',
     footer: 'auth-clerk-footer',
     footerAction: 'auth-clerk-footer-action',
@@ -162,6 +221,8 @@ export default function registerAuthRoutes(app) {
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.end(authPageShell({
       pageTitle: 'Sign Up',
+      heading: 'Sign up',
+      subheading: 'Your AI-powered WhatsApp inbox.',
       mountId: 'signup-component',
       switchPrompt: 'Already have an account?',
       switchHref: '/auth/signin',
@@ -188,6 +249,8 @@ export default function registerAuthRoutes(app) {
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.end(authPageShell({
       pageTitle: 'Sign In',
+      heading: 'Sign in',
+      subheading: 'We help you manage WhatsApp conversations with AI.',
       mountId: 'signin-component',
       switchPrompt: "Don't have an account?",
       switchHref: '/auth/signup',

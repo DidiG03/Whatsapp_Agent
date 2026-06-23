@@ -28,6 +28,7 @@ export default function registerBookingsTab(app) {
         ]).toArray();
     } catch {}
     const apptJson = JSON.stringify(appts || []);
+    const assetVer = process.env.STATIC_ASSETS_VERSION || process.env.VERCEL_GIT_COMMIT_SHA || process.env.GIT_COMMIT || "dev";
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
     res.setHeader("Pragma", "no-cache");
@@ -51,18 +52,11 @@ export default function registerBookingsTab(app) {
                     <a class="btn btn-primary" href="/settings#bookings_section">Open reservation settings</a>
                   </div>
                 ` : `
-                  <div class="alert-banner alert-banner--info">
-                    <p class="alert-banner__copy" style="margin:0;">Configure scheduling rules, services, and staff in <a href="/settings#bookings_section">Settings → Reservations</a>.</p>
-                  </div>
                 `}
-                <div class="workspace-panel">
-                  <div class="workspace-panel__head">
-                    <h3 class="workspace-panel__title">Calendar</h3>
-                    <div class="workspace-panel__hint">Past 30 days to next 90 days</div>
-                  </div>
+                <div class="workspace-panel workspace-panel--calendar">
                   <div id="calendarRoot"></div>
                   <script id="appointments-json" type="application/json">${apptJson.replace(/</g, '\u003c')}</script>
-                  <script src="/calendar.js"></script>
+                  <script src="/calendar.js?v=${assetVer}"></script>
                 </div>
               </div>
             </main>

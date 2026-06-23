@@ -161,15 +161,23 @@ export function resetMetrics() {
   
   logHelpers.logBusinessEvent('metrics_reset');
 }
+function normalizeMetricEndpoint(path) {
+  return String(path || '/')
+    .replace(/\/\d{6,}/g, '/:id')
+    .replace(/\/wamid\.[^/]+/g, '/:wamid')
+    .slice(0, 120);
+}
+
 export function metricsMiddleware() {
   return (req, res, next) => {
     const startTime = Date.now();
+    const endpoint = normalizeMetricEndpoint(req.path);
     incrementCounter('http_requests_total');
-    incrementCounter('http_requests_by_endpoint', 1, { endpoint: req.path, method: req.method });
+    incrementCounter('http_requests_by_endpoint', 1, { endpoint, method: req.method });
     res.on('finish', () => {
       const duration = Date.now() - startTime;
       incrementCounter('http_requests_by_status', 1, { status: res.statusCode });
-      recordHistogram('response_time', duration, { endpoint: req.path, method: req.method, status: res.statusCode });
+      recordHistogram('response_time', duration, { endpoint, method: req.method, status: res.statusCode });
       if (duration > 5000) {        logHelpers.logPerformance('slow_request', duration, {
           method: req.method,
           url: req.url,

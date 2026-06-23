@@ -13,11 +13,15 @@ import {
   mergeAgentDecision,
   guardPrematureActionClaims,
   extractMemoryFacts,
+  normalizeExecutedIntent,
+  isBookingNameCompletion,
 } from "./agent-intelligence.mjs";
 import { buildCustomerProfileSnippet, rememberName, rememberPartySize, getContactMemory } from "./memory.mjs";
 import { isGreeting as isGreetingMessage } from "./agentPipelineHelpers.mjs";
-import { isKbMissReply, isLikelyFaqQuestion, t as tr } from "./i18n.mjs";
+import { isKbMissReply, isLikelyFaqQuestion, isLocationQuestion, t as tr } from "./i18n.mjs";
 import { MESSAGE_ROUTES, routeCustomerMessage } from "./messageRouter.mjs";
+import { detectMessageTopics } from "./messageTopics.mjs";
+import { buildConversationContextBrief } from "./conversationContext.mjs";
 
 export async function runAgentMessagePipeline(ctx) {
   const {
@@ -41,10 +45,14 @@ export async function runAgentMessagePipeline(ctx) {
     executeAgentIntent,
     finalizeAssistantReply,
     tryReplyWithBusinessLocation,
+    trySendBusinessLocationPin,
     isGreeting = isGreetingMessage,
   } = ctx;
 
   let knownCustomerName = String(initialName || "").trim();
+  const pipelineHistory = historyMessages;
+  const bookingHistory = historyMessages;
+  const bookingsEnabled = !!cfg?.bookings_enabled;
 
   const kbMatchesAIBase = await cachedRetrieveKbMatches(text, 8, tenantUserId, "", from, lang);
   const profileSnippet = await buildCustomerProfileSnippet(tenantUserId, from);
@@ -61,7 +69,7 @@ export async function runAgentMessagePipeline(ctx) {
       step: { $in: ["awaiting_cancel_confirm", "awaiting_reschedule_dt"] },
     });
     contactMem = await getContactMemory(tenantUserId, from);
-    if (cfg?.bookings_enabled) {
+    if (cfg?.bookings_enabled && bookingsEnabled) {
       upcomingAppt = await findUpcomingConfirmedAppointment({
         userId: tenantUserId,
         digits: fromDigits,
@@ -75,12 +83,13 @@ export async function runAgentMessagePipeline(ctx) {
     bookingSession: activeBookingSession,
     hasUpcomingAppt: !!upcomingAppt,
     lang,
+    historyMessages: bookingHistory,
   });
   const inferredIntent = inferServerIntent({
     text,
     phase: conversationPhase,
-    bookingsEnabled: !!cfg?.bookings_enabled,
-    historyMessages,
+    bookingsEnabled,
+    historyMessages: bookingHistory,
     upcomingAppt,
   });
   const liveSessionBrief = buildLiveSessionBrief({
@@ -106,8 +115,21 @@ export async function runAgentMessagePipeline(ctx) {
     inferredIntent,
     kbMatches: kbMatchesAIBase,
     lang,
-    bookingsEnabled: !!cfg?.bookings_enabled,
+    bookingsEnabled,
     conversationMode: cfg?.conversation_mode || "",
+  });
+
+  const messageTopics = routing.topics || detectMessageTopics(text, { bookingsEnabled, lang });
+  const multiTopic = messageTopics.length > 1 || routing.reason === "multi_topic";
+
+  const conversationContextBrief = buildConversationContextBrief({
+    text,
+    historyMessages: pipelineHistory,
+    phase: conversationPhase,
+    mem: contactMem,
+    lang,
+    messageTopics,
+    bookingsEnabled,
   });
 
   console.log("[AI-path] route", {
@@ -116,25 +138,39 @@ export async function runAgentMessagePipeline(ctx) {
     confidence: routing.confidence,
     phase: conversationPhase,
     inferred: inferredIntent?.type || null,
+    topics: messageTopics,
+    multiTopic,
   });
 
-  if (routing.route === MESSAGE_ROUTES.LOCATION) {
+  if (
+    !multiTopic
+    && routing.route === MESSAGE_ROUTES.LOCATION
+  ) {
     if (await tryReplyWithBusinessLocation(from, text, cfg, lang)) {
       return { handled: true, route: routing.route };
     }
   }
 
-  if (routing.route === MESSAGE_ROUTES.FAQ && routing.primaryKbMatch) {
+  if (
+    !multiTopic
+    && routing.route === MESSAGE_ROUTES.FAQ
+    && routing.primaryKbMatch
+  ) {
     const faqReply = await answerFromKbFaq(text, routing.primaryKbMatch, {
       tone: tenant?.ai_tone,
       style: tenant?.ai_style,
       lang,
-      historyMessages,
+      historyMessages: pipelineHistory,
       shouldGreet,
       businessName: cfg?.business_name || "",
+      refiningRules: tenant?.ai_refining_rules || cfg?.ai_refining_rules || "",
+      conversationContextBrief,
     });
     const faqNormalized = faqReply
-      ? finalizeAssistantReply(faqReply, { conversationStarted, userMessage: text, lang, shouldGreet })
+      ? guardPrematureActionClaims(
+          finalizeAssistantReply(faqReply, { conversationStarted, userMessage: text, lang, shouldGreet }),
+          { phase: conversationPhase, lang }
+        )
       : null;
     if (faqNormalized) {
       await sendTextTracked(from, String(faqNormalized).slice(0, 1000), cfg);
@@ -149,7 +185,7 @@ export async function runAgentMessagePipeline(ctx) {
     tone: tenant?.ai_tone,
     style: tenant?.ai_style,
     blockedTopics: tenant?.ai_blocked_topics,
-    historyMessages,
+    historyMessages: pipelineHistory,
     lang,
     conversationStarted,
     userMessageIsGreeting: isGreeting(text),
@@ -157,15 +193,28 @@ export async function runAgentMessagePipeline(ctx) {
     primaryKbMatch,
     isBusinessOverviewQuestion: isOverview,
     liveSessionBrief,
+    conversationContextBrief,
     inferredIntent,
     businessName: cfg?.business_name || "",
     businessType: cfg?.business_type || "",
     businessWebsite: cfg?.website_url || "",
     businessCategories: aiOptions.businessCategories,
-    features: buildAgentFeatures(cfg, knownCustomerName),
+    refiningRules: tenant?.ai_refining_rules || cfg?.ai_refining_rules || "",
+    features: buildAgentFeatures(cfg, knownCustomerName, bookingsEnabled),
+    multiTopic,
+    messageTopics,
+    conversationPhase,
   });
 
-  decision = mergeAgentDecision(decision, inferredIntent);
+  decision = mergeAgentDecision(decision, inferredIntent, {
+    aiText: decision?.text,
+    userText: text,
+    conversationPhase,
+    completingBookingWithName: isBookingNameCompletion(text, bookingHistory),
+    historyMessages: bookingHistory,
+    knownCustomerName,
+    contactId: from,
+  });
   console.log("[AI-path] decision", {
     route: routing.route,
     hasText: !!decision?.text,
@@ -195,7 +244,7 @@ export async function runAgentMessagePipeline(ctx) {
       tone: tenant?.ai_tone,
       style: tenant?.ai_style,
       lang,
-      historyMessages,
+      historyMessages: pipelineHistory,
       shouldGreet,
       businessName: cfg?.business_name || "",
     });
@@ -218,8 +267,29 @@ export async function runAgentMessagePipeline(ctx) {
     }
   }
 
-  const intentType = String(decision?.intent?.type || "none").toLowerCase();
-  const intentData = decision?.intent?.data || {};
+  if (
+    isLocationQuestion(text)
+    && conversationPhase !== "booking_flow"
+    && typeof trySendBusinessLocationPin === "function"
+  ) {
+    try {
+      await trySendBusinessLocationPin(from, cfg, lang);
+    } catch (pinErr) {
+      console.warn("[AI-path] location pin after multi-topic reply failed:", pinErr?.message || pinErr);
+    }
+  }
+
+  const normalizedIntent = normalizeExecutedIntent({
+    intentType: decision?.intent?.type,
+    intentData: decision?.intent?.data,
+    text,
+    replyText,
+    historyMessages: bookingHistory,
+    knownCustomerName,
+    contactId: from,
+  });
+  const intentType = normalizedIntent.intentType;
+  const intentData = normalizedIntent.intentData;
   if (intentType && intentType !== "none") {
     if (cfg?.conversation_mode === "escalation" && intentType !== "handoff") {
       return { handled: true, route: routing.route, knownCustomerName };
@@ -237,15 +307,16 @@ export async function runAgentMessagePipeline(ctx) {
       req,
       replyText,
       knownCustomerName,
+      bookingsEnabled,
     });
   }
 
   return { handled: true, route: routing.route, knownCustomerName };
 }
 
-function buildAgentFeatures(cfg, knownCustomerName) {
+function buildAgentFeatures(cfg, knownCustomerName, bookingsEnabled = false) {
   return {
-    bookings_enabled: !!cfg?.bookings_enabled,
+    bookings_enabled: !!bookingsEnabled,
     reminders_enabled: !!cfg?.reminders_enabled,
     business_name: cfg?.business_name || "",
     business_website: cfg?.website_url || "",

@@ -5,7 +5,8 @@ import { db, getDB } from "../db-mongodb.mjs";
 import { findSettingsByVerifyToken, findSettingsByPhoneNumberId, findSettingsByBusinessPhone, buildBusinessSettingsSnippet, getBusinessLocation, upsertSettingsForUser } from "../services/settings.mjs";
 import { retrieveKbMatches, buildKbSuggestions } from "../services/kb.mjs";
 import { Customer, Handoff, KBItem, Staff } from "../schemas/mongodb.mjs";
-import { sendWhatsappButton, sendWhatsAppText, sendWhatsAppGroupText, sendWhatsAppLocation, sendWhatsappList, sendWhatsappReaction, sendWhatsappDocument } from "../services/whatsapp.mjs";
+import { sendWhatsappButton, sendWhatsAppText, sendWhatsAppGroupText, sendWhatsAppLocation, sendWhatsappList, sendWhatsappReaction, sendWhatsappDocument, buildWaMediaProxyUrl } from "../services/whatsapp.mjs";
+import { isAudioTranscriptionEnabled, resolveInboundAudioText } from "../services/audioTranscription.mjs";
 import { normalizePhone, buildUtcFromLocalWallTime } from "../utils.mjs";
 import { runAgentMessagePipeline } from "../services/agentPipeline.mjs";
 import { generateAiReply, generateAssistantNudge } from "../services/ai.mjs";
@@ -14,12 +15,18 @@ import { buildCustomerProfileSnippet, rememberService, rememberAgent, rememberAp
 import {
   isCancelAbort,
   isCancelConfirmation,
-  isExplicitAvailabilityRequest,
+  wantsTimeSlotSuggestions,
+  bookingReplyAsksForName,
   parseBookingNameChange,
+  isUsableCustomerName,
+  isBookingNameCompletion,
+  bookingHasPartySize,
 } from "../services/agent-intelligence.mjs";
 import { listMessagesForThread } from "../services/conversations.mjs";
-import { listAvailability, createBooking, rescheduleBooking, cancelBooking, updateBookingName, buildDayRows, buildTimeRows, filterSlotsByTimeOfDay, getStaffById, ensureAppointmentLegacyId, findAppointmentForUser, resolveAppointmentRefId } from "../services/booking.mjs";
-import { recordOutboundMessage, recordInboundMessage } from "../services/messages.mjs";
+import { buildThreadHistory } from "../services/conversationContext.mjs";
+import { startMapJanitor } from "../utils/ttlCache.mjs";
+import { listAvailability, createBooking, rescheduleBooking, cancelBooking, updateBookingName, buildDayRows, filterSlotsByTimeOfDay, getStaffById, ensureAppointmentLegacyId, findAppointmentForUser, resolveAppointmentRefId } from "../services/booking.mjs";
+import { recordOutboundMessage, recordInboundMessage, persistInboundTranscript } from "../services/messages.mjs";
 import { sendEscalationNotification, sendBookingNotification } from "../services/email.mjs";
 import { isStaffGroupConnectCommand, sendStaffGroupBookingNotification } from "../services/staffGroupNotifications.mjs";
 import { handleCoexistenceMessageEchoes } from "../services/coexistenceLiveMode.mjs";
@@ -252,6 +259,7 @@ function normalizeTemporal(raw) {
   s = s.replace(/\b(?:ne\s+)?ores?\b/g, ' at ');
   s = s.replace(/\bne\s+oren\b/g, ' at ');
   s = s.replace(/\boren\b/g, ' at ');
+  s = s.replace(/\bne\s+(\d{1,2})(?::(\d{2}))?\b/g, ' at $1$2 ');
   s = s.replace(/\bora\b/g, 'at');
   // Dayparts used to disambiguate a bare hour.
   s = s.replace(/\bparadite\b/g, ' am ');
@@ -294,8 +302,6 @@ function parseDayOfMonthFromText(text) {
   return dayOfMonthToISO(Number(m[1]));
 }
 
-const BOOKING_CLOSURE_RE = /\b(jo\s+kaq|kaq\s+esht|kjo\s+eshte|that's\s+all|thats\s+all|nothing\s+else|all\s+good|ne\s+rregull|ok\s+faleminderit|faleminderit\s+kaq|vetem\s+kaq)\b/i;
-
 function disambiguateHour(hh, normalizedText) {
   let hour = Number(hh);
   if (!Number.isFinite(hour)) return hour;
@@ -328,8 +334,14 @@ function parseClockTimeFromText(raw) {
   if (!text) return null;
   let mt = /(?:\bat|\bfor|\baround|tek\s+oren|rreth\s+ores|ne\s+oren|\boren)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i.exec(text);
   if (!mt) {
+    mt = /\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(?:fiks|fix|sharp)\b/i.exec(text);
+  }
+  if (!mt) {
     const explicit = Array.from(text.matchAll(/(\d{1,2}):(\d{2})\b|\b(\d{1,2})\s*(am|pm)\b/gi));
     if (explicit.length) mt = explicit[explicit.length - 1];
+  }
+  if (!mt && !/\b(persona|people|guests|veta)\b/.test(text)) {
+    mt = /\b(?:at\s+)?(\d{1,2})\s*(?:fiks|fix|sharp)?\b/i.exec(text);
   }
   if (!mt) return null;
   const h = mt[1] || mt[3];
@@ -344,6 +356,55 @@ function parseClockTimeFromText(raw) {
     return { hour: hh, minute: mm };
   }
   return null;
+}
+
+function getWallClockInTimeZone(dateObj, timeZone = "UTC") {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timeZone || "UTC",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(dateObj);
+  return {
+    year: Number(parts.find((p) => p.type === "year")?.value || "1970"),
+    month: Number(parts.find((p) => p.type === "month")?.value || "1"),
+    day: Number(parts.find((p) => p.type === "day")?.value || "1"),
+    hour: Number(parts.find((p) => p.type === "hour")?.value || "0"),
+    minute: Number(parts.find((p) => p.type === "minute")?.value || "0"),
+  };
+}
+
+function findSlotByWallClock(slots, dateISO, hour, minute, timeZone) {
+  const targetDate = String(dateISO || "").slice(0, 10);
+  for (const slot of slots || []) {
+    const p = getWallClockInTimeZone(new Date(slot.start), timeZone || "UTC");
+    const slotDate = `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`;
+    if (slotDate === targetDate && p.hour === Number(hour) && p.minute === Number(minute || 0)) {
+      return slot;
+    }
+  }
+  return null;
+}
+
+function findMatchingBookableSlot(slots, parsed, staff) {
+  const tz = staff?.timezone || "UTC";
+  const start = buildUtcFromLocalWallTime(parsed.dateISO, parsed.hour, parsed.minute || 0, tz);
+  const durationMin = Number(staff?.slot_minutes || 30);
+  const toleranceMs = Math.max(120000, Math.floor(durationMin * 60000 / 2));
+
+  const wallMatch = findSlotByWallClock(slots, parsed.dateISO, parsed.hour, parsed.minute || 0, tz);
+  if (wallMatch) return wallMatch;
+
+  const targetMs = start.getTime();
+  const scored = (slots || []).map((s) => ({
+    slot: s,
+    diff: Math.abs(new Date(s.start).getTime() - targetMs),
+  }));
+  scored.sort((a, b) => a.diff - b.diff);
+  return scored.find((x) => x.diff <= toleranceMs)?.slot || null;
 }
 
 function dateISOFromTs(ts) {
@@ -402,10 +463,13 @@ function resolveRescheduleDatetime(phrase, historyMessages, intentData, apptStar
 }
 
 function resolveBookDatetime(phrase, historyMessages, intentData) {
-  if (intentData?.datetime) {
-    const fromIntent = parseRequestedDateTime(String(intentData.datetime));
+  const intentDatetime = String(intentData?.datetime || "").trim();
+  const skipIntentDatetime = intentDatetime
+    && (looksLikeStandaloneName(intentDatetime) || parseNameFromMessage(intentDatetime));
+  if (intentDatetime && !skipIntentDatetime) {
+    const fromIntent = parseRequestedDateTime(intentDatetime);
     if (fromIntent?.dateISO && fromIntent.hour != null) return fromIntent;
-    const intentTime = parseClockTimeFromText(String(intentData.datetime));
+    const intentTime = parseClockTimeFromText(intentDatetime);
     if (intentTime?.hour != null) {
       const merged = findBookingDatetimeInHistory(historyMessages, phrase);
       if (merged?.dateISO) {
@@ -484,7 +548,7 @@ async function loadThreadHistoryForBooking(userId, from, currentText) {
 
 function looksLikeStandaloneName(raw) {
   const s = String(raw || "").trim();
-  return /^[A-ZËÇ][a-zëç]+(?:\s+[A-ZËÇ][a-zëç]+){0,2}$/.test(s);
+  return /^[A-Za-zËÇëç][A-Za-zËÇëç'\-]+(?:\s+[A-Za-zËÇëç][A-Za-zËÇëç'\-]+){0,2}$/.test(s);
 }
 
 function parseBookingReasonFromMessage(raw) {
@@ -536,8 +600,15 @@ function resolvePartySizeFromBookingContext(text, historyMessages, intentData = 
   return null;
 }
 
-function buildBookingNotesFromConversation({ text, historyMessages, intentData, knownCustomerName }) {
-  let name = String(intentData?.name || intentData?.customerName || "").trim() || parseNameFromMessage(text) || String(knownCustomerName || "").trim() || null;
+function buildBookingNotesFromConversation({ text, historyMessages, intentData, knownCustomerName, contactId }) {
+  const rawText = String(text || "").trim();
+  let name = String(intentData?.name || intentData?.customerName || "").trim()
+    || parseNameFromMessage(rawText)
+    || (looksLikeStandaloneName(rawText) ? rawText : null)
+    || null;
+  if (!name && isUsableCustomerName(knownCustomerName, contactId)) {
+    name = String(knownCustomerName).trim();
+  }
   const partySize = resolvePartySizeFromBookingContext(text, historyMessages, intentData);
 
   for (const m of [...(historyMessages || [])].reverse()) {
@@ -568,6 +639,7 @@ async function attemptBookFromRequest({
     historyMessages,
     intentData,
     knownCustomerName,
+    contactId: from,
   });
   const parsed = resolveBookDatetime(String(intentData?.datetime || phrase), historyMessages, intentData);
   if (!parsed?.dateISO || parsed.hour == null) return { status: "unparsed" };
@@ -592,15 +664,19 @@ async function attemptBookFromRequest({
     (s) => new Date(s.start).getTime() >= nowCutoff
   );
   const toleranceMs = Math.max(120000, Math.floor(durationMin * 60000 / 2));
+  const match = findMatchingBookableSlot(slots, parsed, staff);
   const scored = slots.map((s) => ({
     slot: s,
     diff: Math.abs(new Date(s.start).getTime() - start.getTime()),
   }));
   scored.sort((a, b) => a.diff - b.diff);
-  const match = scored.find((x) => x.diff <= toleranceMs)?.slot || null;
 
   if (!match) {
     return { status: "no_slot", suggestions: scored.slice(0, 3).map((x) => x.slot) };
+  }
+
+  if (!details.name) {
+    return { status: "needs_name", match, when: null, ...details };
   }
 
   try {
@@ -648,28 +724,6 @@ async function attemptBookFromRequest({
     console.error("[book-request]", err?.message || err);
     return { status: "error" };
   }
-}
-
-function conversationHasBookableDetails(historyMessages, currentText, intentData = {}) {
-  const parsed = resolveBookDatetime(String(intentData?.datetime || currentText || ""), historyMessages, intentData);
-  if (!parsed?.dateISO || parsed.hour == null) return false;
-  const party = parsePartySize(currentText)
-    || Number(intentData?.partySize || intentData?.guests || 0)
-    || null;
-  if (party) return true;
-  for (const m of [...(historyMessages || [])].reverse()) {
-    if (m?.role !== "user") continue;
-    if (parsePartySize(m.content)) return true;
-  }
-  return false;
-}
-
-function isPureBookingAcknowledgement(text) {
-  const sq = stripAccentsLower(String(text || "")).trim();
-  if (!sq) return false;
-  if (/\b(rezerv|book|termin|anul|ndrysh|provoj|ribej|perseri|again|retry|ndrysho)\b/.test(sq)) return false;
-  return /^(faleminderit|flm|thanks|thank you|ok|okej|ne rregull|super|mir|perfect|great|shume faleminderit)([!.?\s]+.*)?$/i.test(sq)
-    || (/\b(faleminderit|flm|thanks)\b/.test(sq) && sq.split(/\s+/).length <= 3);
 }
 
 function parseRequestedDateTime(raw) {
@@ -918,7 +972,11 @@ const memStatus = new Map();
   const memSpam = new Map();function memKey(userId, contact) {
   return `${String(userId || '')}:${String(contact || '')}`;
 }
-const memProgress = new Map();const memEscalationHold = new Map();async function getMemSession(userId, contact) {
+const memProgress = new Map();
+const memEscalationHold = new Map();
+const memHolidays = new Map();
+
+async function getMemSession(userId, contact) {
   const key = memKey(userId, contact);
   try {
     if (isRedisConnected()) {
@@ -1033,6 +1091,59 @@ export default function registerWebhookRoutes(app) {
     } catch {}
     next();
   };
+
+  if (!global.__webhookCacheJanitor) {
+    global.__webhookCacheJanitor = startMapJanitor({
+      intervalMs: 60_000,
+      maps: [
+        { map: memKb, maxSize: 300 },
+        { map: memEscalation, maxSize: 500 },
+        { map: memTenant, maxSize: 50 },
+        { type: "expiry", map: memStatus, maxSize: 1000 },
+        { map: memHolidays, maxSize: 100 },
+        {
+          map: memProgress,
+          maxSize: 500,
+          custom: (now) => {
+            for (const [key, rec] of memProgress) {
+              const last = Math.max(rec?.lastHoldingAtMs || 0, ...(rec?.hits || []));
+              if (!last || now - last > 30 * 60 * 1000) memProgress.delete(key);
+            }
+          },
+        },
+        {
+          map: memSpam,
+          maxSize: 500,
+          custom: (now) => {
+            for (const [key, rec] of memSpam) {
+              const recent = (rec?.hits || []).filter((ts) => now - ts <= 3600000);
+              if (!recent.length) memSpam.delete(key);
+              else rec.hits = recent;
+            }
+          },
+        },
+        {
+          map: memEscalationHold,
+          maxSize: 500,
+          custom: (now) => {
+            for (const [key, ts] of memEscalationHold) {
+              if (typeof ts === "number" && now - ts > 3600000) memEscalationHold.delete(key);
+            }
+          },
+        },
+        {
+          map: hits,
+          maxSize: 500,
+          custom: (now) => {
+            for (const [ip, rec] of hits) {
+              if (!rec || now - (rec.ts || 0) > rateWindowMs * 2) hits.delete(ip);
+            }
+          },
+        },
+      ],
+    });
+  }
+
   async function getFirstStaffOrNotifyNoStaff(tenantUserId, from, cfg) {
     const tenant = cfg;
     try {
@@ -1135,64 +1246,6 @@ export default function registerWebhookRoutes(app) {
         await sendTextTracked(from, n || tr("no_times", lang), cfg);
       }
     } catch {}
-  }
-
-  async function tryFinalizeBookingFromContext({
-    tenantUserId, from, fromDigits, text, historyMessages, intentData, cfg, tenant, req, knownCustomerName,
-  }) {
-    if (!cfg?.bookings_enabled) return null;
-    if (!conversationHasBookableDetails(historyMessages, text, intentData || {})) return null;
-
-    const staff = await getFirstStaffOrNotifyNoStaff(tenantUserId, from, cfg);
-    if (!staff) return { handled: true };
-
-    const bookResult = await attemptBookFromRequest({
-      userId: tenantUserId,
-      from,
-      staff,
-      phrase: text,
-      historyMessages,
-      intentData: intentData || {},
-      cfg,
-      knownCustomerName,
-    });
-
-    if (bookResult.status === "booked") {
-      if (bookResult.partySize) {
-        try { await rememberPartySize(tenantUserId, from, bookResult.partySize); } catch {}
-      }
-      await sendOrganicBookingConfirmation({
-        req,
-        tenantUserId,
-        from,
-        cfg,
-        tenant,
-        staff,
-        startISO: bookResult.match.start,
-        endISO: bookResult.match.end,
-        bookingId: bookResult.booking.id,
-        when: bookResult.when,
-        details: bookResult,
-      });
-      return { handled: true, booked: true };
-    }
-    if (bookResult.status === "already_booked") {
-      return { handled: true, booked: false };
-    }
-    if (bookResult.status === "no_slot" && bookResult.suggestions?.length) {
-      const suggestions = formatSlotSuggestions(bookResult.suggestions, cfg?.__lang, staff.timezone);
-      await sendTextTracked(from, tr("closest_times", cfg?.__lang, { suggestions }), cfg);
-      return { handled: true };
-    }
-    if (bookResult.status === "past") {
-      await sendTextTracked(from, tr("past_time_warning", cfg?.__lang), cfg);
-      return { handled: true };
-    }
-    if (bookResult.status === "error") {
-      await sendTextTracked(from, tr("slot_book_failed", cfg?.__lang), cfg);
-      return { handled: true };
-    }
-    return null;
   }
 
   async function completeCancellation({ tenantUserId, from, apptId, apptOid, cfg, sessionId, fromDigits }) {
@@ -1399,14 +1452,19 @@ export default function registerWebhookRoutes(app) {
     req,
     replyText,
     knownCustomerName,
+    bookingsEnabled = null,
   }) {
     if (!intentType || intentType === "none") return false;
 
-    if (intentType === "availability" && cfg?.bookings_enabled) {
+    const bookingActive = bookingsEnabled != null
+      ? !!bookingsEnabled
+      : !!cfg?.bookings_enabled;
+
+    if (intentType === "availability" && bookingActive) {
       const staff = await getFirstStaffOrNotifyNoStaff(tenantUserId, from, cfg);
       if (!staff) return true;
       const availabilityPhrase = [text, intentData?.datetime, intentData?.range].filter(Boolean).join(" ");
-      if (!isExplicitAvailabilityRequest(availabilityPhrase)) {
+      if (!wantsTimeSlotSuggestions(availabilityPhrase)) {
         if (!replyText) {
           const n = await generateAssistantNudge("ask_specific_time", {}, aiOpts(tenant));
           await sendTextTracked(from, n || tr("ask_specific_time", cfg?.__lang), cfg);
@@ -1414,29 +1472,18 @@ export default function registerWebhookRoutes(app) {
         return true;
       }
       const resolved = resolveBookDatetime(String(intentData.datetime || text), historyMessages, intentData);
-      if (resolved?.dateISO && resolved?.hour != null) {
-        return executeAgentIntent({
-          intentType: "book",
-          intentData: { ...intentData, datetime: String(intentData.datetime || text) },
-          text,
-          historyMessages,
-          tenantUserId,
-          from,
-          fromDigits,
-          cfg,
-          tenant,
-          req,
-          replyText,
-          knownCustomerName,
-        });
-      }
       let range = null;
-      if (intentData.startDate) {
+      if (resolved?.dateISO && resolved?.hour != null) {
+        range = { startISO: resolved.dateISO, days: 1 };
+      } else if (intentData.startDate) {
         range = { startISO: String(intentData.startDate), days: Math.min(30, Math.max(1, Number(intentData.days || 1))) };
       } else {
         range = parseDateRange(String(intentData.range || intentData.datetime || text));
       }
       const tod = (() => {
+        if (resolved?.dateISO && resolved?.hour != null) {
+          return { startHour: resolved.hour, endHour: resolved.hour + 1 };
+        }
         const t = String(intentData.timeOfDay || "");
         if (/morning/i.test(t)) return { startHour: 6, endHour: 12 };
         if (/afternoon/i.test(t)) return { startHour: 12, endHour: 17 };
@@ -1461,9 +1508,19 @@ export default function registerWebhookRoutes(app) {
       return true;
     }
 
-    if (intentType === "book" && cfg?.bookings_enabled) {
+    if (intentType === "book" && bookingActive) {
       const staff = await getFirstStaffOrNotifyNoStaff(tenantUserId, from, cfg);
       if (!staff) return true;
+      const pendingDetails = buildBookingNotesFromConversation({
+        text,
+        historyMessages,
+        intentData,
+        knownCustomerName,
+        contactId: from,
+      });
+      if (!pendingDetails.name && replyText && bookingReplyAsksForName(replyText)) {
+        return true;
+      }
       const bookResult = await attemptBookFromRequest({
         userId: tenantUserId,
         from,
@@ -1494,12 +1551,31 @@ export default function registerWebhookRoutes(app) {
         return true;
       }
       if (bookResult.status === "already_booked") {
+        if (bookResult.when && bookResult.booking?.id) {
+          await sendTextTracked(
+            from,
+            tr("booking_confirmed_ref", cfg?.__lang, { when: bookResult.when, ref: bookResult.booking.id }),
+            cfg
+          );
+        }
         return true;
       }
-      if (bookResult.status === "no_slot" && bookResult.suggestions?.length) {
-        const suggestions = formatSlotSuggestions(bookResult.suggestions, cfg?.__lang, staff.timezone);
-        if (!replyText) {
+      if (bookResult.status === "needs_name") {
+        if (!replyText || !bookingReplyAsksForName(replyText)) {
+          await sendTextTracked(from, tr("ask_booking_new_name", cfg?.__lang), cfg);
+        }
+        return true;
+      }
+      if (bookResult.status === "no_slot") {
+        const replySq = stripAccentsLower(replyText);
+        const stillCollecting = bookingReplyAsksForName(replyText)
+          || /\b(sa persona|how many people|how many|sa jeni)\b/.test(replySq);
+        if (stillCollecting) return true;
+        if (bookResult.suggestions?.length) {
+          const suggestions = formatSlotSuggestions(bookResult.suggestions, cfg?.__lang, staff.timezone);
           await sendTextTracked(from, tr("closest_times", cfg?.__lang, { suggestions }), cfg);
+        } else {
+          await sendTextTracked(from, tr("slot_book_failed", cfg?.__lang), cfg);
         }
         return true;
       }
@@ -1514,11 +1590,16 @@ export default function registerWebhookRoutes(app) {
       if (bookResult.status === "unparsed") {
         const lang = cfg?.__lang || "en";
         const dateISO = findBookingDateInHistory(historyMessages, String(intentData.datetime || text));
-        if (dateISO) {
-          if (!replyText) {
-            const n = await generateAssistantNudge("ask_specific_time", {}, aiOpts(tenant));
-            await sendTextTracked(from, n || tr("ask_specific_time", lang), cfg);
-          }
+        if (dateISO && !replyText) {
+          const n = await generateAssistantNudge("ask_specific_time", {}, aiOpts(tenant));
+          await sendTextTracked(from, n || tr("ask_specific_time", lang), cfg);
+        } else if (isBookingNameCompletion(text, historyMessages) || intentData?.name) {
+          console.error("[book-intent] booking details complete but datetime unparsed", {
+            from: String(from).slice(-6),
+            name: pendingDetails.name,
+            partySize: pendingDetails.partySize,
+          });
+          await sendTextTracked(from, tr("slot_book_failed", lang), cfg);
         } else if (!replyText) {
           const n = await generateAssistantNudge("ask_datetime", { examples: ["tomorrow 8pm", "Nov 3 at 14:30"] }, aiOpts(tenant));
           await sendTextTracked(from, n || tr("ask_datetime", lang), cfg);
@@ -1528,7 +1609,7 @@ export default function registerWebhookRoutes(app) {
       return true;
     }
 
-    if (intentType === "cancel" && cfg?.bookings_enabled) {
+    if (intentType === "cancel" && bookingActive) {
       const appt = await findUpcomingConfirmedAppointment({ userId: tenantUserId, digits: fromDigits });
       if (!appt) {
         if (!replyText) await sendTextTracked(from, tr("no_booking_found", cfg?.__lang), cfg);
@@ -1581,11 +1662,15 @@ export default function registerWebhookRoutes(app) {
         },
         { upsert: true }
       );
-      await sendTextTracked(from, tr("cancel_confirm_instructions", cfg?.__lang, { ref: apptId || apptRefId }), cfg);
+      const replyAlreadyAsksCancel = replyText && /\?/.test(replyText)
+        && /\b(anul|cancel|konfirmo|confirm|po anuloje)\b/i.test(stripAccentsLower(replyText));
+      if (!replyAlreadyAsksCancel) {
+        await sendTextTracked(from, tr("cancel_confirm_instructions", cfg?.__lang, { ref: apptId || apptRefId }), cfg);
+      }
       return true;
     }
 
-    if (intentType === "reschedule" && cfg?.bookings_enabled) {
+    if (intentType === "reschedule" && bookingActive) {
       const appt = await findUpcomingConfirmedAppointment({ userId: tenantUserId, digits: fromDigits });
       if (!appt) {
         if (!replyText) await sendTextTracked(from, tr("no_booking_found", cfg?.__lang), cfg);
@@ -1676,7 +1761,7 @@ export default function registerWebhookRoutes(app) {
       return true;
     }
 
-    if (intentType === "update_name" && cfg?.bookings_enabled) {
+    if (intentType === "update_name" && bookingActive) {
       const appt = await findUpcomingConfirmedAppointment({
         userId: tenantUserId,
         digits: fromDigits,
@@ -1877,6 +1962,13 @@ export default function registerWebhookRoutes(app) {
     return true;
   }
 
+  async function trySendBusinessLocationPin(from, cfg, lang) {
+    const location = getBusinessLocation(cfg);
+    if (!location) return false;
+    await sendLocationTracked(from, location, cfg);
+    return true;
+  }
+
   async function sendOrganicBookingConfirmation({
     req, tenantUserId, from, cfg, tenant, staff, startISO, endISO, bookingId, when, details = {},
   }) {
@@ -2024,6 +2116,15 @@ export default function registerWebhookRoutes(app) {
       });
       if (inserted) {
         try { incrementUsage(tenantUserId, 'inbound_messages'); } catch {}
+        let replyOriginal = null;
+        const replyToId = message?.context?.message_id || message?.context?.id;
+        if (replyToId) {
+          try {
+            const { createReply, getReplyOriginalMeta } = await import('../services/replies.mjs');
+            await createReply(replyToId, inboundId);
+            replyOriginal = await getReplyOriginalMeta(tenantUserId, replyToId);
+          } catch {}
+        }
         const messageData = {
           id: inboundId,
           direction: 'inbound',
@@ -2035,7 +2136,10 @@ export default function registerWebhookRoutes(app) {
           contact_name: null,
           contact: message.from,
           formatted_time: new Date((message.timestamp ? Number(message.timestamp) : Math.floor(Date.now() / 1000)) * 1000).toLocaleString(),
-          media_url: mediaUrl || null
+          media_url: mediaUrl || null,
+          ...(mediaUrl && normalizedType === 'image' ? { imageUrl: mediaUrl } : {}),
+          ...(mediaUrl && normalizedType === 'audio' ? { audioUrl: mediaUrl } : {}),
+          ...(replyOriginal ? { replyOriginal } : {})
         };
         try { broadcastNewMessage(tenantUserId, message.from, messageData); } catch {}
         try {
@@ -2405,7 +2509,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
     } catch {}
   }
 
-  const memHolidays = new Map();  async function getHolidayDatesForTenant(cfg) {
+  async function getHolidayDatesForTenant(cfg) {
     const userId = cfg?.user_id || cfg?.userId || null;
     const now = Date.now();
     const ttlMs = Number(process.env.HOLIDAYS_TTL_MS || 12*60*60*1000);
@@ -2853,7 +2957,12 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
             historyMessages: histForBook,
             intentData: {},
             knownCustomerName: "",
+            contactId: from,
           });
+          if (!details.name) {
+            await sendTextTracked(from, tr("ask_booking_new_name", cfg?.__lang), cfg);
+            return;
+          }
           const r = await createBooking({
             userId: tenantUserId,
             staffId: String(staffId),
@@ -3024,6 +3133,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         tone: tenant?.ai_tone,
         style: tenant?.ai_style,
         blockedTopics: tenant?.ai_blocked_topics,
+        refiningRules: tenant?.ai_refining_rules || cfg?.ai_refining_rules || "",
         businessType: cfg?.business_type || '',
         businessCategories: (() => { try { const arr = JSON.parse(cfg?.business_categories_json || '[]'); return Array.isArray(arr) ? arr : []; } catch { return []; } })()
       });
@@ -3131,7 +3241,18 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         }
       } catch {}
       
-      if (DEBUG_LOGS) console.log("Webhook received payload:", JSON.stringify(payload, null, 2));
+      if (DEBUG_LOGS) {
+        try {
+          const raw = JSON.stringify(payload);
+          const max = Number(process.env.DEBUG_LOGS_MAX_CHARS || 4000);
+          console.log(
+            "Webhook received payload:",
+            raw.length > max ? `${raw.slice(0, max)}…[truncated ${raw.length - max} chars]` : raw
+          );
+        } catch {
+          console.log("Webhook received payload: [unserializable]");
+        }
+      }
 
       try {
         if (tenantUserId) {
@@ -3139,6 +3260,8 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
             tenantUserId,
             change,
             webhookField: changeNode?.field || null,
+            cfg: tenantSettings ? { ...tenantSettings, user_id: tenantUserId } : null,
+            metadata,
           });
         }
       } catch (e) {
@@ -3334,60 +3457,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         return res.sendStatus(200);
       }
       if (message.context && message.context.id) {
-        if (DEBUG_LOGS) console.log("Received reply message; storing and deciding whether to suppress bot");
-
-        try {
-          if (tenantUserId && message.from && message.text?.body) {
-            const messageId = message.id;
-            const textBody = message.text.body;
-            const timestamp = message.timestamp;
-            const businessPhone = metadata?.display_phone_number?.replace(/\D/g, "");
-
-            const inserted = await recordInboundMessage({
-              messageId,
-              userId: tenantUserId,
-              from: message.from,
-              businessPhone,
-              type: 'text',
-              text: textBody,
-              timestamp: timestamp ? Number(timestamp) : undefined,
-              raw: message
-            });
-            if (inserted) {
-              if (DEBUG_LOGS) console.log("Stored customer reply message:", messageId);
-            }
-            try {
-              const { createReply } = await import('../services/replies.mjs');
-              const replyResult = createReply(message.context.id, messageId);
-              if (DEBUG_LOGS) console.log("Created customer reply relationship:", replyResult);
-            } catch (error) {
-              console.error("Error creating customer reply relationship:", error);
-            }
-          }
-        } catch (error) {
-          console.error("Error storing customer reply message:", error);
-        }
-        let shouldSuppressBot = false;
-        try {
-          let hsSql = null;
-          let hsMongo = null;
-          try {
-            hsSql = db.prepare(`SELECT is_human, COALESCE(human_expires_ts,0) AS exp FROM handoff WHERE contact_id = ? AND user_id = ?`).get(message.from, tenantUserId);
-          } catch {}
-          try {
-            const doc = await Handoff.findOne({ user_id: tenantUserId, contact_id: message.from }).select('is_human human_expires_ts').lean();
-            if (doc) hsMongo = { is_human: !!doc.is_human, exp: Number(doc.human_expires_ts || 0) };
-          } catch {}
-          const now = Math.floor(Date.now()/1000);
-          const sqlLive = !!(hsSql?.is_human && (!hsSql.exp || hsSql.exp > now));
-          const mongoLive = !!(hsMongo?.is_human && (!hsMongo.exp || hsMongo.exp > now));
-          shouldSuppressBot = sqlLive || mongoLive;
-        } catch {}
-
-        if (shouldSuppressBot) {
-          if (DEBUG_LOGS) console.log("Reply received while human live; suppressing bot");
-          return res.sendStatus(200);
-        }
+        if (DEBUG_LOGS) console.log("Received reply message; continuing through inbound pipeline");
       }
 
       // Use a per-request shallow copy: tenantSettings may be a shared/cached
@@ -3417,8 +3487,18 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       if (normalizedType === 'image' && message.image) {
         mediaUrl = message.image.link || null;
         if (!mediaUrl && message.image.id) {
-          mediaUrl = `/wa-media/${encodeURIComponent(String(tenantUserId))}/${encodeURIComponent(String(message.image.id))}`;
+          mediaUrl = buildWaMediaProxyUrl(tenantUserId, message.image.id);
         }
+      }
+      if (normalizedType === 'audio' && message.audio) {
+        const audioResolved = await resolveInboundAudioText({
+          message,
+          tenantUserId,
+          from,
+          cfg,
+        });
+        mediaUrl = audioResolved.mediaUrl || mediaUrl;
+        if (audioResolved.text) text = audioResolved.text;
       }
       try { businessMetrics.trackWhatsAppMessage('received', normalizedType || 'text'); } catch {}
       let humanActive = false;
@@ -3438,7 +3518,8 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         const mongoLive = !!(hsMongo?.is_human && (!hsMongo.exp || hsMongo.exp > now));
         const lastSeenTs = Math.max(Number(hsSql?.lastSeen || 0), Number(hsMongo?.lastSeen || 0));
 
-        humanLive = mongoLive || sqlLive;        humanActive = humanLive;
+        humanLive = mongoLive || sqlLive;
+        humanActive = humanLive;
       } catch {}
 
       const inboundId = message.id;
@@ -3456,15 +3537,35 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       if (inboundId) {
         try {
           const inserted = await recordAndBroadcastInbound({ message, tenantUserId, metadata, normalizedType, text, mediaUrl });
-          if (DEBUG_LOGS) console.log('[Webhook] Inbound record result:', { inserted, inboundId });
+          if (DEBUG_LOGS) console.log('[Webhook] Inbound record result:', { inserted, inboundId, audioTextLen: (text || '').length });
+          if (!inserted && inboundId && String(text || '').trim()) {
+            await persistInboundTranscript(inboundId, text);
+          }
           // Meta often retries the same webhook delivery; don't answer twice.
           if (!inserted) {
             try {
               const exists = await getDB().collection('messages').findOne(
                 { id: String(inboundId) },
-                { projection: { _id: 1 } }
+                { projection: { _id: 1, text_body: 1, type: 1 } }
               );
-              if (exists) return res.sendStatus(200);
+              if (exists) {
+                const existingText = String(exists.text_body || "").trim();
+                if (existingText) {
+                  text = existingText;
+                  return res.sendStatus(200);
+                }
+                if (normalizedType === "audio" && message.audio?.id) {
+                  const retry = await resolveInboundAudioText({ message, tenantUserId, from, cfg });
+                  if (retry.text) {
+                    text = retry.text;
+                    await persistInboundTranscript(inboundId, text);
+                  } else {
+                    return res.sendStatus(200);
+                  }
+                } else {
+                  return res.sendStatus(200);
+                }
+              }
             } catch {}
           }
         } catch (e) {
@@ -3522,6 +3623,12 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         }
       } catch {}
       if (humanActive) {
+        return res.sendStatus(200);
+      }
+      if (normalizedType === "audio" && !String(text || "").trim()) {
+        try {
+          await sendTextTracked(from, tr("audio_transcription_failed", cfg?.__lang), cfg);
+        } catch {}
         return res.sendStatus(200);
       }
       try {
@@ -3586,7 +3693,9 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         return res.sendStatus(200);
       }
       try {
-        text = await maybeJoinRecentFragments({ text, from, tenantUserId, timestampSec: Number(message.timestamp || Math.floor(Date.now()/1000)) });
+        if (message.type !== "audio") {
+          text = await maybeJoinRecentFragments({ text, from, tenantUserId, timestampSec: Number(message.timestamp || Math.floor(Date.now()/1000)) });
+        }
       } catch {}
       // Detect the conversation language (Albanian vs English) and remember it,
       // so the assistant replies like a native speaker and stays consistent even
@@ -3646,7 +3755,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       // removed. The bilingual AI already receives the customer's profile
       // (upcoming/last appointment + last agent) as context and answers these
       // naturally in the customer's language.
-      if (tenantUserId && message.type === 'text') {
+      if (tenantUserId && String(text || "").trim()) {
         if (await handleStructuredBookingSession({ tenantUserId, from, text, cfg, fromDigits })) {
           return res.sendStatus(200);
         }
@@ -3657,7 +3766,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           return await dbNative.collection('booking_sessions').findOne({ user_id: String(tenantUserId), contact_id: String(from) });
         } catch { return null; }
       })() : null;
-      if (tenantUserId && sess && message.type === 'text' && String(sess.step || '') === 'pending') {
+      if (tenantUserId && sess && String(text || "").trim() && String(sess.step || '') === 'pending') {
         try {
           await getDB().collection('booking_sessions').deleteOne({ _id: sess._id });
         } catch {}
@@ -3699,16 +3808,14 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       let lastInboundBeforeCurrentSec = null;
       try {
         const hist = await listMessagesForThread(tenantUserId, from);
-        const trimmed = Array.isArray(hist) ? hist.slice(-12) : [];
+        const trimmed = Array.isArray(hist) ? hist : [];
         const priorInbounds = trimmed.filter(
           (m) => m.direction === "inbound" && String(m.text_body || "").trim() !== String(text || "").trim()
         );
         lastInboundBeforeCurrentSec = priorInbounds.length
           ? Number(priorInbounds[priorInbounds.length - 1].ts || 0) || null
           : null;
-        historyMessages = trimmed
-          .map(m => ({ role: m.direction === 'outbound' ? 'assistant' : 'user', content: String(m.text_body || '') }))
-          .filter(h => h.content && h.content.trim() && h.content.trim() !== String(text || '').trim());
+        historyMessages = buildThreadHistory(trimmed, text, 20);
         conversationStarted = trimmed.some(m => m.direction === 'outbound' && String(m.text_body || '').trim());
       } catch {}
 
@@ -3720,40 +3827,11 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         knownCustomerName = String(memEarly?.display_name || '').trim();
       } catch {}
 
-      if (cfg?.bookings_enabled) {
-        const intentDataEarly = {};
-        const partyNow = parsePartySize(text);
-        if (partyNow) intentDataEarly.partySize = partyNow;
-        const sqMsg = stripAccentsLower(text || "");
-        const shouldTryFinalize = !isPureBookingAcknowledgement(text) && (
-          (partyNow && conversationHasBookableDetails(historyMessages, text, intentDataEarly)) ||
-          (BOOKING_CLOSURE_RE.test(sqMsg) && conversationHasBookableDetails(historyMessages, text, intentDataEarly))
-        );
-        if (shouldTryFinalize) {
-          try {
-            const finalized = await tryFinalizeBookingFromContext({
-              tenantUserId,
-              from,
-              fromDigits,
-              text,
-              historyMessages,
-              intentData: intentDataEarly,
-              cfg,
-              tenant,
-              req,
-              knownCustomerName,
-            });
-            if (finalized?.handled) return res.sendStatus(200);
-          } catch (bookErr) {
-            console.error("[book-finalize-early]", bookErr?.message || bookErr);
-          }
-        }
-      }
-
       const aiOptions = {
         tone: tenant?.ai_tone,
         style: tenant?.ai_style,
         blockedTopics: tenant?.ai_blocked_topics,
+        refiningRules: tenant?.ai_refining_rules || cfg?.ai_refining_rules || "",
         historyMessages,
         lang,
         conversationStarted,
@@ -3793,6 +3871,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
             executeAgentIntent,
             finalizeAssistantReply,
             tryReplyWithBusinessLocation,
+            trySendBusinessLocationPin,
             isGreeting,
           });
           return res.sendStatus(200);

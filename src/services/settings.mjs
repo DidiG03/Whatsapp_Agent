@@ -68,6 +68,8 @@ export async function upsertSettingsForUser(userId, values) {
     waitlist_enabled: values.waitlist_enabled ?? current.waitlist_enabled ?? false,
     staff_whatsapp_group_id: values.staff_whatsapp_group_id ?? current.staff_whatsapp_group_id ?? null,
     staff_whatsapp_group_enabled: values.staff_whatsapp_group_enabled ?? current.staff_whatsapp_group_enabled ?? false,
+    ai_refining_rules: values.ai_refining_rules ?? current.ai_refining_rules ?? null,
+    refining_transcript: values.refining_transcript ?? current.refining_transcript ?? null,
   };
   try {
     const res = await SettingsMulti.findOneAndUpdate(

@@ -109,11 +109,15 @@ window.Toast = {
 document.addEventListener('DOMContentLoaded', function() {
   const urlParams = new URLSearchParams(window.location.search);
   const toastMessage = urlParams.get('toast');
-  const toastType = urlParams.get('type') || 'info';
-  
+  const toastType = urlParams.get('toast_type') || urlParams.get('type') || 'info';
+
   if (toastMessage) {
     Toast.show(decodeURIComponent(toastMessage), toastType);
-    const newUrl = window.location.pathname + window.location.search.replace(/[?&]toast=[^&]*&?/g, '').replace(/[?&]type=[^&]*&?/g, '').replace(/\?$/, '');
+    urlParams.delete('toast');
+    urlParams.delete('toast_type');
+    urlParams.delete('type');
+    const cleanSearch = urlParams.toString();
+    const newUrl = window.location.pathname + (cleanSearch ? `?${cleanSearch}` : '');
     window.history.replaceState({}, document.title, newUrl);
   }
 });

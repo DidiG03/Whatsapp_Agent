@@ -7,14 +7,86 @@ function stripAccentsLower(s) {
   return String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
 
-/** True when the customer explicitly wants to see open times, not merely make a reservation. */
-export function isExplicitAvailabilityRequest(text) {
+/** Customer asks whether reservations/slots exist — not a request to list times. */
+export function isAvailabilityInquiry(text) {
   const sq = stripAccentsLower(String(text || ""));
   if (!sq) return false;
-  return /\b(disponuesh|availability|orare\s+(?:e\s+)?lira|lira\s+(?:jane|ka|keni)|free\s+(?:times|slots)|what\s+times|which\s+times|cilat\s+orare|cfare\s+orare|a\s+keni\s+vende|keni\s+orare|show\s+(?:me\s+)?(?:available|open)|slots?\s+available|when\s+are\s+you\s+free|check\s+availability|shiko\s+oraret|listo\s+oraret)\b/.test(sq);
+  return /\b(rezervime\s+te\s+lira|keni\s+rezervime|nese\s+keni\s+rezerv|a\s+keni\s+rezerv|disponuesh(?:meri|em)?)\b/.test(sq)
+    || (/\b(rezerv|book(?:ing)?)\w*/.test(sq) && /\b(lir[ae]|available|vende|free|openings?|tables?)\b/.test(sq))
+    || /\b(have\s+(?:any\s+)?(?:reservations?|openings?|tables?)|any\s+(?:tables?|openings?)\s+(?:for|tomorrow|tonight))\b/.test(sq);
 }
 
-export function detectConversationPhase({ text, bookingSession, hasUpcomingAppt, lang = "en" } = {}) {
+/** Customer explicitly wants open times listed (slot suggestions). */
+export function wantsTimeSlotSuggestions(text) {
+  const sq = stripAccentsLower(String(text || ""));
+  if (!sq) return false;
+  return /\b(cilat\s+orare|cfare\s+orare|what\s+times|which\s+times|show\s+(?:me\s+)?(?:the\s+)?(?:available|open)\s+(?:times|slots)|show\s+(?:me\s+)?(?:times|slots)|shiko\s+oraret|listo\s+oraret|list\s+(?:the\s+)?(?:times|slots)|when\s+are\s+you\s+free|check\s+availability|slots?\s+available|free\s+(?:times|slots))\b/.test(sq)
+    || /\b(keni\s+orare|what\s+(?:times|slots)\s+(?:do\s+you\s+have|are\s+available))\b/.test(sq);
+}
+
+/** @deprecated alias — only true when the customer wants times listed, not for soft availability asks. */
+export function isExplicitAvailabilityRequest(text) {
+  return wantsTimeSlotSuggestions(text);
+}
+
+export function bookingReplyAsksForName(text) {
+  const raw = String(text || "");
+  const sq = stripAccentsLower(raw);
+  return /\b(emri|emrin|emër|emer|quheni|si quheni|me cilin emer|me cilin emër|what name|under what name|name should i|put on the reservation|ta vendos rezervimin)\b/.test(sq);
+}
+
+export function looksLikeStandaloneCustomerName(raw) {
+  const s = String(raw || "").trim();
+  return /^[A-Za-zËÇëç][A-Za-zËÇëç'\-]+(?:\s+[A-Za-zËÇëç][A-Za-zËÇëç'\-]+){0,2}$/.test(s);
+}
+
+export function isBookingNameCompletion(text, historyMessages = []) {
+  const raw = String(text || "").trim();
+  if (!looksLikeStandaloneCustomerName(raw)) return false;
+  return (historyMessages || []).some(
+    (m) => m?.role === "assistant" && bookingReplyAsksForName(String(m.content || ""))
+  ) || historyHasBookingDateTime(historyMessages);
+}
+
+function historyHasBookingDateTime(historyMessages = []) {
+  return (historyMessages || []).some((m) => {
+    if (m?.role !== "user") return false;
+    const h = stripAccentsLower(String(m.content || ""));
+    return /\b(?:data|neser|nesër|sot|tomorrow|today|\d{1,2}[\/\-.]\d{1,2})\b/.test(h)
+      && /\b(?:ora|oren|at\s+\d|\d{1,2}\s*(?:am|pm|:)|dark|pasdite|evening|mbremje)\b/.test(h);
+  });
+}
+
+function parsePartySizeFromHistory(historyMessages = []) {
+  for (const m of [...(historyMessages || [])].reverse()) {
+    if (m?.role !== "user") continue;
+    const match = /\b(\d{1,2})\s*(?:persona(?:ve)?|people|guests|veta)\b/.exec(stripAccentsLower(String(m.content || "")));
+    if (match) {
+      const n = Number(match[1]);
+      if (n >= 1 && n <= 100) return n;
+    }
+  }
+  return null;
+}
+
+function resolveNameFromHistory(historyMessages = []) {
+  for (const m of [...(historyMessages || [])].reverse()) {
+    if (m?.role !== "user") continue;
+    const c = String(m.content || "").trim();
+    if (looksLikeStandaloneCustomerName(c)) return c;
+  }
+  return null;
+}
+
+export function bookingHasPartySize(text, intentData = {}, historyMessages = []) {
+  const sq = stripAccentsLower(String(text || ""));
+  if (/\b(\d{1,2})\s*(?:persona(?:ve)?|people|guests|veta)\b/.test(sq)) return true;
+  const n = Number(intentData?.partySize || intentData?.guests || 0);
+  if (n >= 1 && n <= 100) return true;
+  return parsePartySizeFromHistory(historyMessages) != null;
+}
+
+export function detectConversationPhase({ text, bookingSession, hasUpcomingAppt, lang = "en", historyMessages = [] } = {}) {
   const step = String(bookingSession?.step || "");
   if (step === "awaiting_cancel_confirm") return "cancel_pending";
   if (step === "awaiting_reschedule_dt") return "reschedule_pending";
@@ -24,16 +96,40 @@ export function detectConversationPhase({ text, bookingSession, hasUpcomingAppt,
   if (/\b(ndrysh|ndrro|zhvendos|reschedule|change\s+(the\s+)?(time|appointment|date))\b/.test(sq) && hasUpcomingAppt && !isBookingNameChangeRequest(text)) {
     return "reschedule_request";
   }
-  if (/\b(rezerv|book|booking|termin|takim)\w*/.test(sq)) return "booking_flow";
-  if (isExplicitAvailabilityRequest(text)) {
+  if (wantsTimeSlotSuggestions(text)) {
     return "availability_check";
   }
+  if (isAvailabilityInquiry(text)) {
+    return "booking_flow";
+  }
+  if (/\b(rezerv|book|booking|termin|takim)\w*/.test(sq)) return "booking_flow";
   if (hasUpcomingAppt && isBookingNameChangeRequest(text)) return "name_change_request";
   if (hasUpcomingAppt && /\b(rezervimi\s+im|my\s+(booking|reservation)|cfare\s+ore|what\s+time\s+is\s+my|kur\s+eshte|nenshkruar|nënshkruar|under\s+what\s+name|saved\s+under)\b/.test(sq)) {
     return "booking_lookup";
   }
   if (/\b(njeri|human|agent|operator|staf)\b/.test(sq)) return "handoff_request";
+  if (isOngoingBookingCollection(text, historyMessages)) return "booking_flow";
   return "general";
+}
+
+function isOngoingBookingCollection(text, historyMessages = []) {
+  const raw = String(text || "").trim();
+  const sq = stripAccentsLower(raw);
+  if (!raw) return false;
+  if (/\b(\d{1,2})\s*(?:persona(?:ve)?|people|guests|veta)\b/.test(sq)) return true;
+  if (/^\d{1,2}(?::\d{2})?\s*(?:am|pm)?$/i.test(raw)) return true;
+  if (looksLikeStandaloneCustomerName(raw)) {
+    return (historyMessages || []).some(
+      (m) => m?.role === "assistant" && bookingReplyAsksForName(String(m.content || ""))
+    );
+  }
+  const recentAssistant = (historyMessages || []).slice(-8).filter((m) => m?.role === "assistant");
+  const assistantCollectingBooking = recentAssistant.some((m) => {
+    const a = stripAccentsLower(String(m.content || ""));
+    return /\b(sa persona|how many people|what time|exact time|n[ëe] cfar[ëe] ore|n[ëe] cilar ore|emri|what name|name should|rezervimin|preferred time)\b/.test(a);
+  });
+  if (!assistantCollectingBooking) return false;
+  return /\b(darke|dark|evening|neser|nesër|tomorrow|ora|persona|\d{1,2})\b/.test(sq);
 }
 
 function titleCaseName(raw) {
@@ -143,13 +239,14 @@ export function inferServerIntent({
     return { type: "reschedule", data: { datetime: raw }, confidence: 0.85, source: "rules" };
   }
 
-  if (isExplicitAvailabilityRequest(raw)) {
-    return { type: "availability", data: { datetime: raw }, confidence: 0.8, source: "rules" };
+  if (wantsTimeSlotSuggestions(raw)) {
+    return { type: "availability", data: { datetime: raw }, confidence: 0.85, source: "rules" };
   }
 
   const partyM = /\b(\d{1,2})\s*(?:persona(?:ve)?|people|guests|veta)\b/.exec(sq);
-  const hasTimeCue = /\b(\d{1,2}(?::\d{2})?\s*(?:am|pm)?|ora\s+\d|oren\s+\d|at\s+\d|neser|tomorrow|today|pasdite|evening|dark|data\s+\d{1,2})\b/.test(sq);
-  if (/\b(rezerv|book|booking|termin)\w*/.test(sq) && hasTimeCue) {
+  const hasTimeCue = /\b(\d{1,2}(?::\d{2})?\s*(?:am|pm)?|ora\s+\d|oren\s+\d|at\s+\d|neser|tomorrow|today|sot|pasdite|evening|dark|data\s+\d{1,2})\b/.test(sq);
+
+  if (/\b(rezerv|book|booking|termin)\w*/.test(sq) && hasTimeCue && !isAvailabilityInquiry(raw)) {
     const data = { datetime: raw };
     if (partyM) data.partySize = Number(partyM[1]);
     return { type: "book", data, confidence: 0.82, source: "rules" };
@@ -163,9 +260,12 @@ export function inferServerIntent({
         && /\b(?:ora|oren|at\s+\d|\d{1,2}\s*(?:am|pm|:)|dark|pasdite|evening|mbremje)\b/.test(h);
     });
     if (histHasSlot) {
+      const data = { datetime: raw, partySize: Number(partyM[1]) };
+      const name = resolveNameFromHistory(historyMessages);
+      if (name) data.name = name;
       return {
         type: "book",
-        data: { datetime: raw, partySize: Number(partyM[1]) },
+        data,
         confidence: 0.92,
         source: "rules",
       };
@@ -179,6 +279,32 @@ export function inferServerIntent({
         type: "update_name",
         data: { name: change.newName, oldName: change.oldName || null },
         confidence: 0.92,
+        source: "rules",
+      };
+    }
+  }
+
+  if (looksLikeStandaloneCustomerName(raw) && (phase === "booking_flow" || phase === "general")) {
+    const askedForName = (historyMessages || []).some(
+      (m) => m?.role === "assistant" && bookingReplyAsksForName(String(m.content || ""))
+    );
+    const partySize = parsePartySizeFromHistory(historyMessages);
+    if ((askedForName || historyHasBookingDateTime(historyMessages)) && partySize) {
+      const data = { name: raw.trim(), partySize };
+      return { type: "book", data, confidence: 0.92, source: "rules" };
+    }
+  }
+
+  if ((phase === "booking_flow" || phase === "general") && historyHasBookingDateTime(historyMessages)) {
+    const partySize = parsePartySizeFromHistory(historyMessages);
+    const name = resolveNameFromHistory(historyMessages);
+    const timePick = /\b(\d{1,2})(?::\d{2})?\b/.test(sq)
+      && /\b(okej|ok|po|pra|ne|at|ora|oren|fiks|fix)\b/.test(sq);
+    if (partySize && name && timePick) {
+      return {
+        type: "book",
+        data: { datetime: raw, partySize, name },
+        confidence: 0.88,
         source: "rules",
       };
     }
@@ -240,7 +366,9 @@ export function buildLiveSessionBrief({
     reschedule_request: lang === "sq" ? "Faza: ndryshim ore." : "Phase: reschedule request.",
     booking_lookup: lang === "sq" ? "Faza: pyet për rezervimin ekzistues — përgjigju nga konteksti." : "Phase: ask about existing booking — answer from context.",
     name_change_request: lang === "sq" ? "Faza: ndryshim emri rezervimi — serveri e përditëson; mos e dërgo te ekipi." : "Phase: booking name change — server updates it; do not escalate.",
-    booking_flow: lang === "sq" ? "Faza: rezervim i ri." : "Phase: new booking.",
+    booking_flow: lang === "sq"
+      ? "Faza: rezervim i ri. Mos përsërit adresën. Mos konfirmo rezervimin pa emër klienti — pyet për emrin fillimisht."
+      : "Phase: new booking. Do not repeat the address. Do not confirm the booking without the customer's name — ask for their name first.",
     availability_check: lang === "sq" ? "Faza: disponueshmëri." : "Phase: availability.",
   };
   if (phaseHints[phase]) lines.push(phaseHints[phase]);
@@ -249,34 +377,154 @@ export function buildLiveSessionBrief({
 }
 
 const WEAK_INTENTS = new Set(["none", "", null, undefined]);
+const ACTION_INTENTS = new Set(["book", "availability", "cancel", "reschedule", "update_name", "handoff"]);
 
-export function mergeAgentDecision(aiDecision, inferred) {
+export function isUsableCustomerName(name, contactId = "") {
+  const n = String(name || "").trim();
+  if (!n || n.length < 2) return false;
+  const digitsOnly = n.replace(/\D/g, "");
+  const contactDigits = String(contactId || "").replace(/\D/g, "");
+  if (contactDigits && digitsOnly === contactDigits) return false;
+  if (/^\+?\d{7,15}$/.test(n.replace(/\s/g, ""))) return false;
+  return true;
+}
+
+function replyCollectsMissingInfo(text) {
+  const raw = String(text || "");
+  if (!raw.trim()) return false;
+  if (bookingReplyAsksForName(raw)) return true;
+  if (!/\?/.test(raw)) return false;
+  const sq = stripAccentsLower(raw);
+  return /\b(sa persona|how many|what time|exact time|which time|n[ëe] cfar[ëe] ore|n[ëe] cilar ore|cila ore|preferred time|what date|which date|what name|emri|emrin)\b/.test(sq);
+}
+
+function shouldApplyInferredIntent(inferred, aiDecision, options = {}) {
+  if (!inferred?.type || inferred.confidence < 0.75) return false;
+
+  if (options.completingBookingWithName && inferred.type === "book") return true;
+
+  const aiText = String(aiDecision?.text || options.aiText || "");
+  const aiType = String(aiDecision?.intent?.type || "none").toLowerCase();
+
+  if (replyCollectsMissingInfo(aiText)) {
+    if (["book", "availability"].includes(inferred.type)) return false;
+  }
+
+  if (inferred.type === "book" && isAvailabilityInquiry(options.userText || "")) return false;
+
+  if (inferred.type === "availability" && !wantsTimeSlotSuggestions(options.userText || "")) return false;
+
+  if (ACTION_INTENTS.has(inferred.type) && aiType !== "none" && aiType !== inferred.type) {
+    if (!["cancel", "reschedule", "update_name", "handoff"].includes(inferred.type)) return false;
+    if (inferred.confidence < 0.9) return false;
+  }
+
+  return true;
+}
+
+export function mergeAgentDecision(aiDecision, inferred, options = {}) {
   if (!aiDecision || typeof aiDecision !== "object") return aiDecision;
-  if (!inferred?.type || inferred.confidence < 0.75) return aiDecision;
+  if (!shouldApplyInferredIntent(inferred, aiDecision, options)) {
+    return sanitizeBookIntentDecision(aiDecision, options);
+  }
 
   const aiType = String(aiDecision.intent?.type || "none").toLowerCase();
   const merged = { ...aiDecision, intent: { ...(aiDecision.intent || {}) } };
 
   if (WEAK_INTENTS.has(aiType) || aiType === "none") {
     merged.intent = { type: inferred.type, data: inferred.data || {} };
-    return merged;
+    return sanitizeBookIntentDecision(merged, options);
   }
 
   if (aiType === inferred.type) {
     merged.intent.data = { ...(inferred.data || {}), ...(aiDecision.intent?.data || {}) };
-    return merged;
+    return sanitizeBookIntentDecision(merged, options);
   }
 
   if (inferred.confidence >= 0.85 && inferred.type === "update_name") {
     merged.intent = { type: "update_name", data: { ...(aiDecision.intent?.data || {}), ...(inferred.data || {}) } };
-    return merged;
+    return sanitizeBookIntentDecision(merged, options);
   }
 
   if (inferred.confidence >= 0.9 && ["cancel", "reschedule", "handoff"].includes(inferred.type)) {
     merged.intent = { type: inferred.type, data: { ...(aiDecision.intent?.data || {}), ...(inferred.data || {}) } };
   }
 
-  return merged;
+  return sanitizeBookIntentDecision(merged, options);
+}
+
+function resolveBookIntentName({ text, intentData = {}, historyMessages = [], knownCustomerName = "", contactId = "" } = {}) {
+  let name = String(intentData?.name || intentData?.customerName || "").trim();
+  if (!name && looksLikeStandaloneCustomerName(String(text || "").trim())) {
+    name = String(text || "").trim();
+  }
+  if (!name && isUsableCustomerName(knownCustomerName, contactId)) {
+    name = String(knownCustomerName).trim();
+  }
+  if (!name) {
+    for (const m of [...(historyMessages || [])].reverse()) {
+      if (m?.role !== "user") continue;
+      const c = String(m.content || "").trim();
+      if (looksLikeStandaloneCustomerName(c)) {
+        name = c;
+        break;
+      }
+    }
+  }
+  return name;
+}
+
+export function bookIntentReady({
+  text,
+  intentData = {},
+  historyMessages = [],
+  knownCustomerName = "",
+  contactId = "",
+} = {}) {
+  if (!bookingHasPartySize(text, intentData, historyMessages)) return false;
+  const name = resolveBookIntentName({ text, intentData, historyMessages, knownCustomerName, contactId });
+  if (!isUsableCustomerName(name, contactId)) return false;
+  if (isBookingNameCompletion(text, historyMessages) && !bookingHasPartySize(text, intentData, historyMessages)) {
+    return false;
+  }
+  return true;
+}
+
+function sanitizeBookIntentDecision(decision, options = {}) {
+  if (!decision || String(decision.intent?.type || "").toLowerCase() !== "book") return decision;
+  if (options.completingBookingWithName) return decision;
+  if (bookingReplyAsksForName(String(decision.text || options.aiText || ""))) {
+    return { ...decision, intent: { type: "none", data: {} } };
+  }
+  if (bookIntentReady({
+    text: options.userText || "",
+    intentData: decision.intent?.data,
+    historyMessages: options.historyMessages || [],
+    knownCustomerName: options.knownCustomerName || "",
+    contactId: options.contactId || "",
+  })) {
+    return decision;
+  }
+  return { ...decision, intent: { type: "none", data: {} } };
+}
+
+export function normalizeExecutedIntent({
+  intentType,
+  intentData,
+  text,
+  replyText,
+  historyMessages = [],
+  knownCustomerName = "",
+  contactId = "",
+}) {
+  let type = String(intentType || "none").toLowerCase();
+  const data = intentData && typeof intentData === "object" ? { ...intentData } : {};
+  if (type === "availability" && !wantsTimeSlotSuggestions(text)) type = "none";
+  if (type === "book" && bookingReplyAsksForName(replyText)) type = "none";
+  if (type === "book" && !bookIntentReady({ text, intentData: data, historyMessages, knownCustomerName, contactId })) {
+    type = "none";
+  }
+  return { intentType: type, intentData: data };
 }
 
 export function guardPrematureActionClaims(text, { phase, lang = "en" } = {}) {
@@ -285,9 +533,8 @@ export function guardPrematureActionClaims(text, { phase, lang = "en" } = {}) {
 
   const processing = lang === "sq"
     ? [
-        /\bpo e (d[ëe]rgoj|p[ëe]rgatis|p[ëe]rpunoj|anuloj|ndryshoj)\b/gi,
+        /\bpo e (d[ëe]rgoj|p[ëe]rgatis|p[ëe]rpunoj|anuloj|ndryshoj|regjistroj)\b/gi,
         /\bprit (?:nj[ëe]|nje) (?:çast|moment)\b/gi,
-        /\bpo e d[ëe]rgoj\b/gi,
       ]
     : [
         /\b(i'?m|i am) (sending|processing|submitting|canceling|cancelling|updating)\b/gi,
@@ -311,10 +558,15 @@ export function guardPrematureActionClaims(text, { phase, lang = "en" } = {}) {
   }
 
   const falseComplete = lang === "sq"
-    ? /\b(rezervimi|termini|rezervim).*(?:u anulua|u konfirmua|u rezervua|u ndryshua|u zhvendos|e\s+shenova|e\s+shënova|kam\s+rezervuar|eshte\s+rezervuar|është\s+rezervuar)\b/i
-    : /\b(booking|appointment|reservation).*(?:has been|is) (?:canceled|cancelled|confirmed|booked|moved|updated|reserved)\b/i;
+    ? /\b(rezervimi|termini|rezervim|gjith[cç]ka u krye|u krye|u anulua|u konfirmua|u rezervua|u ndryshua|u zhvendos|e\s+shenova|e\s+shënova|kam\s+rezervuar|eshte\s+rezervuar|është\s+rezervuar|t[eë] kam\s+rezervuar)\b/i
+    : /\b((?:booking|appointment|reservation).*(?:has been|is|was) (?:canceled|cancelled|confirmed|booked|moved|updated|reserved)|you(?:'re| are) all set|everything is (?:done|set|confirmed))\b/i;
 
-  if (falseComplete.test(s) && ["cancel_pending", "reschedule_pending", "cancel_request", "reschedule_request", "booking_flow", "general"].includes(phase)) {
+  const guardedPhases = [
+    "cancel_pending", "reschedule_pending", "cancel_request", "reschedule_request",
+    "booking_flow", "availability_check", "name_change_request", "general",
+  ];
+
+  if (falseComplete.test(s) && guardedPhases.includes(phase)) {
     s = s.replace(falseComplete, "").replace(/\s{2,}/g, " ").trim();
   }
 

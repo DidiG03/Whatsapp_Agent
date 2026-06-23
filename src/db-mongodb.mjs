@@ -31,6 +31,9 @@ mongoose.connection.on('error', (err) => {
   logHelpers.logError(err, { component: 'mongodb', operation: 'connection_event' });
 });
 export async function initMongoDB() {
+  if (isConnected && mongoDb && mongoose.connection.readyState === 1) {
+    return { client, db: mongoDb };
+  }
   try {
     const SANITIZED_URI = String(MONGODB_URI)
       .replace(/w=majority(%22|%27|%5C%22|%5C%27|\"|')/gi, 'w=majority')

@@ -80,11 +80,28 @@ export async function recordInboundMessage({
     };
     const res = await messages.updateOne(
       { id: doc.id },
-      { $setOnInsert: doc },
+      {
+        $setOnInsert: doc,
+        ...(text ? { $set: { text_body: String(text).trim() } } : {}),
+      },
       { upsert: true }
     );
-    return (res.upsertedCount || 0) > 0;
+    return (res.upsertedCount || 0) > 0 || (res.modifiedCount || 0) > 0;
   } catch (e) {
+    return false;
+  }
+}
+
+export async function persistInboundTranscript(messageId, text) {
+  const body = String(text || "").trim();
+  if (!messageId || !body) return false;
+  try {
+    const res = await getDB().collection("messages").updateOne(
+      { id: String(messageId) },
+      { $set: { text_body: body } }
+    );
+    return (res.modifiedCount || 0) > 0 || (res.matchedCount || 0) > 0;
+  } catch {
     return false;
   }
 }

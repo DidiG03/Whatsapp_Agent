@@ -172,12 +172,13 @@ export async function listMessagesForThread(userId, phoneDigits) {
         }
       ]
     })
-    .select('direction text_body timestamp')
+    .select('direction text_body timestamp type')
     .sort({ timestamp: 1 });
 
     return messages.map(msg => ({
       direction: msg.direction,
       text_body: msg.text_body,
+      type: msg.type || 'text',
       ts: msg.timestamp || 0
     }));
   } catch (error) {

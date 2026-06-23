@@ -1,17 +1,26 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
-import { renderSidebar, normalizePhone, escapeHtml, renderTopbar, getProfessionalHead, renderPageHeader } from "../utils.mjs";
+import { renderSidebar, normalizePhone, escapeHtml, renderTopbar, getProfessionalHead, renderPageHeader, renderVoiceMessageHtml } from "../utils.mjs";
 import { listContactsForUser, listMessagesForThread } from "../services/conversations.mjs";
 import { db, getDB } from "../db-mongodb.mjs";
 import { Customer, Handoff, Message, MessageStatus } from '../schemas/mongodb.mjs';
-import { getSettingsForUser } from "../services/settings.mjs";
+import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
 import { sendWhatsAppText, sendWhatsAppTemplate, sendWhatsappImage, sendWhatsappReaction, sendWhatsappList } from "../services/whatsapp.mjs";
+import {
+  extractTemplateBodyAndVars,
+  fetchMetaTemplateLanguages,
+  findWaTemplateDoc,
+  sendResolvedWhatsAppTemplate,
+  summarizeWhatsAppError,
+} from "../services/waTemplates.mjs";
 import { getQuickReplies } from "../services/quickReplies.mjs";
 import { getMessageReactions, toggleReaction, removeReaction, getMessagesReactions, getUserReactionsForMessages } from "../services/reactions.mjs";
 import { createReply, getMessagesReplies, getReplyOriginals } from "../services/replies.mjs";
 import { getUserPlan, getPlanStatus, isPlanUpgraded, isUsageExceeded } from "../services/usage.mjs";
 import { updateContactActivity } from "../services/contacts.mjs";
-import { canonicalContactId, findHandoffForContact, resolveHumanMode, upsertHandoffForContact } from "../services/handoff.mjs";
+import { canonicalContactId, contactIdVariants, findHandoffForContact, resolveHumanMode, upsertHandoffForContact } from "../services/handoff.mjs";
 import { recordOutboundMessage } from "../services/messages.mjs";
+import { getContactMemory } from "../services/memory.mjs";
+import { detectLanguage, t as tr } from "../services/i18n.mjs";
 import { 
   getConversationStatus, 
   updateConversationStatus, 
@@ -32,9 +41,92 @@ import {
 } from "../services/messageStatus.mjs";
 import { broadcastReaction, broadcastMessageStatus } from "./realtime.mjs";
 import multer from 'multer';
+import path from 'path';
 import { selectStorage } from '../services/uploads.mjs';
 function parseRouteContact(raw) {
   return canonicalContactId(raw);
+}
+
+async function getReplyOriginalMeta(userId, replyTo) {
+  const id = String(replyTo || "").trim();
+  if (!id) return null;
+  try {
+    const doc = await getDB().collection("messages").findOne(
+      { id, user_id: String(userId) },
+      { projection: { id: 1, direction: 1, text_body: 1 } }
+    );
+    if (!doc?.id) return null;
+    return {
+      original_message_id: doc.id,
+      direction: doc.direction,
+      text_body: doc.text_body
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveReplyMessageId(userId, replyTo) {
+  const meta = await getReplyOriginalMeta(userId, replyTo);
+  return meta?.original_message_id || null;
+}
+
+async function sendReopenTemplateMessage({ userId, cfg, to, formValues = {} }) {
+  const tname = String(cfg?.wa_template_name || "").trim();
+  const preferredLang = String(cfg?.wa_template_language || "en_US").trim() || "en_US";
+  if (!tname) throw new Error("No default template configured");
+
+  const cust = await Customer.findOne({ user_id: userId, contact_id: to }).select("display_name").lean();
+  const defaults = {
+    1: String(cust?.display_name || "").trim() || "there",
+    2: "a while",
+  };
+
+  const result = await sendResolvedWhatsAppTemplate({
+    db: getDB(),
+    userId,
+    cfg,
+    to,
+    templateName: tname,
+    preferredLang,
+    formValues,
+    defaults,
+    sendTemplate: sendWhatsAppTemplate,
+  });
+
+  if (result.language && result.language !== preferredLang) {
+    try {
+      await upsertSettingsForUser(userId, {
+        wa_template_name: tname,
+        wa_template_language: result.language,
+      });
+    } catch {}
+  }
+
+  return {
+    resp: result.resp,
+    displayText: result.displayText || "",
+    language: result.language || preferredLang,
+    templateName: tname,
+  };
+}
+
+const TOAST_SEVERITIES = new Set(['success', 'error', 'warning', 'info']);
+
+function parseInboxMessageTypeFilter(query = {}) {
+  const raw = (query.type || '').toString().trim();
+  const hasToast = !!(query.toast || '').toString().trim();
+  const toastType = (query.toast_type || '').toString().trim();
+  if (toastType || (hasToast && TOAST_SEVERITIES.has(raw.toLowerCase()))) return '';
+  return raw;
+}
+
+function redirectToInbox(res, { toast, type } = {}) {
+  const params = new URLSearchParams();
+  if (toast) params.set('toast', toast);
+  if (type) params.set('toast_type', type);
+  const qs = params.toString();
+  return res.redirect(303, qs ? `/inbox?${qs}` : '/inbox');
 }
 function formatTimestampForDisplay(unixTs){
   const ts = Number(unixTs || 0);
@@ -165,8 +257,8 @@ async function performAdvancedSearch(userId, filters) {
     ORDER BY last_message_ts DESC
   `;
   
-  const searchResults = db.prepare(searchQuery).all(...queryParams);
-  return searchResults.map(result => ({
+  const searchResults = await db.prepare(searchQuery).all(...queryParams);
+  return (Array.isArray(searchResults) ? searchResults : []).map(result => ({
     contact: parseRouteContact(result.contact),
     last_message_ts: result.last_message_ts,
     message_count: result.message_count
@@ -207,8 +299,8 @@ async function performMessageSearch(userId, filters) {
     FROM messages m
     WHERE ${whereConditions.join(' AND ')}
   `;
-  const totalResult = db.prepare(countQuery).get(...queryParams);
-  const total = totalResult.total;
+  const totalResult = await db.prepare(countQuery).get(...queryParams);
+  const total = totalResult?.total || 0;
   const messagesQuery = `
     SELECT 
       m.id,
@@ -230,8 +322,8 @@ async function performMessageSearch(userId, filters) {
     LIMIT ? OFFSET ?
   `;
   
-  const messages = db.prepare(messagesQuery).all(userId, ...queryParams, limit, offset);
-  const formattedMessages = messages.map(msg => ({
+  const messages = await db.prepare(messagesQuery).all(userId, ...queryParams, limit, offset);
+  const formattedMessages = (Array.isArray(messages) ? messages : []).map(msg => ({
     id: msg.id,
     direction: msg.direction,
     type: msg.type,
@@ -296,7 +388,7 @@ export default function registerInboxRoutes(app) {
   app.get("/inbox", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const q = (req.query.q || "").toString().trim();
-    const messageType = (req.query.type || "").toString().trim();
+    const messageType = parseInboxMessageTypeFilter(req.query);
     const direction = (req.query.direction || "").toString().trim();
     const dateFrom = (req.query.date_from || "").toString().trim();
     const dateTo = (req.query.date_to || "").toString().trim();
@@ -456,7 +548,7 @@ export default function registerInboxRoutes(app) {
                 <span class="inbox-dropdown-item__emoji" aria-hidden="true">⛔</span> Block 24h
               </button>
             </form>
-            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/delete" onsubmit="event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;">
+            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/delete" onsubmit="return deleteInboxConversation(this, event);">
               <button type="submit" class="inbox-dropdown-item inbox-dropdown-item--danger">
                 <img src="/delete-icon.svg" alt="" class="inbox-dropdown-item__icon" aria-hidden="true" /> Delete
               </button>
@@ -931,7 +1023,7 @@ export default function registerInboxRoutes(app) {
   app.get("/api/search", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const q = (req.query.q || "").toString().trim();
-    const messageType = (req.query.type || "").toString().trim();
+    const messageType = parseInboxMessageTypeFilter(req.query);
     const direction = (req.query.direction || "").toString().trim();
     const dateFrom = (req.query.date_from || "").toString().trim();
     const dateTo = (req.query.date_to || "").toString().trim();
@@ -968,7 +1060,7 @@ export default function registerInboxRoutes(app) {
   app.get("/search", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const q = (req.query.q || "").toString().trim();
-    const messageType = (req.query.type || "").toString().trim();
+    const messageType = parseInboxMessageTypeFilter(req.query);
     const direction = (req.query.direction || "").toString().trim();
     const dateFrom = (req.query.date_from || "").toString().trim();
     const dateTo = (req.query.date_to || "").toString().trim();
@@ -1140,20 +1232,37 @@ export default function registerInboxRoutes(app) {
     `);
   });
 
+  app.get("/inbox/:phone/delete", ensureAuthed, (_req, res) => {
+    return redirectToInbox(res, { toast: 'Conversation deleted', type: 'success' });
+  });
+
   app.get("/inbox/:phone", ensureAuthed, async (req, res) => {
     const phone = parseRouteContact(req.params.phone);    const userId = getCurrentUserId(req);
     try {
+      const variants = contactIdVariants(phone);
       const digits = normalizePhone(phone);
+      const deletedHandoff = await Handoff.findOne({
+        user_id: userId,
+        contact_id: { $in: variants },
+        deleted_at: { $exists: true, $ne: null }
+      }).select('deleted_at').lean();
+      if (deletedHandoff?.deleted_at) {
+        return redirectToInbox(res);
+      }
       const [custRow, handoffRow, msgRow] = await Promise.all([
-        Customer.findOne({ user_id: userId, contact_id: phone }).select('_id'),
-        Handoff.findOne({ user_id: userId, contact_id: phone }).select('_id'),
+        Customer.findOne({ user_id: userId, contact_id: { $in: variants } }).select('_id'),
+        Handoff.findOne({
+          user_id: userId,
+          contact_id: { $in: variants },
+          $or: [{ deleted_at: { $exists: false } }, { deleted_at: null }]
+        }).select('_id'),
         Message.findOne({
           user_id: userId,
           $or: [
             { from_digits: digits },
             { to_digits: digits },
-            { from_id: phone },
-            { to_id: phone }
+            { from_id: { $in: variants } },
+            { to_id: { $in: variants } }
           ]
         }).select('_id')
       ]);
@@ -1196,34 +1305,22 @@ export default function registerInboxRoutes(app) {
     const defaultTemplateLang = (sidebarSettings?.wa_template_language || 'en_US').toString().trim() || 'en_US';
     let templateBody = '';
     let templateVars = [];
+    let defaultTemplateOnMeta = false;
     if (defaultTemplateName) {
       try {
         const dbNative = getDB();
-        const tplDoc = await dbNative
-          .collection('wa_templates')
-          .findOne({ user_id: String(userId), name: defaultTemplateName, language: defaultTemplateLang });
-        let bodyText = '';
-        if (typeof tplDoc?.body === 'string' && tplDoc.body.trim()) {
-          bodyText = tplDoc.body;
-        } else if (Array.isArray(tplDoc?.components)) {
-          const bodyComp = tplDoc.components.find(
-            (c) => String(c.type || '').toUpperCase() === 'BODY' && typeof c.text === 'string'
-          );
-          if (bodyComp?.text) bodyText = bodyComp.text;
-        }
-        templateBody = bodyText || '';
-        const matches = templateBody.match(/{{\d+}}/g);
-        if (matches) {
-          const indices = [...new Set(
-            matches
-              .map((m) => {
-                const n = Number((m.match(/\d+/) || [])[0]);
-                return Number.isFinite(n) ? n : null;
-              })
-              .filter((n) => n && n > 0)
-          )].sort((a, b) => a - b);
-          templateVars = indices;
-        }
+        const { doc: tplDoc } = await findWaTemplateDoc(
+          dbNative,
+          userId,
+          defaultTemplateName,
+          defaultTemplateLang
+        );
+        const parsed = extractTemplateBodyAndVars(tplDoc);
+        templateBody = parsed.bodyText || '';
+        templateVars = parsed.indices || [];
+        const metaLangs = await fetchMetaTemplateLanguages(sidebarSettings, defaultTemplateName);
+        defaultTemplateOnMeta = metaLangs.length > 0
+          && String(tplDoc?.status || '').toUpperCase() !== 'NOT_ON_META';
       } catch (e) {
         console.warn('[Inbox][TemplateBanner] Failed to load template details:', e?.message || e);
       }
@@ -1316,6 +1413,16 @@ export default function registerInboxRoutes(app) {
     
     const email = await getSignedInEmail(req);
     const quickReplies = await getQuickReplies(userId);
+    const templatePreviewByKey = new Map();
+    try {
+      const tplRows = await getDB().collection("wa_templates").find({ user_id: String(userId) })
+        .project({ name: 1, language: 1, body: 1, components: 1 })
+        .toArray();
+      for (const row of tplRows) {
+        const { bodyText } = extractTemplateBodyAndVars(row);
+        if (bodyText) templatePreviewByKey.set(`${row.name}::${row.language}`, bodyText);
+      }
+    } catch {}
     try {
       const etagBase = `${userId}:${phone}:${msgs.length}:${msgs[msgs.length-1]?.id||''}`;
       const etag = 'W/"'+Buffer.from(etagBase).toString('base64').slice(0, 32)+'"';
@@ -1399,14 +1506,52 @@ export default function registerInboxRoutes(app) {
             display = '[image]';
           }
         } else if (m.type === 'audio') {
-          display = '[audio]';
+          let audioUrl = raw?.audio?.link || null;
+          if (!audioUrl && raw?.audio?.id) {
+            audioUrl = `/wa-media/${encodeURIComponent(String(userId))}/${encodeURIComponent(String(raw.audio.id))}`;
+          }
+          const transcript = String(m.text_body || '').trim();
+          if (audioUrl) {
+            if (audioUrl.includes('localhost:3000')) {
+              const host = req.get('host');
+              const protocol = req.protocol;
+              audioUrl = audioUrl.replace(/https?:\/\/localhost:3000/, `${protocol}://${host}`);
+            }
+            display = renderVoiceMessageHtml({ audioUrl, transcript, messageId: m.id });
+          } else if (transcript) {
+            display = `🎤 ${escapeHtml(transcript).replace(/\n/g, '<br/>')}`;
+          } else {
+            display = '[audio]';
+          }
         } else if (m.type === 'video') {
           display = '[video]';
+        } else if (m.type === 'template') {
+          if (!display) {
+            const tplName = raw?.template?.name;
+            const tplLang = raw?.template?.language?.code || raw?.template?.language || "";
+            if (raw?.displayText) {
+              display = String(raw.displayText);
+            } else if (tplName && tplLang && templatePreviewByKey.has(`${tplName}::${tplLang}`)) {
+              display = templatePreviewByKey.get(`${tplName}::${tplLang}`);
+            } else if (tplName) {
+              for (const lang of [tplLang, "en_US", "en", "sq"].filter(Boolean)) {
+                const preview = templatePreviewByKey.get(`${tplName}::${lang}`);
+                if (preview) { display = preview; break; }
+              }
+              if (!display) display = `Template: ${tplName}`;
+            } else {
+              display = '[template]';
+            }
+          }
         } else if (m.type) {
           display = `[${m.type}]`;
         }
       }
-      const safe = display.includes('<img') || display.includes('<div') ? display : escapeHtml(display).replace(/\n/g, '<br/>');
+      const isVoiceBubble = m.type === 'audio' && display.includes('voice-message');
+      const bubbleClass = isVoiceBubble ? 'bubble bubble--voice' : 'bubble';
+      const safe = display.includes('<img') || display.includes('<div') || display.includes('voice-message')
+        ? display
+        : escapeHtml(display).replace(/\n/g, '<br/>');
       const ts = formatTimestampForDisplay(m.ts||0);
       let statusTicks = '';
       if (m.direction === 'outbound') {
@@ -1481,7 +1626,7 @@ export default function registerInboxRoutes(app) {
         </div>
       ` : '';
       
-      return `<div class="${cls} message-container" id="message-${m.id}" data-message-id="${m.id}">${originalMessageHtml}<div class="bubble">${safe}<div class="meta">${ts}${statusTicks}</div>${reactionsHtml}${actionButtons}</div></div>`;
+      return `<div class="${cls} message-container" id="message-${m.id}" data-message-id="${m.id}">${originalMessageHtml}<div class="${bubbleClass}">${safe}<div class="meta">${ts}${statusTicks}</div>${reactionsHtml}${actionButtons}</div></div>`;
     }).join("");
     const toastMsg = (req.query?.toast || '').toString();
     const toastType = (req.query?.type || '').toString();
@@ -1501,6 +1646,12 @@ export default function registerInboxRoutes(app) {
             const phone = '${phone}'.split('?')[0]; // Clean phone number to remove query parameters
             const phoneDigits = phone.replace(/\D/g, ''); // Normalize to digits for realtime rooms/APIs
             const userId = '${userId}';
+
+            window.addEventListener('pageshow', function(e) {
+              if (e.persisted) {
+                window.location.replace('/inbox');
+              }
+            });
             
             // Debug: Log only when DEBUG_LOGS is enabled
             if (window?.ENV?.DEBUG_LOGS === '1') console.log('🔍 Debug - userId from template:', userId);
@@ -2585,7 +2736,7 @@ export default function registerInboxRoutes(app) {
                       <form method="post" action="/inbox/${phone}/clear" class="chat-header-form" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;">
                         <button type="submit" class="chat-header-btn" title="Clear chat">${chatHeaderIcon('clear')}</button>
                       </form>
-                      <form method="post" action="/inbox/${phone}/delete" class="chat-header-form" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;">
+                      <form method="post" action="/inbox/${encodeURIComponent(phone)}/delete" class="chat-header-form" onsubmit="return deleteInboxConversation(this, event);">
                         <button type="submit" class="chat-header-btn chat-header-btn--danger" title="Delete conversation">${chatHeaderIcon('trash')}</button>
                       </form>
                       <div class="status-dropdown wa-chat-header__status-menu">
@@ -2618,67 +2769,74 @@ export default function registerInboxRoutes(app) {
                     const tlang = defaultTemplateLang;
                     if (!tname) {
                       return `
-                        <div style="margin:12px 0; padding:14px 16px; background:#e0f2fe; border:1px solid #bfdbfe; border-radius:12px; display:flex; gap:12px; align-items:flex-start;">
-                          <div style="flex-shrink:0; width:28px; height:28px; border-radius:999px; background:#bfdbfe; display:flex; align-items:center; justify-content:center; font-size:16px; color:#1d4ed8;">⏰</div>
-                          <div style="flex:1; font-size:13px; color:#1e3a8a;">
-                            <div style="font-weight:600; margin-bottom:4px;">24h window expired</div>
-                            <div style="font-size:12px; color:#1d4ed8;">
-                              To message this customer again, configure a default WhatsApp template on the 
-                              <a href="/campaigns" style="font-weight:600; color:#1d4ed8; text-decoration:underline;">Campaigns</a> page</a> and then refresh.
+                        <div class="template-reopen-banner">
+                          <div class="template-reopen-banner__bar">
+                            <div class="template-reopen-banner__lead">
+                              <span class="template-reopen-banner__icon" aria-hidden="true">⏰</span>
+                              <span class="template-reopen-banner__label">24h expired</span>
                             </div>
-                            <div style="margin-top:8px;">
-                              <a href="/campaigns" class="btn-ghost" style="display:inline-block;">Change template</a>
+                            <p class="template-reopen-banner__desc">Choose a default template on <a href="/campaigns">Campaigns</a>, then refresh.</p>
+                            <div class="template-reopen-banner__actions">
+                              <a href="/campaigns" class="btn-primary">Set up template</a>
+                            </div>
+                          </div>
+                        </div>
+                      `;
+                    }
+                    if (!defaultTemplateOnMeta) {
+                      return `
+                        <div class="template-reopen-banner template-reopen-banner--error">
+                          <div class="template-reopen-banner__bar">
+                            <div class="template-reopen-banner__lead">
+                              <span class="template-reopen-banner__icon" aria-hidden="true">⏰</span>
+                              <span class="template-reopen-banner__label">Template not on account</span>
+                              <span class="template-reopen-banner__chip">${escapeHtml(tname)}</span>
+                            </div>
+                            <p class="template-reopen-banner__desc">Sync from Meta on Campaigns and pick an approved template.</p>
+                            <div class="template-reopen-banner__actions">
+                              <a href="/campaigns" class="btn-primary">Fix on Campaigns</a>
                             </div>
                           </div>
                         </div>
                       `;
                     }
                     const hasVars = Array.isArray(templateVars) && templateVars.length > 0;
-                    const safeBody = templateBody ? escapeHtml(templateBody).replace(/\\n/g, '<br/>') : '';
-                    const previewBody = safeBody ? (safeBody.length > 260 ? safeBody.slice(0, 260) + '…' : safeBody) : '';
+                    const safeBody = templateBody ? escapeHtml(templateBody).replace(/\\n/g, ' ') : '';
+                    const previewBody = safeBody ? (safeBody.length > 120 ? safeBody.slice(0, 120) + '…' : safeBody) : '';
                     const inputsHtml = hasVars
-                      ? `<div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">
+                      ? `<div class="template-reopen-banner__vars">
                           ${templateVars.map((idx) => `
                             <input class="settings-field"
                                    name="var${idx}"
-                                   placeholder="{{${idx}} (optional)}"
-                                   style="height:34px; flex:1 1 140px; min-width:120px;" />
+                                   placeholder="{{${idx}}} optional" />
                           `).join('')}
                         </div>`
                       : '';
                     const hintHtml = hasVars
-                      ? `<div class="small" style="margin-top:4px; color:#1d4ed8;">
-                           You can optionally personalize this message by filling in the highlighted placeholders (e.g. {{1}}, {{2}}). Leave them blank to send the default text.
-                         </div>`
+                      ? `<p class="template-reopen-banner__hint">Optional placeholders — leave blank for defaults.</p>`
                       : '';
-                    const bodySection = previewBody
-                      ? `<div style="margin-top:8px; padding:10px 12px; border-radius:10px; background:#eff6ff; border:1px dashed #bfdbfe; font-size:12px; color:#1e3a8a;">
-                           <div style="font-weight:600; margin-bottom:4px;">Preview</div>
-                           <div>${previewBody || ''}</div>
-                         </div>`
+                    const bubbleHtml = previewBody
+                      ? `<div class="template-reopen-banner__bubble" title="${previewBody}">${previewBody}</div>`
                       : '';
                     return `
-                      <div style="margin:12px 0; padding:14px 16px; background:#e0f2fe; border:1px solid #bfdbfe; border-radius:12px;">
-                        <div style="display:flex; align-items:flex-start; gap:10px;">
-                          <div style="flex-shrink:0; width:28px; height:28px; border-radius:999px; background:#bfdbfe; display:flex; align-items:center; justify-content:center; font-size:16px; color:#1d4ed8;">⏰</div>
-                          <div style="flex:1;">
-                            <div style="font-size:13px; font-weight:600; color:#1e3a8a; margin-bottom:4px;">
-                              24h window expired – use your approved template <span style="text-decoration:underline;">${escapeHtml(tname)}</span> to reopen this conversation.
-                            </div>
-                            ${bodySection}
-                            ${hasVars ? `<form method="post" action="/inbox/${phone}/send-template" data-auth-enhanced style="margin-top:10px;">${inputsitation_placeholder}</form>` : `
-                              <form method="post" action="/inbox/${phone}/send-template" data-auth-enhanced style="margin-top:10px;">
-                                <button class="btn-primary" type="submit" style="padding:6px 16px;">Send template</button>
-                              </form>
-                            `}
-                            ${hintHtml}
-                            <div style="margin-top:8px;">
-                              <a href="/campaigns" class="btn-ghost" style="display:inline-block;">Change template</a>
-                            </div>
+                      <div class="template-reopen-banner">
+                        <form method="post" action="/inbox/${phone}/send-template" data-auth-enhanced class="template-reopen-banner__form">
+                          <div class="template-reopen-banner__lead">
+                            <span class="template-reopen-banner__icon" aria-hidden="true">⏰</span>
+                            <span class="template-reopen-banner__label">24h expired</span>
+                            <span class="template-reopen-banner__chip">${escapeHtml(tname)}</span>
+                            <span class="template-reopen-banner__chip">${escapeHtml(tlang)}</span>
                           </div>
-                        </div>
+                          ${bubbleHtml}
+                          ${inputsHtml}
+                          ${hintHtml}
+                          <div class="template-reopen-banner__actions">
+                            <button class="btn-primary" type="submit">Send template</button>
+                            <a href="/campaigns" class="btn-ghost">Change template</a>
+                          </div>
+                        </form>
                       </div>
-                    `.replace('inputsitation_placeholder', inputsHtml + '<div style="margin-top:8px;"><button class="btn-primary" type="submit">Send template</button></div>');
+                    `;
                   })()}
                   <div class="chat-thread">
                     <div class="chat-thread-messages">
@@ -2814,10 +2972,37 @@ export default function registerInboxRoutes(app) {
     `);
   });
 
+  async function resolveContactLang(userId, phone) {
+    try {
+      const mem = await getContactMemory(userId, phone);
+      if (mem?.lang === "sq" || mem?.lang === "en") return mem.lang;
+    } catch {}
+    try {
+      const digits = normalizePhone(phone);
+      const recent = await getDB().collection("messages").findOne(
+        {
+          user_id: String(userId),
+          direction: "inbound",
+          type: "text",
+          text_body: { $exists: true, $nin: ["", null] },
+          $or: [
+            { from_id: String(phone) },
+            ...(digits ? [{ from_digits: digits }] : [])
+          ]
+        },
+        { sort: { timestamp: -1 }, projection: { text_body: 1 } }
+      );
+      const detected = detectLanguage(recent?.text_body || "");
+      if (detected === "sq" || detected === "en") return detected;
+    } catch {}
+    return "en";
+  }
+
   async function sendLiveModeWelcomeMessage(userId, phone, cfg, agentName) {
     if (!cfg?.whatsapp_token || !cfg?.phone_number_id || !agentName) return;
     try {
-      const text = `You are connected with ${agentName}.`;
+      const lang = await resolveContactLang(userId, phone);
+      const text = tr("live_agent_connected", lang, { name: agentName });
       const resp = await sendWhatsAppText(phone, text, cfg);
       const outboundId = resp?.messages?.[0]?.id;
       if (!outboundId) return;
@@ -3191,14 +3376,15 @@ export default function registerInboxRoutes(app) {
     const phone = parseRouteContact(req.params.phone);
     const userId = getCurrentUserId(req);
     const digits = normalizePhone(phone);
+    const variants = contactIdVariants(phone);
     try {
       const criteria = {
         user_id: String(userId),
         $or: [
           { from_digits: digits },
           { to_digits: digits },
-          { from_id: { $in: [digits, '+' + digits] } },
-          { to_id: { $in: [digits, '+' + digits] } }
+          { from_id: { $in: variants.length ? variants : [digits, '+' + digits] } },
+          { to_id: { $in: variants.length ? variants : [digits, '+' + digits] } }
         ]
       };
       const ids = (await Message.find(criteria).select('id').lean().catch(() => []))
@@ -3233,22 +3419,28 @@ export default function registerInboxRoutes(app) {
         const dbNative = getDB();
         await dbNative.collection('contact_interactions').deleteMany({
           user_id: String(userId),
-          contact_id: { $in: [phone, digits, '+' + digits] }
+          contact_id: { $in: variants.length ? variants : [phone, digits, '+' + digits] }
         });
       } catch (e) {
         console.warn('[Inbox][DELETE] delete contact_interactions failed:', e?.message || e);
+      }
+      try {
+        await Customer.deleteMany({ user_id: userId, contact_id: { $in: variants } });
+      } catch (e) {
+        console.warn('[Inbox][DELETE] delete customer failed:', e?.message || e);
       }
     } catch (e) {
       console.error('Delete conversation failed:', e?.message || e);
     }
     try {
-      await Handoff.findOneAndUpdate(
-        { contact_id: phone, user_id: userId },
-        { $set: { deleted_at: Math.floor(Date.now()/1000), updatedAt: new Date() } },
-        { upsert: true }
-      );
-    } catch {}
-    return res.redirect(`/inbox`);
+      await upsertHandoffForContact(userId, phone, {
+        deleted_at: Math.floor(Date.now() / 1000),
+        is_archived: false
+      });
+    } catch (e) {
+      console.warn('[Inbox][DELETE] mark handoff deleted failed:', e?.message || e);
+    }
+    return redirectToInbox(res, { toast: 'Conversation deleted', type: 'success' });
   });
 
   function wantsJsonResponse(req) {
@@ -3293,24 +3485,21 @@ export default function registerInboxRoutes(app) {
 
       if (over24h) {
         const tname = (cfg.wa_template_name || '').toString().trim();
-        const tlang = (cfg.wa_template_language || 'en_US').toString().trim() || 'en_US';
+        let tlang = (cfg.wa_template_language || 'en_US').toString().trim() || 'en_US';
         if (!tname) {
           return respondError('Conversation is older than 24h. Please choose a default template on the Campaigns page before replying.', 400, { requireTemplate: true });
         }
         try {
-          await sendWhatsAppTemplate(to, tname, tlang, [], cfg);
+          await sendReopenTemplateMessage({ userId, cfg, to });
           return respondSuccess({ templateSent: true });
         } catch (e) {
           console.error('24h reopen template send failed:', e?.message || e);
-          return respondError('Session expired and the configured template failed to send. Please try again later.', 502);
+          return respondError(summarizeWhatsAppError(e), 502);
         }
       }
-      let originalMessageId = null;
       const replyTo = req.body?.replyTo;
-      if (replyTo) {
-        const originalMessage = db.prepare(`SELECT id FROM messages WHERE id = ? AND user_id = ?`).get(replyTo, userId);
-        originalMessageId = originalMessage?.id;
-      }
+      const replyOriginal = await getReplyOriginalMeta(userId, replyTo);
+      const originalMessageId = replyOriginal?.original_message_id || null;
       
       const data = await sendWhatsAppText(to, text, cfg, originalMessageId);
       const outboundId = data?.messages?.[0]?.id;
@@ -3335,7 +3524,8 @@ export default function registerInboxRoutes(app) {
           contact: String(to),
           formatted_time: formatTimestampForDisplay(nowTs),
           delivery_status: 'sent',
-          read_status: 'unread'
+          read_status: 'unread',
+          ...(replyOriginal ? { replyOriginal } : {})
         };
         broadcastNewMessage(userId, String(to), messageData);
       } catch {}
@@ -3350,7 +3540,7 @@ export default function registerInboxRoutes(app) {
         try {
           const plan = await getUserPlan(userId);
           if ((plan?.plan_name || 'free') !== 'free') {
-            const replyResult = createReply(replyTo, outboundId);
+            const replyResult = await createReply(replyTo, outboundId);
             if (!replyResult.success) {
               console.error('Failed to create reply relationship:', replyResult.error);
             }
@@ -3359,7 +3549,7 @@ export default function registerInboxRoutes(app) {
           console.error('Error creating reply relationship:', error);
         }
       }
-      return respondSuccess({ messageId: outboundId });
+      return respondSuccess({ messageId: outboundId, replyOriginal: replyOriginal || undefined });
     } catch (e) {
       console.error("Manual send error:", e);
       const tempMessageId = `failed_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -3530,18 +3720,14 @@ export default function registerInboxRoutes(app) {
           return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Conversation is older than 24h. Set a default template on the Campaigns page before sending media.')}&type=error`);
         }
         try {
-          await sendWhatsAppTemplate(to, tname, tlang, [], cfg);
+          await sendReopenTemplateMessage({ userId, cfg, to });
         } catch (e) {
           console.error('24h reopen template send failed (image):', e?.message || e);
         }
         return res.redirect(`/inbox/${encodeURIComponent(to)}`);
       }
-      let originalMessageId = null;
       const replyTo = req.body?.replyTo;
-      if (replyTo) {
-        const originalMessage = db.prepare(`SELECT id FROM messages WHERE id = ? AND user_id = ?`).get(replyTo, userId);
-        originalMessageId = originalMessage?.id;
-      }
+      const originalMessageId = await resolveReplyMessageId(userId, replyTo);
       
       if (process.env.DEBUG_LOGS === '1') console.log('Sending image via WhatsApp API:', { to, whatsappImageUrl, caption });
       
@@ -3551,7 +3737,7 @@ export default function registerInboxRoutes(app) {
       } else {
         if (process.env.DEBUG_LOGS === '1') console.log('Using cloud upload for localhost compatibility');
         const { sendWhatsappImageBase64 } = await import('../services/whatsapp.mjs');
-        data = await sendWhatsappImageBase64(to, req.file.path, caption, cfg);
+        data = await sendWhatsappImageBase64(to, req.file.path, caption, cfg, originalMessageId);
       }
       
       if (process.env.DEBUG_LOGS === '1') console.log('WhatsApp API response:', data);
@@ -3568,7 +3754,7 @@ export default function registerInboxRoutes(app) {
           try {
             const plan = await getUserPlan(userId);
             if ((plan?.plan_name || 'free') !== 'free') {
-              const replyResult = createReply(replyTo, outboundId);
+              const replyResult = await createReply(replyTo, outboundId);
               if (!replyResult.success) {
                 console.error('Failed to create reply relationship:', replyResult.error);
               }
@@ -3629,18 +3815,14 @@ export default function registerInboxRoutes(app) {
           return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${encodeURIComponent('Conversation is older than 24h. Set a default template on the Campaigns page before sending documents.')}&type=error`);
         }
         try {
-          await sendWhatsAppTemplate(to, tname, tlang, [], cfg);
+          await sendReopenTemplateMessage({ userId, cfg, to });
         } catch (e) {
           console.error('24h reopen template send failed (document):', e?.message || e);
         }
         return res.redirect(`/inbox/${encodeURIComponent(to)}`);
       }
-      let originalMessageId = null;
       const replyTo = req.body?.replyTo;
-      if (replyTo) {
-        const originalMessage = db.prepare(`SELECT id FROM messages WHERE id = ? AND user_id = ?`).get(replyTo, userId);
-        originalMessageId = originalMessage?.id;
-      }
+      const originalMessageId = await resolveReplyMessageId(userId, replyTo);
       
       if (process.env.DEBUG_LOGS === '1') console.log('Sending document via WhatsApp API:', { to, whatsappDocumentUrl, caption });
       if (process.env.DEBUG_LOGS === '1') console.log('WhatsApp config check:', { 
@@ -3655,7 +3837,7 @@ export default function registerInboxRoutes(app) {
         data = await sendWhatsappDocument(to, whatsappDocumentUrl, req.file.filename, caption, cfg, originalMessageId);
       } else {
         const { sendWhatsappDocumentBase64 } = await import('../services/whatsapp.mjs');
-        data = await sendWhatsappDocumentBase64(to, req.file.path, req.file.filename, caption, cfg);
+        data = await sendWhatsappDocumentBase64(to, req.file.path, req.file.filename, caption, cfg, originalMessageId);
       }
       
       if (process.env.DEBUG_LOGS === '1') console.log('WhatsApp API response:', data);
@@ -3690,7 +3872,7 @@ export default function registerInboxRoutes(app) {
           try {
             const plan = await getUserPlan(userId);
             if ((plan?.plan_name || 'free') !== 'free') {
-              const replyResult = createReply(replyTo, outboundId);
+              const replyResult = await createReply(replyTo, outboundId);
               if (!replyResult.success) {
                 console.error('Failed to create reply relationship:', replyResult.error);
               }
@@ -3713,41 +3895,34 @@ export default function registerInboxRoutes(app) {
     const userId = getCurrentUserId(req);
     const cfg = await getSettingsForUser(userId);
     const tname = (cfg.wa_template_name || '').toString().trim();
-    const tlang = (cfg.wa_template_language || 'en_US').toString().trim() || 'en_US';
     if (!tname) {
       const msg = encodeURIComponent('No default template configured. Pick one on the Campaigns page first.');
       return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${msg}&type=error`);
     }
-    const components = [];
-    const bodyParams = [];
-    try {
-      const keys = Object.keys(req.body || {}).filter((k) => /^var\d+$/.test(k));
-      keys
-        .sort((a, b) => Number(a.slice(3)) - Number(b.slice(3)))
-        .forEach((key) => {
-          const value = (req.body[key] || '').toString().trim();
-          if (value) {
-            bodyParams.push({ type: 'text', text: value });
-          }
-        });
-    } catch (_) {}
-    if (bodyParams.length) {
-      components.push({ type: 'body', parameters: bodyParams });
-    }
 
     try {
-      const resp = await sendWhatsAppTemplate(to, tname, tlang, components, cfg);
-      const outboundId = resp?.messages?.[0]?.id;
+      const sent = await sendReopenTemplateMessage({ userId, cfg, to, formValues: req.body || {} });
+      const outboundId = sent?.resp?.messages?.[0]?.id;
+      const templateLang = sent?.language || String(cfg.wa_template_language || "en_US").trim() || "en_US";
+      const templateName = sent?.templateName || tname;
+      const displayText = String(sent?.displayText || "").trim();
       if (outboundId) {
         try {
           await recordOutboundMessage({
             messageId: outboundId,
             userId,
-            cfg,
+            cfg: { ...cfg, user_id: userId },
             to,
             type: 'template',
-            text: null,
-            raw: { to, template: { name: tname, language: { code: tlang } }, components }
+            text: displayText || null,
+            raw: {
+              to,
+              displayText: displayText || undefined,
+              template: {
+                name: templateName,
+                language: { code: templateLang },
+              },
+            },
           });
         } catch {}
       }
@@ -3755,7 +3930,7 @@ export default function registerInboxRoutes(app) {
       return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${msg}&type=success`);
     } catch (e) {
       console.error('Template send error:', e?.message || e);
-      const msg = encodeURIComponent('Failed to send template. Please try again.');
+      const msg = encodeURIComponent(summarizeWhatsAppError(e));
       return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${msg}&type=error`);
     }
   });

@@ -313,6 +313,68 @@ window.checkAuthThenSubmit = async function(form) {
 window.checkAuthOnLoad = async function() {
   return window.authManager.checkAuthOnLoad();
 };
+
+window.deleteInboxConversation = async function(form, event) {
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  if (!form?.action) return false;
+
+  const submitButton = form.querySelector('button[type="submit"]');
+  const originalText = submitButton ? submitButton.textContent : '';
+  if (submitButton) {
+    submitButton.disabled = true;
+  }
+
+  try {
+    await window.authManager.touchSession();
+    let authStatus = await window.authManager.checkAuthStatus();
+    if (!authStatus.success || !authStatus.signedIn) {
+      const refreshed = await window.authManager.refreshSession();
+      if (!refreshed?.success) {
+        window.authManager.handleUnauthorized();
+        return false;
+      }
+      authStatus = await window.authManager.checkAuthStatus();
+      if (!authStatus.success || !authStatus.signedIn) {
+        window.authManager.handleUnauthorized();
+        return false;
+      }
+    }
+
+    const resp = await window.authManager.authenticatedFetch(form.action, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { Accept: 'text/html,application/json' }
+    });
+
+    if (resp.status === 401) {
+      window.authManager.handleUnauthorized();
+      return false;
+    }
+
+    if (!resp.ok && resp.status !== 302 && resp.status !== 303) {
+      throw new Error('Delete failed');
+    }
+
+    const target = '/inbox?toast=' + encodeURIComponent('Conversation deleted') + '&toast_type=success';
+    window.location.replace(target);
+    return false;
+  } catch (error) {
+    console.error('Delete conversation failed:', error);
+    if (submitButton) {
+      submitButton.disabled = false;
+      if (originalText) submitButton.textContent = originalText;
+    }
+    const msg = error?.message || 'Failed to delete conversation';
+    if (window.Toast?.error) window.Toast.error(msg);
+    else if (window.Toast?.show) window.Toast.show(msg, 'error');
+    else alert(msg);
+    return false;
+  }
+};
+
 document.addEventListener('DOMContentLoaded', function() {
   const enhancedForms = document.querySelectorAll('form[data-auth-enhanced]');
   enhancedForms.forEach((form) => {

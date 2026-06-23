@@ -1,9 +1,10 @@
 
-
+import v8 from 'v8';
 import { getDB, isMongoConnected } from '../db-mongodb.mjs';
 import { logHelpers } from './logger.mjs';
 import { sentryHelpers } from './sentry.mjs';
 import fs from 'fs';
+
 const healthChecks = {
   database: null,
   external_apis: null,
@@ -11,6 +12,15 @@ const healthChecks = {
   disk_space: null,
   last_check: null
 };
+
+const isProduction = process.env.NODE_ENV === 'production';
+const RSS_WARN_MB = Number(process.env.MEMORY_RSS_WARN_MB || (isProduction ? 768 : 512));
+const RSS_CRITICAL_MB = Number(process.env.MEMORY_RSS_CRITICAL_MB || (isProduction ? 1200 : 900));
+const HEAP_LIMIT_WARN_PCT = Number(process.env.MEMORY_HEAP_LIMIT_WARN_PCT || 85);
+const HEAP_LIMIT_CRITICAL_PCT = Number(process.env.MEMORY_HEAP_LIMIT_CRITICAL_PCT || 92);
+const CHECK_EXTERNAL_APIS = process.env.HEALTH_CHECK_EXTERNAL_APIS === '1'
+  || (isProduction && process.env.HEALTH_CHECK_EXTERNAL_APIS !== '0');
+
 async function checkDatabase() {
   try {
     const startTime = Date.now();
@@ -52,20 +62,31 @@ async function checkDatabase() {
       error: error.message,
       last_check: new Date().toISOString()
     };
-    
+
     logHelpers.logError(error, { component: 'health_check', check: 'database' });
     sentryHelpers.captureException(error, { tags: { component: 'health_check', check: 'database' } });
-    
+
     return false;
   }
 }
+
 async function checkExternalAPIs() {
+  if (!CHECK_EXTERNAL_APIS) {
+    healthChecks.external_apis = {
+      status: 'healthy',
+      skipped: true,
+      reason: 'disabled_in_development',
+      last_check: new Date().toISOString()
+    };
+    return true;
+  }
+
   const checks = {
     whatsapp_api: false,
     openai_api: false,
     stripe_api: false
   };
-  
+
   try {
     if (process.env.WHATSAPP_TOKEN) {
       try {
@@ -75,7 +96,7 @@ async function checkExternalAPIs() {
           }
         });
         checks.whatsapp_api = response.ok;
-      } catch (error) {
+      } catch {
         checks.whatsapp_api = false;
       }
     }
@@ -87,7 +108,7 @@ async function checkExternalAPIs() {
           }
         });
         checks.openai_api = response.ok;
-      } catch (error) {
+      } catch {
         checks.openai_api = false;
       }
     }
@@ -99,7 +120,7 @@ async function checkExternalAPIs() {
           }
         });
         checks.stripe_api = response.ok;
-      } catch (error) {
+      } catch {
         checks.stripe_api = false;
       }
     }
@@ -110,13 +131,12 @@ async function checkExternalAPIs() {
     };
     const configuredChecks = Object.keys(checks).filter(api => configuredAPIs[api]);
     const configuredHealthy = configuredChecks.every(api => checks[api] === true);
-    const anyConfiguredHealthy = configuredChecks.some(api => checks[api] === true);
-    
+
     let status = 'healthy';
-    if (configuredChecks.length === 0) {
-      status = 'healthy';    } else if (!configuredHealthy) {
-      status = 'degraded';    }
-    
+    if (configuredChecks.length > 0 && !configuredHealthy) {
+      status = 'degraded';
+    }
+
     healthChecks.external_apis = {
       status,
       checks,
@@ -124,7 +144,7 @@ async function checkExternalAPIs() {
       configured_count: configuredChecks.length,
       last_check: new Date().toISOString()
     };
-    
+
     return configuredChecks.length === 0 || configuredHealthy;
   } catch (error) {
     healthChecks.external_apis = {
@@ -132,77 +152,99 @@ async function checkExternalAPIs() {
       error: error.message,
       last_check: new Date().toISOString()
     };
-    
+
     logHelpers.logError(error, { component: 'health_check', check: 'external_apis' });
     return false;
   }
 }
+
 function checkMemory() {
   try {
     const memUsage = process.memoryUsage();
-    const totalMem = memUsage.heapTotal;
-    const usedMem = memUsage.heapUsed;
-    const externalMem = memUsage.external;
-    const rssMem = memUsage.rss;
-    
-    const usagePercentage = (usedMem / totalMem) * 100;
-    const isHealthy = usagePercentage < 95;    const isWarning = usagePercentage >= 95 && usagePercentage < 98;    if (usagePercentage > 98 && global.gc) {
-      global.gc();
-      const newMemUsage = process.memoryUsage();
-      const newUsagePercentage = (newMemUsage.heapUsed / newMemUsage.heapTotal) * 100;
-      
-      healthChecks.memory = {
-        status: newUsagePercentage < 95 ? 'healthy' : (newUsagePercentage < 98 ? 'warning' : 'unhealthy'),
-        heap_total: Math.round(newMemUsage.heapTotal / 1024 / 1024),        heap_used: Math.round(newMemUsage.heapUsed / 1024 / 1024),        heap_external: Math.round(newMemUsage.external / 1024 / 1024),        rss: Math.round(newMemUsage.rss / 1024 / 1024),        usage_percentage: Math.round(newUsagePercentage * 100) / 100,
-        garbage_collected: true,
-        last_check: new Date().toISOString()
-      };
-      
-      if (newUsagePercentage > 95) {
-        logHelpers.logError(new Error('High memory usage after GC'), {
-          component: 'health_check',
-          check: 'memory',
-          usage_percentage: newUsagePercentage,
-          gc_performed: true
-        });
-      }
-      
-      return newUsagePercentage < 90;
+    const heapStats = v8.getHeapStatistics();
+
+    const rssMb = memUsage.rss / 1024 / 1024;
+    const heapUsedMb = memUsage.heapUsed / 1024 / 1024;
+    const heapTotalMb = memUsage.heapTotal / 1024 / 1024;
+    const heapLimitMb = heapStats.heap_size_limit / 1024 / 1024;
+    const externalMb = memUsage.external / 1024 / 1024;
+
+    // heapUsed / heapTotal is misleading — V8 grows heapTotal on demand.
+    // Use RSS and heapUsed vs V8 heap_size_limit instead.
+    const heapUtilizationPct = (memUsage.heapUsed / heapStats.heap_size_limit) * 100;
+    const heapCommittedPct = (memUsage.heapUsed / memUsage.heapTotal) * 100;
+
+    let status = 'healthy';
+    if (rssMb >= RSS_CRITICAL_MB || heapUtilizationPct >= HEAP_LIMIT_CRITICAL_PCT) {
+      status = 'unhealthy';
+    } else if (rssMb >= RSS_WARN_MB || heapUtilizationPct >= HEAP_LIMIT_WARN_PCT) {
+      status = 'warning';
     }
-    
+
+    if (status === 'unhealthy' && typeof global.gc === 'function') {
+      global.gc();
+      const after = process.memoryUsage();
+      const afterHeap = v8.getHeapStatistics();
+      const afterRssMb = after.rss / 1024 / 1024;
+      const afterHeapUtil = (after.heapUsed / afterHeap.heap_size_limit) * 100;
+      if (afterRssMb < RSS_CRITICAL_MB && afterHeapUtil < HEAP_LIMIT_CRITICAL_PCT) {
+        status = afterRssMb >= RSS_WARN_MB || afterHeapUtil >= HEAP_LIMIT_WARN_PCT ? 'warning' : 'healthy';
+      }
+    }
+
     healthChecks.memory = {
-      status: isHealthy ? 'healthy' : (isWarning ? 'warning' : 'unhealthy'),
-      heap_total: Math.round(totalMem / 1024 / 1024),      heap_used: Math.round(usedMem / 1024 / 1024),      heap_external: Math.round(externalMem / 1024 / 1024),      rss: Math.round(rssMem / 1024 / 1024),      usage_percentage: Math.round(usagePercentage * 100) / 100,
+      status,
+      rss_mb: Math.round(rssMb),
+      heap_used_mb: Math.round(heapUsedMb),
+      heap_total_mb: Math.round(heapTotalMb),
+      heap_limit_mb: Math.round(heapLimitMb),
+      heap_external_mb: Math.round(externalMb),
+      heap_utilization_pct: Math.round(heapUtilizationPct * 100) / 100,
+      heap_committed_pct: Math.round(heapCommittedPct * 100) / 100,
+      thresholds: {
+        rss_warn_mb: RSS_WARN_MB,
+        rss_critical_mb: RSS_CRITICAL_MB,
+        heap_limit_warn_pct: HEAP_LIMIT_WARN_PCT,
+        heap_limit_critical_pct: HEAP_LIMIT_CRITICAL_PCT,
+      },
       last_check: new Date().toISOString()
     };
-    
-    if (!isHealthy) {
+
+    if (status === 'unhealthy') {
       logHelpers.logError(new Error('High memory usage'), {
         component: 'health_check',
         check: 'memory',
-        usage_percentage: usagePercentage
+        ...healthChecks.memory,
+      });
+    } else if (status === 'warning') {
+      logHelpers.logBusinessEvent('memory_warning', {
+        component: 'health_check',
+        check: 'memory',
+        ...healthChecks.memory,
       });
     }
-    
-    return isHealthy;
+
+    return status !== 'unhealthy';
   } catch (error) {
     healthChecks.memory = {
       status: 'unhealthy',
       error: error.message,
       last_check: new Date().toISOString()
     };
-    
+
     return false;
   }
 }
+
 function checkDiskSpace() {
   try {
-    const stats = fs.statSync('.');
+    fs.statSync('.');
     healthChecks.disk_space = {
-      status: 'healthy',      last_check: new Date().toISOString(),
+      status: 'healthy',
+      last_check: new Date().toISOString(),
       note: 'Disk space check simplified - implement proper disk monitoring'
     };
-    
+
     return true;
   } catch (error) {
     healthChecks.disk_space = {
@@ -210,13 +252,14 @@ function checkDiskSpace() {
       error: error.message,
       last_check: new Date().toISOString()
     };
-    
+
     return false;
   }
 }
+
 export async function runHealthChecks() {
   const startTime = Date.now();
-  
+
   try {
     logHelpers.logBusinessEvent('health_check_started');
     const [dbHealthy, apisHealthy, memHealthy, diskHealthy] = await Promise.all([
@@ -225,29 +268,31 @@ export async function runHealthChecks() {
       Promise.resolve(checkMemory()),
       Promise.resolve(checkDiskSpace())
     ]);
-    
+
     const overallHealthy = dbHealthy && memHealthy && diskHealthy;
     const duration = Date.now() - startTime;
     let overallStatus = 'healthy';
     if (!dbHealthy || !diskHealthy) {
-      overallStatus = 'unhealthy';    } else if (!memHealthy || !apisHealthy) {
-      overallStatus = 'degraded';    }
-    
+      overallStatus = 'unhealthy';
+    } else if (!memHealthy || !apisHealthy) {
+      overallStatus = 'degraded';
+    }
+
     healthChecks.last_check = new Date().toISOString();
     healthChecks.overall_status = overallStatus;
     healthChecks.check_duration = duration;
-    
+
     logHelpers.logBusinessEvent('health_check_completed', {
       overall_status: healthChecks.overall_status,
       duration,
       checks: Object.keys(healthChecks).filter(key => key !== 'last_check' && key !== 'overall_status' && key !== 'check_duration')
     });
-    
+
     return healthChecks;
   } catch (error) {
     logHelpers.logError(error, { component: 'health_check', check: 'overall' });
     sentryHelpers.captureException(error, { tags: { component: 'health_check', check: 'overall' } });
-    
+
     return {
       ...healthChecks,
       overall_status: 'unhealthy',
@@ -256,15 +301,17 @@ export async function runHealthChecks() {
     };
   }
 }
+
 export function getHealthStatus() {
   return healthChecks;
 }
+
 export function healthCheckMiddleware() {
   return async (req, res, next) => {
     if (req.path === '/health' || req.path === '/health/detailed') {
       try {
         const healthStatus = await runHealthChecks();
-        
+
         if (req.path === '/health/detailed') {
           res.json({
             status: healthStatus.overall_status,
@@ -279,7 +326,7 @@ export function healthCheckMiddleware() {
         }
       } catch (error) {
         logHelpers.logError(error, { component: 'health_check', endpoint: req.path });
-        
+
         res.status(503).json({
           status: 'unhealthy',
           error: 'Health check failed',
@@ -291,21 +338,24 @@ export function healthCheckMiddleware() {
     }
   };
 }
-export function startHealthCheckScheduler(intervalMs = 300000) {  if (global.healthCheckInterval) {
+
+export function startHealthCheckScheduler(intervalMs = 300000) {
+  if (global.healthCheckInterval) {
     clearInterval(global.healthCheckInterval);
   }
-  
+
   global.healthCheckInterval = setInterval(async () => {
     try {
       await runHealthChecks();
-      if (global.gc) {
-        global.gc();
-      }
     } catch (error) {
       logHelpers.logError(error, { component: 'health_check', operation: 'scheduled_check' });
     }
   }, intervalMs);
-  
+
+  if (typeof global.healthCheckInterval.unref === 'function') {
+    global.healthCheckInterval.unref();
+  }
+
   logHelpers.logBusinessEvent('health_check_scheduler_started', { interval_ms: intervalMs });
 }
 

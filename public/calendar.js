@@ -5,6 +5,10 @@
   function addMonths(d, n){ return new Date(d.getFullYear(), d.getMonth()+n, 1); }
   function formatMonthYear(d){ return d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }); }
   function sameDay(a,b){ return a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate(); }
+  function formatTime(ts){
+    return new Date((ts || 0) * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+  function isToday(date){ return sameDay(date, new Date()); }
 
   var state = {
     current: startOfMonth(new Date()),
@@ -20,7 +24,8 @@
   function groupByDay(appts){
     var map = new Map();
     appts.forEach(function(a){
-      if (String(a.status||'confirmed') !== 'confirmed') return;      var d = new Date((a.start_ts||0)*1000);
+      if (String(a.status||'confirmed') !== 'confirmed') return;
+      var d = new Date((a.start_ts||0)*1000);
       var key = d.getFullYear()+"-"+(d.getMonth()+1)+"-"+d.getDate();
       if(!map.has(key)) map.set(key, []);
       map.get(key).push(a);
@@ -51,63 +56,131 @@
     return String(apt.contact_phone||'Booking');
   }
 
+  function confirmedCount(appts){
+    return (appts || []).filter(function(a){ return String(a.status||'confirmed') === 'confirmed'; }).length;
+  }
+
+  function createNavButton(label, onClick){
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'calendar-nav-btn';
+    btn.setAttribute('aria-label', label);
+    btn.textContent = label;
+    btn.onclick = onClick;
+    return btn;
+  }
+
   function render(){
     var root = document.getElementById('calendarRoot');
     if(!root) return;
     root.innerHTML = '';
 
-    var toolbar = document.createElement('div');
-    toolbar.className = 'calendar-';
-    var left = document.createElement('button'); left.className='btn-ghost'; left.textContent='‹'; left.onclick=function(){ state.current = addMonths(state.current, -1); render(); };
-    var right = document.createElement('button'); right.className='btn-ghost'; right.textContent='›'; right.onclick=function(){ state.current = addMonths(state.current, 1); render(); };
-    var title = document.createElement('div'); title.className='calendar-title'; title.textContent = formatMonthYear(state.current);
-    var legend = document.createElement('div'); legend.className='calendar-legend'; legend.innerHTML = '<span class="swatch swatch-blue"></span> Appointments';
-    var leftWrap = document.createElement('div'); leftWrap.style.display='flex'; leftWrap.style.gap='8px'; leftWrap.appendChild(left); leftWrap.appendChild(right);
-    var rightWrap = document.createElement('div'); rightWrap.appendChild(legend);
-    toolbar.appendChild(title); toolbar.appendChild(leftWrap); toolbar.appendChild(rightWrap);
+    var wrap = document.createElement('div');
+    wrap.className = 'bookings-calendar';
 
-    var cal = document.createElement('div'); cal.className='calendar';
-    var grid = document.createElement('div'); grid.className='calendar-grid';
+    var toolbar = document.createElement('div');
+    toolbar.className = 'calendar-toolbar';
+
+    var navGroup = document.createElement('div');
+    navGroup.className = 'calendar-toolbar__left';
+    navGroup.appendChild(createNavButton('‹', function(){ state.current = addMonths(state.current, -1); render(); }));
+
+    var title = document.createElement('h2');
+    title.className = 'calendar-title';
+    title.textContent = formatMonthYear(state.current);
+    navGroup.appendChild(title);
+
+    navGroup.appendChild(createNavButton('›', function(){ state.current = addMonths(state.current, 1); render(); }));
+
+    var todayBtn = document.createElement('button');
+    todayBtn.type = 'button';
+    todayBtn.className = 'calendar-today-btn';
+    todayBtn.textContent = 'Today';
+    todayBtn.onclick = function(){ state.current = startOfMonth(new Date()); render(); };
+    navGroup.appendChild(todayBtn);
+
+    var meta = document.createElement('div');
+    meta.className = 'calendar-toolbar__right';
+    meta.innerHTML =
+      '<span class="calendar-stat"><strong>'+ confirmedCount(state.appts) +'</strong> upcoming</span>' +
+      '<span class="calendar-legend"><span class="swatch swatch-blue"></span>Appointments</span>';
+
+    toolbar.appendChild(navGroup);
+    toolbar.appendChild(meta);
+
+    var body = document.createElement('div');
+    body.className = 'calendar-body';
+
+    var grid = document.createElement('div');
+    grid.className = 'calendar-grid';
 
     var days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-    days.forEach(function(d){ var h=document.createElement('div'); h.className='calendar-dow'; h.textContent=d; grid.appendChild(h); });
+    days.forEach(function(d){
+      var h = document.createElement('div');
+      h.className = 'calendar-dow';
+      h.textContent = d;
+      grid.appendChild(h);
+    });
 
     var first = startOfMonth(state.current);
-    var last = endOfMonth(state.current);
     var startIdx = first.getDay();
-    var totalDays = last.getDate();
-
     var apptMap = groupByDay(state.appts);
+
     for(var i=0;i<42;i++){
-      var cell = document.createElement('div'); cell.className='calendar-cell';
-      var date = new Date(first); date.setDate(1 - startIdx + i);
+      var cell = document.createElement('div');
+      cell.className = 'calendar-cell';
+      var date = new Date(first);
+      date.setDate(1 - startIdx + i);
+
       if(date.getMonth() !== state.current.getMonth()) cell.classList.add('other-month');
-      var day = document.createElement('div'); day.className='day'; day.textContent=String(date.getDate());
-      var list = document.createElement('div'); list.className='calendar-events';
+      if(isToday(date)) cell.classList.add('is-today');
+
+      var day = document.createElement('div');
+      day.className = 'calendar-day-num';
+      if(isToday(date)) day.classList.add('is-today');
+      day.textContent = String(date.getDate());
+
+      var list = document.createElement('div');
+      list.className = 'calendar-events';
       var key = date.getFullYear()+"-"+(date.getMonth()+1)+"-"+date.getDate();
       var items = apptMap.get(key) || [];
       items.sort(function(a,b){ return a.start_ts - b.start_ts; });
-      items.forEach(function(a){
-        var ev = document.createElement('div'); ev.className='cal-event';
-        ev.textContent = extractName(a);
+
+      if(items.length > 0) cell.classList.add('has-events');
+
+      items.slice(0, 3).forEach(function(a){
+        var ev = document.createElement('div');
+        ev.className = 'cal-event';
+        ev.title = extractName(a) + ' · ' + formatTime(a.start_ts);
+        ev.innerHTML =
+          '<span class="cal-event__time">'+ formatTime(a.start_ts) +'</span>' +
+          '<span class="cal-event__name">'+ extractName(a) +'</span>';
         list.appendChild(ev);
       });
-      cell.appendChild(day); cell.appendChild(list);
+
+      if(items.length > 3){
+        var more = document.createElement('div');
+        more.className = 'calendar-more';
+        more.textContent = '+' + (items.length - 3) + ' more';
+        list.appendChild(more);
+      }
+
+      cell.appendChild(day);
+      cell.appendChild(list);
+
       if(items.length > 0){
         cell.style.cursor = 'pointer';
         (function(dateCopy, itemsCopy){
           cell.addEventListener('click', function(){ showDayModal(dateCopy, itemsCopy); });
         })(new Date(date), items.slice());
       }
+
       grid.appendChild(cell);
     }
 
-    cal.appendChild(grid);
-
-    var wrap = document.createElement('div');
-    wrap.className = 'calendar';
+    body.appendChild(grid);
     wrap.appendChild(toolbar);
-    wrap.appendChild(cal);
+    wrap.appendChild(body);
     root.appendChild(wrap);
   }
 
@@ -191,24 +264,21 @@
       if(act === 'save_notes'){
         var ta = content.querySelector('textarea[data-notes-for="'+id+'"]');
         var notes = ta ? ta.value : '';
-        try { console.log('[Calendar][Notes] PATCH start', { id, notes_len: (notes||'').length }); } catch(e){}
         fetch('/booking/'+id+'/notes', { method:'PATCH', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ notes: notes }) })
-          .then(function(r){ try { console.log('[Calendar][Notes] response', r.status); } catch(e){} return r.json(); })
+          .then(function(r){ return r.json(); })
           .then(function(){ ta.style.outline='2px solid #22c55e'; setTimeout(function(){ ta.style.outline=''; }, 800); })
-          .catch(function(err){ try { console.warn('[Calendar][Notes] error', err); } catch(e){} });
+          .catch(function(){});
       } else if (act === 'cancel'){
         if(!confirm('Cancel this booking?')) return;
-        try { console.log('[Calendar][Cancel] DELETE start', { id }); } catch(e){}
         fetch('/booking/'+id, { method:'DELETE' })
-          .then(function(r){ try { console.log('[Calendar][Cancel] response status', r.status); } catch(e){} return r.json().catch(function(){ return { ok:false, error:'invalid response'}; }).then(function(j){ return { ok:r.ok, status:r.status, body:j }; }); })
-          .then(function(resp){ try { console.log('[Calendar][Cancel] response body', resp); } catch(e){}
+          .then(function(r){ return r.json().catch(function(){ return { ok:false, error:'invalid response'}; }).then(function(j){ return { ok:r.ok, status:r.status, body:j }; }); })
+          .then(function(resp){
             if(!resp.ok || resp.body.ok === false){ alert('Failed to cancel booking'+ (resp.body && resp.body.error ? (': '+resp.body.error) : '')); return; }
             state.appts = state.appts.map(function(a){ var aid = String(a.id!=null?a.id:(a._id_str||a._id)); if(String(aid)===String(id)){ a.status='canceled'; } return a; });
-            try { console.log('[Calendar][Cancel] local state updated; closing modal'); } catch(e){}
             render();
             var m = document.getElementById('dayModal'); if (m) m.remove();
           })
-          .catch(function(err){ try { console.warn('[Calendar][Cancel] error', err); } catch(e){} });
+          .catch(function(){});
       } else if (act === 'reschedule'){
         var durationMs = 0;
         var ap = (state.appts || []).find(function(a){ var aid = String(a.id!=null?a.id:(a._id_str||a._id)); return String(aid)===String(id); });
@@ -218,14 +288,13 @@
         var s = new Date(newStart);
         if(isNaN(s.getTime())){ alert('Invalid date/time'); return; }
         var e = new Date(s.getTime() + durationMs);
-        try { console.log('[Calendar][Reschedule] PUT start', { id, start: s.toISOString(), end: e.toISOString() }); } catch(e){}
         fetch('/booking/'+id, { method:'PUT', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ start: s.toISOString(), end: e.toISOString() }) })
-          .then(function(r){ try { console.log('[Calendar][Reschedule] response', r.status); } catch(e){} return r.json(); })
+          .then(function(r){ return r.json(); })
           .then(function(){
             state.appts = state.appts.map(function(a){ var aid = String(a.id!=null?a.id:(a._id_str||a._id)); if(String(aid)===String(id)){ a.start_ts=Math.floor(s.getTime()/1000); a.end_ts=Math.floor(e.getTime()/1000); a.status='confirmed'; } return a; });
             render(); showDayModal(date, state.appts.filter(function(a){ return sameDay(new Date(a.start_ts*1000), date); }));
           })
-          .catch(function(err){ try { console.warn('[Calendar][Reschedule] error', err); } catch(e){} });
+          .catch(function(){});
       }
     });
   }

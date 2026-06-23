@@ -148,7 +148,9 @@ const settingsMultiSchema = new mongoose.Schema({
   smtp_secure: { type: Boolean, default: false },
   smtp_user: String,
   smtp_pass: String,
-  dashboard_preferences: String
+  dashboard_preferences: String,
+  ai_refining_rules: String,
+  refining_transcript: String
 }, {
   timestamps: true,
   collection: 'settings_multi'
@@ -454,7 +456,24 @@ const createIndexes = async () => {
       }
     } catch {}
     await Appointment.collection.createIndex({ user_id: 1, contact_phone: 1, start_ts: 1 }, { name: 'user_phone_startTs' });
-    await Appointment.collection.createIndex({ user_id: 1, id: 1 }, { name: 'user_legacy_appt_id', unique: true, sparse: true });
+    try {
+      const { backfillAppointmentLegacyIds } = await import('../services/booking.mjs');
+      const fixed = await backfillAppointmentLegacyIds();
+      if (fixed > 0) console.log(`Backfilled legacy appointment ids for ${fixed} document(s)`);
+    } catch (backfillError) {
+      logHelpers.logError(backfillError, { component: 'mongodb', operation: 'backfill_appointment_ids' });
+    }
+    try {
+      await Appointment.collection.dropIndex('user_legacy_appt_id');
+    } catch {}
+    await Appointment.collection.createIndex(
+      { user_id: 1, id: 1 },
+      {
+        name: 'user_legacy_appt_id',
+        unique: true,
+        partialFilterExpression: { id: { $type: 'number', $gt: 0 } },
+      }
+    );
     await SettingsAudit.collection.createIndex({ user_id: 1, createdAt: -1 }, { name: 'settings_audit_user' });
 
     console.log('MongoDB indexes created successfully');

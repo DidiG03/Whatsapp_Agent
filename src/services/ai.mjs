@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { normalizePhoneE164 } from "../utils.mjs";
-import { detectLanguage, languageInstruction, kbScopeGuidance, conversationalStyleGuidance, conversationContinuityInstruction, t as translate } from "./i18n.mjs";
+import { detectLanguage, languageInstruction, kbScopeGuidance, conversationalStyleGuidance, conversationContinuityInstruction, howAreYouReplyGuidance, isHowAreYouQuestion, isCustomerWellbeingReply, customerWellbeingReplyGuidance, isThankYouMessage, thanksReplyGuidance, t as translate } from "./i18n.mjs";
+import { formatRefiningRulesForPrompt } from "./refiningDirectives.mjs";
 
 // Resolve the reply language from an explicit hint, the current message, and
 // recent history, so the assistant consistently mirrors the customer.
@@ -98,16 +99,54 @@ async function createChat(params = {}) {
   return openai.chat.completions.create(body);
 }
 
-const LINE_PATTERNS = [
+const REFINING_LINE_PATTERNS = [
+  /^REPLY\|[^\n]+$/,
   /^ASK_MORE\|[^\n]+$/,
+  /^ADD_RULE\|.+$/,
+  /^REMOVE_RULE\|.+$/,
+  /^CLEAR_RULES$/,
   /^ADD_KB\|[^|\n]{1,60}\|.+$/,
   /^SET\|[a-z_]+\|.+$/,
-  /^COMPLETE$/,
 ];
+
+function isValidRefiningDslResponse(s) {
+  if (!s) return false;
+  if (/^```|```$|^\s*-/m.test(s)) return false;
+  const lines = s.trim().split(/\r?\n/).filter(Boolean);
+  if (!lines.length) return false;
+
+  let replyCount = 0;
+  let askMoreCount = 0;
+  let hasAddRule = false;
+
+  for (const line of lines) {
+    if (!REFINING_LINE_PATTERNS.some((p) => p.test(line))) return false;
+    if (line.startsWith("REPLY|")) replyCount++;
+    if (line.startsWith("ASK_MORE|")) askMoreCount++;
+    if (line.startsWith("ADD_RULE|")) hasAddRule = true;
+  }
+
+  if (askMoreCount > 1) return false;
+  if (replyCount > 1) return false;
+  if (askMoreCount === 1 && hasAddRule) return false;
+  if (askMoreCount === 1) return askMoreCount === 1;
+  return replyCount === 1;
+}
+
+function buildRefiningRulesBlock(options = {}) {
+  return formatRefiningRulesForPrompt(options?.refiningRules || "");
+}
 
 function isValidDslResponse(s) {
   if (!s) return false;
-  if (/^```|```$|^\s*-/m.test(s)) return false;  const lines = s.trim().split(/\r?\n/);
+  if (/^```|```$|^\s*-/m.test(s)) return false;
+  const LINE_PATTERNS = [
+    /^ASK_MORE\|[^\n]+$/,
+    /^ADD_KB\|[^|\n]{1,60}\|.+$/,
+    /^SET\|[a-z_]+\|.+$/,
+    /^COMPLETE$/,
+  ];
+  const lines = s.trim().split(/\r?\n/);
   if (!lines.length) return false;
   let askMore = 0;
   let hasComplete = false;
@@ -275,16 +314,25 @@ export async function generateAiReply(userMessage, contextSnippets, options = {}
     languageInstruction(lang),
     kbScopeGuidance(lang),
     conversationalStyleGuidance(lang),
-    conversationContinuityInstruction(conversationStarted, userMessageIsGreeting),
-    "Exception: For generic pleasantries (e.g., 'how are you', greetings, thanks, apologies, simple emojis), respond briefly and warmly WITHOUT using the out-of-scope phrase.",
+    conversationContinuityInstruction(conversationStarted, userMessageIsGreeting, userMessage),
+    isHowAreYouQuestion(userMessage) ? howAreYouReplyGuidance(lang) : "",
+    isCustomerWellbeingReply(userMessage) ? customerWellbeingReplyGuidance(lang) : "",
+    isThankYouMessage(userMessage) ? thanksReplyGuidance(lang) : "",
+    buildRefiningRulesBlock(options),
+    options?.refiningRules
+      ? (lang === "sq"
+        ? "Kur zbatohet një rregull i pronarit, përshëndet klientin nëse ka përshëndetur dhe mbyll me 'Faleminderit!' kur jep një përgjigje të plotë ose ridrejtim — mos u përgjigj vetëm me tekst politik pa ngrohtësi."
+        : "When applying an owner rule, greet the customer if they greeted you and end with 'Thank you!' when giving a complete answer or redirect — never deliver a dry policy-only reply.")
+      : "",
+    "Exception: For generic pleasantries (e.g., 'how are you', greetings, thanks, apologies, simple emojis), respond briefly and warmly WITHOUT using the out-of-scope phrase. For thanks, reciprocate (e.g. 'S'ka problem, faleminderit!'). Never say 'po jam këtu' or 'yes I'm here'.",
     "Never invent facts.",
     "Interpret typos, slang, dialect, and paraphrases generously.",
     blockedLine ? blockedLine : "",
     "Tone: " + tone + ". Style: " + style + ".",
     businessProfileLine ? businessProfileLine : "",
     mismatchGuidance ? mismatchGuidance : "",
-    "Booking guidance (no pickers): If the customer wants to book but is missing a date or time, ask for their preferred date/time in one short, friendly sentence.",
-    "Availability: if asked without a date range, ask which dates to check.",
+    "Booking guidance (no pickers): If the customer wants to book but is missing date, time, party size, or name, ask for ONE missing detail — never claim it is booked.",
+    "Availability: only discuss open times when the customer explicitly asks to see times; otherwise ask clarifying questions.",
     "Never claim a reservation or cancellation is confirmed, complete, or being sent — the server handles those actions.",
     "If Customer Profile shows an Upcoming appointment, use it when the user asks about their booking, cancel, or reschedule.",
   ].filter(Boolean).join("\n");
@@ -414,6 +462,11 @@ export async function answerFromKbFaq(userMessage, kbDoc, options = {}) {
     "Answer using ONLY the FAQ facts below — never invent details.",
     "Give a direct answer and stop. Do NOT add 'if you need anything else' or similar at the end.",
     "If the FAQ answer is 'Yes' or 'No', expand it into a natural, complete reply (not one word).",
+    options.conversationContextBrief
+      ? (lang === "sq"
+        ? "Përdor KONTEKSTIN E BISEDËS më poshtë — mos ripyet për fakte që klienti i ka dhënë tashmë."
+        : "Use CONVERSATION CONTEXT below — do not re-ask for facts the customer already provided.")
+      : "",
     options.shouldGreet
       ? (lang === "sq"
         ? "Mos përfshi përshëndetje — sistemi e shton automatikisht."
@@ -421,12 +474,21 @@ export async function answerFromKbFaq(userMessage, kbDoc, options = {}) {
       : "",
     `Tone: ${tone}. Style: ${style}.`,
     businessName ? `You represent ${businessName}.` : "",
+    buildRefiningRulesBlock(options),
+    options?.refiningRules
+      ? (lang === "sq"
+        ? "Kur zbatohet një rregull i pronarit, përshëndet klientin nëse ka përshëndetur dhe mbyll me 'Faleminderit!' kur jep një përgjigje të plotë ose ridrejtim — mos u përgjigj vetëm me tekst politik pa ngrohtësi."
+        : "When applying an owner rule, greet the customer if they greeted you and end with 'Thank you!' when giving a complete answer or redirect — never deliver a dry policy-only reply.")
+      : "",
   ].filter(Boolean).join("\n");
 
   const messages = [
     { role: "system", content: policy },
     { role: "system", content: `FAQ question: ${title}\nFAQ answer: ${content}` },
-  ];
+    options.conversationContextBrief
+      ? { role: "system", content: String(options.conversationContextBrief) }
+      : null,
+  ].filter(Boolean);
   for (const m of historyMessages.slice(-6)) {
     try {
       const role = m && (m.role === "assistant" || m.role === "user") ? m.role : "user";
@@ -491,8 +553,19 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
     `Tone: ${tone}. Style: ${style}.`,
     kbScopeGuidance(lang),
     conversationalStyleGuidance(lang),
-    conversationContinuityInstruction(conversationStarted, userMessageIsGreeting),
-    "Read the whole conversation and the customer's intent before replying. Acknowledge what they said, answer directly, and keep momentum toward what they actually want.",
+    conversationContinuityInstruction(conversationStarted, userMessageIsGreeting, userMessage),
+    isHowAreYouQuestion(userMessage) ? howAreYouReplyGuidance(lang) : "",
+    isCustomerWellbeingReply(userMessage) ? customerWellbeingReplyGuidance(lang) : "",
+    isThankYouMessage(userMessage) ? thanksReplyGuidance(lang) : "",
+    buildRefiningRulesBlock(options),
+    options?.refiningRules
+      ? (lang === "sq"
+        ? "Kur zbatohet një rregull i pronarit, përshëndet klientin nëse ka përshëndetur dhe mbyll me 'Faleminderit!' kur jep një përgjigje të plotë ose ridrejtim — mos u përgjigj vetëm me tekst politik pa ngrohtësi."
+        : "When applying an owner rule, greet the customer if they greeted you and end with 'Thank you!' when giving a complete answer or redirect — never deliver a dry policy-only reply.")
+      : "",
+    "Read the whole conversation and the customer's intent before replying. Acknowledge what they said, answer directly, and keep momentum toward what they actually want. Never say 'po jam këtu' or 'yes I'm here'.",
+    "Use CONVERSATION CONTEXT and LIVE SESSION CONTEXT as ground truth for facts already established in this thread — never re-ask for details the customer already provided.",
+    "When the customer changes topic (e.g. from booking to menu, hours, or location), answer the new question clearly first, then only if natural mention the earlier thread. Stay professional and never sound confused or contradictory.",
     "Mirror the customer's energy: match their pace, but stay warm — never reply with a dry one-liner when a fuller answer would feel more human.",
     blockedLine ? blockedLine : "",
     businessProfileLine ? businessProfileLine : "",
@@ -519,6 +592,51 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
     );
   }
 
+  if (options.conversationPhase === "booking_flow") {
+    systemParts.push(
+      lang === "sq"
+        ? "Je duke mbledhur detajet e rezervimit. Mos përsërit adresën ose vendndodhjen. Përdor intent book VETËM kur ke datën, orën, numrin e personave DHE emrin e klientit — përndryshe intent none dhe pyet për çfarë mungon (zakonisht emri)."
+        : "You are collecting booking details. Do not repeat the address or location. Use intent book ONLY when you have date, time, party size AND the customer's name — otherwise use intent none and ask for what is missing (usually their name)."
+    );
+  }
+
+  if (options.multiTopic && Array.isArray(options.messageTopics) && options.messageTopics.length > 1) {
+    const topicList = options.messageTopics.join(", ");
+    systemParts.push(
+      lang === "sq"
+        ? `Klienti bëri MË SHUMË SE NJË pyetje në të njëjtin mesazh (${topicList}). Përgjigju të GJITHA pjesëve në një përgjigje të vetme — mos injoro asnjë pyetje. Përdor 2–3 fjali të shkurtra ose lista me pika.`
+        : `The customer asked MORE THAN ONE question in the same message (${topicList}). Answer EVERY part in one cohesive reply — do not ignore any question. Use 2–3 short sentences or bullet points.`
+    );
+    if (options.messageTopics.includes("overview")) {
+      systemParts.push(
+        lang === "sq"
+          ? "Klienti kërkon info rreth restorantit/biznesit — përgjigju shkurt (çfarë jeni, stili, ushqimi) nga Docs/KB para pjesës së tjera."
+          : "They asked about the business itself — answer briefly (what you are, style, cuisine) from Docs/KB before any other part."
+      );
+    }
+    if (options.messageTopics.includes("location")) {
+      systemParts.push(
+        lang === "sq"
+          ? "Nëse pyet për vendndodhjen, përmend adresën shkurt vetëm për pjesën e vendndodhjes — harta GPS dërgohet veçmas. Mos e përsërit adresën kur vazhdon biseda për rezervim."
+          : "If they asked for location, mention the address briefly only for the location part — the GPS map pin is sent separately. Do not repeat the address when the conversation moves on to booking."
+      );
+    }
+    if (options.messageTopics.includes("booking") && features.bookings_enabled) {
+      systemParts.push(
+        lang === "sq"
+          ? "Nëse pyet nëse keni rezervime të lira ose dëshiron të rezervojë, përgjigju shkurt (p.sh. konfirmo datën) dhe pyet sa persona do të jenë — mos listo orare; serveri i liston vetëm kur klienti kërkon sugjerime."
+          : "If they asked whether you have reservations or want to book, answer briefly (e.g. confirm the date) and ask how many people — do not list time slots; the server only lists slots when they explicitly ask for suggestions."
+      );
+    }
+    if (options.messageTopics.includes("availability") && features.bookings_enabled) {
+      systemParts.push(
+        lang === "sq"
+          ? "Klienti kërkon sugjerime oraresh — përgjigju shkurt dhe përdor intent availability; serveri do të dërgojë listën e orareve pas mesazhit tënd."
+          : "They explicitly asked to see available times — reply briefly and use intent availability; the server will send the slot list after your message."
+      );
+    }
+  }
+
   if (isEscalationMode) {
     systemParts.push(
       "Escalation Mode is active: you must not fulfill or resolve the request yourself.",
@@ -539,15 +657,16 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
       "When the customer gives a date and/or time in ANY phrasing or language (e.g. 'tomorrow at 3', 'nesër ora 15:00', 'Friday afternoon', 'nesër në dark', 'next week'), capture it and pass it through as the intent — do not ask them to rephrase into a specific format.",
       "For evening/morning/afternoon WITHOUT a specific hour (e.g. 'nesër në dark', 'tomorrow evening'), that is NOT enough to book — use intent none and ask for an exact clock time. Do NOT list or offer available times unless they explicitly ask to see them.",
       "For evening/morning/afternoon requests, set intent.data.timeOfDay to 'morning', 'afternoon', or 'evening' (e.g. 'në dark' / 'in the evening' → evening) when relevant, but still use intent none until they give an exact hour.",
-      "Use intent type availability ONLY when the customer explicitly asks what times are free, which slots are open, or wants to see available options (e.g. 'what times do you have?', 'cilat orare keni?', 'a keni vende?'). A reservation request with only a daypart is NOT an availability request.",
-      "When the customer names a specific time (e.g. 'at 9:30', 'në orën 21:30', 'do you have seats at 9pm'), use intent type book — not availability.",
-      "You may plan ONE optional intent for the server to execute. Choose wisely and only if enough info is present.",
+      "Use intent type availability ONLY when the customer explicitly asks to see open times or wants slot suggestions (e.g. 'what times do you have?', 'cilat orare keni?', 'show me available times', 'shiko oraret'). Asking whether you have free reservations or tables for a date is NOT an availability request — use intent book or none and ask how many people.",
+      "Use intent type book ONLY when date, a specific clock time, party size, and the customer's name are all known in this conversation (or a real saved name from Customer Profile — never a phone number). If anything is missing — especially the name — use intent none and ask one short question.",
+      "When the customer names a specific time (e.g. 'at 9:30', 'në orën 21:30', '9') but their name is still missing, use intent none and ask for their name — do NOT use intent book yet.",
       "INTENT TYPES: availability, book, reschedule, cancel, update_name, handoff, none.",
       "For availability/book/reschedule intents, include the customer's natural date/time phrase in intent.data (e.g. data.datetime or data.range); the server will parse Albanian and English phrasing.",
-      "When the customer gives party size only (e.g. '5 persona') without a specific clock time in the SAME message, use intent none ONLY if date/time is not already established earlier in the thread — if they already gave date+time and now only add party size, use intent book with partySize and pass the datetime phrase from context.",
+      "When the customer gives party size only (e.g. '5 persona') without a specific clock time in the SAME message, use intent none ONLY if date/time is not already established earlier in the thread — if they already gave date+time and now only add party size, use intent none until you also have their name.",
       "Never include partySize in intent.data unless the customer stated it in this conversation. Do not say you are keeping or assuming a party size — ask how many people instead.",
       "When the customer gives their name, include intent.data.name — the server saves it. Do NOT include intent.data.reason or mention past visit reasons.",
-      "Do NOT claim a reservation is confirmed, complete, or being sent in your text — the server creates the calendar booking only after a specific time is chosen. You may acknowledge date/party size and ask for the missing exact time.",
+      "When the customer replies with their name ONLY after you asked for it (and date, time, and party size are already in the thread), use intent book with intent.data.name (and partySize if known). Your text should be a brief ack only — the SERVER creates the booking and sends the confirmation with ref #.",
+      "Do NOT claim a reservation is confirmed, complete, or being sent in your text — the server creates the calendar booking and sends ref # after intent book succeeds.",
       "If Docs include a Customer Profile with Upcoming (date/time and Ref #), use it when the user asks about their booking, wants to cancel, or reschedule — do not ask them to repeat details you already have.",
       "CANCEL FLOW (two steps): (1) User asks to cancel (question) → intent cancel; text = acknowledge the upcoming booking and ask them to confirm (e.g. 'po anuloje' / 'konfirmo'). Never say it is canceled or being processed. (2) User confirms → intent cancel; text = short ack only; the SERVER sends the final canceled confirmation.",
       "RESCHEDULE: never say the appointment is moved or that you are sending/processing the change — the server confirms after it updates the calendar. Use intent reschedule with data.datetime when a new time is given. For time-only changes (e.g. 'ne oren 9'), pass the new hour in data.datetime and keep the same date from context.",
@@ -574,11 +693,51 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
     "JSON examples (output one object only):",
     '{"text":"Sigurisht, a e anuloj rezervimin? Shkruaj \\"po anuloje\\" ose \\"konfirmo\\" për ta konfirmuar.","intent":{"type":"cancel"}}',
     '{"text":"Patjetër. Për cilën datë dhe në çfarë ore e doni rezervimin? Sa persona jeni?","intent":{"type":"none"}}',
-    '{"text":"Patjetër, nesër në orën 20:00 për 5 persona. Si quheni?","intent":{"type":"book","data":{"datetime":"nesër ora 20:00","partySize":5}}}',
+    '{"text":"Patjetër, nesër në orën 20:00 për 5 persona. Si quheni?","intent":{"type":"none"}}',
+    '{"text":"Faleminderit, Bashruti.","intent":{"type":"book","data":{"name":"Bashruti Kuki","partySize":5}}}',
     '{"text":"Patjetër, për nesër në mbrëmje. Cila orë saktësisht ju përshtatet?","intent":{"type":"none"}}',
     '{"text":"Po, ja disa orare të lira për nesër.","intent":{"type":"availability","data":{"datetime":"nesër","timeOfDay":"evening"}}}',
     '{"text":"Po, pranojmë karta krediti.","intent":{"type":"none"}}'
   );
+
+  const liveSessionBrief = String(options.liveSessionBrief || '').trim();
+  const conversationContextBrief = String(options.conversationContextBrief || '').trim();
+  const inferredIntent = options.inferredIntent || null;
+
+  if (inferredIntent?.type && inferredIntent.confidence >= 0.75) {
+    const inferredData = inferredIntent.data && typeof inferredIntent.data === "object"
+      ? JSON.stringify(inferredIntent.data)
+      : "{}";
+    systemParts.push(
+      lang === "sq"
+        ? `Sugjerim serveri (besueshmëri ${Math.round(inferredIntent.confidence * 100)}%): intent "${inferredIntent.type}" me data ${inferredData}. Përdore vetëm nëse përputhet me mesazhin e klientit — serveri ekzekuton intent-in pas përgjigjes.`
+        : `Server suggestion (confidence ${Math.round(inferredIntent.confidence * 100)}%): intent "${inferredIntent.type}" with data ${inferredData}. Use only if it matches the customer's message — the server executes the intent after your reply.`
+    );
+  }
+
+  if (options.conversationPhase && options.conversationPhase !== "general") {
+    systemParts.push(
+      lang === "sq"
+        ? `Faza e bisedës: ${options.conversationPhase}. Respekto udhëzimet e fazës — mos konfirmo veprime që serveri nuk i ka kryer ende.`
+        : `Conversation phase: ${options.conversationPhase}. Follow phase guidance — do not confirm actions the server has not completed yet.`
+    );
+  }
+
+  if (liveSessionBrief) {
+    systemParts.push(
+      "Use LIVE SESSION CONTEXT as ground truth for this customer's booking state.",
+      "When the customer asks about their reservation, answer directly from that context — never claim you cannot find a booking if Upcoming is listed.",
+      "Think step-by-step internally: (1) customer goal, (2) facts already known, (3) one missing detail — then write the JSON reply."
+    );
+  }
+
+  if (conversationContextBrief) {
+    systemParts.push(
+      lang === "sq"
+        ? "Përdor KONTEKSTIN E BISEDËS për të mbajtur vijimësinë kur klienti ndryshon pyetje. Mos u ngatërro dhe mos humb profesionalizmin."
+        : "Use CONVERSATION CONTEXT to stay oriented when the customer switches questions. Do not get confused and never drop professionalism."
+    );
+  }
 
   const system = systemParts.filter(Boolean).join("\n");
 
@@ -612,27 +771,17 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
     ? `Known customer name status: ${knownCustomerName ? knownCustomerName : 'not provided yet (collect it).'}`
     : '';
 
-  const liveSessionBrief = String(options.liveSessionBrief || '').trim();
-  const inferredIntent = options.inferredIntent || null;
-
-  if (liveSessionBrief) {
-    systemParts.push(
-      "Use LIVE SESSION CONTEXT as ground truth for this customer's booking state.",
-      "When the customer asks about their reservation, answer directly from that context — never claim you cannot find a booking if Upcoming is listed.",
-      "Think step-by-step internally: (1) customer goal, (2) facts already known, (3) one missing detail — then write the JSON reply."
-    );
-  }
-
   const messages = [
     { role: 'system', content: system },
     { role: 'system', content: 'Docs:\n' + context },
     { role: 'system', content: capabilityHint },
     liveSessionBrief ? { role: 'system', content: liveSessionBrief } : null,
+    conversationContextBrief ? { role: 'system', content: conversationContextBrief } : null,
     servicesLine ? { role: 'system', content: servicesLine } : null,
     escalationHeader ? { role: 'system', content: escalationHeader } : null,
     knownNameLine ? { role: 'system', content: knownNameLine } : null,
   ].filter(Boolean);
-  for (const m of historyMessages.slice(-10)) {
+  for (const m of historyMessages.slice(-16)) {
     try {
       const role = (m && (m.role === 'assistant' || m.role === 'user')) ? m.role : 'user';
       const content = String(m?.content || '').slice(0, 1000);
@@ -698,21 +847,22 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
       }
     }
 
-    const fallback = await generateAiReply(userMessage, contextSnippets, options);
-    const fb = fallback ? { text: fallback, intent: { type: 'none' } } : null;
-    if (fb && inferredIntent?.type && inferredIntent.confidence >= 0.85) {
-      fb.intent = { type: inferredIntent.type, data: inferredIntent.data || {} };
-    }
-    return fb;
+    const fallback = buildSafeAgentDecisionFallback(options.lang);
+    return fallback;
   } catch (e) {
     logOpenAiError(e, 'AI decision error');
-    try {
-      const fallback = await generateAiReply(userMessage, contextSnippets, options);
-      return fallback ? { text: fallback, intent: { type: 'none' } } : null;
-    } catch (_) {
-      return null;
-    }
+    return buildSafeAgentDecisionFallback(options.lang);
   }
+}
+
+function buildSafeAgentDecisionFallback(lang = "en") {
+  const sq = lang === "sq";
+  return {
+    text: sq
+      ? "Më fal, kam pasur një problem teknik. A mund ta përsëris pyetjen?"
+      : "Sorry, I had a small technical hiccup. Could you repeat your question?",
+    intent: { type: "none" },
+  };
 }
 
 function buildOnboardingSystem(tonePref, stylePref, blockedTopics) {
@@ -827,5 +977,119 @@ export async function onboardingCoachReply(userMessage, kbItems = [], historyTra
     out = "ASK_MORE|Could you share the key missing details (e.g., services/products offered, booking or shipping/returns info)?";
   }
 
+  return out.trim();
+}
+
+function buildRefiningSystem(tonePref, stylePref, blockedTopics, currentRules = "") {
+  const toneLine = tonePref ? `- Tone preference: ${String(tonePref)}.` : "";
+  const styleLine = stylePref ? `- Style preference: ${String(stylePref)}.` : "";
+  const blockedLine = blockedTopics ? `- Blocked topics: ${String(blockedTopics)}.` : "";
+  const rulesBlock = formatRefiningRulesForPrompt(currentRules);
+  return [
+    "You are a bot-refining copilot for a business owner using Code Orbit Agent on WhatsApp.",
+    "The owner describes how the customer-facing bot should behave. You turn their requests into durable bot rules and optional KB updates.",
+    "Follow the output protocol EXACTLY. No markdown, bullets, or code fences.",
+    "",
+    "Core behaviour:",
+    "- Reply in the owner's language from their message.",
+    "- Read the FULL conversation history before responding — owners often answer your earlier questions in short follow-ups.",
+    "- Do NOT save a vague rule. Ask follow-up questions until the instruction is specific enough for the customer bot to act on.",
+    "- Ask ONE clear question at a time via ASK_MORE| (you may ask many questions across turns).",
+    "- Only output ADD_RULE when you are confident the rule includes: trigger/situation (WHEN), action (THEN), and any critical details (numbers, phone, wording).",
+    "- If the owner gives a short reply (e.g. '30', 'call us', 'yes'), combine it with prior context from the transcript — do not treat it as a standalone new topic.",
+    toneLine,
+    styleLine,
+    blockedLine,
+    "- Never invent facts about the business (phone numbers, prices, policies). Ask if missing.",
+    "",
+    "Output ONLY these line types:",
+    "  ASK_MORE|<single clarifying question>",
+    "  REPLY|<short confirmation to the owner>",
+    "  ADD_RULE|<single imperative rule the customer bot must follow>",
+    "  REMOVE_RULE|<substring matching an existing rule to delete>",
+    "  CLEAR_RULES",
+    "  ADD_KB|<Title>|<Content>",
+    "  SET|<settings_key>|<value>",
+    "",
+    "When to ASK_MORE (no ADD_RULE in the same response):",
+    "- Instruction is vague ('be nicer', 'handle big groups', 'don't allow that').",
+    "- Missing threshold, phone number, exact wording, scope, or exception.",
+    "- You are unsure what situation the rule applies to.",
+    "",
+    "When to REPLY + ADD_RULE:",
+    "- You have enough detail to write a complete WHEN/THEN rule.",
+    "- Owner answered your clarifying questions.",
+    "- Owner gave a fully specified instruction in one message.",
+    "",
+    "When to REPLY only (no ADD_RULE):",
+    "- Simple acknowledgement when no rule change is needed.",
+    "",
+    "When to REPLY + REMOVE_RULE (or CLEAR_RULES):",
+    "- Owner asks to delete, remove, undo, or cancel a rule.",
+    "- Match REMOVE_RULE to distinctive words from the rule text (e.g. '30 people', 'large groups').",
+    "- Use CLEAR_RULES only when the owner wants to wipe every rule.",
+    "- Do NOT use ASK_MORE for clear removal requests.",
+    "",
+    "Allowed SET keys: ai_tone, ai_style, ai_blocked_topics, conversation_mode, business_phone, website_url, business_name.",
+    "",
+    "Example multi-turn:",
+    "Owner: 'Handle big bookings differently'",
+    "ASK_MORE|From how many people should the bot stop taking reservations by message and ask customers to call instead?",
+    "",
+    "Owner: '30'",
+    "ASK_MORE|What phone number or exact message should the bot give customers when that happens?",
+    "",
+    "Owner: '+355 69 123 4567'",
+    "REPLY|Done — large groups will be directed to call you.",
+    "ADD_RULE|When a customer requests a booking for more than 30 people, advise them to call +355 69 123 4567 directly. Do not complete large group bookings via WhatsApp message.",
+    "",
+    rulesBlock ? `\nCurrent active bot rules:\n${rulesBlock}` : "\nCurrent active bot rules: (none yet)",
+  ].filter(Boolean).join("\n");
+}
+
+function buildRefiningInstruction(historyTranscript, userMessage) {
+  const history = String(historyTranscript || "").slice(-MAX_HISTORY_CHARS);
+  return `
+Conversation history (latest last):
+${history || "(no history)"}
+
+Owner message:
+${String(userMessage || "").slice(0, 4000)}
+
+(Reply ONLY with valid DSL lines. Use ASK_MORE when you still need details — do NOT add ADD_RULE in the same response as ASK_MORE. When ready, use REPLY plus ADD_RULE.)
+`.trim();
+}
+
+export async function refiningCoachReply(userMessage, historyTranscript = "", options = {}) {
+  const system = buildRefiningSystem(
+    options?.tone,
+    options?.style,
+    options?.blockedTopics,
+    options?.currentRules || ""
+  );
+  const instruction = buildRefiningInstruction(historyTranscript, userMessage);
+
+  async function callOnce(extra = "") {
+    const resp = await createChat({
+      model: MODEL,
+      temperature: 0.2,
+      max_tokens: 700,
+      messages: [
+        { role: "system", content: system + extra },
+        { role: "user", content: `${instruction}\n\nOwner: ${userMessage}\nAssistant:` },
+      ],
+    });
+    return resp.choices?.[0]?.message?.content?.trim() || "";
+  }
+
+  let out = await callOnce();
+  if (!isValidRefiningDslResponse(out)) {
+    out = await callOnce(
+      "\n\nREMINDER: Output ONLY valid DSL lines. Use ASK_MORE| for one clarifying question when details are missing. Use REPLY| plus ADD_RULE| only when the rule is complete. Never combine ASK_MORE with ADD_RULE."
+    );
+  }
+  if (!isValidRefiningDslResponse(out)) {
+    out = "ASK_MORE|Could you share a bit more detail — for example when this should apply and what the bot should say or do?";
+  }
   return out.trim();
 }

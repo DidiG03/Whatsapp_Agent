@@ -38,6 +38,19 @@ export async function ensureAppointmentLegacyId(appt, userId) {
   }
 }
 
+export async function backfillAppointmentLegacyIds() {
+  const db = getDB();
+  const rows = await db.collection('appointments').find({
+    $or: [{ id: null }, { id: { $exists: false } }],
+  }).toArray();
+  let fixed = 0;
+  for (const row of rows) {
+    const id = await ensureAppointmentLegacyId(row, row.user_id);
+    if (id) fixed += 1;
+  }
+  return fixed;
+}
+
 export async function findAppointmentForUser({ userId, appointmentId, mongoId }) {
   const db = getDB();
   const uid = String(userId);

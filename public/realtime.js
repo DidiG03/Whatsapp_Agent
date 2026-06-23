@@ -331,6 +331,9 @@ class RealtimeManager {
   async sendMessage(phone, message, type = 'text', replyToMessageId = null) {
     try {
       this.stopTyping(phone);
+      const replyOriginal = replyToMessageId
+        ? this.getReplyPreviewFromDom(replyToMessageId)
+        : null;
       const body = {
         text: message,
         type,
@@ -368,7 +371,8 @@ class RealtimeManager {
           timestamp: nowTs,
           to_digits: String(phone),
           contact: String(phone),
-          delivery_status: 'sent'
+          delivery_status: 'sent',
+          replyOriginal: data.replyOriginal || replyOriginal || null
         });
       }
       if (data?.templateSent) {
@@ -576,6 +580,9 @@ class RealtimeManager {
       const thread = this.getChatMessagesEl();
       if (!thread) return false;
       if (message?.id && document.getElementById(`message-${message.id}`)) {
+        if (message.replyOriginal) {
+          this.ensureReplyPreviewOnMessage(message.id, message.replyOriginal, message?.direction || 'outbound');
+        }
         return true;
       }
       const emptyState = thread.querySelector('.chat-empty-state');
@@ -588,7 +595,8 @@ class RealtimeManager {
         container.setAttribute('data-message-id', message.id);
       }
       const bubble = document.createElement('div');
-      bubble.className = 'bubble';
+      const isVoice = (message?.type || '') === 'audio';
+      bubble.className = isVoice ? 'bubble bubble--voice' : 'bubble';
       const meta = this.formatTimestamp(message?.timestamp);
       const deliveryStatus = this.normalizeDeliveryStatus(message?.delivery_status || 'sent');
       const ticksHtml = message?.direction === 'outbound'
@@ -606,6 +614,15 @@ class RealtimeManager {
         <div class="meta">${meta}${ticksHtml}</div>
         ${actionsHtml}
       `;
+      if (message.replyOriginal) {
+        const previewWrap = document.createElement('div');
+        previewWrap.innerHTML = this.buildReplyPreviewHtml(
+          message.replyOriginal,
+          message?.direction || 'outbound'
+        ).trim();
+        const preview = previewWrap.firstElementChild;
+        if (preview) container.appendChild(preview);
+      }
       container.appendChild(bubble);
       const anchor = thread.querySelector('[data-thread-anchor]');
       if (anchor && anchor.parentElement === thread) {
@@ -614,6 +631,9 @@ class RealtimeManager {
         thread.appendChild(container);
       }
       this.scrollThreadToBottom(thread);
+      if (isVoice && typeof window.initVoiceMessages === 'function') {
+        window.initVoiceMessages(container);
+      }
       return true;
     } catch (error) {
       console.warn('Append message failed:', error?.message || error);
@@ -621,19 +641,163 @@ class RealtimeManager {
     }
   }
 
+  ensureReplyPreviewOnMessage(messageId, replyOriginal, replyDirection = 'outbound') {
+    const container = document.getElementById(`message-${messageId}`);
+    if (!container || container.querySelector('.reply-preview')) return;
+    const previewWrap = document.createElement('div');
+    previewWrap.innerHTML = this.buildReplyPreviewHtml(replyOriginal, replyDirection).trim();
+    const preview = previewWrap.firstElementChild;
+    const bubble = container.querySelector('.bubble');
+    if (preview && bubble) {
+      container.insertBefore(preview, bubble);
+    }
+  }
+
+  getReplyPreviewFromDom(messageId) {
+    const el = document.getElementById(`message-${messageId}`);
+    if (!el) return null;
+    const isInbound = el.classList.contains('msg-in');
+    const bubble = el.querySelector('.bubble');
+    let text = '[Media]';
+    if (bubble) {
+      const clone = bubble.cloneNode(true);
+      clone.querySelector('.meta')?.remove();
+      clone.querySelector('.message-actions')?.remove();
+      clone.querySelector('.message-reactions')?.remove();
+      const body = clone.querySelector('.wa-message-body');
+      text = (body ? body.textContent : clone.textContent || '').trim() || '[Media]';
+    }
+    return {
+      original_message_id: messageId,
+      direction: isInbound ? 'inbound' : 'outbound',
+      text_body: text
+    };
+  }
+
+  buildReplyPreviewHtml(originalMessage, replyDirection = 'outbound') {
+    if (!originalMessage?.original_message_id) return '';
+    const originalText = originalMessage.text_body || '[Media]';
+    const truncatedText = originalText.length > 40
+      ? `${originalText.substring(0, 40)}...`
+      : originalText;
+    const authorName = originalMessage.direction === 'inbound' ? 'Customer' : 'You';
+    const borderColor = replyDirection === 'inbound' ? '#3b82f6' : '#10b981';
+    const id = this.escapeHtml(originalMessage.original_message_id);
+    const safeText = this.escapeHtml(truncatedText);
+    return `
+      <div class="reply-preview" onclick="scrollToMessage('${id}')" style="cursor:pointer; margin:4px 0 2px 0;">
+        <div class="reply-preview-content" style="display:flex; gap:8px; align-items:flex-start; background:#f5f7f9; border-left:3px solid ${borderColor}; padding:6px 8px; border-radius:6px;">
+          <div style="flex:1; min-width:0;">
+            <div class="reply-preview-author" style="font-size:11px; color:#64748b; font-weight:600;">${authorName}</div>
+            <div class="reply-preview-text" style="font-size:12px; color:#111b21; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${safeText}</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  parseMessageRaw(message) {
+    const raw = message?.raw;
+    if (raw && typeof raw === 'object') return raw;
+    if (typeof raw === 'string') {
+      try { return JSON.parse(raw); } catch { return {}; }
+    }
+    return {};
+  }
+
+  resolveImageUrl(message) {
+    const direct = message?.imageUrl || message?.media_url;
+    if (direct) return direct;
+    const raw = this.parseMessageRaw(message);
+    let url = raw?.image?.link || raw?.imageUrl;
+    if (!url && raw?.image?.id && this.userId) {
+      url = `/wa-media/${encodeURIComponent(String(this.userId))}/${encodeURIComponent(String(raw.image.id))}`;
+    }
+    return url || null;
+  }
+
+  resolveDocumentUrl(message) {
+    const direct = message?.documentUrl || message?.media_url;
+    if (direct) return direct;
+    const raw = this.parseMessageRaw(message);
+    return raw?.document?.link || raw?.documentUrl || null;
+  }
+
+  resolveAudioUrl(message) {
+    const direct = message?.audioUrl || (message?.type === 'audio' ? message?.media_url : null);
+    if (direct) return direct;
+    const raw = this.parseMessageRaw(message);
+    let url = raw?.audio?.link || raw?.audioUrl;
+    if (!url && raw?.audio?.id && this.userId) {
+      url = `/wa-media/${encodeURIComponent(String(this.userId))}/${encodeURIComponent(String(raw.audio.id))}`;
+    }
+    return url || null;
+  }
+
+  renderImageHtml(url) {
+    const safe = this.escapeHtml(url);
+    return `<div style="margin:8px 0;"><img src="${safe}" style="max-width:200px; max-height:200px; border-radius:8px; object-fit:cover; cursor:pointer;" alt="Image" onclick="window.open('${safe}', '_blank')" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';"/><div style="display:none; padding:8px; background:#f0f0f0; border-radius:8px; font-size:12px; color:#666;">[Image failed to load]</div></div>`;
+  }
+
+  renderAudioHtml(url, transcript = '', messageId = '') {
+    const safe = this.escapeHtml(url);
+    const safeId = this.escapeHtml(String(messageId || ''));
+    const bars = Array.from({ length: 14 }, (_, i) => {
+      const h = 6 + ((i * 7) % 18);
+      return `<span style="--vh:${h}px"></span>`;
+    }).join('');
+    const transcriptHtml = String(transcript || '').trim()
+      ? `<div class="voice-message__transcript">${this.escapeHtml(transcript).replace(/\n/g, '<br/>')}</div>`
+      : '';
+    return `
+      <div class="voice-message" data-message-id="${safeId}">
+        <button type="button" class="voice-message__play" aria-label="Play voice message" onclick="window.toggleVoiceMessage && window.toggleVoiceMessage(this)">&#9654;</button>
+        <div class="voice-message__track">
+          <div class="voice-message__wave" aria-hidden="true">${bars}</div>
+          <div class="voice-message__footer">
+            <span class="voice-message__label">Voice message</span>
+            <span class="voice-message__duration">--:--</span>
+          </div>
+        </div>
+        <audio class="voice-message__audio" preload="auto" src="${safe}"></audio>
+      </div>
+      ${transcriptHtml}
+    `.trim();
+  }
+
   formatMessageBody(message) {
     const type = message?.type || 'text';
+    if (type === 'image') {
+      const imageUrl = this.resolveImageUrl(message);
+      if (imageUrl) return this.renderImageHtml(imageUrl);
+      return '[image]';
+    }
+    if (type === 'document') {
+      const documentUrl = this.resolveDocumentUrl(message);
+      if (documentUrl) {
+        const name = this.escapeHtml(message.documentName || message.text_body || 'Document');
+        return `<a href="${this.escapeHtml(documentUrl)}" target="_blank" rel="noopener">📎 ${name}</a>`;
+      }
+      return this.escapeHtml(message?.text_body || '[document]');
+    }
     if (type === 'text') {
       const body = message?.text_body || message?.text || '';
+      if (body.trim() === '[image]' || message?.media_url || message?.imageUrl) {
+        const imageUrl = this.resolveImageUrl(message);
+        if (imageUrl) return this.renderImageHtml(imageUrl);
+      }
       return this.escapeHtml(body).replace(/\n/g, '<br/>');
     }
-    if (type === 'image' && message?.imageUrl) {
-      return `<img src="${this.escapeHtml(message.imageUrl)}" alt="Image" style="max-width:200px;border-radius:8px;" />`;
+    if (type === 'audio') {
+      const audioUrl = this.resolveAudioUrl(message);
+      const transcript = message?.text_body || message?.text || '';
+      if (audioUrl) return this.renderAudioHtml(audioUrl, transcript, message?.id);
+      if (String(transcript || '').trim()) {
+        return `🎤 ${this.escapeHtml(transcript).replace(/\n/g, '<br/>')}`;
+      }
+      return '[audio]';
     }
-    if (type === 'document' && message?.documentUrl) {
-      const name = this.escapeHtml(message.documentName || 'Document');
-      return `<a href="${this.escapeHtml(message.documentUrl)}" target="_blank" rel="noopener">📎 ${name}</a>`;
-    }
+    if (type === 'video') return '[video]';
     return this.escapeHtml(message?.text_body || `[${type}]`);
   }
 
@@ -836,3 +1000,85 @@ class RealtimeManager {
     try { manager.destroy(); } catch {}
   });
 })();
+
+function formatVoiceDuration(audioEl) {
+  const wrap = audioEl?.closest?.('.voice-message');
+  const label = wrap?.querySelector('.voice-message__duration');
+  if (!label || !audioEl) return false;
+  const raw = Number(audioEl.duration);
+  if (!Number.isFinite(raw) || raw <= 0 || raw === Infinity) return false;
+  const s = Math.max(0, Math.round(raw));
+  const m = Math.floor(s / 60);
+  const r = String(s % 60).padStart(2, '0');
+  label.textContent = `${m}:${r}`;
+  return true;
+}
+
+function bindVoiceAudio(audio) {
+  if (!audio || audio._voiceDurationBound) return;
+  audio._voiceDurationBound = true;
+  const tryUpdate = () => formatVoiceDuration(audio);
+  ['loadedmetadata', 'durationchange', 'loadeddata', 'canplay', 'canplaythrough'].forEach((ev) => {
+    audio.addEventListener(ev, tryUpdate);
+  });
+  audio.addEventListener('error', () => {
+    const label = audio.closest('.voice-message')?.querySelector('.voice-message__duration');
+    if (label && label.textContent === '--:--') label.textContent = '0:00';
+  });
+  let attempts = 0;
+  const poll = () => {
+    if (tryUpdate() || attempts >= 12) return;
+    attempts += 1;
+    setTimeout(poll, 250);
+  };
+  try { audio.load(); } catch {}
+  poll();
+}
+
+function toggleVoiceMessage(btn) {
+  const wrap = btn?.closest?.('.voice-message');
+  const audio = wrap?.querySelector('.voice-message__audio');
+  if (!audio) return;
+  document.querySelectorAll('.voice-message__audio').forEach((a) => {
+    if (a === audio) return;
+    a.pause();
+    const otherBtn = a.closest('.voice-message')?.querySelector('.voice-message__play');
+    const otherWrap = a.closest('.voice-message');
+    if (otherBtn) {
+      otherBtn.innerHTML = '&#9654;';
+      otherBtn.classList.remove('is-playing');
+    }
+    otherWrap?.classList.remove('is-playing');
+  });
+  if (audio.paused) {
+    audio.play().catch(() => {});
+    formatVoiceDuration(audio);
+    btn.innerHTML = '&#10074;&#10074;';
+    btn.classList.add('is-playing');
+    wrap.classList.add('is-playing');
+  } else {
+    audio.pause();
+    btn.innerHTML = '&#9654;';
+    btn.classList.remove('is-playing');
+    wrap.classList.remove('is-playing');
+  }
+  if (!audio._voiceBound) {
+    audio._voiceBound = true;
+    audio.addEventListener('ended', () => {
+      btn.innerHTML = '&#9654;';
+      btn.classList.remove('is-playing');
+      wrap.classList.remove('is-playing');
+    });
+  }
+}
+
+function initVoiceMessages(root = document) {
+  root.querySelectorAll('.voice-message__audio').forEach(bindVoiceAudio);
+}
+
+if (typeof window !== 'undefined') {
+  window.toggleVoiceMessage = toggleVoiceMessage;
+  window.formatVoiceDuration = formatVoiceDuration;
+  window.initVoiceMessages = initVoiceMessages;
+  document.addEventListener('DOMContentLoaded', () => initVoiceMessages(), { once: true });
+}

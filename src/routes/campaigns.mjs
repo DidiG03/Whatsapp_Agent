@@ -7,6 +7,48 @@ import { getPlanStatus } from "../services/usage.mjs";
 import { enqueueOutboundMessage } from "../jobs/outboundQueue.mjs";
 import { sendTemplateStatusEmail } from "../services/email.mjs";
 import { sendWhatsAppText, sendWhatsAppTemplate } from "../services/whatsapp.mjs";
+import {
+  buildTemplateNotFoundMessage,
+  fetchMetaApprovedTemplates,
+  fetchMetaTemplateLanguages,
+  markStaleTemplates,
+  orderMetaLanguages,
+  templateSyncKey,
+} from "../services/waTemplates.mjs";
+
+const TEMPLATE_CATEGORIES = ["UTILITY", "MARKETING", "AUTHENTICATION"];
+
+function normalizeTemplateCategory(raw) {
+  const value = String(raw || "").trim().toUpperCase();
+  if (TEMPLATE_CATEGORIES.includes(value)) return value;
+  if (/GENERAL|FOLLOW|REOPEN|SERVICE|CUSTOMER|BOOKING|RESERVATION/.test(value)) return "UTILITY";
+  if (/PROMO|SALE|ADS|CAMPAIGN/.test(value)) return "MARKETING";
+  if (/OTP|VERIFY|AUTH|CODE|LOGIN/.test(value)) return "AUTHENTICATION";
+  return "UTILITY";
+}
+
+function summarizeMetaGraphError(rawText, statusCode) {
+  const raw = String(rawText || "").trim();
+  let detail = raw;
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      detail = parsed?.error?.error_user_msg || parsed?.error?.message || raw;
+    } catch {}
+  }
+  const detailText = String(detail || "").trim();
+  if (/session has expired|access token.*expired|error validating access token/i.test(detailText)) {
+    return "WhatsApp access token expired. Open Settings → WhatsApp, generate a new token in Meta Developer Console, paste it, and save.";
+  }
+  if (statusCode === 401 || statusCode === 403) {
+    return detailText
+      ? `WhatsApp authorization failed (${statusCode}): ${detailText.slice(0, 180)}`
+      : `WhatsApp authorization failed (${statusCode}). Update your access token in Settings → WhatsApp.`;
+  }
+  if (detailText) return detailText.slice(0, 240);
+  if (statusCode) return `Meta API request failed (${statusCode}).`;
+  return "Meta request failed. Check your token/WABA and fields, then try again.";
+}
 
 export default function registerCampaignRoutes(app) {
   app.get("/campaigns", ensureAuthed, async (req, res) => {
@@ -103,7 +145,8 @@ export default function registerCampaignRoutes(app) {
       const lang = String(t.language || 'en_US');
       const isDefault = defaultTemplateName && defaultTemplateName === name && defaultTemplateLang === lang;
       const status = String(t.status || 'submitted');
-      const submittedAt = new Date(t.createdAt || Date.now()).toLocaleString();
+      const onMeta = status.toUpperCase() !== 'NOT_ON_META';
+      const submittedAt = new Date(t.updatedAt || t.createdAt || Date.now()).toLocaleString();
       const quality = (t.quality_score || '').toString();
       const category = (t.category || '').toString();
 
@@ -121,13 +164,16 @@ export default function registerCampaignRoutes(app) {
           }
         }
       } catch {}
-      const actionCell = isDefault
+      const actionCell = !onMeta
+        ? '<span class="small muted" title="Not on your connected WhatsApp account. Re-submit in Meta or pick another template.">Not on account</span>'
+        : isDefault
         ? '<span class="small muted">24h reopen default</span>'
         : `<form method="get" action="/campaigns/templates/default" style="margin:0;">
              <input type="hidden" name="name" value="${escapeHtml(name)}"/>
              <input type="hidden" name="language" value="${escapeHtml(lang)}"/>
              <button class="meta-ghost text-xs" type="submit" style="padding:4px 8px;">Use for 24h reopen</button>
            </form>`;
+      const statusLabel = status.toUpperCase() === 'NOT_ON_META' ? 'Not on account' : status;
       const nameCell = `
         <button type="button"
                 class="js-template-preview"
@@ -147,7 +193,7 @@ export default function registerCampaignRoutes(app) {
       <tr>
         <td>${nameCell}</td>
         <td class="small">${escapeHtml(lang)}</td>
-        <td><span class="badge ${status}">${escapeHtml(status)}</span></td>
+        <td><span class="badge ${escapeHtml(status)}">${escapeHtml(statusLabel)}</span></td>
         <td class="small">${submittedAt}</td>
         <td class="small">${actionCell}</td>
       </tr>`;
@@ -181,6 +227,7 @@ export default function registerCampaignRoutes(app) {
           .meta-table tbody tr:hover { background:#f9fafb; }
           .badge { padding:4px 8px; border-radius:9999px; font-size:var(--font-size-xs); border:1px solid #e5e7eb; background:#f9fafb; }
           .badge.APPROVED { background:#ecfdf5; color:#065f46; border-color:#a7f3d0; }
+          .badge.NOT_ON_META { background:#fef2f2; color:#991b1b; border-color:#fecaca; }
           .badge.submitted { background:#fef3c7; color:#92400e; border-color:#fde68a; }
           .small.muted { color:#64748b; }
         </style>
@@ -199,9 +246,6 @@ export default function registerCampaignRoutes(app) {
                     <button class="btn btn-ghost" type="submit" title="Pull approved templates from Meta">Sync from Meta</button>
                   </form>
                 `)}
-                <div class="alert-banner alert-banner--info" style="margin-bottom:16px;">
-                  <p class="alert-banner__copy" style="margin:0;">Templates are required for messages sent outside the 24-hour customer care window.</p>
-                </div>
                 <!-- Modals (reuse global day-modal styles) -->
                 <style>.meta-form-vertical { display:grid; grid-template-columns: 1fr; gap:10px; }</style>
 
@@ -247,10 +291,15 @@ export default function registerCampaignRoutes(app) {
                     </div>
                     <div class="day-modal-body">
                       <form method="post" action="/campaigns/templates/submit" class="meta-form-vertical">
-                        <input class="settings-field meta-input" name="name" placeholder="Template name" required />
-                        <input class="settings-field meta-input" name="language" placeholder="Language (e.g., en_US)" required />
-                        <input class="settings-field meta-input" name="category" placeholder="Category (e.g., MARKETING)" />
-                        <textarea class="settings-field meta-textarea" name="body" placeholder="Template body" rows="4" required></textarea>
+                        <input class="settings-field meta-input" name="name" placeholder="Template name (e.g. ullishtja_followup)" required />
+                        <input class="settings-field meta-input" name="language" placeholder="Language code (Albanian: sq, English US: en_US)" required />
+                        <p class="small muted" style="margin:-4px 0 8px;">Albanian templates use language code <strong>sq</strong>. Write the body in Albanian — Meta does not auto-translate.</p>
+                        <select class="settings-field meta-select" name="category" required>
+                          <option value="UTILITY" selected>UTILITY — follow-ups, booking updates, 24h reopen</option>
+                          <option value="MARKETING">MARKETING — promotions and offers</option>
+                          <option value="AUTHENTICATION">AUTHENTICATION — OTP / verification codes</option>
+                        </select>
+                        <textarea class="settings-field meta-textarea" name="body" placeholder="Template body in Albanian, e.g. Pershendetje! Po ju shkruajme per rezervimin tuaj..." rows="4" required></textarea>
                         <button class="meta-primary" type="submit">Submit for Approval</button>
                       </form>
                     </div>
@@ -425,16 +474,24 @@ export default function registerCampaignRoutes(app) {
   app.get("/campaigns/templates/default", ensureAuthed, async (req, res) => {
     try {
       const userId = getCurrentUserId(req);
-      const rawName = String(req.body?.name || '').trim();
-      const language = String(req.body?.language || 'en_US').trim();
+      const rawName = String(req.query?.name || req.body?.name || '').trim();
+      const language = String(req.query?.language || req.body?.language || 'en_US').trim();
       if (!rawName || !language) {
         return res.redirect('/campaigns?toast=' + encodeURIComponent('Missing template name or language.') + '&type=error');
       }
+      const cfg = await getSettingsForUser(userId);
+      const metaLangs = await fetchMetaTemplateLanguages(cfg, rawName);
+      if (!metaLangs.length) {
+        const approved = await fetchMetaApprovedTemplates(cfg);
+        const msg = buildTemplateNotFoundMessage(rawName, approved);
+        return res.redirect('/campaigns?toast=' + encodeURIComponent(msg) + '&type=error');
+      }
+      const resolvedLang = orderMetaLanguages(language, metaLangs)[0] || metaLangs[0] || language;
       await upsertSettingsForUser(userId, {
         wa_template_name: rawName,
-        wa_template_language: language
+        wa_template_language: resolvedLang
       });
-      return res.redirect('/campaigns?toast=' + encodeURIComponent(`Default 24h reopen template set to "${rawName}" (${language}).`) + '&type=success');
+      return res.redirect('/campaigns?toast=' + encodeURIComponent(`Default 24h reopen template set to "${rawName}" (${resolvedLang}).`) + '&type=success');
     } catch (e) {
       console.error('Set default template error:', e?.message || e);
       return res.redirect('/campaigns?toast=' + encodeURIComponent('Failed to update default 24h reopen template.') + '&type=error');
@@ -448,7 +505,7 @@ export default function registerCampaignRoutes(app) {
 
       const rawName = String(req.body?.name || '').trim();
       const language = String(req.body?.language || 'en_US').trim();
-      const category = String(req.body?.category || 'MARKETING').trim();
+      const category = normalizeTemplateCategory(req.body?.category || 'UTILITY');
       const bodyText = String(req.body?.body || '').trim();
       if (!rawName || !language || !bodyText) {
         return res.redirect('/campaigns?toast=' + encodeURIComponent('Missing template name, language or body') + '&type=error');
@@ -500,7 +557,8 @@ export default function registerCampaignRoutes(app) {
 
       if (!createOk) {
         console.warn('[Templates][Create] Meta API error', { status: respStatus, text: respText?.slice?.(0,200) });
-        return res.redirect('/campaigns?toast=' + encodeURIComponent('Meta template create failed. Check your token/WABA and fields, then try again.') + '&type=error');
+        const msg = summarizeMetaGraphError(respText, respStatus);
+        return res.redirect('/campaigns?toast=' + encodeURIComponent(msg) + '&type=error');
       }
       try {
         await db.collection('wa_templates').updateOne(
@@ -534,7 +592,7 @@ export default function registerCampaignRoutes(app) {
         });
         if (!phoneResp.ok) {
           const text = await phoneResp.text().catch(()=>String(phoneResp.status));
-          throw new Error(`Phone lookup failed ${phoneResp.status}: ${text.slice(0,120)}`);
+          throw new Error(summarizeMetaGraphError(text, phoneResp.status));
         }
         const phoneJson = await phoneResp.json();
         wabaId = phoneJson?.whatsapp_business_account?.id;
@@ -542,6 +600,7 @@ export default function registerCampaignRoutes(app) {
       }
       let url = `https://graph.facebook.com/v20.0/${encodeURIComponent(String(wabaId))}/message_templates?limit=100`;
       let count = 0;
+      const seenKeys = new Set();
       while (url) {
         if (Date.now() - startedAt > SYNC_TIME_BUDGET_MS) {
           hitTimeBudget = true;
@@ -549,7 +608,10 @@ export default function registerCampaignRoutes(app) {
         }
 
         const r = await fetch(url, { headers: { Authorization: `Bearer ${cfg.whatsapp_token}` } });
-        if (!r.ok) throw new Error(`Templates fetch failed ${r.status}`);
+        if (!r.ok) {
+          const text = await r.text().catch(() => String(r.status));
+          throw new Error(summarizeMetaGraphError(text, r.status));
+        }
         const j = await r.json();
         const data = Array.isArray(j?.data) ? j.data : [];
         for (const t of data) {
@@ -559,11 +621,15 @@ export default function registerCampaignRoutes(app) {
             language: t?.language || null
           };
           const existing = await db.collection('wa_templates').findOne(key);
+          const bodyComp = Array.isArray(t?.components)
+            ? t.components.find((c) => String(c?.type || '').toUpperCase() === 'BODY')
+            : null;
           const setDoc = {
             category: t?.category || null,
             status: t?.status || null,
             quality_score: t?.quality_score || null,
             components: t?.components || [],
+            body: bodyComp?.text || null,
             last_updated_time: t?.last_updated_time ? new Date(t.last_updated_time) : null,
             updatedAt: new Date()
           };
@@ -572,6 +638,7 @@ export default function registerCampaignRoutes(app) {
             { $set: setDoc, $setOnInsert: { user_id: key.user_id, name: key.name, language: key.language, createdAt: new Date() } },
             { upsert: true }
           );
+          seenKeys.add(templateSyncKey(key.name, key.language));
           const oldStatus = existing?.status ? String(existing.status) : null;
           const newStatus = setDoc.status ? String(setDoc.status) : null;
           if (newStatus && newStatus !== oldStatus) {
@@ -600,18 +667,25 @@ export default function registerCampaignRoutes(app) {
         if (reachedLimit || hitTimeBudget) break;
         url = j?.paging?.next || null;
       }
+
+      let staleCount = 0;
+      if (!reachedLimit && !hitTimeBudget) {
+        staleCount = await markStaleTemplates(db, userId, seenKeys, { onlyIfComplete: true });
+      }
+
       let msg;
-      if (!count) {
+      if (!count && !staleCount) {
         msg = 'No template changes found';
       } else if (reachedLimit || hitTimeBudget) {
         msg = `Synced ${count} template${count===1?'':'s'} from Meta (partial sync; run again to continue)`;
       } else {
         msg = `Synced ${count} template${count===1?'':'s'} from Meta`;
+        if (staleCount) msg += `. Marked ${staleCount} local template${staleCount===1?'':'s'} as not on this account.`;
       }
       return res.redirect('/campaigns?toast=' + encodeURIComponent(msg) + '&type=success');
     } catch (e) {
       console.error('Templates sync error:', e?.message || e);
-      const errMsg = e?.message ? `Sync failed: ${e.message}` : 'Sync failed';
+      const errMsg = String(e?.message || 'Sync failed').replace(/^Sync failed:\s*/i, '');
       return res.redirect('/campaigns?toast=' + encodeURIComponent(errMsg) + '&type=error');
     }
   }

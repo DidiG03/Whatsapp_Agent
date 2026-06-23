@@ -30,6 +30,7 @@ import registerStripeRoutes from "./routes/stripe.mjs";
 import registerRealtimeRoutes from "./routes/realtime.mjs";
 import registerMonitoringRoutes from "./routes/monitoring.mjs";
 import registerUsageRoutes from "./routes/usage.mjs";
+import registerRefiningRoutes from "./routes/refining.mjs";
 import { initOutboundQueue } from "./jobs/outboundQueue.mjs";
 
 export async function createApp() {
@@ -236,6 +237,7 @@ export async function createApp() {
   registerRealtimeRoutes(app);
   registerMonitoringRoutes(app);
   registerUsageRoutes(app);
+  registerRefiningRoutes(app);
   registerWebhookRoutes(app);
   registerMiscRoutes(app);
   app.use('/webhook', webhookLimiter);

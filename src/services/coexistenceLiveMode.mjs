@@ -2,6 +2,9 @@ import { getDB } from "../db-mongodb.mjs";
 import { normalizePhone } from "../utils.mjs";
 import { upsertHandoffForContact } from "./handoff.mjs";
 import { updateConversationStatus, CONVERSATION_STATUSES } from "./conversationStatus.mjs";
+import { recordOutboundMessage } from "./messages.mjs";
+import { createReply, getReplyOriginalMeta } from "./replies.mjs";
+import { broadcastNewMessage } from "../routes/realtime.mjs";
 
 export function isCoexistenceAutoLiveEnabled() {
   const v = String(process.env.COEXISTENCE_AUTO_LIVE_MODE ?? "1").toLowerCase();
@@ -54,8 +57,81 @@ function echoCustomerPhone(echo = {}) {
 
 function shouldAutoLiveForEcho({ echo, source }) {
   if (source === "smb_message_echoes") return true;
-  // message_echoes can include Cloud API sends on some accounts — caller filters those out.
   return source === "message_echoes";
+}
+
+function echoMessageText(echo = {}) {
+  const type = String(echo.type || "text");
+  if (type === "text") return echo.text?.body || null;
+  if (type === "image") return echo.image?.caption || "📷 Image";
+  if (type === "document") return echo.document?.caption || echo.document?.filename || "📄 Document";
+  if (type === "audio") return "🎵 Audio";
+  if (type === "video") return echo.video?.caption || "🎬 Video";
+  return `[${type}]`;
+}
+
+export async function recordAndBroadcastStaffEcho({ userId, echo, cfg, metadata }) {
+  const messageId = String(echo?.id || "").trim();
+  if (!userId || !messageId) return { recorded: false, reason: "missing_data" };
+
+  if (await isKnownApiOutboundMessage(userId, messageId)) {
+    return { recorded: false, reason: "api_outbound" };
+  }
+
+  const customerPhone = echoCustomerPhone(echo);
+  if (!customerPhone) return { recorded: false, reason: "no_customer" };
+
+  const type = String(echo.type || "text");
+  const text = echoMessageText(echo);
+  const settings = cfg || {
+    business_phone: metadata?.display_phone_number?.replace(/\D/g, "") || null,
+    user_id: userId
+  };
+
+  const recorded = await recordOutboundMessage({
+    messageId,
+    userId,
+    cfg: { ...settings, user_id: userId },
+    to: customerPhone,
+    type,
+    text,
+    raw: echo
+  });
+  if (!recorded) return { recorded: false, reason: "duplicate" };
+
+  const replyToId = echo.context?.message_id;
+  let replyOriginal = null;
+  if (replyToId) {
+    try {
+      await createReply(replyToId, messageId);
+      replyOriginal = await getReplyOriginalMeta(userId, replyToId);
+    } catch {}
+  }
+
+  const timestamp = echo.timestamp ? Number(echo.timestamp) : Math.floor(Date.now() / 1000);
+  let imageUrl = null;
+  if (type === "image" && echo.image) {
+    imageUrl = echo.image.link || null;
+    if (!imageUrl && echo.image.id) {
+      imageUrl = `/wa-media/${encodeURIComponent(String(userId))}/${encodeURIComponent(String(echo.image.id))}`;
+    }
+  }
+  try {
+    await broadcastNewMessage(userId, customerPhone, {
+      id: messageId,
+      direction: "outbound",
+      type,
+      text_body: text,
+      timestamp,
+      to_digits: customerPhone,
+      contact: customerPhone,
+      delivery_status: "sent",
+      ...(imageUrl ? { imageUrl, media_url: imageUrl } : {}),
+      ...(replyOriginal ? { replyOriginal } : {})
+    });
+  } catch {}
+
+  return { recorded: true, customerPhone, messageId };
 }
 
 export async function activateStaffLiveModeFromEcho({
@@ -119,6 +195,8 @@ export async function handleCoexistenceMessageEchoes({
   tenantUserId,
   change,
   webhookField = null,
+  cfg = null,
+  metadata = null,
 }) {
   if (!tenantUserId || !change) return { handled: 0, results: [] };
 
@@ -128,6 +206,16 @@ export async function handleCoexistenceMessageEchoes({
   const results = [];
   for (const { echo, source } of echoes) {
     try {
+      try {
+        await recordAndBroadcastStaffEcho({
+          userId: tenantUserId,
+          echo,
+          cfg,
+          metadata,
+        });
+      } catch (e) {
+        console.error("[Coexistence] Echo record/broadcast failed:", e?.message || e);
+      }
       const result = await activateStaffLiveModeFromEcho({
         userId: tenantUserId,
         echo,

@@ -1,6 +1,26 @@
 
 
 import { getDB } from '../db-mongodb.mjs';
+
+export async function getReplyOriginalMeta(userId, replyTo) {
+  const id = String(replyTo || "").trim();
+  if (!id) return null;
+  try {
+    const doc = await getDB().collection("messages").findOne(
+      { id, user_id: String(userId) },
+      { projection: { id: 1, direction: 1, text_body: 1 } }
+    );
+    if (!doc?.id) return null;
+    return {
+      original_message_id: doc.id,
+      direction: doc.direction,
+      text_body: doc.text_body
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function createReply(originalMessageId, replyMessageId) {
   try {
     const db = getDB();

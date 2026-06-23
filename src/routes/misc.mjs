@@ -257,14 +257,13 @@ export default function registerMiscRoutes(app) {
       if (!url) return res.sendStatus(404);
       const binResp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
       if (!binResp.ok) return res.sendStatus(404);
-      const ctype = binResp.headers.get('content-type') || 'application/octet-stream';
+      const buffer = Buffer.from(await binResp.arrayBuffer());
+      const ctype = (binResp.headers.get('content-type') || 'application/octet-stream').split(';')[0].trim();
       res.setHeader('Content-Type', ctype);
+      res.setHeader('Content-Length', String(buffer.length));
+      res.setHeader('Accept-Ranges', 'bytes');
       res.setHeader('Cache-Control', 'private, max-age=300');
-      await new Promise((resolve, reject) => {
-        binResp.body.on('error', reject);
-        binResp.body.on('end', resolve);
-        binResp.body.pipe(res);
-      });
+      return res.end(buffer);
     } catch (e) {
       try { res.sendStatus(500); } catch {}
     }

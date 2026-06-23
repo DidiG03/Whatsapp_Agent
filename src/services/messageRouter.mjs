@@ -5,6 +5,7 @@
 
 import { isGeneralBusinessOverviewQuestion, isLocationQuestion } from "./i18n.mjs";
 import { assessPrimaryKbConfidence } from "./kb.mjs";
+import { detectMessageTopics } from "./messageTopics.mjs";
 
 export const MESSAGE_ROUTES = {
   OVERVIEW: "overview",
@@ -51,6 +52,16 @@ export function routeCustomerMessage(text, options = {}) {
   const message = String(text || "").trim();
   if (!message) {
     return { route: MESSAGE_ROUTES.GENERAL, confidence: 0, reason: "empty_message" };
+  }
+
+  const topics = detectMessageTopics(message, { bookingsEnabled, lang });
+  if (topics.length > 1) {
+    return {
+      route: MESSAGE_ROUTES.GENERAL,
+      confidence: 0.92,
+      reason: "multi_topic",
+      topics,
+    };
   }
 
   if (String(conversationMode).toLowerCase() === "escalation") {

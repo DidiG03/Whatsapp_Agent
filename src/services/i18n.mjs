@@ -33,8 +33,9 @@ const ALBANIAN_WORDS = [
   "hene", "marte", "merkure", "enjte", "premte", "shtune", "diel",
   // common verbs / pronouns / connectors
   "dua", "duan", "deshiroj", "mund", "kam", "kemi", "eshte", "jam", "je",
-  "une", "ti", "ju", "ne", "per", "nje", "dhe", "apo", "pse", "kur", "ku",
+  "une", "ti", "ju", "ne", "per", "nje", "dhe", "edhe", "apo", "pse", "kur", "ku",
   "sa", "cfare", "cila", "cili", "si", "po", "jo", "me", "te", "nga",
+  "persona", "personave", "veta", "fiks", "fix",
   // service / commerce
   "cmim", "cmimet", "kushton", "sa kushton", "porosi", "porosit", "produkt",
   "sherbim", "sherbime", "adresa", "ndihme", "njeri", "agjent", "operator",
@@ -81,6 +82,13 @@ export function detectLanguage(text) {
   if (/\bju lutem\b/.test(normalized)) albanianHits++;
 
   if (albanianHits === 0) {
+    const trimmed = raw.trim();
+    if (/^[A-Za-zËÇëç][A-Za-zËÇëç'\-]+(?:\s+[A-Za-zËÇëç][A-Za-zËÇëç'\-]+){0,2}$/.test(trimmed)) {
+      return null;
+    }
+    if (/^\d{1,2}(?::\d{2})?\s*(?:fiks|fix|sharp)?$/i.test(trimmed)) {
+      return null;
+    }
     if (tokens.length >= 2) return "en";
     if (tokens.length === 1 && ENGLISH_HINT_WORDS.has(tokens[0])) return "en";
     // Single short/ambiguous tokens ("konfirmo", "ok", a time) — keep remembered lang.
@@ -100,6 +108,13 @@ export function detectLanguage(text) {
  */
 export function resolveLanguage(text, remembered, sessionLang) {
   const detected = detectLanguage(text);
+  const raw = String(text || "").trim();
+  const stickyName = /^[A-Za-zËÇëç][A-Za-zËÇëç'\-]+(?:\s+[A-Za-zËÇëç][A-Za-zËÇëç'\-]+){0,2}$/.test(raw);
+  const stickyTime = /^\d{1,2}(?::\d{2})?\s*(?:fiks|fix|sharp)?$/i.test(raw)
+    || /^(?:okej|ok|po)\b/i.test(raw);
+  if (detected === "en" && remembered === "sq" && (stickyName || stickyTime)) {
+    return "sq";
+  }
   if (detected) return detected;
   if (sessionLang && SUPPORTED_LANGS.includes(sessionLang)) return sessionLang;
   if (remembered && SUPPORTED_LANGS.includes(remembered)) return remembered;
@@ -243,7 +258,8 @@ export function isGeneralBusinessOverviewQuestion(text) {
     return false;
   }
   return (
-    /\b(cfare\s+mund\s+te\s+me\s+thuash|cfare\s+(?:mund|me)\s+(?:te\s+)?(?:thuash|tregosh|tregon|ndihmon)|dua\s+te\s+di\s+me\s+shum|me\s+shum\s+rreth|cfare\s+(?:eshte|jane|jeni|keni)|kush\s+(?:jeni|jane)|prezantoni|prezantohu|interesohem\s+(?:per|rreth)|dua\s+te\s+njoh)\b/.test(s)
+    /\b(cfare\s+mund\s+te\s+me\s+thuash|cfare\s+(?:mund|me)\s+(?:te\s+)?(?:thuash|tregosh|tregon|ndihmon)|mund\s+(?:te\s+)?me\s+thuash|mund\s+tme\s+thuash|me\s+thuash\s+pak|pak\s+rreth|rreth\s+(?:restorantit|restaurantit|biznesit|vendit|kompanise|juaj))\b/.test(s)
+    || /\b(dua\s+te\s+di\s+me\s+shum|me\s+shum\s+rreth|cfare\s+(?:eshte|jane|jeni|keni)|kush\s+(?:jeni|jane)|prezantoni|prezantohu|interesohem\s+(?:per|rreth)|dua\s+te\s+njoh)\b/.test(s)
     || /\b(tell me (?:more )?about|what can you tell me|learn more about|who are you|about your business|about the business|what do you do|what is this place)\b/.test(s)
   );
 }
@@ -254,7 +270,7 @@ export function conversationalStyleGuidance(lang) {
     return [
       "Shkruaj si anëtar i vërtetë i ekipit në WhatsApp, i ngrohtë dhe attentiv, jo si bot FAQ.",
       "Mos përdor vizën e gjatë (—); përdor presje, pikë ose fjali të shkurtra.",
-      "Përdor zakonisht 1–3 fjali natyrale: njoh pyetjen, jep përgjigjen, mbaro. Mos shto në fund 'nëse ju duhet ndihmë', 'më thuaj nëse dëshiron', 'këtu jam nëse...' ose oferta të ngjashme.",
+      "Përdor zakonisht 1–3 fjali natyrale: njoh pyetjen, jep përgjigjen, mbaro. Mos shto në fund 'nëse ju duhet ndihmë', 'më thuaj nëse dëshiron', 'këtu jam nëse...' ose oferta të ngjashme — PËRJASHTIM: kur klienti thotë se është mirë pas 'si jeni', duhet pyetje e dobishme; kur falenderon, kthe falenderimin.",
       "Pyet vetëm kur të mungon një informacion i nevojshëm për kërkesën e klientit (datë, orë, emër, etj.), jo si mbyllje e çdo mesazhi.",
       "Mos u tingëll telegrafik; lidh idetë natyrshëm dhe shmang përgjigjet e thata me një fjali.",
       "Mos e përsërit pyetjen word-for-word; mos shpik fakte jashtë Docs/KB.",
@@ -264,7 +280,7 @@ export function conversationalStyleGuidance(lang) {
   return [
     "Write like a real team member on WhatsApp, warm and attentive, not a FAQ bot.",
     "Do not use em dashes (—); use commas, periods, or short sentences.",
-    "Usually use 1–3 natural sentences: acknowledge, answer, stop. Do NOT end with 'let me know if you need anything else', 'I'm here if you need help', or similar boilerplate.",
+    "Usually use 1–3 natural sentences: acknowledge, answer, stop. Do NOT end with 'let me know if you need anything else', 'I'm here if you need help', or similar boilerplate — EXCEPT after a wellbeing reply (ask how you can help) or thanks (reciprocate the thank-you).",
     "Only ask a question when you genuinely need missing info for their request, not as a closing line on every message.",
     "Avoid telegraphic one-liners; connect ideas naturally and avoid dry single-sentence replies.",
     "Don't repeat the question verbatim; never invent facts beyond the provided Docs/KB.",
@@ -320,18 +336,74 @@ export function prependSessionGreeting(reply, lang, userMessage = "") {
   return `${buildSessionGreetingPrefix(lang, userMessage)} ${body}`;
 }
 
+/** Detect "how are you?" style pleasantries (not just hello). */
+export function isHowAreYouQuestion(text) {
+  const norm = stripAccents(String(text || "")).toLowerCase().replace(/\s+/g, " ").trim();
+  if (!norm) return false;
+  return /\b(si\s+jeni|ca\s+mande|si\s+kaloni|how\s+are\s+you|how\s+r\s+u|how\s+do\s+you\s+do|how\s+is\s+it\s+going|how'?s\s+it\s+going)\b/.test(norm);
+}
+
+export function howAreYouReplyGuidance(lang = "en") {
+  if (lang === "sq") {
+    return "If the customer asks how you are (e.g. 'si jeni', 'how are you'), reply warmly, say you're well, AND ask them back in one short phrase (e.g. 'Mirë, faleminderit! Po ju?' or 'Shumë mirë, faleminderit! Po ju?') — skipping the ask-back feels rude. Never say 'po jam këtu' or 'yes I'm here'.";
+  }
+  return "If the customer asks how you are, reply warmly, say you're well, AND ask them back briefly (e.g. 'We're well, thanks! And you?') — skipping the ask-back feels rude. Never say 'yes I'm here' or 'still here'.";
+}
+
+/** Customer says they are well after a how-are-you exchange (e.g. 'shum mirë'). */
+export function isCustomerWellbeingReply(text) {
+  const norm = stripAccents(String(text || "")).toLowerCase().replace(/\s+/g, " ").trim();
+  if (!norm) return false;
+  return /^(shume\s+mire|shum\s+mire|mire|mir[eë]|po\s+mire|ne\s+rregull|n[eë]\s+rregull|very\s+well|im\s+good|i'?m\s+fine|doing\s+(well|good|fine)|all\s+good|great\s+thanks?|good\s+thanks?)[!.?]*$/i.test(norm)
+    || /^(mir[eë])(\s+faleminderit)?[!.?]*$/i.test(norm);
+}
+
+export function customerWellbeingReplyGuidance(lang = "en") {
+  if (lang === "sq") {
+    return "The customer just said they are well (e.g. 'shum mirë' after you asked how they are). Mirror briefly (e.g. 'Shumë mirë!') AND immediately ask what you can help with (e.g. 'Si mund t'ju ndihmoj sot?' or 'A dëshironi të rezervoni apo keni ndonjë pyetje?'). Never stop at 'Shumë mirë' alone — customers write to get something done.";
+  }
+  return "The customer said they are well after a how-are-you exchange. Acknowledge briefly AND ask what you can help with today — do not leave the conversation without a helpful follow-up.";
+}
+
+/** Standalone thank-you messages (e.g. 'flm', 'faleminderit', 'thanks'). */
+export function isThankYouMessage(text) {
+  const norm = stripAccents(String(text || "")).toLowerCase().replace(/\s+/g, " ").trim();
+  if (!norm) return false;
+  if (norm.length > 40) return false;
+  return /^(faleminderit|flm|thanks?|thank\s+you|many\s+thanks|thx|tnx|rrofsh|cheers)(\s+(you|a\s+lot|so\s+much))?[!.?]*$/i.test(norm)
+    || /^(ok\s+)?(faleminderit|flm|thanks?)[!.?]*$/i.test(norm);
+}
+
+export function thanksReplyGuidance(lang = "en") {
+  if (lang === "sq") {
+    return "The customer is thanking you. Reply with BOTH acknowledgment AND returned thanks (e.g. 'S'ka problem, faleminderit!' or 'Me kënaqësi, faleminderit!'). Never reply with only 'S'ka problem' — reciprocate the thanks.";
+  }
+  return "The customer is thanking you. Reply with something like 'You're welcome, thank you!' or 'No problem, thanks!' — not a bare 'No problem' alone.";
+}
+
 /** Tell the model not to re-introduce itself mid-conversation. */
-export function conversationContinuityInstruction(conversationStarted, userMessageIsGreeting) {
+export function conversationContinuityInstruction(conversationStarted, userMessageIsGreeting, userMessage = "") {
+  const userHasGreeting = messageContainsGreeting(userMessage) && !userMessageIsGreeting;
+
   if (!conversationStarted) {
-    return "If the customer opens with a greeting, you may greet back briefly once — then help with their request.";
+    return "If the customer opens with a greeting, greet back naturally when appropriate (e.g. 'Përshëndetje, si jeni?' / 'Hello, how are you?') — then help with their request. Never say 'po jam këtu', 'yes I'm here', or 'still here'.";
   }
   if (userMessageIsGreeting) {
-    return "The customer sent another greeting mid-conversation. Acknowledge briefly (e.g. 'Po, jam këtu!' / 'Still here!') — do NOT repeat a full intro or ask 'how can I help' again.";
+    return "The customer sent another greeting mid-conversation. Reply with a natural greeting (e.g. 'Përshëndetje, si jeni?' / 'Hello again!') — NEVER say 'Po, jam këtu', 'Yes I'm here', or 'Still here'. If they have not stated a request yet, you may briefly ask how you can help.";
+  }
+  if (userHasGreeting) {
+    return [
+      "The customer's message includes a greeting AND a request (e.g. 'Përshëndetje, dua të rezervoj…').",
+      "Start with a brief greeting (e.g. 'Përshëndetje!' / 'Hello!') then answer their request — never skip the greeting.",
+      "When you give a complete answer, redirect, or policy reply, end with a short polite closing (e.g. 'Faleminderit!' / 'Thank you!').",
+      "Never say 'po jam këtu' or 'yes I'm here'.",
+    ].join(" ");
   }
   return [
     "CONTINUITY: This conversation is already in progress.",
-    "Do NOT send a fresh greeting, hello, përshëndetje, or 'how can I help you' intro.",
+    "Do NOT send a fresh 'how can I help you' intro or repeat a full welcome.",
     "Answer the latest question directly — stay warm and conversational, not robotic or one-word dry.",
+    "When giving a complete answer or redirect, you may end with a brief 'Faleminderit!' / 'Thank you!' if it fits naturally.",
   ].join(" ");
 }
 
@@ -408,12 +480,10 @@ export function sanitizeAssistantReply(text, { conversationStarted = false, user
     const prefixes = lang === "sq"
       ? [
           /^(pershendetje|përshëndetje|tungjatjeta|tung|hej|miremengjes|miredita|mirembrema)[!.,\s]+(si\s+(mund\s+)?(t'?)?ju\s+ndihmoj)[!.?]*\s+/i,
-          /^(pershendetje|përshëndetje|tungjatjeta|tung|hej)[!.,\s]+/i,
           /^si\s+(mund\s+)?(t'?)?ju\s+ndihmoj[!.?]*\s+/i,
         ]
       : [
           /^(hello|hi|hey|good\s+(morning|afternoon|evening))[!.,\s]+(how\s+can\s+i\s+help(\s+you)?)[!.?]*\s+/i,
-          /^(hello|hi|hey)[!.,\s]+/i,
           /^how\s+can\s+i\s+help(\s+you)?[!.?]*\s+/i,
         ];
     for (const re of prefixes) {
@@ -425,7 +495,85 @@ export function sanitizeAssistantReply(text, { conversationStarted = false, user
     }
   }
 
-  return stripBoilerplateHelpOffers(stripEmDashes(s.trim()));
+  s = stripBoilerplateHelpOffers(stripEmDashes(s.trim()));
+  return polishPleasantryReply(s, { userMessage, lang });
+}
+
+function replyNeedsHelpFollowUp(reply, lang) {
+  const norm = stripAccents(String(reply || "")).toLowerCase().trim();
+  if (!norm) return true;
+  if (/^(shume\s+mire|shum\s+mire|mire|mir[eë]|po\s+mire|ne\s+rregull|great|good|wonderful)[!.?]*$/.test(norm)) return true;
+  if (/\b(si\s+(mund\s+)?(t'?)?ju\s+ndihmoj|how\s+can\s+i\s+help|a\s+deshironi|can\s+i\s+help)\b/.test(norm)) return false;
+  return norm.length < 45 && !/\?/.test(norm);
+}
+
+function replyAlreadyHasThanksClosing(reply, lang) {
+  const norm = stripAccents(String(reply || "")).toLowerCase();
+  if (!norm) return false;
+  if (lang === "sq") {
+    return /\b(faleminderit|ju faleminderit|me kenaqesi)\b/.test(norm)
+      && /[!.?]\s*$/.test(norm.trim());
+  }
+  return /\b(thank you|thanks|thank you!?)\b/.test(norm) && /[!.?]\s*$/.test(norm.trim());
+}
+
+function replyLooksLikeCompleteAnswer(reply, lang) {
+  const norm = stripAccents(String(reply || "")).toLowerCase();
+  if (norm.length < 50) return false;
+  if (/\?\s*$/.test(norm) && !/\b(telefon|call|whatsapp)\b/.test(norm)) return false;
+  return /\b(telefon|telefononi|na telefononi|call us|call directly|whatsapp|nuk e mbyllim|cannot complete|not complete|ju lutem)\b/.test(norm)
+    || (norm.length >= 80 && !/\?\s*$/.test(norm));
+}
+
+/** Fix dry pleasantries: remove 'yes I'm here', enrich thanks, add help pivot after wellbeing. */
+export function polishPleasantryReply(reply, { userMessage = "", lang = "en" } = {}) {
+  let s = String(reply || "").trim();
+  if (!s) return s;
+
+  s = s
+    .replace(/\b(po,?\s+)?jam\s+k[eë]tu\b/gi, "")
+    .replace(/\b(yes,?\s+)?i'?m\s+here\b/gi, "")
+    .replace(/\bstill\s+here[!.]?\b/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/([!.?])\s*([!.?])+$/g, "$1")
+    .replace(/^[,.\s]+|[,.\s]+$/g, "")
+    .trim();
+
+  if (messageContainsGreeting(userMessage) && !replyAlreadyHasGreeting(s, lang)) {
+    const prefix = buildSessionGreetingPrefix(lang, userMessage);
+    s = `${prefix} ${s}`.trim();
+  }
+
+  if (isThankYouMessage(userMessage)) {
+    const norm = stripAccents(s).toLowerCase();
+    const bareThanksAckSq = /^(s'?ka\s+problem|ska\s+problem|pa\s+problem|s'?ka\s+gj[eë]|te\s+lutem)[!.?]*$/.test(norm);
+    const bareThanksAckEn = /^(no\s+problem|you'?re\s+welcome|my\s+pleasure|anytime)[!.?]*$/.test(norm);
+    if ((lang === "sq" && bareThanksAckSq) || (lang !== "sq" && bareThanksAckEn)) {
+      s = lang === "sq" ? "S'ka problem, faleminderit!" : "No problem, thank you!";
+    } else if (lang === "sq" && /^(s'?ka\s+problem|ska\s+problem|pa\s+problem)/.test(norm) && !/\bfaleminderit\b/.test(norm)) {
+      s = s.replace(/[!.?]+$/, "") + ", faleminderit!";
+    } else if (lang !== "sq" && /^no\s+problem\b/.test(norm) && !/\bthank\b/.test(norm)) {
+      s = s.replace(/[!.?]+$/, "") + ", thank you!";
+    }
+  }
+
+  if (isCustomerWellbeingReply(userMessage) && replyNeedsHelpFollowUp(s, lang)) {
+    const followUp = lang === "sq" ? " Si mund t'ju ndihmoj sot?" : " How can I help you today?";
+    if (!/\?/.test(s)) {
+      s = s.replace(/[!.?]+$/, "") + "!" + followUp;
+    }
+  }
+
+  if (
+    !isThankYouMessage(userMessage)
+    && !isCustomerWellbeingReply(userMessage)
+    && replyLooksLikeCompleteAnswer(s, lang)
+    && !replyAlreadyHasThanksClosing(s, lang)
+  ) {
+    s = s.replace(/[!.?]+$/, "") + (lang === "sq" ? ". Faleminderit!" : ". Thank you!");
+  }
+
+  return s.trim();
 }
 
 /** True when the assistant wrongly claims it lacks KB-backed facts. */
@@ -491,9 +639,11 @@ const STRINGS = {
     handoff_ask_name: "Of course, I'll connect you with a colleague. Could I get your name first?",
     handoff_ask_reason: (v) => `Thanks${v?.name ? `, ${v.name}` : ""}! What's it regarding, so I can pass on the details?`,
     handoff_connecting: "Thanks! I'm connecting you with a member of our team now. 🙌",
+    live_agent_connected: (v) => `You are connected with ${v?.name}.`,
     escalation_ack: "A member of our team will get back to you shortly.",
     escalation_reason_prompt: (v) => `Hello! What's the reason for contacting ${v?.business || "us"} today?`,
     error_generic: "Sorry, something went wrong on my side. Could you try again in a moment?",
+    audio_transcription_failed: "I couldn't quite catch that voice message. Could you type your question or try recording again?",
     error_connecting_agent: "I'm having trouble connecting you to a colleague right now. Please try again in a moment.",
     available_times_header: "Here are some available times:",
     type_preferred_time: "Just write the time that works for you (e.g. \"9:30\" or \"21:30\").",
@@ -549,9 +699,11 @@ const STRINGS = {
     handoff_ask_name: "Sigurisht, të lidh me një koleg. A mund të ma thuash emrin tënd fillimisht?",
     handoff_ask_reason: (v) => `Faleminderit${v?.name ? `, ${v.name}` : ""}! Për çfarë bëhet fjalë, që t'ia përcjell detajet?`,
     handoff_connecting: "Faleminderit! Po të lidh tani me një anëtar të ekipit tonë. 🙌",
+    live_agent_connected: (v) => `Je i lidhur tani me ${v?.name}.`,
     escalation_ack: "Një anëtar i ekipit tonë do të të kthejë përgjigje së shpejti.",
     escalation_reason_prompt: (v) => `Përshëndetje! Cila është arsyeja që po kontakton ${v?.business || "ne"} sot?`,
     error_generic: "Më vjen keq, diçka shkoi keq nga ana ime. A mund të provosh sërish pas pak?",
+    audio_transcription_failed: "Nuk e kuptova mirë mesazhin zanor. A mund ta shkruash pyetjen ose ta regjistrosh përsëri?",
     error_connecting_agent: "Po has vështirësi për të të lidhur me një koleg tani. Të lutem provo sërish pas pak.",
     available_times_header: "Këto janë disa orare të lira:",
     type_preferred_time: "Shkruaj orën që të përshtatet (p.sh. \"9:30\" ose \"21:30\").",
