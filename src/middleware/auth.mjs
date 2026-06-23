@@ -4,6 +4,10 @@ import crypto from "node:crypto";
 import { CLERK_AUTHORIZED_PARTIES, CLERK_ENABLED, CLERK_JWT_KEY, CLERK_PUBLISHABLE, CLERK_SECRET, CLERK_SIGN_IN_URL, CLERK_SIGN_UP_URL, PORT, PUBLIC_BASE_URL } from "../config.mjs";
 const SESSION_TOKEN_SECRET = process.env.SESSION_TOKEN_SECRET || CLERK_SECRET || "dev-secret-change";
 const WS_TOKEN_TTL_SECONDS = parseInt(process.env.WS_TOKEN_TTL_SECONDS || '7200', 10);
+function isProductionEnv() {
+  return process.env.NODE_ENV === 'production' || process.env.VERCEL_ENV === 'production';
+}
+
 function clerkEnabledRuntime() {
   const secret = (process.env.CLERK_SECRET_KEY || '').trim();
   if (!secret) return false;
@@ -32,80 +36,83 @@ const _emailCache = new Map();const EMAIL_CACHE_TTL_MS = Math.max(30_000, Number
     console.warn("[Clerk] Disabled: missing CLERK_PUBLISHABLE_KEY or CLERK_SECRET_KEY");
     return;
   }
-  const signInUrl = (CLERK_SIGN_IN_URL || "/auth/signin");
-  const signUpUrl = (CLERK_SIGN_UP_URL || "/auth/signup");
+  const useHostedClerkAuth = process.env.CLERK_USE_HOSTED_AUTH === '1';
+  const signInUrl = useHostedClerkAuth ? (CLERK_SIGN_IN_URL || "/auth/signin") : "/auth/signin";
+  const signUpUrl = useHostedClerkAuth ? (CLERK_SIGN_UP_URL || "/auth/signup") : "/auth/signup";
   const jwtKey = CLERK_JWT_KEY || null;
   const authorizedParties = (() => {
-    const fromEnv = (CLERK_AUTHORIZED_PARTIES || '')
-      .split(',')
-      .map(s => s.trim())
-      .filter(Boolean);
-    if (fromEnv.length) return fromEnv;
-    const defaults = new Set();
+    const parties = new Set();
+    for (const value of (CLERK_AUTHORIZED_PARTIES || '').split(',')) {
+      const trimmed = value.trim().replace(/\/$/, '');
+      if (trimmed) parties.add(trimmed);
+    }
     const base = (PUBLIC_BASE_URL || '').replace(/\/$/, '');
-    if (base) defaults.add(base);
+    if (base) parties.add(base);
     const localPort = PORT || 3000;
-    defaults.add(`http://localhost:${localPort}`);
-    defaults.add(`http://127.0.0.1:${localPort}`);
-    return defaults.size ? [...defaults] : undefined;
+    parties.add(`http://localhost:${localPort}`);
+    parties.add(`http://127.0.0.1:${localPort}`);
+    parties.add('https://agent.codeorbit.tech');
+    return parties.size ? [...parties] : undefined;
   })();
   const clerkMW = clerkMiddleware({
     publishableKey: CLERK_PUBLISHABLE,
     secretKey: CLERK_SECRET,
     ...(jwtKey ? { jwtKey } : {}),
-    ...(authorizedParties ? { authorizedParties } : {}),
+    ...(isProductionEnv() && authorizedParties ? { authorizedParties } : {}),
     signInUrl,
     signUpUrl,
-    afterSignInUrl: '/inbox',
-    afterSignUpUrl: '/inbox',
   });
   app.use(clerkMW);
 }
+
+function wantsJsonResponse(req) {
+  return req.xhr || req.headers.accept?.includes('application/json');
+}
+
+export function redirectToSignIn(req, res) {
+  const currentBaseUrl = `${req.protocol}://${req.get('host')}`;
+  const pathOnly = req.originalUrl || '/';
+  const signInUrl = `${currentBaseUrl}/auth/signin?redirect_url=${encodeURIComponent(pathOnly)}`;
+  return res.redirect(signInUrl);
+}
+
+function sendAuthRequired(req, res, { code = 'AUTH_REQUIRED', message = 'Authentication required' } = {}) {
+  if (wantsJsonResponse(req)) {
+    return res.status(401).json({
+      error: message,
+      code,
+      redirectTo: '/auth',
+    });
+  }
+  if (req.method === 'POST' && req.headers['content-type']?.includes('application/x-www-form-urlencoded')) {
+    return res.status(401).json({
+      error: 'Session expired, please refresh and try again',
+      code: 'SESSION_EXPIRED',
+      redirectTo: '/auth',
+    });
+  }
+  return redirectToSignIn(req, res);
+}
+
 export function ensureAuthed(req, res, next) {
-  if (!CLERK_ENABLED || !clerkEnabledRuntime()) return next();
+  if (!CLERK_ENABLED || !clerkEnabledRuntime()) {
+    if (isProductionEnv()) {
+      return res.status(503).send('Authentication is not configured.');
+    }
+    return next();
+  }
   try {
-    const { userId, sessionId } = getAuth(req);
+    const { userId } = getAuth(req);
     if (!userId) {
-      if (req.xhr || req.headers.accept?.includes('application/json')) {
-        return res.status(401).json({ 
-          error: 'Authentication required',
-          code: 'AUTH_REQUIRED',
-          redirectTo: '/auth'
-        });
-      }
-      if (req.method === 'POST' && req.headers['content-type']?.includes('application/x-www-form-urlencoded')) {
-        return res.status(401).json({ 
-          error: 'Session expired, please refresh and try again',
-          code: 'SESSION_EXPIRED',
-          redirectTo: '/auth'
-        });
-      }
-      const currentBaseUrl = `${req.protocol}://${req.get('host')}`;
-      const redirectUrl = req.originalUrl ? `${currentBaseUrl}${req.originalUrl}` : currentBaseUrl;
-      const signInUrl = `${currentBaseUrl}/auth/signin?redirect_url=${encodeURIComponent(redirectUrl)}`;
-      return res.redirect(signInUrl);
+      return sendAuthRequired(req, res);
     }
     return next();
   } catch (error) {
     console.error('Auth middleware error:', error);
-    if (req.xhr || req.headers.accept?.includes('application/json')) {
-      return res.status(401).json({ 
-        error: 'Authentication check failed',
-        code: 'AUTH_ERROR',
-        redirectTo: '/auth'
-      });
-    }
-    if (req.method === 'POST' && req.headers['content-type']?.includes('application/x-www-form-urlencoded')) {
-      return res.status(401).json({ 
-        error: 'Session expired, please refresh and try again',
-        code: 'SESSION_EXPIRED',
-        redirectTo: '/auth'
-      });
-    }
-    const currentBaseUrl = `${req.protocol}://${req.get('host')}`;
-    const redirectUrl = req.originalUrl ? `${currentBaseUrl}${req.originalUrl}` : currentBaseUrl;
-    const signInUrl = `${currentBaseUrl}/auth/signin?redirect_url=${encodeURIComponent(redirectUrl)}`;
-    return res.redirect(signInUrl);
+    return sendAuthRequired(req, res, {
+      code: 'AUTH_ERROR',
+      message: 'Authentication check failed',
+    });
   }
 }
 export function isAuthenticated(req) {

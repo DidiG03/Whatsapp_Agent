@@ -15,6 +15,9 @@ const FAQ_SECOND_BEST_MARGIN = 1.4;
 const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
 const shouldLogVerbose = LOG_LEVEL === "debug" || LOG_LEVEL === "trace";
 const KB_SQ_FULL_CONTEXT_MAX = Number(process.env.KB_SQ_FULL_CONTEXT_MAX || 25);
+const COACH_KB_FULL_MAX = Number(process.env.COACH_KB_FULL_MAX || 25);
+const COACH_KB_RETRIEVE_LIMIT = Number(process.env.COACH_KB_RETRIEVE_LIMIT || 8);
+const COACH_KB_CONTENT_MAX = Number(process.env.COACH_KB_CONTENT_MAX || 1200);
 export async function upsertKbItem(userId, title, content, file = null) {
   const existing = await KBItem.findOne({ user_id: userId, title }).select('_id').lean();
   if (existing?._id) {
@@ -405,6 +408,53 @@ export async function retrieveKbMatches(query, limit = 3, userId = null, onboard
   if (!isKbHybridSearchEnabled() || !userId) {
     console.log("FTS results:", merged.slice(0, 3));
   }
+  return merged;
+}
+
+/** KB snippets for onboarding/refining coach chats. */
+export async function retrieveCoachKbContext(userId, userMessage = "", historyTranscript = "") {
+  const uid = userId != null ? String(userId) : "";
+  if (!uid) return [];
+
+  const rows = await KBItem.find({ user_id: uid, title: { $ne: null } })
+    .select("title content")
+    .sort({ createdAt: -1 })
+    .lean();
+  if (!rows.length) return [];
+
+  const toEntry = (row) => ({
+    title: String(row?.title || "").trim(),
+    content: String(row?.content || "").trim().slice(0, COACH_KB_CONTENT_MAX),
+  });
+
+  if (rows.length <= COACH_KB_FULL_MAX) {
+    return rows.map(toEntry).filter((r) => r.title);
+  }
+
+  const recentHistory = String(historyTranscript || "").slice(-1500);
+  const query = [String(userMessage || "").trim(), recentHistory].filter(Boolean).join("\n").trim();
+  const matches = await retrieveKbMatches(query || userMessage, COACH_KB_RETRIEVE_LIMIT, uid, historyTranscript);
+
+  const seen = new Set();
+  const merged = [];
+  for (const match of matches) {
+    const title = String(match?.title || "").trim();
+    if (!title || seen.has(title)) continue;
+    seen.add(title);
+    merged.push({
+      title,
+      content: String(match?.content || "").trim().slice(0, COACH_KB_CONTENT_MAX),
+    });
+  }
+
+  for (const row of rows) {
+    if (merged.length >= COACH_KB_RETRIEVE_LIMIT + 3) break;
+    const entry = toEntry(row);
+    if (!entry.title || seen.has(entry.title)) continue;
+    seen.add(entry.title);
+    merged.push(entry);
+  }
+
   return merged;
 }
 

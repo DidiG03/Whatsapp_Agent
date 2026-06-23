@@ -56,6 +56,16 @@ export const STATIC_DIR = "public";
 export const PUBLIC_BASE_URL =
   process.env.PUBLIC_BASE_URL
   || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${PORT}`);
+export const META_APP_ID = process.env.META_APP_ID || process.env.FACEBOOK_APP_ID || null;
+export const META_APP_SECRET = process.env.META_APP_SECRET || process.env.FACEBOOK_APP_SECRET || null;
+export const META_EMBEDDED_SIGNUP_CONFIG_ID =
+  process.env.META_EMBEDDED_SIGNUP_CONFIG_ID
+  || process.env.WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID
+  || null;
+export const META_GRAPH_VERSION = (process.env.META_GRAPH_VERSION || "v21.0").trim();
+export const META_EMBEDDED_SIGNUP_ENABLED = Boolean(
+  META_APP_ID && META_APP_SECRET && META_EMBEDDED_SIGNUP_CONFIG_ID
+);
 export const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
 export const SMTP_PORT = parseInt(process.env.SMTP_PORT || '587', 10);
 export const SMTP_SECURE = process.env.SMTP_SECURE === 'true';

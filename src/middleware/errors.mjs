@@ -1,5 +1,6 @@
 
 import { logHelpers } from "../monitoring/logger.mjs";
+import { isAuthenticated, redirectToSignIn } from "./auth.mjs";
 import { getProfessionalHead, renderSidebar, renderTopbar } from "../utils.mjs";
 export function requestLogger(req, res, next) {
   const start = Date.now();
@@ -71,6 +72,16 @@ export function errorHandler(err, req, res, next) {
 }
 export function notFoundHandler(req, res) {
   const wantsJson = req.xhr || req.headers.accept?.includes("application/json");
+  if (!isAuthenticated(req)) {
+    if (wantsJson) {
+      return res.status(401).json({
+        error: "Authentication required",
+        code: "AUTH_REQUIRED",
+        redirectTo: "/auth",
+      });
+    }
+    return redirectToSignIn(req, res);
+  }
   if (wantsJson) {
     return res.status(404).json({ error: "Not found" });
   }

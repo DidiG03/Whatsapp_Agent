@@ -109,6 +109,19 @@ export async function createApp() {
   app.use('/uploads', express.static('uploads', { setHeaders: (res)=> res.setHeader('Cache-Control','public, max-age=604800') }));
   initClerk(app);
   app.use((req, res, next) => {
+    if (req.method !== "GET" && req.method !== "HEAD") return next();
+    const raw = req.originalUrl || req.url || "";
+    if (!raw.includes("%23")) return next();
+    const [pathPart, queryPart = ""] = raw.split("?");
+    const decodedPath = decodeURIComponent(pathPart);
+    const hashIdx = decodedPath.indexOf("#");
+    if (hashIdx === -1) return next();
+    const path = decodedPath.slice(0, hashIdx) || "/";
+    const hash = decodedPath.slice(hashIdx);
+    const qs = queryPart ? `?${queryPart}` : "";
+    return res.redirect(302, `${path}${qs}${hash}`);
+  });
+  app.use((req, res, next) => {
     res.setHeader("Cache-Control", "no-store");
     next();
   });

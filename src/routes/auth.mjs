@@ -42,6 +42,19 @@ function clearClerkCookies(req, res) {
 
 const CLERK_JS_VERSION = (process.env.CLERK_JS_VERSION || '5').toString().trim() || '5';
 
+function resolveSafeRedirectUrl(req, raw) {
+  if (!raw || typeof raw !== "string") return "/inbox";
+  if (raw.startsWith("/") && !raw.startsWith("//") && !raw.includes("://")) return raw;
+  try {
+    const target = new URL(raw, `${req.protocol}://${req.get("host")}`);
+    const host = req.get("host");
+    if (host && target.host === host) {
+      return `${target.pathname}${target.search}${target.hash}`;
+    }
+  } catch {}
+  return "/inbox";
+}
+
 const AUTH_BUBBLE_DECOR = `
         <div class="auth-page__bubbles" aria-hidden="true">
           <div class="auth-page__bubble auth-page__bubble--1 auth-page__bubble--in">
@@ -193,6 +206,44 @@ export default function registerAuthRoutes(app) {
       const el = document.getElementById(mountId);
       if (el) el.innerHTML = '<div class="error-message">' + message + '</div>';
     }
+    async function waitForServerSessionThenRedirect(target, attempt, mountId, remountFn) {
+      const tries = typeof attempt === 'number' ? attempt : 0;
+      try {
+        const response = await fetch('/auth/status', {
+          credentials: 'include',
+          headers: { Accept: 'application/json' }
+        });
+        const data = await response.json().catch(function() { return {}; });
+        if (data && data.signedIn) {
+          window.location.replace(target);
+          return;
+        }
+      } catch {}
+      if (tries < 24) {
+        setTimeout(function() { waitForServerSessionThenRedirect(target, tries + 1, mountId, remountFn); }, 250);
+        return;
+      }
+      try {
+        if (window.Clerk?.signOut) {
+          await window.Clerk.signOut();
+        }
+      } catch {}
+      if (typeof remountFn === 'function') {
+        remountFn();
+        return;
+      }
+      showAuthError(mountId, 'Could not verify your session. Please sign in again.');
+    }
+    async function syncClerkSessionToServer() {
+      try {
+        if (window.Clerk?.session?.getToken) {
+          await window.Clerk.session.getToken({ skipCache: true });
+        }
+        if (window.Clerk?.session?.reload) {
+          await window.Clerk.session.reload();
+        }
+      } catch {}
+    }
     function waitForClerk(mountId, onReady) {
       let retryCount = 0;
       const maxRetries = 50;
@@ -213,11 +264,61 @@ export default function registerAuthRoutes(app) {
       }
       tick();
     }
+    function mountAuthComponent(mountId, mountFn) {
+      let completingSignIn = false;
+      function remountAuth() {
+        const el = document.getElementById(mountId);
+        if (el) el.innerHTML = '';
+        mountFn();
+      }
+      function completeSignIn(target) {
+        if (completingSignIn) return;
+        completingSignIn = true;
+        syncClerkSessionToServer().finally(function() {
+          waitForServerSessionThenRedirect(target, 0, mountId, function() {
+            completingSignIn = false;
+            remountAuth();
+          });
+        });
+      }
+      waitForClerk(mountId, async function() {
+        const target = safeRedirectUrl();
+        try {
+          const statusResponse = await fetch('/auth/status', {
+            credentials: 'include',
+            headers: { Accept: 'application/json' }
+          });
+          const status = await statusResponse.json().catch(function() { return {}; });
+          if (status && status.signedIn) {
+            window.location.replace(target);
+            return;
+          }
+        } catch {}
+        if (window.Clerk.user) {
+          completeSignIn(target);
+          return;
+        }
+        remountAuth();
+        if (window.Clerk.addListener) {
+          window.Clerk.addListener(function(payload) {
+            if (payload && payload.user) {
+              completeSignIn(target);
+            }
+          });
+        }
+      });
+    }
   `;
 
   const clerkAppearanceJson = JSON.stringify(CLERK_APPEARANCE);
 
-  app.get("/auth/signup", (_req, res) => {
+  app.get("/auth/signup", (req, res) => {
+    try {
+      const { userId } = getAuth(req) || {};
+      if (userId) {
+        return res.redirect(302, resolveSafeRedirectUrl(req, req.query.redirect_url));
+      }
+    } catch {}
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.end(authPageShell({
       pageTitle: 'Sign Up',
@@ -232,12 +333,10 @@ export default function registerAuthRoutes(app) {
         if (!clerkPublishableKey || clerkPublishableKey === 'undefined' || clerkPublishableKey === 'null') {
           showAuthError('signup-component', 'Authentication is not configured. Please contact support.');
         } else {
-          waitForClerk('signup-component', function() {
+          mountAuthComponent('signup-component', function() {
             window.Clerk.mountSignUp(document.getElementById('signup-component'), {
               appearance: clerkAppearance,
-              afterSignUpUrl: '/inbox',
-              signInUrl: '/auth/signin',
-              redirectUrl: safeRedirectUrl()
+              signInUrl: '/auth/signin'
             });
           });
         }
@@ -245,7 +344,13 @@ export default function registerAuthRoutes(app) {
     }));
   });
 
-  app.get("/auth/signin", (_req, res) => {
+  app.get("/auth/signin", (req, res) => {
+    try {
+      const { userId } = getAuth(req) || {};
+      if (userId) {
+        return res.redirect(302, resolveSafeRedirectUrl(req, req.query.redirect_url));
+      }
+    } catch {}
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.end(authPageShell({
       pageTitle: 'Sign In',
@@ -260,12 +365,10 @@ export default function registerAuthRoutes(app) {
         if (!clerkPublishableKey || clerkPublishableKey === 'undefined' || clerkPublishableKey === 'null') {
           showAuthError('signin-component', 'Authentication is not configured. Please contact support.');
         } else {
-          waitForClerk('signin-component', function() {
+          mountAuthComponent('signin-component', function() {
             window.Clerk.mountSignIn(document.getElementById('signin-component'), {
               appearance: clerkAppearance,
-              afterSignInUrl: '/inbox',
-              signUpUrl: '/auth/signup',
-              redirectUrl: safeRedirectUrl()
+              signUpUrl: '/auth/signup'
             });
           });
         }

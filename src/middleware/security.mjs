@@ -34,13 +34,13 @@ export const securityHeaders = (req, res, next) => {
     : '';
   res.setHeader('Content-Security-Policy', 
     "default-src 'self'; " +
-    ("script-src 'self' 'unsafe-inline' 'unsafe-eval' https://clerk.accounts.dev https://accounts.clerk.com https://unpkg.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com https://js.stripe.com https://vercel.live https://cdn.ably.io" + (clerkExtras ? ` ${clerkExtras}` : '') + "; ") +
+    ("script-src 'self' 'unsafe-inline' 'unsafe-eval' https://clerk.accounts.dev https://accounts.clerk.com https://unpkg.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com https://js.stripe.com https://vercel.live https://cdn.ably.io https://connect.facebook.net https://www.facebook.com" + (clerkExtras ? ` ${clerkExtras}` : '') + "; ") +
     "worker-src 'self' blob:; " +
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
     ("img-src 'self' data: https: https://m.stripe.network https://*.stripe.com" + (clerkExtras ? ` ${clerkExtras}` : '') + "; ") +
     "font-src 'self' data: https://fonts.gstatic.com; " +
-    ("connect-src 'self' https://api.openai.com https://api.stripe.com https://m.stripe.network https://graph.facebook.com https://*.clerk.accounts.dev https://accounts.clerk.com https://clerk.accounts.dev https://clerk-telemetry.com https://*.cloudflare.com https://vercel.live wss://vercel.live https://rest.ably.io https://*.ably.io https://ably.io https://*.ably-realtime.com wss://*.ably.io wss://ably.io wss://*.ably-realtime.com" + (clerkExtras ? ` ${clerkExtras}` : '') + "; ") +
-    ("frame-src 'self' https://clerk.accounts.dev https://accounts.clerk.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com https://js.stripe.com https://hooks.stripe.com https://vercel.live" + (clerkExtras ? ` ${clerkExtras}` : '') + ";")
+    ("connect-src 'self' https://api.openai.com https://api.stripe.com https://m.stripe.network https://graph.facebook.com https://www.facebook.com https://web.facebook.com https://connect.facebook.net https://*.clerk.accounts.dev https://accounts.clerk.com https://clerk.accounts.dev https://clerk-telemetry.com https://*.cloudflare.com https://vercel.live wss://vercel.live https://rest.ably.io https://*.ably.io https://ably.io https://*.ably-realtime.com wss://*.ably.io wss://ably.io wss://*.ably-realtime.com" + (clerkExtras ? ` ${clerkExtras}` : '') + "; ") +
+    ("frame-src 'self' https://clerk.accounts.dev https://accounts.clerk.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com https://js.stripe.com https://hooks.stripe.com https://vercel.live https://www.facebook.com https://web.facebook.com https://connect.facebook.net" + (clerkExtras ? ` ${clerkExtras}` : '') + ";")
   );
   if (process.env.NODE_ENV === 'production') {
     res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');

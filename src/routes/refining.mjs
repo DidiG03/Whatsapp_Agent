@@ -10,6 +10,8 @@ import {
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
 import { getPlanStatus } from "../services/usage.mjs";
 import { refiningCoachReply } from "../services/ai.mjs";
+import { retrieveCoachKbContext } from "../services/kb.mjs";
+import { buildCoachBusinessContext } from "../services/coachContext.mjs";
 import { parseRefiningDirectives, applyRefiningDirectives, removeRuleAtIndex, clearAllRefiningRules, listRefiningRules } from "../services/refiningDirectives.mjs";
 
 function parseRulesList(rulesText = "") {
@@ -66,7 +68,7 @@ export default function registerRefiningRoutes(app) {
       ? renderTranscriptAsBubbles(transcript)
       : `<div class="refining-empty">
           <p class="refining-empty__title">Start a coaching session</p>
-          <p class="refining-empty__hint">Describe a situation or behaviour. If details are missing, the coach will ask follow-up questions before saving a rule.</p>
+          <p class="refining-empty__hint">Describe how your WhatsApp bot should behave, ask for suggestions, or refine rules. Off-topic questions won't be answered — this coach focuses on your bot only.</p>
         </div>`;
 
     res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -269,11 +271,17 @@ export default function registerRefiningRoutes(app) {
     try {
       const settings = await getSettingsForUser(userId);
       const history = settings?.refining_transcript || "";
+      const [kbContext, businessContext] = await Promise.all([
+        retrieveCoachKbContext(userId, userMsg, history),
+        buildCoachBusinessContext(settings),
+      ]);
       const coach = await refiningCoachReply(userMsg, history, {
         tone: settings?.ai_tone,
         style: settings?.ai_style,
         blockedTopics: settings?.ai_blocked_topics,
         currentRules: settings?.ai_refining_rules || "",
+        kbItems: kbContext,
+        businessContext: businessContext || "",
       });
 
       const directives = parseRefiningDirectives(coach);

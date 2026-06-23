@@ -1,11 +1,10 @@
 import { getCurrentUserId, verifySessionToken } from "../middleware/auth.mjs";
 import { ONBOARD_STEPS, getOnboarding, setOnboarding } from "../services/onboarding.mjs";
 import { renderTranscriptAsBubbles, getVercelWebAnalyticsSnippet } from "../utils.mjs";
-import { upsertKbItem } from "../services/kb.mjs";
+import { upsertKbItem, retrieveCoachKbContext } from "../services/kb.mjs";
 import { upsertSettingsForUser, getSettingsForUser } from "../services/settings.mjs";
 import { parseDirectives, applyDirectives } from "../services/coachDirectives.mjs";
 import { onboardingCoachReply } from "../services/ai.mjs";
-import { KBItem } from "../schemas/mongodb.mjs";
 
 export default function registerAssistantRoutes(app) {
   app.get("/assistant", (req, res) => {
@@ -220,10 +219,10 @@ export default function registerAssistantRoutes(app) {
     const state = getOnboarding(userId) || { step: 0, transcript: '' };
     if (!userMsg) return res.redirect("/assistant");
     try {
-      const titles = (await KBItem.find({ user_id: userId, title: { $ne: null } }).select('title').lean()).map(r => r.title);
       const history = state.transcript || "";
+      const kbContext = await retrieveCoachKbContext(userId, userMsg, history);
       const prefs = await getSettingsForUser(userId);
-      let coach = await onboardingCoachReply(userMsg, titles, history, {
+      let coach = await onboardingCoachReply(userMsg, kbContext, history, {
         tone: prefs?.ai_tone,
         style: prefs?.ai_style,
         blockedTopics: prefs?.ai_blocked_topics

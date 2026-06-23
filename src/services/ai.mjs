@@ -164,6 +164,35 @@ function escapePipes(s) {
   return String(s ?? "").replace(/\|/g, "\\|").trim();
 }
 
+function normalizeCoachKbEntries(kbItems = []) {
+  return (kbItems || [])
+    .map((item) => {
+      if (typeof item === "string") {
+        return { title: item.trim(), content: "" };
+      }
+      return {
+        title: String(item?.title || "").trim(),
+        content: String(item?.content || "").trim(),
+      };
+    })
+    .filter((item) => item.title);
+}
+
+function formatCoachKbForPrompt(kbItems = []) {
+  const entries = normalizeCoachKbEntries(kbItems);
+  if (!entries.length) return "(none yet)";
+  return entries
+    .map((item) => {
+      const title = escapePipes(item.title || "Untitled");
+      const content = String(item.content || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 1200);
+      return content ? `- ${title}: ${content}` : `- ${title}: (empty)`;
+    })
+    .join("\n");
+}
+
 function detectLanguageHint(userMessage) {
   const m = userMessage || "";
   const hasNonASCII = /[^\u0000-\u007f]/.test(m);
@@ -879,6 +908,7 @@ function buildOnboardingSystem(tonePref, stylePref, blockedTopics) {
     styleLine,
     blockedLine,
     "- Never invent facts. Extract facts from userMessage and prior transcript; if missing, ask via ASK_MORE.",
+    "- Use the knowledge base below for what is already saved — avoid duplicate ADD_KB entries and refine existing topics when the owner adds detail.",
     "- Output may contain only these lines in any order: ASK_MORE|..., ADD_KB|...|..., SET|...|..., COMPLETE",
     "",
     "Delimiters & validation:",
@@ -920,17 +950,15 @@ function buildOnboardingSystem(tonePref, stylePref, blockedTopics) {
 }
 
 function buildOnboardingInstruction(kbItems, historyTranscript, userMessage) {
-  const titles = (kbItems || [])
-    .map((r) => `- ${escapePipes(r?.title || "Untitled")}`)
-    .join("\n");
+  const kbBlock = formatCoachKbForPrompt(kbItems);
   const history = String(historyTranscript || "").slice(-MAX_HISTORY_CHARS);
   const langHint = detectLanguageHint(userMessage);
 
   return `
 ${langHint}
 
-Existing KB titles:
-${titles || "(none yet)"}
+Existing knowledge base:
+${kbBlock}
 
 Conversation history (latest last):
 ${history || "(no history)"}
@@ -992,15 +1020,26 @@ function buildRefiningSystem(tonePref, stylePref, blockedTopics, currentRules = 
     "",
     "Core behaviour:",
     "- Reply in the owner's language from their message.",
+    "- Stay in scope: you ONLY help refine this business's WhatsApp customer bot (rules, bot behaviour, tone-related settings, and KB updates that improve bot answers).",
+    "- Do NOT answer unrelated questions (general knowledge, coding, personal life, politics, news, jokes, unrelated business strategy, competitors, legal/medical advice, etc.).",
+    "- If the owner asks something off-topic, respond with REPLY| only: politely decline, explain you are the refining coach, and invite them back to bot rules or behaviour.",
     "- Read the FULL conversation history before responding — owners often answer your earlier questions in short follow-ups.",
     "- Do NOT save a vague rule. Ask follow-up questions until the instruction is specific enough for the customer bot to act on.",
     "- Ask ONE clear question at a time via ASK_MORE| (you may ask many questions across turns).",
     "- Only output ADD_RULE when you are confident the rule includes: trigger/situation (WHEN), action (THEN), and any critical details (numbers, phone, wording).",
     "- If the owner gives a short reply (e.g. '30', 'call us', 'yes'), combine it with prior context from the transcript — do not treat it as a standalone new topic.",
+    "",
+    "Suggestions (when asked):",
+    "- If the owner asks for ideas, suggestions, recommendations, or 'what should I add/change', use REPLY| with 3–5 concrete suggestions.",
+    "- Ground every suggestion in their business profile, website summary, knowledge base, services, and current rules — not generic chatbot advice.",
+    "- Keep all suggestions in a single REPLY| line (use semicolons or 1) 2) 3) — no markdown bullets).",
+    "- Do NOT output ADD_RULE unless they explicitly want to save a rule or give a complete instruction to save.",
+    "- You may end with a short question offering to turn a suggestion into a saved rule.",
     toneLine,
     styleLine,
     blockedLine,
     "- Never invent facts about the business (phone numbers, prices, policies). Ask if missing.",
+    "- Ground rules and ADD_KB suggestions in the business profile, website summary, and knowledge base below when relevant.",
     "",
     "Output ONLY these line types:",
     "  ASK_MORE|<single clarifying question>",
@@ -1023,6 +1062,8 @@ function buildRefiningSystem(tonePref, stylePref, blockedTopics, currentRules = 
     "",
     "When to REPLY only (no ADD_RULE):",
     "- Simple acknowledgement when no rule change is needed.",
+    "- Off-topic questions (decline politely and redirect).",
+    "- Suggestion requests (ideas for rules, improvements, gaps to cover).",
     "",
     "When to REPLY + REMOVE_RULE (or CLEAR_RULES):",
     "- Owner asks to delete, remove, undo, or cancel a rule.",
@@ -1043,20 +1084,36 @@ function buildRefiningSystem(tonePref, stylePref, blockedTopics, currentRules = 
     "REPLY|Done — large groups will be directed to call you.",
     "ADD_RULE|When a customer requests a booking for more than 30 people, advise them to call +355 69 123 4567 directly. Do not complete large group bookings via WhatsApp message.",
     "",
+    "Example suggestions:",
+    "Owner: 'Any ideas for rules I should add?'",
+    "REPLY|Based on your business, consider: 1) Escalate to a human when a customer asks for a refund; 2) Confirm party size before accepting bookings over 6; 3) Share your hours when someone asks if you're open; 4) Offer to send the menu link when asked about prices. Want me to save any of these as a rule?",
+    "",
+    "Example off-topic:",
+    "Owner: 'What's the weather tomorrow?'",
+    "REPLY|I'm your refining coach — I help shape how your WhatsApp bot handles customers (rules, tone, and behaviour). I can't help with unrelated questions, but I can suggest or save bot rules if you'd like.",
+    "",
     rulesBlock ? `\nCurrent active bot rules:\n${rulesBlock}` : "\nCurrent active bot rules: (none yet)",
   ].filter(Boolean).join("\n");
 }
 
-function buildRefiningInstruction(historyTranscript, userMessage) {
+function buildRefiningInstruction(historyTranscript, userMessage, kbItems = [], businessContext = "") {
   const history = String(historyTranscript || "").slice(-MAX_HISTORY_CHARS);
+  const kbBlock = formatCoachKbForPrompt(kbItems);
+  const businessBlock = String(businessContext || "").trim() || "(not available)";
   return `
+Business profile, settings, and website:
+${businessBlock}
+
+Business knowledge base (facts already saved — use these; do not contradict or invent):
+${kbBlock}
+
 Conversation history (latest last):
 ${history || "(no history)"}
 
 Owner message:
 ${String(userMessage || "").slice(0, 4000)}
 
-(Reply ONLY with valid DSL lines. Use ASK_MORE when you still need details — do NOT add ADD_RULE in the same response as ASK_MORE. When ready, use REPLY plus ADD_RULE.)
+(Reply ONLY with valid DSL lines. Use ASK_MORE when you still need details — do NOT add ADD_RULE in the same response as ASK_MORE. When ready, use REPLY plus ADD_RULE. For off-topic messages, use REPLY only to decline and redirect. For suggestion requests, use REPLY only with grounded ideas.)
 `.trim();
 }
 
@@ -1067,13 +1124,18 @@ export async function refiningCoachReply(userMessage, historyTranscript = "", op
     options?.blockedTopics,
     options?.currentRules || ""
   );
-  const instruction = buildRefiningInstruction(historyTranscript, userMessage);
+  const instruction = buildRefiningInstruction(
+    historyTranscript,
+    userMessage,
+    options?.kbItems || options?.kbContext || [],
+    options?.businessContext || ""
+  );
 
   async function callOnce(extra = "") {
     const resp = await createChat({
       model: MODEL,
       temperature: 0.2,
-      max_tokens: 700,
+      max_tokens: 900,
       messages: [
         { role: "system", content: system + extra },
         { role: "user", content: `${instruction}\n\nOwner: ${userMessage}\nAssistant:` },
@@ -1085,7 +1147,7 @@ export async function refiningCoachReply(userMessage, historyTranscript = "", op
   let out = await callOnce();
   if (!isValidRefiningDslResponse(out)) {
     out = await callOnce(
-      "\n\nREMINDER: Output ONLY valid DSL lines. Use ASK_MORE| for one clarifying question when details are missing. Use REPLY| plus ADD_RULE| only when the rule is complete. Never combine ASK_MORE with ADD_RULE."
+      "\n\nREMINDER: Output ONLY valid DSL lines. Stay in refining scope — decline off-topic questions with REPLY| only. For suggestion requests, use REPLY| with grounded ideas (no ADD_RULE unless saving). Use ASK_MORE| when details are missing. Never combine ASK_MORE with ADD_RULE."
     );
   }
   if (!isValidRefiningDslResponse(out)) {

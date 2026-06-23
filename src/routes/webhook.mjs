@@ -3191,14 +3191,15 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         }
       } catch {}
       const REQUIRE_SIG = (process.env.NODE_ENV === 'production') && (process.env.REQUIRE_WEBHOOK_SIGNATURE !== '0');
-      if (REQUIRE_SIG && (!sig || !s.app_secret)) {
+      const appSecret = s.app_secret || process.env.META_APP_SECRET || process.env.FACEBOOK_APP_SECRET || '';
+      if (REQUIRE_SIG && (!sig || !appSecret)) {
         return res.sendStatus(403);
       }
-      if (s.app_secret && sig) {
+      if (appSecret && sig) {
         const [algo, theirHex] = String(sig||'').split("=");
         if (algo !== "sha256") return res.sendStatus(403);
         const raw = req.rawBody instanceof Buffer ? req.rawBody : Buffer.from(JSON.stringify(req.body || {}));
-        const hmac = crypto.createHmac("sha256", s.app_secret);
+        const hmac = crypto.createHmac("sha256", appSecret);
         hmac.update(raw);
         const oursHex = hmac.digest("hex");
         try {

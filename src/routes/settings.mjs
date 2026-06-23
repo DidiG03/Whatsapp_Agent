@@ -1,4 +1,5 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail, clerkClient } from "../middleware/auth.mjs";
+import { CLERK_ENABLED, META_APP_ID, META_EMBEDDED_SIGNUP_CONFIG_ID, META_EMBEDDED_SIGNUP_ENABLED, PUBLIC_BASE_URL } from "../config.mjs";
 import { wrapAsync } from "../middleware/errors.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
 import { getVercelWebAnalyticsSnippet, renderSidebar, renderTopbar, escapeHtml, getProfessionalHead, renderPageHeader } from "../utils.mjs";
@@ -29,6 +30,12 @@ import { recordSettingsAudit } from "../services/audit.mjs";
 import { autocompleteAddress, getPlaceDetails, autocompleteBusiness, isPlacesConfigured } from "../services/places.mjs";
 import { previewGoogleBusinessImport, applyGoogleBusinessImport } from "../services/googleBusinessImport.mjs";
 import { checkWhatsAppGroupsSupport } from "../services/staffGroupsSupport.mjs";
+import {
+  buildConnectionStatus,
+  completeWhatsAppConnection,
+  disconnectWhatsApp,
+  validateWhatsAppToken,
+} from "../services/whatsappConnect.mjs";
 
 export default function registerSettingsRoutes(app, options = {}) {
   const protect = options.csrfProtection || ((req, _res, next) => next());
@@ -44,6 +51,22 @@ export default function registerSettingsRoutes(app, options = {}) {
     const bookingsActive = effectiveConversationMode === 'full';
     const bookingsLocked = !bookingsActive;
     const email = await getSignedInEmail(req);
+    let passwordEnabled = false;
+    let signedInWithGoogle = false;
+    let primaryEmail = email || '';
+    if (CLERK_ENABLED && userId) {
+      try {
+        const clerkUser = await clerkClient.users.getUser(userId);
+        passwordEnabled = clerkUser?.passwordEnabled === true;
+        primaryEmail = clerkUser.emailAddresses?.find((entry) => entry.id === clerkUser.primaryEmailAddressId)?.emailAddress
+          || clerkUser.emailAddresses?.[0]?.emailAddress
+          || primaryEmail;
+        signedInWithGoogle = (clerkUser.externalAccounts || []).some((account) => {
+          const provider = String(account.provider || '').toLowerCase();
+          return provider.includes('google');
+        });
+      } catch {}
+    }
     const q = req.query || {};
     const businessCategories = (() => { try { return JSON.parse(s.business_categories_json || '[]'); } catch { return []; } })();
     const businessCategoriesValue = Array.isArray(businessCategories) ? businessCategories.join(', ') : '';
@@ -58,6 +81,15 @@ export default function registerSettingsRoutes(app, options = {}) {
     const staffToEdit = (q.edit_staff ? await Staff.findOne({ _id: String(q.edit_staff), user_id: userId }).lean().catch(() => null) : null);
     const quickReplies = await getQuickReplies(userId);
     const quickReplyCategories = await getQuickReplyCategories(userId);
+    const waConnection = buildConnectionStatus(s);
+    const waWebhookUrl = `${PUBLIC_BASE_URL}/webhook`;
+    const waVerifyToken = s.verify_token || "";
+    const metaConnectConfigJson = JSON.stringify({
+      enabled: META_EMBEDDED_SIGNUP_ENABLED,
+      appId: META_APP_ID || "",
+      configId: META_EMBEDDED_SIGNUP_CONFIG_ID || "",
+      graphVersion: "v21.0",
+    });
     const csrfToken = res.locals.csrfToken || '';
     const csrfField = `<input type="hidden" name="_csrf" value="${escapeAttr(csrfToken)}">`;
     const csrfTokenJson = JSON.stringify(csrfToken);
@@ -113,47 +145,608 @@ export default function registerSettingsRoutes(app, options = {}) {
             const el=document.getElementById(id); if(!el) return;
             try{ await navigator.clipboard.writeText(el.value||''); }catch(e){}
           }
-          // Accordion helper: wrap section content and allow toggle per section
-          const ACCORDION_STORE_KEY = 'settings:accordion:v1';
-          function readAccordionPrefs(){ try{ return JSON.parse(localStorage.getItem(ACCORDION_STORE_KEY)||'{}'); }catch(_){ return {}; } }
-          function writeAccordionPrefs(p){ try{ localStorage.setItem(ACCORDION_STORE_KEY, JSON.stringify(p||{})); }catch(_){} }
-          function initAccordions(){
-            const prefs = readAccordionPrefs();
-            const sections = document.querySelectorAll('.section');
-            sections.forEach(sec => {
-              const header = sec.querySelector('h3');
-              if(!header) return;
-              // Wrap body once
-              if (!sec.querySelector('.section-body')) {
-                const body = document.createElement('div');
-                body.className = 'section-body';
-                const nodes = Array.from(sec.childNodes).slice(Array.from(sec.childNodes).indexOf(header)+1);
-                nodes.forEach(n => body.appendChild(n));
-                sec.appendChild(body);
+          // Settings panel navigation (one section visible at a time)
+          const SETTINGS_PANEL_KEY = 'settings:activePanel:v1';
+          function initSettingsPanels(){
+            const panels = document.querySelectorAll('.settings-panel');
+            const links = document.querySelectorAll('[data-settings-panel]');
+            const heading = document.getElementById('settings-panel-heading');
+
+            function showPanel(id){
+              if (!id) return;
+              const hasPanel = Array.from(panels).some((panel) => panel.id === id);
+              if (!hasPanel) return;
+
+              panels.forEach((panel) => {
+                panel.classList.toggle('is-active', panel.id === id);
+              });
+              links.forEach((link) => {
+                link.classList.toggle('is-active', link.getAttribute('data-settings-panel') === id);
+              });
+
+              const activeHeading = document.querySelector('.settings-panel.is-active h3, .settings-panel.is-active .settings-section__title');
+              if (heading) heading.textContent = activeHeading?.textContent?.trim() || 'Settings';
+
+              try { localStorage.setItem(SETTINGS_PANEL_KEY, id); } catch (_) {}
+              if (window.history && window.history.replaceState) {
+                window.history.replaceState(null, '', '#' + id);
               }
-              // Add caret if missing
-              if (!header.querySelector('.caret')) { const caret = document.createElement('span'); caret.className='caret'; header.prepend(caret); }
-              // Apply persisted state
-              const id = sec.getAttribute('id');
-              if (id && prefs[id] === true) sec.classList.add('collapsed');
-              header.addEventListener('click', () => {
-                sec.classList.toggle('collapsed');
-                const id2 = sec.getAttribute('id');
-                if (id2) { const p = readAccordionPrefs(); p[id2] = sec.classList.contains('collapsed'); writeAccordionPrefs(p); }
+            }
+
+            links.forEach((link) => {
+              link.addEventListener('click', () => {
+                showPanel(link.getAttribute('data-settings-panel'));
               });
             });
+
+            window.addEventListener('hashchange', () => {
+              const hash = (location.hash || '').replace(/^#/, '');
+              if (hash) showPanel(hash);
+            });
+
+            const hash = (location.hash || '').replace(/^#/, '');
+            let stored = null;
+            try { stored = localStorage.getItem(SETTINGS_PANEL_KEY); } catch (_) {}
+            const initial = (hash && document.getElementById(hash)) ? hash : (stored || 'account');
+            showPanel(initial);
           }
-          function expandAll(){
-            const p = readAccordionPrefs();
-            document.querySelectorAll('.section').forEach(s=>{ s.classList.remove('collapsed'); const id=s.id; if(id){ p[id]=false; } });
-            writeAccordionPrefs(p);
+          window.addEventListener('DOMContentLoaded', initSettingsPanels);
+
+          function clerkAccountErrorMessage(error, fallback) {
+            const errors = error?.errors;
+            if (Array.isArray(errors) && errors.length) {
+              const first = errors[0] || {};
+              const code = String(first.code || '').toLowerCase();
+              if (code.includes('reverification') || code === 'session_reverification_required') {
+                return 'For your security, please sign out and sign in again, then retry.';
+              }
+              if (code === 'form_identifier_exists') {
+                return 'That email is already linked to another account.';
+              }
+              return first.longMessage || first.message || fallback;
+            }
+            const message = String(error?.message || '').trim();
+            if (/reverification|verification required/i.test(message)) {
+              return 'For your security, please sign out and sign in again, then retry.';
+            }
+            return message || fallback;
           }
-          function collapseAll(){
-            const p = readAccordionPrefs();
-            document.querySelectorAll('.section').forEach(s=>{ s.classList.add('collapsed'); const id=s.id; if(id){ p[id]=true; } });
-            writeAccordionPrefs(p);
+
+          function initAccountEmailForm() {
+            const form = document.getElementById('account-email-form');
+            if (!form) return;
+
+            const clerkEnabled = form.dataset.clerkEnabled === 'true';
+            const currentEmailInput = document.getElementById('account-current-email');
+            const newEmailInput = document.getElementById('account-new-email');
+            const codeInput = document.getElementById('account-email-code');
+            const verifyStep = document.getElementById('account-email-verify-step');
+            const verifyHint = document.getElementById('account-email-verify-hint');
+            const errorEl = document.getElementById('account-email-error');
+            const successEl = document.getElementById('account-email-success');
+            const submitBtn = document.getElementById('account-email-submit');
+            const resendBtn = document.getElementById('account-email-resend');
+            const cancelBtn = document.getElementById('account-email-cancel');
+            let pendingEmailAddress = null;
+            let verifyMode = false;
+
+            function setMessage(el, message) {
+              if (!el) return;
+              if (message) {
+                el.textContent = message;
+                el.hidden = false;
+              } else {
+                el.textContent = '';
+                el.hidden = true;
+              }
+            }
+
+            function setVerifyMode(enabled, targetEmail) {
+              verifyMode = enabled;
+              if (verifyStep) verifyStep.hidden = !enabled;
+              if (resendBtn) resendBtn.hidden = !enabled;
+              if (cancelBtn) cancelBtn.hidden = !enabled;
+              if (newEmailInput) newEmailInput.readOnly = enabled;
+              if (submitBtn) submitBtn.textContent = enabled ? 'Verify & set as primary' : 'Send verification code';
+              if (verifyHint && targetEmail) {
+                verifyHint.textContent = 'Enter the 6-digit code sent to ' + targetEmail + '.';
+              }
+              if (!enabled) {
+                pendingEmailAddress = null;
+                if (codeInput) codeInput.value = '';
+              }
+            }
+
+            function getCurrentPrimaryEmail(user) {
+              return String(user?.primaryEmailAddress?.emailAddress || currentEmailInput?.value || '').trim();
+            }
+
+            async function prepareEmailVerification(user, targetEmail) {
+              const normalizedTarget = targetEmail.toLowerCase();
+              const existing = (user.emailAddresses || []).find((entry) => {
+                return String(entry.emailAddress || '').trim().toLowerCase() === normalizedTarget;
+              });
+
+              let emailAddress = existing || null;
+              if (!emailAddress) {
+                const created = await user.createEmailAddress({ email: targetEmail });
+                await user.reload();
+                emailAddress = user.emailAddresses.find((entry) => entry.id === created.id) || null;
+              }
+
+              if (!emailAddress) {
+                throw new Error('Could not add the email address. Please try again.');
+              }
+
+              if (emailAddress.verification?.status === 'verified') {
+                await user.update({ primaryEmailAddressId: emailAddress.id });
+                await user.reload();
+                return { alreadyVerified: true, emailAddress };
+              }
+
+              await emailAddress.prepareVerification({ strategy: 'email_code' });
+              return { alreadyVerified: false, emailAddress };
+            }
+
+            cancelBtn?.addEventListener('click', () => {
+              setMessage(errorEl, '');
+              setMessage(successEl, '');
+              setVerifyMode(false);
+            });
+
+            resendBtn?.addEventListener('click', async () => {
+              setMessage(errorEl, '');
+              setMessage(successEl, '');
+              if (!pendingEmailAddress) return;
+              if (resendBtn) {
+                resendBtn.disabled = true;
+                resendBtn.textContent = 'Sending...';
+              }
+              try {
+                await window.authManager.initClerk();
+                await pendingEmailAddress.prepareVerification({ strategy: 'email_code' });
+                setMessage(successEl, 'Verification code resent.');
+              } catch (error) {
+                console.error('Email code resend failed:', error);
+                setMessage(errorEl, clerkAccountErrorMessage(error, 'Failed to resend verification code.'));
+              } finally {
+                if (resendBtn) {
+                  resendBtn.disabled = false;
+                  resendBtn.textContent = 'Resend code';
+                }
+              }
+            });
+
+            form.addEventListener('submit', async (event) => {
+              event.preventDefault();
+              setMessage(errorEl, '');
+              setMessage(successEl, '');
+
+              if (!clerkEnabled) {
+                setMessage(errorEl, 'Email changes require Clerk authentication.');
+                return;
+              }
+
+              const targetEmail = String(newEmailInput?.value || '').trim();
+              if (!targetEmail) {
+                setMessage(errorEl, 'Enter a new email address.');
+                newEmailInput?.focus();
+                return;
+              }
+
+              if (submitBtn) {
+                submitBtn.disabled = true;
+              }
+
+              try {
+                await window.authManager.initClerk();
+                const user = window.Clerk?.user;
+                if (!user) {
+                  window.authManager.handleUnauthorized();
+                  return;
+                }
+
+                const currentEmail = getCurrentPrimaryEmail(user);
+                if (targetEmail.toLowerCase() === currentEmail.toLowerCase()) {
+                  setMessage(errorEl, 'That is already your current email address.');
+                  return;
+                }
+
+                if (!verifyMode) {
+                  if (submitBtn) submitBtn.textContent = 'Sending...';
+                  const result = await prepareEmailVerification(user, targetEmail);
+                  if (result.alreadyVerified) {
+                    if (currentEmailInput) currentEmailInput.value = targetEmail;
+                    setVerifyMode(false);
+                    setMessage(successEl, 'Primary email updated successfully.');
+                    if (window.history?.replaceState) {
+                      window.history.replaceState(null, '', '/settings#account');
+                    }
+                    return;
+                  }
+                  pendingEmailAddress = result.emailAddress;
+                  setVerifyMode(true, targetEmail);
+                  setMessage(successEl, 'Verification code sent. Check your inbox.');
+                  codeInput?.focus();
+                  return;
+                }
+
+                const code = String(codeInput?.value || '').trim();
+                if (!code) {
+                  setMessage(errorEl, 'Enter the verification code from your email.');
+                  codeInput?.focus();
+                  return;
+                }
+                if (!pendingEmailAddress) {
+                  setMessage(errorEl, 'Verification expired. Send a new code to continue.');
+                  setVerifyMode(false);
+                  return;
+                }
+
+                if (submitBtn) submitBtn.textContent = 'Verifying...';
+                await pendingEmailAddress.attemptVerification({ code });
+                await user.update({ primaryEmailAddressId: pendingEmailAddress.id });
+                await user.reload();
+
+                const updatedEmail = getCurrentPrimaryEmail(user);
+                if (currentEmailInput && updatedEmail) currentEmailInput.value = updatedEmail;
+                if (newEmailInput) newEmailInput.value = '';
+                setVerifyMode(false);
+                setMessage(successEl, 'Primary email updated successfully.');
+                if (window.history?.replaceState) {
+                  window.history.replaceState(null, '', '/settings#account');
+                }
+              } catch (error) {
+                console.error('Email update failed:', error);
+                setMessage(errorEl, clerkAccountErrorMessage(error, verifyMode
+                  ? 'Verification failed. Check the code and try again.'
+                  : 'Failed to start email update.'));
+              } finally {
+                if (submitBtn) {
+                  submitBtn.disabled = false;
+                  submitBtn.textContent = verifyMode ? 'Verify & set as primary' : 'Send verification code';
+                }
+              }
+            });
           }
-          window.addEventListener('DOMContentLoaded', initAccordions);
+
+          function clerkPasswordErrorMessage(error) {
+            return clerkAccountErrorMessage(error, 'Failed to update password.');
+          }
+
+          function initAccountPasswordForm() {
+            const form = document.getElementById('account-password-form');
+            if (!form) return;
+
+            const passwordEnabled = form.dataset.passwordEnabled === 'true';
+            const clerkEnabled = form.dataset.clerkEnabled === 'true';
+            const errorEl = document.getElementById('account-password-error');
+            const successEl = document.getElementById('account-password-success');
+            const submitBtn = document.getElementById('account-password-submit');
+            const currentInput = document.getElementById('account-current-password');
+            const newInput = document.getElementById('account-new-password');
+            const confirmInput = document.getElementById('account-confirm-password');
+            const signOutCheckbox = document.getElementById('account-sign-out-sessions');
+
+            function setMessage(el, message) {
+              if (!el) return;
+              if (message) {
+                el.textContent = message;
+                el.hidden = false;
+              } else {
+                el.textContent = '';
+                el.hidden = true;
+              }
+            }
+
+            function clearPasswordFields() {
+              if (currentInput) currentInput.value = '';
+              if (newInput) newInput.value = '';
+              if (confirmInput) confirmInput.value = '';
+            }
+
+            form.addEventListener('submit', async (event) => {
+              event.preventDefault();
+              setMessage(errorEl, '');
+              setMessage(successEl, '');
+
+              if (!clerkEnabled) {
+                setMessage(errorEl, 'Password changes require Clerk authentication.');
+                return;
+              }
+
+              const newPassword = String(newInput?.value || '');
+              const confirmPassword = String(confirmInput?.value || '');
+              const currentPassword = String(currentInput?.value || '');
+
+              if (passwordEnabled && !currentPassword) {
+                setMessage(errorEl, 'Enter your current password.');
+                currentInput?.focus();
+                return;
+              }
+              if (!newPassword || newPassword.length < 8) {
+                setMessage(errorEl, 'New password must be at least 8 characters.');
+                newInput?.focus();
+                return;
+              }
+              if (newPassword !== confirmPassword) {
+                setMessage(errorEl, 'New password and confirmation do not match.');
+                confirmInput?.focus();
+                return;
+              }
+              if (passwordEnabled && currentPassword === newPassword) {
+                setMessage(errorEl, 'New password must be different from your current password.');
+                newInput?.focus();
+                return;
+              }
+
+              const signOutOfOtherSessions = signOutCheckbox ? signOutCheckbox.checked : true;
+              if (signOutOfOtherSessions && !window.confirm('You will be signed out of all other devices after this change. Continue?')) {
+                return;
+              }
+
+              if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.textContent = 'Updating...';
+              }
+
+              try {
+                await window.authManager.initClerk();
+                const user = window.Clerk?.user;
+                if (!user) {
+                  window.authManager.handleUnauthorized();
+                  return;
+                }
+
+                const params = { newPassword, signOutOfOtherSessions };
+                if (passwordEnabled) params.currentPassword = currentPassword;
+
+                await user.updatePassword(params);
+                clearPasswordFields();
+                setMessage(successEl, passwordEnabled
+                  ? 'Password updated successfully.'
+                  : 'Password set successfully. You can now sign in with email and password.');
+              } catch (error) {
+                console.error('Password update failed:', error);
+                setMessage(errorEl, clerkPasswordErrorMessage(error));
+              } finally {
+                if (submitBtn) {
+                  submitBtn.disabled = false;
+                  submitBtn.textContent = passwordEnabled ? 'Update password' : 'Set password';
+                }
+              }
+            });
+          }
+          window.addEventListener('DOMContentLoaded', initAccountPasswordForm);
+          window.addEventListener('DOMContentLoaded', initAccountEmailForm);
+
+          window.__META_WA_CONNECT__ = ${metaConnectConfigJson};
+
+          function initWhatsAppConnect() {
+            const card = document.getElementById('wa-connect-card');
+            if (!card) return;
+
+            const config = window.__META_WA_CONNECT__ || {};
+            const statusEl = document.getElementById('wa-connect-status');
+            const errorEl = document.getElementById('wa-connect-error');
+            const successEl = document.getElementById('wa-connect-success');
+            const connectBtn = document.getElementById('wa-connect-btn');
+            const disconnectBtn = document.getElementById('wa-connect-disconnect');
+            const testBtn = document.getElementById('wa-connect-test');
+            const detailsEl = document.getElementById('wa-connect-details');
+            let pendingSignup = null;
+            let pendingCode = null;
+
+            function setInlineMessage(el, message) {
+              if (!el) return;
+              if (message) {
+                el.textContent = message;
+                el.hidden = false;
+              } else {
+                el.textContent = '';
+                el.hidden = true;
+              }
+            }
+
+            function renderStatus(data) {
+              if (!data) return;
+              const connected = !!data.connected;
+              if (statusEl) {
+                statusEl.innerHTML = connected
+                  ? '<span class="wa-connect-status__dot wa-connect-status__dot--ok"></span><span><strong>Connected</strong></span>'
+                  : '<span class="wa-connect-status__dot"></span><span><strong>Not connected</strong></span>';
+              }
+              if (connectBtn) connectBtn.textContent = connected ? 'Reconnect WhatsApp' : 'Connect WhatsApp';
+              if (disconnectBtn) disconnectBtn.hidden = !connected;
+              if (testBtn) testBtn.hidden = !connected;
+              if (detailsEl) {
+                detailsEl.hidden = !connected;
+                const phoneId = document.getElementById('wa-connected-phone-id');
+                const wabaId = document.getElementById('wa-connected-waba-id');
+                const businessPhone = document.getElementById('wa-connected-business-phone');
+                if (phoneId) phoneId.textContent = data.phoneNumberId || '—';
+                if (wabaId) wabaId.textContent = data.wabaId || '—';
+                if (businessPhone) businessPhone.textContent = data.businessPhone ? ('+' + String(data.businessPhone).replace(/\\D/g, '')) : '—';
+              }
+            }
+
+            async function refreshStatus() {
+              try {
+                const resp = await window.authManager.authenticatedFetch('/api/settings/whatsapp/status', {
+                  headers: { Accept: 'application/json' }
+                });
+                const data = await resp.json();
+                if (resp.ok) renderStatus(data);
+              } catch (_) {}
+            }
+
+            async function completeConnection() {
+              if (!pendingCode || !pendingSignup?.phone_number_id) return;
+              setInlineMessage(errorEl, '');
+              setInlineMessage(successEl, '');
+              if (connectBtn) {
+                connectBtn.disabled = true;
+                connectBtn.textContent = 'Connecting...';
+              }
+              try {
+                const resp = await window.authManager.authenticatedFetch('/api/settings/whatsapp/connect', {
+                  method: 'POST',
+                  headers: {
+                    Accept: 'application/json',
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({
+                    code: pendingCode,
+                    phone_number_id: pendingSignup.phone_number_id,
+                    waba_id: pendingSignup.waba_id || null,
+                    business_id: pendingSignup.business_id || null
+                  })
+                });
+                const data = await resp.json();
+                if (!resp.ok || !data.success) {
+                  throw new Error(data.error || 'Failed to connect WhatsApp');
+                }
+                pendingSignup = null;
+                pendingCode = null;
+                setInlineMessage(successEl, 'WhatsApp connected successfully.');
+                renderStatus(data.status || data);
+                await refreshStatus();
+                const verifyField = document.querySelector('input[name="verify_token"]');
+                if (verifyField && data.verify_token) verifyField.value = data.verify_token;
+                const phoneField = document.querySelector('input[name="phone_number_id"]');
+                if (phoneField && data.phone_number_id) phoneField.value = data.phone_number_id;
+                const wabaField = document.querySelector('input[name="waba_id"]');
+                if (wabaField && data.waba_id) wabaField.value = data.waba_id;
+                const businessPhoneField = document.querySelector('input[name="business_phone"]');
+                if (businessPhoneField && data.business_phone) businessPhoneField.value = data.business_phone;
+              } catch (error) {
+                console.error('WhatsApp connect failed:', error);
+                setInlineMessage(errorEl, error?.message || 'Failed to connect WhatsApp.');
+              } finally {
+                if (connectBtn) {
+                  connectBtn.disabled = false;
+                  connectBtn.textContent = 'Reconnect WhatsApp';
+                }
+              }
+            }
+
+            function tryCompleteConnection() {
+              if (pendingCode && pendingSignup?.phone_number_id) {
+                completeConnection();
+              }
+            }
+
+            window.addEventListener('message', (event) => {
+              if (!event.origin.endsWith('facebook.com')) return;
+              try {
+                const payload = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+                if (payload?.type === 'WA_EMBEDDED_SIGNUP' && payload?.data) {
+                  pendingSignup = payload.data;
+                  tryCompleteConnection();
+                }
+              } catch (_) {}
+            });
+
+            function launchEmbeddedSignup() {
+              if (!config.enabled) {
+                setInlineMessage(errorEl, 'Embedded Signup is not configured. Add META_APP_ID, META_APP_SECRET, and META_EMBEDDED_SIGNUP_CONFIG_ID to your environment.');
+                return;
+              }
+              if (!window.FB) {
+                setInlineMessage(errorEl, 'Meta SDK is still loading. Please try again in a moment.');
+                return;
+              }
+              setInlineMessage(errorEl, '');
+              setInlineMessage(successEl, '');
+              pendingSignup = null;
+              pendingCode = null;
+              window.FB.login((response) => {
+                if (response?.authResponse?.code) {
+                  pendingCode = response.authResponse.code;
+                  tryCompleteConnection();
+                  return;
+                }
+                if (response?.status === 'not_authorized' || response?.status === 'unknown') {
+                  setInlineMessage(errorEl, 'Meta sign-in was cancelled.');
+                }
+              }, {
+                config_id: config.configId,
+                response_type: 'code',
+                override_default_response_type: true,
+                extras: { setup: {} }
+              });
+            }
+
+            function loadFacebookSdk() {
+              if (!config.enabled || !config.appId) return;
+              window.fbAsyncInit = function() {
+                window.FB.init({
+                  appId: config.appId,
+                  cookie: true,
+                  xfbml: false,
+                  version: config.graphVersion || 'v21.0'
+                });
+              };
+              if (document.getElementById('facebook-jssdk')) return;
+              const script = document.createElement('script');
+              script.id = 'facebook-jssdk';
+              script.async = true;
+              script.defer = true;
+              script.crossOrigin = 'anonymous';
+              script.src = 'https://connect.facebook.net/en_US/sdk.js';
+              document.body.appendChild(script);
+            }
+
+            connectBtn?.addEventListener('click', launchEmbeddedSignup);
+            disconnectBtn?.addEventListener('click', async () => {
+              if (!window.confirm('Disconnect WhatsApp from Code Orbit?')) return;
+              setInlineMessage(errorEl, '');
+              setInlineMessage(successEl, '');
+              try {
+                const resp = await window.authManager.authenticatedFetch('/api/settings/whatsapp/disconnect', {
+                  method: 'POST',
+                  headers: { Accept: 'application/json' }
+                });
+                const data = await resp.json();
+                if (!resp.ok || !data.success) throw new Error(data.error || 'Disconnect failed');
+                setInlineMessage(successEl, 'WhatsApp disconnected.');
+                await refreshStatus();
+              } catch (error) {
+                setInlineMessage(errorEl, error?.message || 'Failed to disconnect WhatsApp.');
+              }
+            });
+            testBtn?.addEventListener('click', async () => {
+              setInlineMessage(errorEl, '');
+              setInlineMessage(successEl, '');
+              if (testBtn) {
+                testBtn.disabled = true;
+                testBtn.textContent = 'Testing...';
+              }
+              try {
+                const resp = await window.authManager.authenticatedFetch('/api/settings/whatsapp/status?validate=1', {
+                  headers: { Accept: 'application/json' }
+                });
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(data.error || 'Connection test failed');
+                if (data.tokenStatus === 'ok') {
+                  setInlineMessage(successEl, 'Connection is healthy.');
+                } else {
+                  throw new Error(data.tokenMessage || 'Token is invalid or expired. Try reconnecting.');
+                }
+              } catch (error) {
+                setInlineMessage(errorEl, error?.message || 'Connection test failed.');
+              } finally {
+                if (testBtn) {
+                  testBtn.disabled = false;
+                  testBtn.textContent = 'Test connection';
+                }
+              }
+            });
+
+            loadFacebookSdk();
+            refreshStatus();
+          }
+          window.addEventListener('DOMContentLoaded', initWhatsAppConnect);
         </script>
         <div class="container">
           ${renderTopbar('Settings', email)}
@@ -162,45 +755,126 @@ export default function registerSettingsRoutes(app, options = {}) {
             <main class="main">
             <div class="main-content settings-page">
               <div class="settings-shell">
-              <div id="settings-nav" class="settings-nav">
-                <div class="settings-nav__inner">
-                  <a href="#account" class="settings-nav__link">Account</a>
-                  <a href="#business" class="settings-nav__link">Business</a>
-                  <a href="#whatsapp" class="settings-nav__link">WhatsApp</a>
-                  <a href="#conversation" class="settings-nav__link">Conversation</a>
-                  <a href="#holidays" class="settings-nav__link">Holidays</a>
-                  <a href="#bookings_section" class="settings-nav__link">Reservations</a>
-                  <a href="#staff" class="settings-nav__link">Staff</a>
-                  <a href="#quick-replies" class="settings-nav__link">Quick Replies</a>
-                  <a href="#danger" class="settings-nav__link">Danger</a>
-                  <button class="settings-nav__utility" type="button" onclick="expandAll()">Expand all</button>
-                  <button class="settings-nav__utility" type="button" onclick="collapseAll()">Collapse all</button>
-                  <button class="settings-nav__save btn btn-primary" type="submit" form="settings-main-form">Save changes</button>
+              <div class="settings-toolbar">
+                <div>
+                  <h2 class="settings-toolbar__title">Settings</h2>
+                  <p class="settings-toolbar__subtitle">Configure your workspace, WhatsApp bot, and bookings.</p>
                 </div>
+                <button class="btn btn-primary settings-toolbar__save" type="submit" form="settings-main-form">Save changes</button>
               </div>
+              <div class="settings-layout">
+              <nav id="settings-nav" class="settings-sidebar" aria-label="Settings sections">
+                <div class="settings-sidebar__group">
+                  <div class="settings-sidebar__label">General</div>
+                  <button type="button" class="settings-sidebar__link is-active" data-settings-panel="account">Account</button>
+                  <button type="button" class="settings-sidebar__link" data-settings-panel="business">Business information</button>
+                </div>
+                <div class="settings-sidebar__group">
+                  <div class="settings-sidebar__label">WhatsApp</div>
+                  <button type="button" class="settings-sidebar__link" data-settings-panel="whatsapp">Connection</button>
+                  <button type="button" class="settings-sidebar__link" data-settings-panel="ai">AI preferences</button>
+                  <button type="button" class="settings-sidebar__link" data-settings-panel="conversation">Conversation mode</button>
+                </div>
+                <div class="settings-sidebar__group">
+                  <div class="settings-sidebar__label">Scheduling</div>
+                  <button type="button" class="settings-sidebar__link" data-settings-panel="holidays">Holidays & closures</button>
+                  <button type="button" class="settings-sidebar__link" data-settings-panel="bookings_section">Reservations</button>
+                  <button type="button" class="settings-sidebar__link" data-settings-panel="staff">Staff</button>
+                </div>
+                <div class="settings-sidebar__group">
+                  <div class="settings-sidebar__label">Messaging</div>
+                  <button type="button" class="settings-sidebar__link" data-settings-panel="quick-replies">Quick replies</button>
+                </div>
+                <div class="settings-sidebar__group settings-sidebar__group--danger">
+                  <button type="button" class="settings-sidebar__link settings-sidebar__link--danger" data-settings-panel="danger">Danger zone</button>
+                </div>
+              </nav>
               <div class="settings-shell__body">
+                <div class="settings-content-header">
+                  <h3 id="settings-panel-heading">Account</h3>
+                </div>
+                <div class="settings-panels">
+                <div class="section settings-panel is-active" id="account">
+                    <h3>Account</h3>
+                    <div class="account-email-block">
+                      <label>Current email
+                        <input type="email" id="account-current-email" value="${escapeAttr(primaryEmail)}" class="settings-field" readonly disabled />
+                      </label>
+                      <p class="account-email-block__hint small">
+                        ${signedInWithGoogle
+                          ? 'You signed in with Google. To change your login email, add a new address, verify it, and it will become your primary email. Your Google sign-in will remain linked.'
+                          : 'To change your primary email, add a new address and verify it with the code we send you.'}
+                      </p>
+                      ${CLERK_ENABLED ? `
+                      <form id="account-email-form" class="account-email-form" data-clerk-enabled="true" novalidate>
+                        <label>New email
+                          <input type="email" id="account-new-email" autocomplete="email" class="settings-field" required />
+                        </label>
+                        <div id="account-email-verify-step" hidden>
+                          <label>Verification code
+                            <input type="text" id="account-email-code" inputmode="numeric" autocomplete="one-time-code" class="settings-field" placeholder="6-digit code" />
+                          </label>
+                          <p class="small account-email-block__hint" id="account-email-verify-hint"></p>
+                        </div>
+                        <div id="account-email-error" class="account-password-form__message account-password-form__message--error" hidden></div>
+                        <div id="account-email-success" class="account-password-form__message account-password-form__message--success" hidden></div>
+                        <div class="account-email-form__actions">
+                          <button type="submit" class="btn-primary" id="account-email-submit">Send verification code</button>
+                          <button type="button" class="btn-ghost" id="account-email-resend" hidden>Resend code</button>
+                          <button type="button" class="btn-ghost" id="account-email-cancel" hidden>Cancel</button>
+                        </div>
+                      </form>
+                      ` : `
+                      <div class="small" style="color:#64748b;">Email management is unavailable because Clerk authentication is not configured.</div>
+                      `}
+                    </div>
+
+                    <div class="account-security-block">
+                      <div class="account-security-block__title">Password</div>
+                      <p class="account-security-block__hint small">
+                        ${passwordEnabled
+                          ? 'Update your sign-in password. For security, your current password is required.'
+                          : 'You signed in without a password. Set one to also sign in with email and password.'}
+                      </p>
+                      ${CLERK_ENABLED ? `
+                      <form id="account-password-form" class="account-password-form" data-password-enabled="${passwordEnabled ? 'true' : 'false'}" data-clerk-enabled="true" novalidate>
+                        ${passwordEnabled ? `
+                        <label>Current password
+                          <div class="input-row">
+                            <input type="password" id="account-current-password" autocomplete="current-password" class="settings-field" required />
+                            <button type="button" class="btn-ghost" onclick="toggleReveal('account-current-password')" aria-label="Show current password"><img src="/show-password.svg" alt=""/></button>
+                          </div>
+                        </label>
+                        ` : ''}
+                        <label>New password
+                          <div class="input-row">
+                            <input type="password" id="account-new-password" autocomplete="new-password" class="settings-field" minlength="8" required />
+                            <button type="button" class="btn-ghost" onclick="toggleReveal('account-new-password')" aria-label="Show new password"><img src="/show-password.svg" alt=""/></button>
+                          </div>
+                          <div class="small" style="color:#64748b; margin-top:4px;">At least 8 characters. Clerk may reject commonly used or compromised passwords.</div>
+                        </label>
+                        <label>Confirm new password
+                          <div class="input-row">
+                            <input type="password" id="account-confirm-password" autocomplete="new-password" class="settings-field" minlength="8" required />
+                            <button type="button" class="btn-ghost" onclick="toggleReveal('account-confirm-password')" aria-label="Show confirm password"><img src="/show-password.svg" alt=""/></button>
+                          </div>
+                        </label>
+                        <label class="account-password-form__checkbox">
+                          <input type="checkbox" id="account-sign-out-sessions" checked />
+                          <span>Sign out of all other devices after updating</span>
+                        </label>
+                        <div id="account-password-error" class="account-password-form__message account-password-form__message--error" hidden></div>
+                        <div id="account-password-success" class="account-password-form__message account-password-form__message--success" hidden></div>
+                        <button type="submit" class="btn-primary" id="account-password-submit">${passwordEnabled ? 'Update password' : 'Set password'}</button>
+                      </form>
+                      ` : `
+                      <div class="small" style="color:#64748b;">Password management is unavailable because Clerk authentication is not configured.</div>
+                      `}
+                    </div>
+                  </div>
                 <form id="settings-main-form" method="post" action="/settings" onsubmit="event.preventDefault(); checkAuthThenSubmit(this).then(valid => { if(valid) this.submit(); }); return false;">
                   ${csrfField}
-                  <div class="section" id="account">
-                    <h3>Account</h3>
-                    <label>Email
-                      <div style="display: flex; align-items: center; gap: 8px;">
-                        <input type="email" name="new_email" value="${email}" class="settings-field" form="email-start-form" required />
-                        <button type="submit" form="email-start-form" class="btn-primary">Update</button>
-                      </div>
-                    </label>
-                    ${q.email_update === 'sent' ? `
-                    <form method="post" action="/settings/email/verify" style="display:flex; gap:8px; align-items:center; margin-top:6px;">
-                      <input type="hidden" name="email_id" value="${q.email_id || ''}"/>
-                      <input type="text" name="code" placeholder="6-digit code" class="settings-field" required />
-                      <button type="submit" class="btn-primary">Verify & set as primary</button>
-                      <button type="submit" class="btn-ghost" formaction="/settings/email/resend">Resend code</button>
-                    </form>
-                    ` : ''}
-                    ${q.email_update === 'done' ? `<div class="small" style="color:#065f46; margin-top:6px;">Email updated successfully.</div>` : ''}
-                    ${q.email_error ? `<div class="small" style="color:#991b1b; margin-top:6px;">${q.email_error}</div>` : ''}
-                  </div>
-                  <div class="section" id="business">
+                  <div class="section settings-panel" id="business">
                     <h3>Business Information</h3>
                     <label>Business Name
                       <input placeholder="My Business" class="settings-field" name="business_name" value="${s.business_name || ''}"/>
@@ -504,9 +1178,50 @@ export default function registerSettingsRoutes(app, options = {}) {
                       Set <code>GOOGLE_MAPS_API_KEY</code> to enable Google Business import.
                     </div>`}
                   </div>
-                  <div class="section" id="whatsapp">
+                  <div class="section settings-panel" id="whatsapp">
                     <h3>WhatsApp Setup</h3>
-                    <div class="grid-2">
+
+                    <div id="wa-connect-card" class="wa-connect-card">
+                      <div class="wa-connect-card__header">
+                        <div>
+                          <div class="wa-connect-card__title">WhatsApp connection</div>
+                          <p class="wa-connect-card__hint small">Each workspace connects its own WhatsApp Business account. You will sign in with <strong>your</strong> Meta/Facebook account and choose your business phone number — not the platform owner’s account.</p>
+                        </div>
+                        <div id="wa-connect-status" class="wa-connect-status">
+                          <span class="wa-connect-status__dot ${waConnection.connected ? 'wa-connect-status__dot--ok' : ''}"></span>
+                          <span><strong>${waConnection.connected ? 'Connected' : 'Not connected'}</strong></span>
+                        </div>
+                      </div>
+
+                      <div id="wa-connect-details" class="wa-connect-details" ${waConnection.connected ? '' : 'hidden'}>
+                        <div><span class="wa-connect-details__label">Phone number ID</span><code id="wa-connected-phone-id">${escapeHtml(String(s.phone_number_id || '—'))}</code></div>
+                        <div><span class="wa-connect-details__label">WABA ID</span><code id="wa-connected-waba-id">${escapeHtml(String(s.waba_id || '—'))}</code></div>
+                        <div><span class="wa-connect-details__label">Business phone</span><code id="wa-connected-business-phone">${s.business_phone ? escapeHtml('+' + String(s.business_phone).replace(/\D/g, '')) : '—'}</code></div>
+                      </div>
+
+                      <div id="wa-connect-error" class="account-password-form__message account-password-form__message--error" hidden></div>
+                      <div id="wa-connect-success" class="account-password-form__message account-password-form__message--success" hidden></div>
+
+                      <div class="wa-connect-card__actions">
+                        <button type="button" class="btn-primary" id="wa-connect-btn">${waConnection.connected ? 'Reconnect WhatsApp' : 'Connect WhatsApp'}</button>
+                        <button type="button" class="btn-ghost" id="wa-connect-test" ${waConnection.connected ? '' : 'hidden'}>Test connection</button>
+                        <button type="button" class="btn-ghost" id="wa-connect-disconnect" ${waConnection.connected ? '' : 'hidden'}>Disconnect</button>
+                      </div>
+
+                      <div class="small wa-connect-card__setup-note">
+                        Platform Meta app credentials (<code>META_APP_ID</code>, etc.) identify Code Orbit in Meta’s system only. Each customer still authorizes their own WhatsApp Business Account during connect.
+                        ${META_EMBEDDED_SIGNUP_ENABLED ? '' : ' Set those env vars on the server to enable one-click connect, or use manual setup below.'}
+                      </div>
+
+                      <div class="small wa-connect-card__webhook-note">
+                        <strong>Webhook URL:</strong> <code>${escapeHtml(waWebhookUrl)}</code>
+                        ${waVerifyToken ? `<span style="margin-left:8px;"><strong>Verify token:</strong> <code>${escapeHtml(waVerifyToken)}</code></span>` : '<span style="margin-left:8px;">A verify token is generated automatically when you connect.</span>'}
+                      </div>
+                    </div>
+
+                    <details class="wa-manual-setup">
+                      <summary class="wa-manual-setup__summary">Advanced manual setup</summary>
+                      <p class="small wa-manual-setup__hint">Use this only if Embedded Signup is unavailable or you are migrating an existing Meta app configuration.</p>
                       <label>Phone Number ID
                         <input placeholder="8***************" class="settings-field" name="phone_number_id" value="${s.phone_number_id || ''}"/>
                       </label>
@@ -516,26 +1231,17 @@ export default function registerSettingsRoutes(app, options = {}) {
                       <label>Business Phone
                         <input placeholder="1***************" class="settings-field" name="business_phone" value="${s.business_phone || ''}"/>
                       </label>
-                    </div>
-                    <div class="grid-2">
                       <label>WhatsApp Token
                         <div class="input-row">
                           <input id="wa_token" type="password" placeholder="E***************" class="settings-field" name="whatsapp_token" value="${s.whatsapp_token || ''}"/>
-                          <button type="button" class="btn-ghost" onclick="toggleReveal('wa_token')"><img src="/show-password.svg" alt="Reveal"/></button>
-                          <button type="button" class="btn-ghost" onclick="copyValue('wa_token')"><img src="/copy-icon.svg" alt="Copy"/></button>
+                          <button type="button" class="btn-ghost" onclick="toggleReveal('wa_token')" aria-label="Reveal token"><img src="/show-password.svg" alt=""/></button>
+                          <button type="button" class="btn-ghost" onclick="copyValue('wa_token')" aria-label="Copy token"><img src="/copy-icon.svg" alt=""/></button>
                         </div>
                       </label>
-                      <label>App Secret
-                        <div class="input-row">
-                          <input id="app_secret" type="password" placeholder="c***************" class="settings-field" name="app_secret" value="${s.app_secret || ''}"/>
-                          <button type="button" class="btn-ghost" onclick="toggleReveal('app_secret')"><img src="/show-password.svg" alt="Reveal"/></button>
-                          <button type="button" class="btn-ghost" onclick="copyValue('app_secret')"><img src="/copy-icon.svg" alt="Copy"/></button>
-                        </div>
+                      <label>Verify Token
+                        <input placeholder="Auto-generated on connect" class="settings-field" name="verify_token" value="${s.verify_token || ''}"/>
                       </label>
-                    </div>
-                    <label>Verify Token
-                      <input placeholder="***************" class="settings-field" name="verify_token" value="${s.verify_token || ''}"/>
-                    </label>
+                    </details>
 
                     <div style="margin-top:20px; padding:16px; background:#f8fafc; border-radius:8px;">
                       <h4 style="margin:0 0 8px 0;">Staff WhatsApp Group</h4>
@@ -628,7 +1334,7 @@ export default function registerSettingsRoutes(app, options = {}) {
 
                   <!-- Website section removed (Website URL moved to Business Information) -->
 
-                  <div class="section" id="ai">
+                  <div class="section settings-panel" id="ai">
                     <h3>AI Preferences</h3>
                     <div class="grid-2">
                       <label>AI Tone
@@ -642,7 +1348,7 @@ export default function registerSettingsRoutes(app, options = {}) {
                       <input placeholder="use emojis, keep answers under 2 lines" class="settings-field" name="ai_style" value="${s.ai_style || ''}"/>
                     </label>
                   </div>
-                  <div class="section" id="conversation">
+                  <div class="section settings-panel" id="conversation">
                     <h3>Conversation Mode</h3>
                     <div class="small" style="margin-bottom:12px;">Choose how the chatbot should respond to customer messages:</div>
                     <label style="display:block; margin-bottom:12px; padding:12px; border:none; border-radius:8px; ${!isUpgraded ? 'opacity:0.6; cursor:not-allowed; position:relative;' : 'cursor:pointer;'} ${effectiveConversationMode === 'full' ? 'background:#f0f9ff;' : ''}">
@@ -697,7 +1403,7 @@ export default function registerSettingsRoutes(app, options = {}) {
             </label>
           </div>
                   </div>
-                  <div class="section" id="holidays">
+                  <div class="section settings-panel" id="holidays">
                     <h3>Holidays & Closures</h3>
                     <div class="small" style="margin-bottom:8px;">Add holiday name, date and business closed time window.</div>
                     <div id="holiday-rows" style="display:grid; grid-template-columns: 1.2fr 0.8fr 0.5fr 0.5fr auto; gap:8px; align-items:center;">
@@ -785,7 +1491,7 @@ export default function registerSettingsRoutes(app, options = {}) {
                       })();
                     </script>
                   </div>
-                  <div class="section" id="bookings_section">
+                  <div class="section settings-panel" id="bookings_section">
                     <h3>Reservations</h3>
                     ${bookingsLocked ? `
                       <div class="small" style="margin:0 0 16px 0; padding:12px 14px; border:1px dashed #fecaca; background:#fff1f2; color:#991b1b; border-radius:8px; line-height:1.5;">
@@ -934,8 +1640,7 @@ export default function registerSettingsRoutes(app, options = {}) {
                   </div>
                 </form>
                 <!-- Separate email form (not nested) to avoid interfering with settings submission -->
-                <form id="email-start-form" method="post" action="/settings/email/start" style="display:none;">${csrfField}</form>
-                <div class="section" id="staff">
+                <div class="section settings-panel" id="staff">
                   <h3>Staff</h3>
                   <div style="margin-bottom:12px;">
                     <form method="post" action="/settings/staff" onsubmit="event.preventDefault(); return checkAuthThenSubmit(this);" style="display:grid; grid-template-columns: repeat(2, 1fr); gap:8px;">
@@ -1209,7 +1914,7 @@ export default function registerSettingsRoutes(app, options = {}) {
                   
                 </div>
                 <!-- Quick Replies Section -->
-                <div class="section" id="quick-replies">
+                <div class="section settings-panel" id="quick-replies">
                   <h3>Quick Replies</h3>
                   <div style="margin-bottom:12px;">
                     <form id="quick-reply-form" onsubmit="return addQuickReply(event)" style="display:grid; grid-template-columns: 1fr auto auto; gap:8px; align-items:end;">
@@ -1275,7 +1980,7 @@ export default function registerSettingsRoutes(app, options = {}) {
                   </div>
                 </div>
                 <!-- Danger Section -->
-                <div class="section section--danger" id="danger">
+                <div class="section settings-panel section--danger" id="danger">
                   <h3 class="settings-section__title settings-section__title--danger">Danger zone</h3>
                   <p class="settings-section__lead settings-section__lead--danger">These actions are irreversible. Please proceed with caution.</p>
                   <div class="settings-danger-actions">
@@ -1293,6 +1998,8 @@ export default function registerSettingsRoutes(app, options = {}) {
                 </div>
               </div>
               </div>
+            </div>
+            </div>
               
             </main>
           </div>
@@ -1568,6 +2275,39 @@ export default function registerSettingsRoutes(app, options = {}) {
     }
   }));
 
+  app.get("/api/settings/whatsapp/status", ensureAuthed, wrapAsync(async (req, res) => {
+    const userId = getCurrentUserId(req);
+    const settings = await getSettingsForUser(userId);
+    const status = buildConnectionStatus(settings);
+    if (req.query.validate === "1" && status.connected) {
+      const check = await validateWhatsAppToken(settings.phone_number_id, settings.whatsapp_token);
+      status.tokenStatus = check.valid ? "ok" : "invalid";
+      status.tokenMessage = check.valid ? null : `Token validation failed (${check.status || "unknown"})`;
+    }
+    return res.json(status);
+  }));
+
+  app.post("/api/settings/whatsapp/connect", ensureAuthed, protect, wrapAsync(async (req, res) => {
+    const userId = getCurrentUserId(req);
+    try {
+      const result = await completeWhatsAppConnection(userId, req.body || {});
+      const status = buildConnectionStatus(await getSettingsForUser(userId));
+      return res.json({ ...result, status });
+    } catch (error) {
+      console.error("[POST /api/settings/whatsapp/connect]", error?.message || error, error?.meta || "");
+      return res.status(400).json({
+        success: false,
+        error: error?.message || "Failed to connect WhatsApp",
+      });
+    }
+  }));
+
+  app.post("/api/settings/whatsapp/disconnect", ensureAuthed, protect, wrapAsync(async (req, res) => {
+    const userId = getCurrentUserId(req);
+    await disconnectWhatsApp(userId);
+    return res.json({ success: true, status: buildConnectionStatus(await getSettingsForUser(userId)) });
+  }));
+
   app.get("/api/settings/wa-token/status", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     try {
@@ -1661,45 +2401,6 @@ export default function registerSettingsRoutes(app, options = {}) {
     const result = await checkWhatsAppGroupsSupport(settings);
     return res.json(result);
   }));
-  app.post("/settings/email/start", ensureAuthed, protect, async (req, res) => {
-    const userId = getCurrentUserId(req);
-    const newEmail = String(req.body?.new_email || '').trim();
-    if (!newEmail) return res.redirect(303, '/settings?email_error=Missing+email');
-    try {
-      const created = await clerkClient.users.createEmailAddress({ userId, emailAddress: newEmail });
-      try { await clerkClient.users.prepareEmailAddressVerification({ userId, emailAddressId: created.id, strategy: 'email_code' }); } catch {}
-      return res.redirect(303, `/settings?email_update=sent&email_id=${encodeURIComponent(created.id)}`);
-    } catch (e) {
-      const msg = encodeURIComponent(e?.errors?.[0]?.message || e?.message || 'Failed to start email update');
-      return res.redirect(303, `/settings?email_error=${msg}`);
-    }
-  });
-  app.post("/settings/email/resend", ensureAuthed, protect, async (req, res) => {
-    const userId = getCurrentUserId(req);
-    const emailId = String(req.body?.email_id || '').trim();
-    if (!emailId) return res.redirect(303, '/settings?email_error=Missing+email_id');
-    try {
-      await clerkClient.users.prepareEmailAddressVerification({ userId, emailAddressId: emailId, strategy: 'email_code' });
-      return res.redirect(303, `/settings?email_update=sent&email_id=${encodeURIComponent(emailId)}`);
-    } catch (e) {
-      const msg = encodeURIComponent(e?.errors?.[0]?.message || e?.message || 'Failed to resend code');
-      return res.redirect(303, `/settings?email_error=${msg}`);
-    }
-  });
-  app.post("/settings/email/verify", ensureAuthed, protect, async (req, res) => {
-    const userId = getCurrentUserId(req);
-    const emailId = String(req.body?.email_id || '').trim();
-    const code = String(req.body?.code || '').trim();
-    if (!emailId || !code) return res.redirect(303, '/settings?email_error=Missing+verification+data');
-    try {
-      await clerkClient.users.verifyEmailAddress({ userId, emailAddressId: emailId, code });
-      await clerkClient.users.updateUser(userId, { primaryEmailAddressId: emailId });
-      return res.redirect(303, '/settings?email_update=done');
-    } catch (e) {
-      const msg = encodeURIComponent(e?.errors?.[0]?.message || e?.message || 'Verification failed');
-      return res.redirect(303, `/settings?email_error=${msg}&email_update=sent&email_id=${encodeURIComponent(emailId)}`);
-    }
-  });
   app.post("/api/quick-replies", ensureAuthed, (req, res) => {
     const userId = getCurrentUserId(req);
     const { text, category } = req.body;
