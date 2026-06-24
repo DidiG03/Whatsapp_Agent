@@ -2,6 +2,31 @@
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 import { logHelpers } from '../monitoring/logger.mjs';
+
+function getClerkCspOrigins() {
+  const origins = new Set();
+  for (const entry of (process.env.CLERK_FRONTEND_DOMAIN || '').split(',')) {
+    const trimmed = entry.trim().replace(/\/$/, '');
+    if (!trimmed) continue;
+    origins.add(trimmed.startsWith('http') ? trimmed : `https://${trimmed}`);
+  }
+  try {
+    const base = (process.env.PUBLIC_BASE_URL || '').trim();
+    if (!base) return [...origins].join(' ');
+    const host = new URL(base).hostname.toLowerCase();
+    if (host === 'localhost' || host === '127.0.0.1' || host.includes('ngrok')) {
+      return [...origins].join(' ');
+    }
+    const parts = host.split('.');
+    if (parts.length >= 2) {
+      const apex = parts.slice(-2).join('.');
+      origins.add(`https://clerk.${apex}`);
+      origins.add(`wss://clerk.${apex}`);
+    }
+  } catch (_) {}
+  return [...origins].join(' ');
+}
+
 export const createRateLimiters = () => {
   const generalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,    max: 2000,    message: { error: 'Too many requests from this IP, please try again later.' },
@@ -28,10 +53,7 @@ export const securityHeaders = (req, res, next) => {
   res.setHeader('X-DNS-Prefetch-Control', 'off');
   res.setHeader('X-Download-Options', 'noopen');
   res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
-  const CLERK_FRONTEND_DOMAIN = (process.env.CLERK_FRONTEND_DOMAIN || '').trim();
-  const clerkExtras = CLERK_FRONTEND_DOMAIN
-    ? CLERK_FRONTEND_DOMAIN.split(',').map(s => s.trim()).filter(Boolean).join(' ')
-    : '';
+  const clerkExtras = getClerkCspOrigins();
   res.setHeader('Content-Security-Policy', 
     "default-src 'self'; " +
     ("script-src 'self' 'unsafe-inline' 'unsafe-eval' https://clerk.accounts.dev https://accounts.clerk.com https://unpkg.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com https://js.stripe.com https://vercel.live https://cdn.ably.io https://connect.facebook.net https://www.facebook.com" + (clerkExtras ? ` ${clerkExtras}` : '') + "; ") +
