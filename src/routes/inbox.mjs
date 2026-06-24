@@ -411,6 +411,7 @@ export default function registerInboxRoutes(app) {
     const s = await getSettingsForUser(userId);
     const plan = await getUserPlan(userId);
     const isUpgraded = isPlanUpgraded(plan);
+    const assetVer = process.env.STATIC_ASSETS_VERSION || process.env.VERCEL_GIT_COMMIT_SHA || process.env.GIT_COMMIT || 'dev';
     if (!showArchived) {
       try {
         const archivedRows = await Handoff.find({ user_id: userId, is_archived: true }).select('contact_id');
@@ -657,80 +658,7 @@ export default function registerInboxRoutes(app) {
     res.end(`
       <html>${getProfessionalHead('Inbox')}<body>
         <script src="/toast.js"></script>
-        <script>
-          // WhatsApp token check and modal
-          async function checkWaTokenAndPrompt(){
-            try{
-              const r = await fetch('/api/settings/wa-token/status', { credentials: 'include' });
-              const j = await r.json();
-              if (j.status === 'invalid' || j.status === 'missing') {
-                openWaTokenModal(j.status);
-              }
-            }catch(_){ }
-          }
-
-          function openWaTokenModal(state){
-            var m = document.getElementById('waTokenModal');
-            if(!m) return; m.style.display='flex';
-            var msg = document.getElementById('waTokenMsg');
-            if(msg){
-              msg.textContent = state === 'missing' ? 'Your WhatsApp configuration is incomplete. Please add a valid token.' : 'Your WhatsApp token appears to be invalid or expired. Please enter a new token.';
-            }
-          }
-          function closeWaTokenModal(){
-            var m = document.getElementById('waTokenModal');
-            if(m) m.style.display='none';
-          }
-          async function saveWaToken(){
-            var input = document.getElementById('waTokenInput');
-            var btn = document.getElementById('waTokenSave');
-            if(!input || !input.value.trim()) return;
-            btn.disabled = true;
-            try{
-              const resp = await fetch('/api/settings/wa-token', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                credentials: 'include',
-                body: JSON.stringify({ whatsapp_token: input.value.trim() })
-              });
-              const data = await resp.json();
-              if (!resp.ok || !data.success) {
-                const msg = data?.error || 'Failed to update token';
-                try {
-                  if (window.Toast && typeof window.Toast.error === 'function') {
-                    window.Toast.error(msg);
-                  }
-                } catch(_) {}
-                btn.disabled = false; return;
-              }
-              closeWaTokenModal();
-              // Soft reload the page to refresh settings and media access
-              location.reload();
-            }catch(e){
-              btn.disabled=false;
-              try {
-                if (window.Toast && typeof window.Toast.error === 'function') {
-                  window.Toast.error('Error: ' + (e?.message||e));
-                }
-              } catch(_) {}
-            }
-          }
-          // Check authentication on page load
-          (async function checkAuthOnLoad(){
-            try{ 
-              const r=await fetch('/auth/status',{credentials:'include', headers:{'Accept':'application/json'}}); 
-              const j=await r.json(); 
-              if(!j.signedIn){ 
-                window.location='/auth'; 
-                return; 
-              } 
-            }catch(e){ 
-              // Don't force a relogin on transient network/auth-status failures.
-              console.warn('Auth status check failed (non-fatal):', e);
-            }
-            setTimeout(checkWaTokenAndPrompt, 150);
-          })();
-        </script>
+        <script src="/inbox-page.js?v=${assetVer}"></script>
         <div class="container">
           ${renderTopbar('Inbox', email)}
           <div class="layout">
@@ -757,7 +685,7 @@ export default function registerInboxRoutes(app) {
                   </div>
                   <form method="get" action="/inbox" class="search-form">
                     <div class="search-input-group">
-                      <input class="search-input" type="text" name="q" placeholder="Search conversations..." value="${q}"/>
+                      <input class="search-input" type="text" name="q" placeholder="Search conversations..." value="${escapeHtml(q)}"/>
                       <button type="button" class="btn btn-ghost inbox-filters-toggle" onclick="toggleSearchFilters()" title="Advanced filters">Filters</button>
                       <button type="submit" class="btn btn-primary" aria-label="Search">
                         <img src="/search-icon.svg" alt="" width="18" height="18">
@@ -823,191 +751,6 @@ export default function registerInboxRoutes(app) {
                     </div>
                   </div>
                 </div>
-                <script>
-                  function openNameModal(contactId){
-                  var f = document.getElementById('nameForm');
-                  if (f) f.action = '/inbox/' + encodeURIComponent(contactId) + '/nameCustomer';
-                  var m = document.getElementById('nameModal');
-                  if (m){ m.style.display = 'flex'; }
-                }
-                function closeNameModal(){
-                  var m = document.getElementById('nameModal');
-                  if (m){ m.style.display = 'none'; }
-                }
-                function openImageModal(){
-                  var m = document.getElementById('imageModal');
-                  if (m){ m.style.display = 'flex'; }
-                }
-                function closeImageModal(){
-                  var m = document.getElementById('imageModal');
-                  if (m){ m.style.display = 'none'; }
-                }
-                function toggleSearchFilters(){
-                  var filters = document.getElementById('searchFilters');
-                  if (!filters) return;
-                  const open = filters.style.display === 'none' || filters.style.display === '';
-                  filters.style.display = open ? 'grid' : 'none';
-                }
-                function clearFilters(){
-                  document.querySelector('input[name="q"]').value = '';
-                  document.querySelector('select[name="type"]').value = '';
-                  document.querySelector('select[name="direction"]').value = '';
-                  document.querySelector('input[name="date_from"]').value = '';
-                  document.querySelector('input[name="date_to"]').value = '';
-                }
-                
-                // Search history functionality
-                function saveSearchHistory(query) {
-                  if (!query.trim()) return;
-                  
-                  let history = JSON.parse(localStorage.getItem('searchHistory') || '[]');
-                  // Remove if already exists
-                  history = history.filter(item => item !== query);
-                  // Add to beginning
-                  history.unshift(query);
-                  // Keep only last 10 searches
-                  history = history.slice(0, 10);
-                  localStorage.setItem('searchHistory', JSON.stringify(history));
-                }
-                
-                function loadSearchHistory() {
-                  const history = JSON.parse(localStorage.getItem('searchHistory') || '[]');
-                  return history;
-                }
-                
-                function showSearchSuggestions() {
-                  const history = loadSearchHistory();
-                  if (history.length === 0) return;
-                  
-                  const input = document.querySelector('input[name="q"]');
-                  const container = document.querySelector('.search-container');
-                  
-                  // Remove existing suggestions
-                  const existingSuggestions = document.querySelector('.search-suggestions');
-                  if (existingSuggestions) existingSuggestions.remove();
-                  
-                  if (input.value.trim() === '') {
-                    const suggestionsDiv = document.createElement('div');
-                    suggestionsDiv.className = 'search-suggestions';
-                    
-                    let suggestionsHtml = '<div class="suggestions-header">Recent Searches</div>';
-                    history.forEach(item => {
-                      const escapedItem = item.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-                      suggestionsHtml += '<div class="suggestion-item" onclick="selectSuggestion(\'' + escapedItem + '\')">' + item + '</div>';
-                    });
-                    
-                    suggestionsDiv.innerHTML = suggestionsHtml;
-                    container.appendChild(suggestionsDiv);
-                  }
-                }
-                
-                function selectSuggestion(query) {
-                  document.querySelector('input[name="q"]').value = query;
-                  hideSearchSuggestions();
-                }
-                
-                function hideSearchSuggestions() {
-                  const suggestions = document.querySelector('.search-suggestions');
-                  if (suggestions) suggestions.remove();
-                }
-                
-                // Add event listeners for search history
-                document.addEventListener('DOMContentLoaded', function() {
-                  const searchInput = document.querySelector('input[name="q"]');
-                  const searchForm = document.querySelector('.search-form');
-                  
-                  if (searchInput) {
-                    searchInput.addEventListener('focus', showSearchSuggestions);
-                    searchInput.addEventListener('blur', function() {
-                      setTimeout(hideSearchSuggestions, 200);
-                    });
-                    searchInput.addEventListener('input', function() {
-                      if (this.value.trim() === '') {
-                        showSearchSuggestions();
-                      } else {
-                        hideSearchSuggestions();
-                      }
-                    });
-                  }
-                  
-                  if (searchForm) {
-                    searchForm.addEventListener('submit', function() {
-                      const query = searchInput.value.trim();
-                      if (query) {
-                        saveSearchHistory(query);
-                      }
-                    });
-                  }
-                });
-                function switchImageTab(tab){
-                  var urlTab = document.getElementById('urlTab');
-                  var uploadTab = document.getElementById('uploadTab');
-                  var urlForm = document.getElementById('imageUrlForm');
-                  var uploadForm = document.getElementById('imageUploadForm');
-                  
-                  if(tab === 'url'){
-                    urlTab.style.background = 'var(--surface)';
-                    uploadTab.style.background = '#f0f0f0';
-                    urlForm.style.display = 'grid';
-                    uploadForm.style.display = 'none';
-                  } else {
-                    urlTab.style.background = '#f0f0f0';
-                    uploadTab.style.background = 'var(--surface)';
-                    urlForm.style.display = 'none';
-                    uploadForm.style.display = 'grid';
-                  }
-                }
-                document.addEventListener('keydown', function(e){
-                  if(e.key==='Escape'){ closeNameModal(); closeImageModal(); }
-                });
-              </script>
-              <script>
-                function closeInboxMenu(menu) {
-                  if (!menu) return;
-                  menu.classList.remove('is-open');
-                  menu.style.position = '';
-                  menu.style.left = '';
-                  menu.style.top = '';
-                  menu.style.zIndex = '';
-                  menu.style.display = '';
-                }
-                function openInboxMenu(menu, trigger) {
-                  const rect = (trigger && trigger.getBoundingClientRect()) || menu.getBoundingClientRect();
-                  menu.classList.add('is-open');
-                  menu.style.position = 'fixed';
-                  menu.style.left = Math.max(8, rect.right - 208) + 'px';
-                  menu.style.top = (rect.bottom + 6) + 'px';
-                  menu.style.zIndex = '100000';
-                  menu.style.display = 'block';
-                }
-                function toggleMenu(id, evt){
-                  if(evt){ try{ evt.preventDefault(); evt.stopPropagation(); }catch(_){} }
-                  try{
-                    const menu = document.getElementById(id);
-                    if(!menu) return false;
-                    const trigger = menu.closest('.inbox-dropdown')?.querySelector('.inbox-dropdown__trigger');
-                    const isOpen = menu.classList.contains('is-open');
-                    document.querySelectorAll('.inbox-dropdown-menu.is-open').forEach(el => {
-                      if (el !== menu) closeInboxMenu(el);
-                    });
-                    if (isOpen) {
-                      closeInboxMenu(menu);
-                    } else {
-                      openInboxMenu(menu, trigger);
-                    }
-                  }catch(_){ }
-                  return false;
-                }
-                document.addEventListener('click', function(evt){
-                  if (evt.target.closest('.inbox-dropdown')) return;
-                  document.querySelectorAll('.inbox-dropdown-menu.is-open').forEach(closeInboxMenu);
-                });
-                document.addEventListener('keydown', function(evt){
-                  if (evt.key === 'Escape') {
-                    document.querySelectorAll('.inbox-dropdown-menu.is-open').forEach(closeInboxMenu);
-                  }
-                });
-              </script>
                 <div class="conversation-list-shell">
                 <ul class="list">${searchResultsCount}${listContent}</ul>
                 ${paginationNav}
