@@ -106,6 +106,66 @@ export function buildConnectionStatus(settings = {}) {
   };
 }
 
+export async function completeManualWhatsAppConnection(userId, payload = {}) {
+  const phoneNumberId = String(payload.phone_number_id || "").trim();
+  const accessToken = String(payload.whatsapp_token || "").trim();
+  let wabaId = String(payload.waba_id || "").trim();
+  let businessPhone = String(payload.business_phone || "").replace(/\D/g, "") || null;
+  let verifyToken = String(payload.verify_token || "").trim();
+
+  if (!phoneNumberId) throw new Error("Phone number ID is required.");
+  if (!accessToken) throw new Error("WhatsApp access token is required.");
+
+  const tokenCheck = await validateWhatsAppToken(phoneNumberId, accessToken);
+  if (!tokenCheck.valid) {
+    throw new Error(`Token validation failed for this phone number ID (${tokenCheck.status || "unknown"}).`);
+  }
+
+  const phoneDetails = await fetchPhoneNumberDetails(phoneNumberId, accessToken);
+  if (!wabaId) {
+    wabaId = String(phoneDetails?.whatsapp_business_account?.id || "").trim();
+  }
+  if (!businessPhone && phoneDetails?.display_phone_number) {
+    businessPhone = String(phoneDetails.display_phone_number).replace(/\D/g, "") || null;
+  }
+
+  const current = await getSettingsForUser(userId);
+  if (!verifyToken) {
+    verifyToken = current.verify_token || createVerifyToken();
+  }
+  const appSecret = META_APP_SECRET || current.app_secret || null;
+
+  if (wabaId) {
+    try {
+      const sub = await subscribeAppToWaba(wabaId, accessToken);
+      if (!sub.ok) {
+        console.warn("[WA Manual] subscribed_apps failed:", sub.data?.error?.message || sub.status);
+      }
+    } catch (error) {
+      console.warn("[WA Manual] subscribed_apps error:", error?.message || error);
+    }
+  }
+
+  await upsertSettingsForUser(userId, {
+    phone_number_id: phoneNumberId,
+    waba_id: wabaId || null,
+    whatsapp_token: accessToken,
+    verify_token: verifyToken,
+    app_secret: appSecret,
+    business_phone: businessPhone,
+  });
+
+  return {
+    success: true,
+    phone_number_id: phoneNumberId,
+    waba_id: wabaId || null,
+    business_phone: businessPhone,
+    verified_name: phoneDetails?.verified_name || null,
+    webhook_url: `${PUBLIC_BASE_URL}/webhook`,
+    verify_token: verifyToken,
+  };
+}
+
 export async function completeWhatsAppConnection(userId, payload = {}) {
   const code = String(payload.code || "").trim();
   const phoneNumberId = String(payload.phone_number_id || "").trim();

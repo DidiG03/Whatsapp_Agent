@@ -27,19 +27,12 @@ export async function listContactsForUser(userId, opts = {}) {
           }
         }
       },
+      { $sort: { timestamp: -1 } },
       {
         $group: {
           _id: '$contact',
           last_ts: { $max: '$timestamp' },
-          last_text: {
-            $first: {
-              $cond: [
-                { $eq: [{ $max: '$timestamp' }, '$timestamp'] },
-                '$text_body',
-                null
-              ]
-            }
-          }
+          last_text: { $first: '$text_body' },
         }
       },
       {
@@ -133,47 +126,53 @@ function mergeContactsByDigits(contacts) {
   }
   return [...byDigits.values()].sort((a, b) => Number(b.last_ts || 0) - Number(a.last_ts || 0));
 }
+function threadPhoneMatch(phoneDigits) {
+  return {
+    $or: [
+      {
+        $and: [
+          { direction: 'inbound' },
+          {
+            $or: [
+              { from_digits: phoneDigits },
+              {
+                $and: [
+                  { from_digits: { $exists: false } },
+                  { from_id: { $regex: phoneDigits.replace(/[+ -]/g, ''), $options: 'i' } }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        $and: [
+          { direction: 'outbound' },
+          {
+            $or: [
+              { to_digits: phoneDigits },
+              {
+                $and: [
+                  { to_digits: { $exists: false } },
+                  { to_id: { $regex: phoneDigits.replace(/[+ -]/g, ''), $options: 'i' } }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  };
+}
+
 export async function listMessagesForThread(userId, phoneDigits) {
   try {
     const messages = await Message.find({
       user_id: userId,
-      $or: [
-        {
-          $and: [
-            { direction: 'inbound' },
-            {
-              $or: [
-                { from_digits: phoneDigits },
-                { 
-                  $and: [
-                    { from_digits: { $exists: false } },
-                    { from_id: { $regex: phoneDigits.replace(/[+ -]/g, ''), $options: 'i' } }
-                  ]
-                }
-              ]
-            }
-          ]
-        },
-        {
-          $and: [
-            { direction: 'outbound' },
-            {
-              $or: [
-                { to_digits: phoneDigits },
-                { 
-                  $and: [
-                    { to_digits: { $exists: false } },
-                    { to_id: { $regex: phoneDigits.replace(/[+ -]/g, ''), $options: 'i' } }
-                  ]
-                }
-              ]
-            }
-          ]
-        }
-      ]
+      ...threadPhoneMatch(phoneDigits)
     })
-    .select('direction text_body timestamp type')
-    .sort({ timestamp: 1 });
+      .select('direction text_body timestamp type')
+      .sort({ timestamp: 1 });
 
     return messages.map(msg => ({
       direction: msg.direction,
@@ -185,5 +184,32 @@ export async function listMessagesForThread(userId, phoneDigits) {
     console.error('Error listing messages for thread:', error);
     return [];
   }
+}
+
+export async function listThreadMessagesPage(userId, phoneDigits, { beforeTs = null, limit = 50 } = {}) {
+  const pageSize = Math.min(80, Math.max(10, parseInt(limit, 10) || 50));
+  const match = {
+    user_id: userId,
+    ...threadPhoneMatch(phoneDigits),
+    type: { $ne: 'system_clear' }
+  };
+  if (beforeTs) {
+    match.timestamp = { $lt: Number(beforeTs) };
+  }
+
+  const docs = await Message.find(match)
+    .sort({ timestamp: -1 })
+    .limit(pageSize + 1)
+    .lean();
+
+  const hasMore = docs.length > pageSize;
+  const slice = hasMore ? docs.slice(0, pageSize) : docs;
+  slice.reverse();
+
+  return {
+    messages: slice,
+    hasMore,
+    oldestTs: slice.length ? Number(slice[0].timestamp || 0) : null
+  };
 }
 

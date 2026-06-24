@@ -8,6 +8,9 @@
     const errorEl = document.getElementById('wa-connect-error');
     const successEl = document.getElementById('wa-connect-success');
     const connectBtn = document.getElementById('wa-connect-btn');
+    const showManualBtn = document.getElementById('wa-show-manual-btn');
+    const manualConnectBtn = document.getElementById('wa-manual-connect-btn');
+    const manualSetupEl = document.getElementById('wa-manual-setup');
     const disconnectBtn = document.getElementById('wa-connect-disconnect');
     const testBtn = document.getElementById('wa-connect-test');
     const detailsEl = document.getElementById('wa-connect-details');
@@ -74,6 +77,90 @@
       } catch (_) {}
     }
 
+    function readManualField(name) {
+      const field = document.querySelector('input[name="' + name + '"]');
+      return field ? String(field.value || '').trim() : '';
+    }
+
+    function applyConnectionFields(data) {
+      const verifyField = document.querySelector('input[name="verify_token"]');
+      if (verifyField && data.verify_token) verifyField.value = data.verify_token;
+      const phoneField = document.querySelector('input[name="phone_number_id"]');
+      if (phoneField && data.phone_number_id) phoneField.value = data.phone_number_id;
+      const wabaField = document.querySelector('input[name="waba_id"]');
+      if (wabaField && data.waba_id) wabaField.value = data.waba_id;
+      const businessPhoneField = document.querySelector('input[name="business_phone"]');
+      if (businessPhoneField && data.business_phone) businessPhoneField.value = data.business_phone;
+    }
+
+    function openManualSetup() {
+      if (!manualSetupEl) return;
+      manualSetupEl.open = true;
+      manualSetupEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const phoneField = document.querySelector('input[name="phone_number_id"]');
+      if (phoneField) phoneField.focus();
+    }
+
+    async function connectManually() {
+      const phoneNumberId = readManualField('phone_number_id');
+      const whatsappToken = readManualField('whatsapp_token');
+      const wabaId = readManualField('waba_id');
+      const businessPhone = readManualField('business_phone');
+      const verifyToken = readManualField('verify_token');
+
+      if (!phoneNumberId) {
+        setInlineMessage(errorEl, 'Phone number ID is required for manual setup.');
+        openManualSetup();
+        return;
+      }
+      if (!whatsappToken) {
+        setInlineMessage(errorEl, 'WhatsApp token is required for manual setup.');
+        openManualSetup();
+        return;
+      }
+
+      setInlineMessage(errorEl, '');
+      setInlineMessage(successEl, '');
+      if (manualConnectBtn) {
+        manualConnectBtn.disabled = true;
+        manualConnectBtn.textContent = 'Connecting...';
+      }
+
+      try {
+        const resp = await window.authManager.authenticatedFetch('/api/settings/whatsapp/connect/manual', {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            phone_number_id: phoneNumberId,
+            whatsapp_token: whatsappToken,
+            waba_id: wabaId || null,
+            business_phone: businessPhone || null,
+            verify_token: verifyToken || null
+          })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.success) {
+          throw new Error(data.error || 'Failed to connect WhatsApp manually');
+        }
+        setInlineMessage(successEl, 'WhatsApp connected successfully.');
+        renderStatus(data.status || data);
+        await refreshStatus();
+        applyConnectionFields(data);
+      } catch (error) {
+        console.error('WhatsApp manual connect failed:', error);
+        setInlineMessage(errorEl, (error && error.message) || 'Failed to connect WhatsApp manually.');
+        openManualSetup();
+      } finally {
+        if (manualConnectBtn) {
+          manualConnectBtn.disabled = false;
+          manualConnectBtn.textContent = 'Connect manually';
+        }
+      }
+    }
+
     async function completeConnection() {
       if (!pendingCode || !pendingSignup || !pendingSignup.phone_number_id) return;
       setInlineMessage(errorEl, '');
@@ -105,14 +192,7 @@
         setInlineMessage(successEl, 'WhatsApp connected successfully.');
         renderStatus(data.status || data);
         await refreshStatus();
-        const verifyField = document.querySelector('input[name="verify_token"]');
-        if (verifyField && data.verify_token) verifyField.value = data.verify_token;
-        const phoneField = document.querySelector('input[name="phone_number_id"]');
-        if (phoneField && data.phone_number_id) phoneField.value = data.phone_number_id;
-        const wabaField = document.querySelector('input[name="waba_id"]');
-        if (wabaField && data.waba_id) wabaField.value = data.waba_id;
-        const businessPhoneField = document.querySelector('input[name="business_phone"]');
-        if (businessPhoneField && data.business_phone) businessPhoneField.value = data.business_phone;
+        applyConnectionFields(data);
       } catch (error) {
         console.error('WhatsApp connect failed:', error);
         setInlineMessage(errorEl, (error && error.message) || 'Failed to connect WhatsApp.');
@@ -229,6 +309,8 @@
     }
 
     if (connectBtn) connectBtn.addEventListener('click', launchEmbeddedSignup);
+    if (showManualBtn) showManualBtn.addEventListener('click', openManualSetup);
+    if (manualConnectBtn) manualConnectBtn.addEventListener('click', connectManually);
     if (disconnectBtn) {
       disconnectBtn.addEventListener('click', async function () {
         if (!window.confirm('Disconnect WhatsApp from Code Orbit?')) return;
@@ -268,7 +350,7 @@
           const data = await resp.json();
           if (!resp.ok) throw new Error(data.error || 'Connection test failed');
           if (!data.connected) {
-            throw new Error('WhatsApp is not connected. Click Connect WhatsApp above, or use Advanced manual setup below.');
+            throw new Error('WhatsApp is not connected. Use Connect WhatsApp, or set up manually below.');
           }
           if (data.tokenStatus === 'ok') {
             setInlineMessage(successEl, 'Connection is healthy.');

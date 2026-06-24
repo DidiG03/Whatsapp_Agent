@@ -32,6 +32,7 @@ import { previewGoogleBusinessImport, applyGoogleBusinessImport } from "../servi
 import { checkWhatsAppGroupsSupport } from "../services/staffGroupsSupport.mjs";
 import {
   buildConnectionStatus,
+  completeManualWhatsAppConnection,
   completeWhatsAppConnection,
   disconnectWhatsApp,
   validateWhatsAppToken,
@@ -576,30 +577,23 @@ export default function registerSettingsRoutes(app, options = {}) {
 
                       <div class="wa-connect-card__actions">
                         <button type="button" class="btn-primary" id="wa-connect-btn">${waConnection.connected ? 'Reconnect WhatsApp' : 'Connect WhatsApp'}</button>
+                        <button type="button" class="btn-ghost" id="wa-show-manual-btn">Set up manually</button>
                         <button type="button" class="btn-ghost" id="wa-connect-test" ${waConnection.connected ? '' : 'hidden'}>Test connection</button>
                         <button type="button" class="btn-ghost" id="wa-connect-disconnect" ${waConnection.connected ? '' : 'hidden'}>Disconnect</button>
                       </div>
 
                       <p class="small wa-connect-card__hint-next" id="wa-connect-next-step" ${waConnection.connected ? 'hidden' : ''}>
-                        No token paste needed here — click <strong>Connect WhatsApp</strong> and sign in with Meta.
-                        Meta requires <strong>HTTPS</strong> (use your ngrok or production URL, not <code>localhost</code>).
-                        To enter a token manually, open <strong>Advanced manual setup</strong> below, fill in the fields, then click <strong>Save changes</strong>.
+                        Use <strong>Connect WhatsApp</strong> to sign in with Meta (requires <strong>HTTPS</strong>).
+                        Or click <strong>Set up manually</strong> to paste your Phone number ID and access token from Meta Business Suite.
                       </p>
-
-                      <div class="small wa-connect-card__setup-note">
-                        Platform Meta app credentials (<code>META_APP_ID</code>, etc.) identify Code Orbit in Meta’s system only. Each customer still authorizes their own WhatsApp Business Account during connect.
-                        ${META_EMBEDDED_SIGNUP_ENABLED ? '' : ' Set those env vars on the server to enable one-click connect, or use manual setup below.'}
-                      </div>
-
-                      <div class="small wa-connect-card__webhook-note">
-                        <strong>Webhook URL:</strong> <code>${escapeHtml(waWebhookUrl)}</code>
-                        ${waVerifyToken ? `<span style="margin-left:8px;"><strong>Verify token:</strong> <code>${escapeHtml(waVerifyToken)}</code></span>` : '<span style="margin-left:8px;">A verify token is generated automatically when you connect.</span>'}
-                      </div>
                     </div>
 
-                    <details class="wa-manual-setup">
-                      <summary class="wa-manual-setup__summary">Advanced manual setup</summary>
-                      <p class="small wa-manual-setup__hint">Use this only if Embedded Signup is unavailable or you are migrating an existing Meta app configuration.</p>
+                    <details class="wa-manual-setup" id="wa-manual-setup">
+                      <summary class="wa-manual-setup__summary">Manual setup</summary>
+                      <p class="small wa-manual-setup__hint">
+                        Paste credentials from Meta → WhatsApp → API setup. Required: <strong>Phone number ID</strong> and <strong>WhatsApp token</strong>.
+                        WABA ID and business phone are optional — we will try to fill them from Meta when you connect.
+                      </p>
                       <label>Phone Number ID
                         <input placeholder="8***************" class="settings-field" name="phone_number_id" value="${s.phone_number_id || ''}"/>
                       </label>
@@ -619,6 +613,10 @@ export default function registerSettingsRoutes(app, options = {}) {
                       <label>Verify Token
                         <input placeholder="Auto-generated on connect" class="settings-field" name="verify_token" value="${s.verify_token || ''}"/>
                       </label>
+                      <div class="wa-manual-setup__actions">
+                        <button type="button" class="btn-primary" id="wa-manual-connect-btn">Connect manually</button>
+                        <p class="small wa-manual-setup__save-note">You can also save these fields with <strong>Save changes</strong> at the top of the page.</p>
+                      </div>
                     </details>
 
                     <div style="margin-top:20px; padding:16px; background:#f8fafc; border-radius:8px;">
@@ -640,11 +638,6 @@ export default function registerSettingsRoutes(app, options = {}) {
                       </div>
                       <div id="staff-group-support" class="small" style="margin-bottom:12px; color:#64748b;"></div>
                       <button type="button" class="btn-ghost" id="staff-group-check" style="margin-bottom:12px;">Check Groups API support</button>
-                      <div class="small" style="margin-bottom:12px; padding:10px 12px; background:#eff6ff; border-radius:6px; color:#1e40af;">
-                        <strong>Coexistence (WhatsApp app + bot):</strong> When staff reply from the WhatsApp Business app,
-                        Code Orbit auto-enables <strong>Live mode</strong> for that customer (bot stays quiet).
-                        Subscribe to <code>smb_message_echoes</code> (and optionally <code>message_echoes</code>) in Meta → Webhooks.
-                      </div>
                       <div class="small" style="margin-bottom:12px; padding:10px 12px; background:#fff7ed; border-radius:6px; color:#9a3412;">
                         <strong>Important:</strong> Your business number (${s.business_phone ? `+${String(s.business_phone).replace(/\D/g, '')}` : 'configure Business Phone above'}) must appear as a <em>member</em> in the group before CONNECT works.
                         If the group shows only <strong>1 member</strong>, the bot is not in the group yet and CONNECT will do nothing.
@@ -1685,6 +1678,21 @@ export default function registerSettingsRoutes(app, options = {}) {
       return res.status(400).json({
         success: false,
         error: error?.message || "Failed to connect WhatsApp",
+      });
+    }
+  }));
+
+  app.post("/api/settings/whatsapp/connect/manual", ensureAuthed, protect, wrapAsync(async (req, res) => {
+    const userId = getCurrentUserId(req);
+    try {
+      const result = await completeManualWhatsAppConnection(userId, req.body || {});
+      const status = buildConnectionStatus(await getSettingsForUser(userId));
+      return res.json({ ...result, status });
+    } catch (error) {
+      console.error("[POST /api/settings/whatsapp/connect/manual]", error?.message || error, error?.meta || "");
+      return res.status(400).json({
+        success: false,
+        error: error?.message || "Failed to connect WhatsApp manually",
       });
     }
   }));

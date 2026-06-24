@@ -1,6 +1,6 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
 import { renderSidebar, normalizePhone, escapeHtml, renderTopbar, getProfessionalHead, renderPageHeader, renderVoiceMessageHtml } from "../utils.mjs";
-import { listContactsForUser, listMessagesForThread } from "../services/conversations.mjs";
+import { listContactsForUser, listMessagesForThread, listThreadMessagesPage } from "../services/conversations.mjs";
 import { db, getDB } from "../db-mongodb.mjs";
 import { Customer, Handoff, Message, MessageStatus } from '../schemas/mongodb.mjs';
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
@@ -21,6 +21,7 @@ import { canonicalContactId, contactIdVariants, findHandoffForContact, resolveHu
 import { recordOutboundMessage } from "../services/messages.mjs";
 import { getContactMemory } from "../services/memory.mjs";
 import { detectLanguage, t as tr } from "../services/i18n.mjs";
+import { renderThreadMessagesHtml } from "./inboxThreadMessages.mjs";
 import { 
   getConversationStatus, 
   updateConversationStatus, 
@@ -46,6 +47,8 @@ import { selectStorage } from '../services/uploads.mjs';
 function parseRouteContact(raw) {
   return canonicalContactId(raw);
 }
+
+const THREAD_MESSAGES_PAGE_SIZE = 50;
 
 async function getReplyOriginalMeta(userId, replyTo) {
   const id = String(replyTo || "").trim();
@@ -165,6 +168,192 @@ function contactInitials(displayName, contact) {
   const digits = String(contact || '').replace(/\D/g, '');
   return digits.slice(-2) || '??';
 }
+
+function renderInboxContactListItems(contacts, ctx = {}) {
+  const {
+    showArchived = false,
+    customerNameByContact = new Map(),
+    lastSeenByContact = new Map(),
+    statusByContact = new Map(),
+    escalationByContact = new Map(),
+    liveByContact = new Map(),
+    unreadCounts = new Map(),
+  } = ctx;
+
+  return (contacts || []).map((c) => {
+    const lastTs = Number(c.last_ts || 0);
+    const ts = formatTimestampForDisplay(lastTs);
+    const rawPreview = (c.last_text || '').toString();
+    const shortened = rawPreview.length > 60 ? rawPreview.slice(0, 57) + '...' : rawPreview;
+    const preview = shortened.replace(/</g, '&lt;');
+    const phoneLabel = formatPhoneLabel(c.contact);
+    const savedName = customerNameByContact.get(String(c.contact));
+    const displayName = savedName || phoneLabel;
+    const initials = contactInitials(savedName, c.contact);
+    const phoneSubline = savedName
+      ? `<div class="inbox-item__phone">${escapeHtml(phoneLabel)}</div>`
+      : '';
+    const seenTs = lastSeenByContact.get(String(c.contact)) || 0;
+    const hasNew = lastTs > seenTs;
+    const isLive = c.isLive ?? liveByContact.has(String(c.contact));
+    const unreadCount = (c.unreadCount ?? unreadCounts.get(String(c.contact))) || 0;
+    const conversationStatus = c.conversationStatus || statusByContact.get(String(c.contact)) || CONVERSATION_STATUSES.NEW;
+    const statusDisplay = STATUS_DISPLAY_NAMES[conversationStatus];
+    const statusColor = STATUS_COLORS[conversationStatus];
+    const dropdownId = `menu_${c.contact}`;
+    const menu = `
+        <div class="inbox-dropdown">
+          <button type="button" class="inbox-dropdown__trigger" aria-label="Conversation actions" onclick="return toggleMenu('${dropdownId}', event)">
+            <svg class="inbox-dropdown__trigger-icon" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M7 4c0-.139 0-.209.008-.267a.85.85 0 0 1 .724-.724c.059-.008.128-.008.267-.008s.21 0 .267.008a.85.85 0 0 1 .724.724c.008.058.008.128.008.267s0 .209-.008.267a.85.85 0 0 1-.724.724c-.058.008-.128.008-.267.008s-.209 0-.267-.008a.85.85 0 0 1-.724-.724C7 4.209 7 4.139 7 4m0 4c0-.139 0-.209.008-.267a.85.85 0 0 1 .724-.724c.059-.008.128-.008.267-.008s.21 0 .267.008a.85.85 0 0 1 .724.724c.008.058.008.128.008.267s0 .209-.008.267a.85.85 0 0 1-.724.724c-.058.008-.128.008-.267.008s-.209 0-.267-.008a.85.85 0 0 1-.724-.724C7 8.209 7 8.139 7 8m0 4c0-.139 0-.209.008-.267a.85.85 0 0 1 .724-.724c.059-.008.128-.008.267-.008s.21 0 .267.008a.85.85 0 0 1 .724.724c.008.058.008.128.008.267s0 .209-.008.268a.85.85 0 0 1-.724.724C8.208 13 8.138 13 8 13s-.209 0-.267-.008a.85.85 0 0 1-.724-.724C7 12.21 7 12.14 7 12"/></svg>
+          </button>
+          <div id="${dropdownId}" class="inbox-dropdown-menu" onclick="event.stopPropagation()">
+            ${showArchived ? `
+            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/unarchive" onsubmit="event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;">
+              <button type="submit" class="inbox-dropdown-item">
+                <img src="/archive-icon.svg" alt="" class="inbox-dropdown-item__icon" aria-hidden="true" /> Unarchive
+              </button>
+            </form>` : `
+            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/archive" onsubmit="event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;">
+              <button type="submit" class="inbox-dropdown-item">
+                <img src="/archive-icon.svg" alt="" class="inbox-dropdown-item__icon" aria-hidden="true" /> Archive
+              </button>
+            </form>`}
+            <button type="button" class="inbox-dropdown-item" onclick="openNameModal('${encodeURIComponent(c.contact)}'); return false;">
+              <span class="inbox-dropdown-item__emoji" aria-hidden="true">✏️</span> Name customer
+            </button>
+            <div class="inbox-dropdown-divider" role="separator"></div>
+            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/clear" onsubmit="event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;">
+              <button type="submit" class="inbox-dropdown-item">
+                <img src="/clear-icon.svg" alt="" class="inbox-dropdown-item__icon" aria-hidden="true" /> Clear chat
+              </button>
+            </form>
+            <div class="inbox-dropdown-divider" role="separator"></div>
+            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/block24h" onsubmit="event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;">
+              <button type="submit" class="inbox-dropdown-item">
+                <span class="inbox-dropdown-item__emoji" aria-hidden="true">⛔</span> Block 24h
+              </button>
+            </form>
+            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/delete" onsubmit="return deleteInboxConversation(this, event);">
+              <button type="submit" class="inbox-dropdown-item inbox-dropdown-item--danger">
+                <img src="/delete-icon.svg" alt="" class="inbox-dropdown-item__icon" aria-hidden="true" /> Delete
+              </button>
+            </form>
+          </div>
+        </div>
+      `;
+    const unreadBadge = unreadCount > 0
+      ? `<span class="inbox-item__unread">${unreadCount > 99 ? '99+' : unreadCount}</span>`
+      : (hasNew ? '<span class="inbox-item__dot" aria-label="Unread"></span>' : '');
+    const chips = [
+      isLive ? '<span class="live-chip">Live</span>' : '',
+      conversationStatus !== CONVERSATION_STATUSES.NEW
+        ? `<span class="status-chip" style="background-color:${statusColor}">${statusDisplay}</span>`
+        : '',
+    ].filter(Boolean).join('');
+    const metaHtml = chips ? `<div class="inbox-item__meta">${chips}</div>` : '';
+    return `
+        <li class="inbox-item${hasNew || unreadCount > 0 ? ' inbox-item--unread' : ''}">
+          <a class="inbox-item__link" href="/inbox/${encodeURIComponent(c.contact)}">
+            <div class="inbox-item__avatar" aria-hidden="true">${escapeHtml(initials)}</div>
+            <div class="inbox-item__body">
+              <div class="inbox-item__header">
+                <div class="inbox-item__title">
+                  <span class="inbox-item__name">${escapeHtml(displayName || '')}</span>
+                  ${unreadBadge}
+                </div>
+                <time class="inbox-item__time">${ts}</time>
+              </div>
+              ${phoneSubline}
+              ${metaHtml}
+              <p class="inbox-item__preview">${preview || '<span class="inbox-item__preview-empty">No messages yet</span>'}</p>
+            </div>
+          </a>
+          <div class="inbox-item__actions">
+            ${menu}
+          </div>
+        </li>
+      `;
+  }).join('');
+}
+
+async function enrichInboxContacts(userId, contacts) {
+  const customers = await Customer.find({ user_id: userId }).select('contact_id display_name');
+  const customerNameByContact = new Map(customers.map(r => [String(r.contact_id), r.display_name]));
+  const lastSeenRows = await Handoff.find({ user_id: userId }).select('contact_id last_seen_ts');
+  const lastSeenByContact = new Map(lastSeenRows.map(r => [String(r.contact_id), Number(r.last_seen_ts || 0)]));
+  const unreadCounts = new Map();
+  try {
+    await Promise.all((contacts || []).slice(0, 50).map(async (c) => {
+      try {
+        const contactId = String(c.contact || '');
+        if (!contactId) return;
+        const seenTs = lastSeenByContact.get(contactId) || 0;
+        const digits = normalizePhone(contactId);
+        const cnt = await Message.countDocuments({
+          user_id: userId,
+          direction: 'inbound',
+          timestamp: { $gt: seenTs },
+          $or: [
+            { from_id: contactId },
+            { from_digits: digits }
+          ]
+        });
+        unreadCounts.set(contactId, Number(cnt || 0));
+      } catch (_) {}
+    }));
+  } catch (_) {}
+  const statusRows = await Handoff.find({ user_id: userId }).select('contact_id conversation_status');
+  const statusByContact = new Map(statusRows.map(r => [String(r.contact_id), r.conversation_status || CONVERSATION_STATUSES.NEW]));
+  const now = Math.floor(Date.now() / 1000);
+  const escalationRows = await Handoff.find({
+    user_id: userId,
+    escalation_reason: { $exists: true, $ne: null }
+  }).select('contact_id escalation_reason updatedAt is_human human_expires_ts');
+  const liveRows = await Handoff.find({
+    user_id: userId,
+    is_human: true,
+    human_expires_ts: { $gt: now }
+  }).select('contact_id');
+  const escalationByContact = new Map();
+  const liveByContact = new Map(liveRows.map((row) => [String(row.contact_id), true]));
+  escalationRows.forEach((row) => {
+    const contactId = String(row.contact_id);
+    const isHuman = Number(row.is_human || 0);
+    const humanExpiresTs = Number(row.human_expires_ts || 0);
+    if (isHuman && humanExpiresTs > now) {
+      escalationByContact.set(contactId, row.escalation_reason);
+    }
+  });
+
+  const enrichedContacts = (contacts || []).map((c) => {
+    const contactId = String(c.contact || '');
+    const seenTs = lastSeenByContact.get(contactId) || 0;
+    const lastTs = Number(c.last_ts || 0);
+    const unreadCount = unreadCounts.get(contactId) || 0;
+    const hasNew = lastTs > seenTs;
+    const hasEscalation = escalationByContact.has(contactId);
+    const isLive = liveByContact.has(contactId);
+    return {
+      ...c,
+      unreadCount,
+      hasNew,
+      hasEscalation,
+      isLive,
+      conversationStatus: statusByContact.get(contactId) || CONVERSATION_STATUSES.NEW,
+    };
+  });
+
+  return {
+    enrichedContacts,
+    customerNameByContact,
+    lastSeenByContact,
+    statusByContact,
+    escalationByContact,
+    liveByContact,
+    unreadCounts,
+  };
+}
+
 function buildInboxQuery(params = {}) {
   const qs = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {
@@ -426,170 +615,34 @@ export default function registerInboxRoutes(app) {
       if (req.headers['if-none-match'] === etag) return res.status(304).end();
       res.setHeader('ETag', etag);
     } catch {}
-    const customers = await Customer.find({ user_id: userId }).select('contact_id display_name');
-    const customerNameByContact = new Map(customers.map(r => [String(r.contact_id), r.display_name]));
-    const lastSeenRows = await Handoff.find({ user_id: userId }).select('contact_id last_seen_ts');
-    const lastSeenByContact = new Map(lastSeenRows.map(r => [String(r.contact_id), Number(r.last_seen_ts || 0)]));
-    const unreadCounts = new Map();
-    try {
-      await Promise.all((contacts||[]).slice(0, 50).map(async (c) => {
-        try {
-          const contactId = String(c.contact||'');
-          if (!contactId) return;
-          const seenTs = lastSeenByContact.get(contactId) || 0;
-          const digits = normalizePhone(contactId);
-          const cnt = await Message.countDocuments({
-            user_id: userId,
-            direction: 'inbound',
-            timestamp: { $gt: seenTs },
-            $or: [
-              { from_id: contactId },
-              { from_digits: digits }
-            ]
-          });
-          unreadCounts.set(contactId, Number(cnt||0));
-        } catch(_){ }
-      }));
-    } catch(_){ }
-    const statusRows = await Handoff.find({ user_id: userId }).select('contact_id conversation_status');
-    const statusByContact = new Map(statusRows.map(r => [String(r.contact_id), r.conversation_status || CONVERSATION_STATUSES.NEW]));
-    const escalationRows = await Handoff.find({ 
-      user_id: userId, 
-      escalation_reason: { $exists: true, $ne: null } 
-    }).select('contact_id escalation_reason updatedAt is_human human_expires_ts');
-    
-    const escalationByContact = new Map();
-    const now = Math.floor(Date.now()/1000);
-    
-    escalationRows.forEach(row => {
-      const contactId = String(row.contact_id);
-      const escalationTs = Number(row.updatedAt || 0);
-      const isHuman = Number(row.is_human || 0);
-      const humanExpiresTs = Number(row.human_expires_ts || 0);
-      const isHumanModeActive = isHuman && humanExpiresTs > now;
-      if (isHumanModeActive) {
-        escalationByContact.set(contactId, row.escalation_reason);
-      }
-    });
-    const enrichedContacts = (contacts || []).map((c) => {
-      const contactId = String(c.contact || '');
-      const seenTs = lastSeenByContact.get(contactId) || 0;
-      const lastTs = Number(c.last_ts || 0);
-      const unreadCount = unreadCounts.get(contactId) || 0;
-      const hasNew = lastTs > seenTs;
-      const hasEscalation = escalationByContact.has(contactId);
-      return {
-        ...c,
-        unreadCount,
-        hasNew,
-        hasEscalation,
-        conversationStatus: statusByContact.get(contactId) || CONVERSATION_STATUSES.NEW,
-      };
-    });
+    const {
+      enrichedContacts,
+      customerNameByContact,
+      lastSeenByContact,
+      statusByContact,
+      escalationByContact,
+      liveByContact,
+      unreadCounts,
+    } = await enrichInboxContacts(userId, contacts);
     const filteredContacts = enrichedContacts.filter((c) => {
       if (inboxFilter === 'unread') return (c.unreadCount || 0) > 0 || c.hasNew;
-      if (inboxFilter === 'live') return c.hasEscalation;
+      if (inboxFilter === 'live') return c.isLive;
       return true;
     });
     const filterCounts = {
       all: enrichedContacts.length,
       unread: enrichedContacts.filter((c) => (c.unreadCount || 0) > 0 || c.hasNew).length,
-      live: enrichedContacts.filter((c) => c.hasEscalation).length,
+      live: enrichedContacts.filter((c) => c.isLive).length,
     };
-    const list = filteredContacts.map(c => {
-      const lastTs = Number(c.last_ts||0);
-      const ts = formatTimestampForDisplay(lastTs);
-      const rawPreview = (c.last_text || "").toString();
-      const shortened = rawPreview.length > 60 ? rawPreview.slice(0, 57) + "..." : rawPreview;
-      const preview = shortened.replace(/</g,'&lt;');
-      const phoneLabel = formatPhoneLabel(c.contact);
-      const savedName = customerNameByContact.get(String(c.contact));
-      const displayName = savedName || phoneLabel;
-      const initials = contactInitials(savedName, c.contact);
-      const phoneSubline = savedName
-        ? `<div class="inbox-item__phone">${escapeHtml(phoneLabel)}</div>`
-        : '';
-      const seenTs = lastSeenByContact.get(String(c.contact)) || 0;
-      const hasNew = lastTs > seenTs;
-      const hasEscalation = c.hasEscalation;
-      const unreadCount = c.unreadCount || 0;
-      const conversationStatus = c.conversationStatus || CONVERSATION_STATUSES.NEW;
-      const statusDisplay = STATUS_DISPLAY_NAMES[conversationStatus];
-      const statusColor = STATUS_COLORS[conversationStatus];
-          const dropdownId = `menu_${c.contact}`;
-          const menu = `
-        <div class="inbox-dropdown">
-          <button type="button" class="inbox-dropdown__trigger" aria-label="Conversation actions" onclick="return toggleMenu('${dropdownId}', event)">
-            <svg class="inbox-dropdown__trigger-icon" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M7 4c0-.139 0-.209.008-.267a.85.85 0 0 1 .724-.724c.059-.008.128-.008.267-.008s.21 0 .267.008a.85.85 0 0 1 .724.724c.008.058.008.128.008.267s0 .209-.008.267a.85.85 0 0 1-.724.724c-.058.008-.128.008-.267.008s-.209 0-.267-.008a.85.85 0 0 1-.724-.724C7 4.209 7 4.139 7 4m0 4c0-.139 0-.209.008-.267a.85.85 0 0 1 .724-.724c.059-.008.128-.008.267-.008s.21 0 .267.008a.85.85 0 0 1 .724.724c.008.058.008.128.008.267s0 .209-.008.267a.85.85 0 0 1-.724.724c-.058.008-.128.008-.267.008s-.209 0-.267-.008a.85.85 0 0 1-.724-.724C7 8.209 7 8.139 7 8m0 4c0-.139 0-.209.008-.267a.85.85 0 0 1 .724-.724c.059-.008.128-.008.267-.008s.21 0 .267.008a.85.85 0 0 1 .724.724c.008.058.008.128.008.267s0 .209-.008.268a.85.85 0 0 1-.724.724C8.208 13 8.138 13 8 13s-.209 0-.267-.008a.85.85 0 0 1-.724-.724C7 12.21 7 12.14 7 12"/></svg>
-          </button>
-          <div id="${dropdownId}" class="inbox-dropdown-menu" onclick="event.stopPropagation()">
-            ${showArchived ? `
-            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/unarchive" onsubmit="event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;">
-              <button type="submit" class="inbox-dropdown-item">
-                <img src="/archive-icon.svg" alt="" class="inbox-dropdown-item__icon" aria-hidden="true" /> Unarchive
-              </button>
-            </form>` : `
-            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/archive" onsubmit="event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;">
-              <button type="submit" class="inbox-dropdown-item">
-                <img src="/archive-icon.svg" alt="" class="inbox-dropdown-item__icon" aria-hidden="true" /> Archive
-              </button>
-            </form>`}
-            <button type="button" class="inbox-dropdown-item" onclick="openNameModal('${encodeURIComponent(c.contact)}'); return false;">
-              <span class="inbox-dropdown-item__emoji" aria-hidden="true">✏️</span> Name customer
-            </button>
-            <div class="inbox-dropdown-divider" role="separator"></div>
-            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/clear" onsubmit="event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;">
-              <button type="submit" class="inbox-dropdown-item">
-                <img src="/clear-icon.svg" alt="" class="inbox-dropdown-item__icon" aria-hidden="true" /> Clear chat
-              </button>
-            </form>
-            <div class="inbox-dropdown-divider" role="separator"></div>
-            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/block24h" onsubmit="event.preventDefault(); if (window.checkAuthThenSubmit) { checkAuthThenSubmit(this).then(valid => { if (valid) this.submit(); }); } else { this.submit(); } return false;">
-              <button type="submit" class="inbox-dropdown-item">
-                <span class="inbox-dropdown-item__emoji" aria-hidden="true">⛔</span> Block 24h
-              </button>
-            </form>
-            <form method="post" action="/inbox/${encodeURIComponent(c.contact)}/delete" onsubmit="return deleteInboxConversation(this, event);">
-              <button type="submit" class="inbox-dropdown-item inbox-dropdown-item--danger">
-                <img src="/delete-icon.svg" alt="" class="inbox-dropdown-item__icon" aria-hidden="true" /> Delete
-              </button>
-            </form>
-          </div>
-        </div>
-      `;
-      const unreadBadge = unreadCount > 0
-        ? `<span class="inbox-item__unread">${unreadCount > 99 ? '99+' : unreadCount}</span>`
-        : (hasNew ? '<span class="inbox-item__dot" aria-label="Unread"></span>' : '');
-      const chips = [
-        hasEscalation ? '<span class="live-chip">Live</span>' : '',
-        conversationStatus !== CONVERSATION_STATUSES.NEW
-          ? `<span class="status-chip" style="background-color:${statusColor}">${statusDisplay}</span>`
-          : '',
-      ].filter(Boolean).join('');
-      const metaHtml = chips ? `<div class="inbox-item__meta">${chips}</div>` : '';
-      return `
-        <li class="inbox-item${hasNew || unreadCount > 0 ? ' inbox-item--unread' : ''}">
-          <a class="inbox-item__link" href="/inbox/${encodeURIComponent(c.contact)}">
-            <div class="inbox-item__avatar" aria-hidden="true">${escapeHtml(initials)}</div>
-            <div class="inbox-item__body">
-              <div class="inbox-item__header">
-                <div class="inbox-item__title">
-                  <span class="inbox-item__name">${escapeHtml(displayName || '')}</span>
-                  ${unreadBadge}
-                </div>
-                <time class="inbox-item__time">${ts}</time>
-              </div>
-              ${phoneSubline}
-              ${metaHtml}
-              <p class="inbox-item__preview">${preview || '<span class="inbox-item__preview-empty">No messages yet</span>'}</p>
-            </div>
-          </a>
-          <div class="inbox-item__actions">
-            ${menu}
-          </div>
-        </li>
-      `;
-    }).join("");
+    const list = renderInboxContactListItems(filteredContacts, {
+      showArchived,
+      customerNameByContact,
+      lastSeenByContact,
+      statusByContact,
+      escalationByContact,
+      liveByContact,
+      unreadCounts,
+    });
     const searchResultsCount = isSearchMode ?
       `<div class="search-result-count">Found ${filteredContacts.length} conversation${filteredContacts.length !== 1 ? 's' : ''} matching your search criteria</div>` : '';
     const filterBase = {
@@ -611,20 +664,8 @@ export default function registerInboxRoutes(app) {
         <a class="inbox-filter-tab${inboxFilter === 'unread' ? ' is-active' : ''}" href="${inboxTabHref('unread')}">Unread<span class="inbox-filter-tab__count">${filterCounts.unread}</span></a>
         <a class="inbox-filter-tab${inboxFilter === 'live' ? ' is-active' : ''}" href="${inboxTabHref('live')}">Live<span class="inbox-filter-tab__count">${filterCounts.live}</span></a>
       </div>`;
-    const paginationNav = (!isSearchMode && !showArchived && (page > 1 || (contacts || []).length >= pageSize)) ? (() => {
-      const prevParams = { ...filterBase };
-      if (inboxFilter !== 'all') prevParams.filter = inboxFilter;
-      if (page > 1) prevParams.page = page - 1;
-      const nextParams = { ...filterBase };
-      if (inboxFilter !== 'all') nextParams.filter = inboxFilter;
-      if ((contacts || []).length >= pageSize) nextParams.page = page + 1;
-      return `
-      <div class="inbox-pagination">
-        ${page > 1 ? `<a class="btn btn-ghost" href="/inbox${buildInboxQuery(prevParams)}">← Previous</a>` : '<span></span>'}
-        <span class="inbox-pagination__info">Page ${page}</span>
-        ${(contacts || []).length >= pageSize ? `<a class="btn btn-ghost" href="/inbox${buildInboxQuery(nextParams)}">Next →</a>` : '<span></span>'}
-      </div>`;
-    })() : '';
+    const hasMoreContacts = !isSearchMode && (contacts || []).length >= pageSize;
+    const paginationNav = '';
     const listContent = list || (inboxFilter !== 'all' && enrichedContacts.length > 0 ? `
                   <li style="border:0;">
                     <div class="empty-state-pro">
@@ -667,31 +708,31 @@ export default function registerInboxRoutes(app) {
               <div class="main-content">
                 <div class="inbox-workspace">
                 <div class="inbox-toolbar">
-                  <div class="inbox-toolbar__top">
-                    ${filterTabs}
-                    <div class="inbox-toolbar__links">
-                      ${showArchived ? `
-                        <a href="/inbox" class="btn btn-ghost btn-sm inbox-toolbar__link-btn" title="Back to Inbox">
-                          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M22 12H2"/><path d="M9 5l-7 7 7 7"/></svg>
-                          Inbox
-                        </a>
-                      ` : `
-                        <a href="/inbox?archived=1" class="btn btn-ghost btn-sm inbox-toolbar__link-btn" title="View archived">
-                          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 8v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>
-                          Archived
-                        </a>
-                      `}
-                    </div>
-                  </div>
                   <form method="get" action="/inbox" class="search-form">
-                    <div class="search-input-group">
-                      <input class="search-input" type="text" name="q" placeholder="Search conversations..." value="${escapeHtml(q)}"/>
-                      <button type="button" class="btn btn-ghost inbox-filters-toggle" onclick="toggleSearchFilters()" title="Advanced filters">Filters</button>
-                      <button type="submit" class="btn btn-primary" aria-label="Search">
-                        <img src="/search-icon.svg" alt="" width="18" height="18">
-                      </button>
+                    <div class="inbox-toolbar__row">
+                      ${filterTabs}
+                      <div class="inbox-toolbar__links">
+                        ${showArchived ? `
+                          <a href="/inbox" class="btn btn-ghost btn-sm inbox-toolbar__link-btn" title="Back to Inbox">
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M22 12H2"/><path d="M9 5l-7 7 7 7"/></svg>
+                            Inbox
+                          </a>
+                        ` : `
+                          <a href="/inbox?archived=1" class="btn btn-ghost btn-sm inbox-toolbar__link-btn" title="View archived">
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 8v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>
+                            Archived
+                          </a>
+                        `}
+                      </div>
+                      <div class="search-input-group">
+                        <input class="search-input" type="text" name="q" placeholder="Search conversations..." value="${escapeHtml(q)}"/>
+                        <button type="button" class="btn btn-ghost inbox-filters-toggle" onclick="toggleSearchFilters()" title="Advanced filters">Filters</button>
+                        <button type="submit" class="btn btn-primary" aria-label="Search">
+                          <img src="/search-icon.svg" alt="" width="18" height="18">
+                        </button>
+                      </div>
                     </div>
-                    <div class="search-filters" id="searchFilters" style="display: ${(messageType || direction || dateFrom || dateTo) ? 'grid' : 'none'};">
+                    <div class="search-filters" id="searchFilters" style="display: ${(messageType || direction || dateFrom || dateTo) ? 'flex' : 'none'};">
                       <div class="filter-group">
                         <label>Message Type:</label>
                         <select name="type" class="filter-select">
@@ -751,8 +792,22 @@ export default function registerInboxRoutes(app) {
                     </div>
                   </div>
                 </div>
-                <div class="conversation-list-shell">
-                <ul class="list">${searchResultsCount}${listContent}</ul>
+                <div class="conversation-list-shell" id="inboxConversationList"
+                  data-infinite-scroll="${isSearchMode ? '' : '1'}"
+                  data-page="${page}"
+                  data-has-more="${hasMoreContacts ? '1' : '0'}"
+                  data-page-size="${pageSize}"
+                  data-filter="${escapeHtml(inboxFilter)}"
+                  data-archived="${showArchived ? '1' : '0'}"
+                  data-q="${escapeHtml(q)}"
+                  data-type="${escapeHtml(messageType || '')}"
+                  data-direction="${escapeHtml(direction)}"
+                  data-date-from="${escapeHtml(dateFrom)}"
+                  data-date-to="${escapeHtml(dateTo)}">
+                <ul class="list" id="inboxConversationListItems">${searchResultsCount}${listContent}</ul>
+                <div class="inbox-list-status" id="inboxListStatus"${hasMoreContacts ? '' : ' hidden'}>
+                  <span class="inbox-list-status__text" id="inboxListStatusText">Scroll for more conversations</span>
+                </div>
                 ${paginationNav}
                 </div>
                 </div>
@@ -763,6 +818,141 @@ export default function registerInboxRoutes(app) {
       </body></html>
     `);
   });
+
+  app.get("/api/inbox/contacts", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
+    const showArchived = ['1', 'true', 'yes'].includes(String(req.query.archived || '').toLowerCase());
+    const inboxFilter = ['all', 'unread', 'live'].includes(String(req.query.filter || 'all'))
+      ? String(req.query.filter || 'all')
+      : 'all';
+    const page = Math.max(1, parseInt(req.query.page || '1', 10) || 1);
+    const pageSize = Math.min(50, Math.max(10, parseInt(req.query.page_size || '20', 10) || 20));
+    const q = (req.query.q || '').toString().trim();
+    const messageType = parseInboxMessageTypeFilter(req.query);
+    const direction = (req.query.direction || '').toString().trim();
+    const dateFrom = (req.query.date_from || '').toString().trim();
+    const dateTo = (req.query.date_to || '').toString().trim();
+    const isSearchMode = !showArchived && (q || messageType || direction || dateFrom || dateTo);
+
+    if (isSearchMode) {
+      return res.json({ success: false, error: 'Infinite scroll is not available in search mode' });
+    }
+
+    let contacts = showArchived
+      ? await listArchivedContacts(userId, { page, pageSize })
+      : await listContactsForUser(userId, { page, pageSize });
+
+    if (!showArchived) {
+      try {
+        const archivedRows = await Handoff.find({ user_id: userId, is_archived: true }).select('contact_id');
+        const archivedSet = new Set(archivedRows.map(r => String(r.contact_id)));
+        contacts = (contacts || []).filter(c => !archivedSet.has(String(c.contact)));
+      } catch (_) {}
+    }
+
+    const {
+      enrichedContacts,
+      customerNameByContact,
+      lastSeenByContact,
+      statusByContact,
+      escalationByContact,
+      liveByContact,
+      unreadCounts,
+    } = await enrichInboxContacts(userId, contacts);
+
+    const filteredContacts = enrichedContacts.filter((c) => {
+      if (inboxFilter === 'unread') return (c.unreadCount || 0) > 0 || c.hasNew;
+      if (inboxFilter === 'live') return c.isLive;
+      return true;
+    });
+
+    const html = renderInboxContactListItems(filteredContacts, {
+      showArchived,
+      customerNameByContact,
+      lastSeenByContact,
+      statusByContact,
+      escalationByContact,
+      liveByContact,
+      unreadCounts,
+    });
+
+    return res.json({
+      success: true,
+      html,
+      page,
+      hasMore: (contacts || []).length >= pageSize,
+      count: filteredContacts.length,
+    });
+  });
+
+  app.get("/api/inbox/:phone/messages", ensureAuthed, async (req, res) => {
+    const phone = parseRouteContact(req.params.phone);
+    const userId = getCurrentUserId(req);
+    const phoneDigits = normalizePhone(phone);
+    const beforeTs = parseInt(String(req.query.before_ts || ''), 10) || null;
+
+    if (!beforeTs) {
+      return res.status(400).json({ success: false, error: 'before_ts is required' });
+    }
+
+    try {
+      const { messages, hasMore, oldestTs } = await listThreadMessagesPage(userId, phoneDigits, {
+        beforeTs,
+        limit: THREAD_MESSAGES_PAGE_SIZE,
+      });
+
+      const msgs = messages.map((m) => ({
+        id: m.id,
+        direction: m.direction,
+        type: m.type,
+        text_body: m.text_body,
+        ts: m.timestamp || 0,
+        raw: m.raw,
+        delivery_status: m.delivery_status,
+        read_status: m.read_status,
+      }));
+
+      const messageIds = msgs.map((m) => m.id);
+      const [
+        reactionsByMessage,
+        userReactionsByMessage,
+        replyOriginals,
+        planStatus,
+      ] = await Promise.all([
+        getMessagesReactions(messageIds),
+        getUserReactionsForMessages(messageIds, userId),
+        getReplyOriginals(messageIds),
+        getPlanStatus(userId),
+      ]);
+
+      const templatePreviewByKey = new Map();
+      try {
+        const tplRows = await getDB().collection('wa_templates').find({ user_id: String(userId) })
+          .project({ name: 1, language: 1, body: 1, components: 1 })
+          .toArray();
+        for (const row of tplRows) {
+          const { bodyText } = extractTemplateBodyAndVars(row);
+          if (bodyText) templatePreviewByKey.set(`${row.name}::${row.language}`, bodyText);
+        }
+      } catch {}
+
+      const html = renderThreadMessagesHtml(msgs, {
+        userId,
+        req,
+        isUpgraded: !!planStatus?.isUpgraded,
+        reactionsByMessage,
+        userReactionsByMessage,
+        replyOriginals,
+        templatePreviewByKey,
+      });
+
+      return res.json({ success: true, html, hasMore, oldestTs });
+    } catch (error) {
+      console.error('Thread messages API error:', error);
+      return res.status(500).json({ success: false, error: 'Failed to load messages' });
+    }
+  });
+
   app.get("/api/search", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const q = (req.query.q || "").toString().trim();
@@ -1088,7 +1278,7 @@ export default function registerInboxRoutes(app) {
       },
       { $sort: { timestamp: 1 } },
       { $group: { _id: null, items: { $push: '$$ROOT' } } },
-      { $project: { items: { $slice: ['$items', -400] } } },
+      { $project: { items: { $slice: ['$items', -THREAD_MESSAGES_PAGE_SIZE] } } },
       { $unwind: '$items' },
       { $replaceRoot: { newRoot: '$items' } },
       {
@@ -1121,6 +1311,8 @@ export default function registerInboxRoutes(app) {
       }
     ]);
     try { msgs = msgs.filter(m => m?.type !== 'system_clear'); } catch {}
+    const hasMoreThreadMessages = msgs.length >= THREAD_MESSAGES_PAGE_SIZE;
+    const oldestThreadTs = msgs.length ? Number(msgs[0]?.ts || 0) : 0;
     const messageIds = msgs.map(m => m.id);
     const reactionsByMessage = await getMessagesReactions(messageIds);
     const userReactionsByMessage = await getUserReactionsForMessages(messageIds, userId);
@@ -1173,204 +1365,16 @@ export default function registerInboxRoutes(app) {
       res.setHeader('ETag', etag);
     } catch {}
 
-    const items = msgs.map(m => {
-      const cls = m.direction === 'inbound' ? 'msg msg-in' : 'msg msg-out';
-      let display = String(m.text_body || '').trim();
-      if (!display || display === '[image]' || display === '[document]' || display === '[audio]' || display === '[video]' || (m.type && m.type !== 'text')) {
-        let raw = {};
-        if (m && typeof m.raw === 'object' && m.raw !== null) {
-          raw = m.raw;
-        } else {
-          try { raw = JSON.parse(m.raw || '{}'); } catch { raw = {}; }
-        }
-        if (m.type === 'interactive') {
-          const br = raw?.interactive?.button_reply;
-          const lr = raw?.interactive?.list_reply;
-          const bodyText = raw?.interactive?.body?.text;
-          if (br?.title) display = br.title;
-          else if (lr?.title) display = lr.title;
-          else if (bodyText) display = bodyText;
-          else {
-            try {
-              const v = raw?.value || raw;
-              const arr = Array.isArray(v?.messages) ? v.messages : (Array.isArray(raw?.messages) ? raw.messages : []);
-              const first = arr[0] || {};
-              const lr2 = first?.interactive?.list_reply?.title;
-              const br2 = first?.interactive?.button_reply?.title;
-              const body2 = first?.interactive?.body?.text;
-              if (lr2) display = lr2;
-              else if (br2) display = br2;
-              else if (body2) display = body2;
-              else display = '[interactive]';
-            } catch { display = '[interactive]'; }
-          }
-        } else if (m.type === 'document') {
-          let documentUrl = raw?.document?.link || raw?.documentUrl;
-          const filename = raw?.document?.filename || raw?.filename || 'Document';
-          
-          if (documentUrl) {
-            if (documentUrl.includes('localhost:3000')) {
-              const host = req.get('host');
-              const protocol = req.protocol;
-              documentUrl = documentUrl.replace(/https?:\/\/localhost:3000/, `${protocol}://${host}`);
-            }
-            const fileExtension = filename.split('.').pop()?.toUpperCase() || 'DOC';
-            
-            display = `
-              <div class="document-message" style="margin:8px 0; background:#f0f0f0; border-radius:8px; padding:12px; max-width:250px; cursor:pointer;" onclick="window.open('${escapeHtml(documentUrl)}', '_blank')">
-                <div style="display:flex; align-items:center; gap:12px;">
-                  <div style="width:40px; height:40px; background:#25d366; border-radius:6px; display:flex; align-items:center; justify-content:center; color:white; font-weight:bold; font-size:12px; flex-shrink:0;">
-                    ${fileExtension}
-                  </div>
-                  <div style="flex:1; min-width:0;">
-                    <div style="font-weight:500; color:#111b21; font-size:14px; margin-bottom:2px; word-break:break-word;">${escapeHtml(filename)}</div>
-                    <div style="font-size:12px; color:#667781;">Tap to download</div>
-                  </div>
-                  <div style="color:#25d366; font-size:16px;">📥</div>
-                </div>
-              </div>
-            `;
-          } else {
-            display = `[document] ${escapeHtml(filename)}`;
-          }
-        } else if (m.type === 'image') {
-          let imageUrl = raw?.image?.link || raw?.imageUrl;
-          if (!imageUrl && raw?.image?.id) {
-            imageUrl = `/wa-media/${encodeURIComponent(String(userId))}/${encodeURIComponent(String(raw.image.id))}`;
-          }
-          if (imageUrl) {
-            if (imageUrl.includes('localhost:3000')) {
-              const host = req.get('host');
-              const protocol = req.protocol;
-              imageUrl = imageUrl.replace(/https?:\/\/localhost:3000/, `${protocol}://${host}`);
-            }
-            display = `<div style="margin:8px 0;"><img src="${escapeHtml(imageUrl)}" style="max-width:200px; max-height:200px; border-radius:8px; object-fit:cover; cursor:pointer;" alt="Image" onclick="window.open('${escapeHtml(imageUrl)}', '_blank')" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';"/><div style="display:none; padding:8px; background:#f0f0f0; border-radius:8px; font-size:12px; color:#666;">[Image failed to load]</div></div>`;
-          } else {
-            display = '[image]';
-          }
-        } else if (m.type === 'audio') {
-          let audioUrl = raw?.audio?.link || null;
-          if (!audioUrl && raw?.audio?.id) {
-            audioUrl = `/wa-media/${encodeURIComponent(String(userId))}/${encodeURIComponent(String(raw.audio.id))}`;
-          }
-          const transcript = String(m.text_body || '').trim();
-          if (audioUrl) {
-            if (audioUrl.includes('localhost:3000')) {
-              const host = req.get('host');
-              const protocol = req.protocol;
-              audioUrl = audioUrl.replace(/https?:\/\/localhost:3000/, `${protocol}://${host}`);
-            }
-            display = renderVoiceMessageHtml({ audioUrl, transcript, messageId: m.id });
-          } else if (transcript) {
-            display = `🎤 ${escapeHtml(transcript).replace(/\n/g, '<br/>')}`;
-          } else {
-            display = '[audio]';
-          }
-        } else if (m.type === 'video') {
-          display = '[video]';
-        } else if (m.type === 'template') {
-          if (!display) {
-            const tplName = raw?.template?.name;
-            const tplLang = raw?.template?.language?.code || raw?.template?.language || "";
-            if (raw?.displayText) {
-              display = String(raw.displayText);
-            } else if (tplName && tplLang && templatePreviewByKey.has(`${tplName}::${tplLang}`)) {
-              display = templatePreviewByKey.get(`${tplName}::${tplLang}`);
-            } else if (tplName) {
-              for (const lang of [tplLang, "en_US", "en", "sq"].filter(Boolean)) {
-                const preview = templatePreviewByKey.get(`${tplName}::${lang}`);
-                if (preview) { display = preview; break; }
-              }
-              if (!display) display = `Template: ${tplName}`;
-            } else {
-              display = '[template]';
-            }
-          }
-        } else if (m.type) {
-          display = `[${m.type}]`;
-        }
-      }
-      const isVoiceBubble = m.type === 'audio' && display.includes('voice-message');
-      const bubbleClass = isVoiceBubble ? 'bubble bubble--voice' : 'bubble';
-      const safe = display.includes('<img') || display.includes('<div') || display.includes('voice-message')
-        ? display
-        : escapeHtml(display).replace(/\n/g, '<br/>');
-      const ts = formatTimestampForDisplay(m.ts||0);
-      let statusTicks = '';
-      if (m.direction === 'outbound') {
-        const deliveryStatus = m.delivery_status || MESSAGE_STATUS.SENT;
-        const readStatus = m.read_status || READ_STATUS.UNREAD;
-        let finalStatus = deliveryStatus;
-        if (readStatus === READ_STATUS.READ) {
-          finalStatus = MESSAGE_STATUS.READ;
-        }
-        if (finalStatus === MESSAGE_STATUS.FAILED) {
-          statusTicks = `
-            <div class="message-status-ticks message-status-failed">
-              <div class="message-failed-indicator" title="Message failed to send">
-                <span class="failed-icon">!</span>
-                <button class="btn btn-danger" data-message-id="${m.id}" onclick="retryMessage('${m.id}')" title="Retry sending message">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
-                    <path d="M21 3v5h-5"/>
-                    <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
-                    <path d="M3 21v-5h5"/>
-                  </svg>
-                </button>
-              </div>
-            </div>
-          `;
-        } else {
-          statusTicks = `
-            <div class="message-status-ticks message-status-${finalStatus}">
-              <div class="message-tick"></div>
-              <div class="message-tick"></div>
-            </div>
-          `;
-        }
-      }
-      const messageReactions = reactionsByMessage[m.id] || [];
-      const userReactions = userReactionsByMessage[m.id] || [];
-      const originalMessage = replyOriginals[m.id];
-      let originalMessageHtml = '';
-      if (originalMessage) {
-        const originalText = originalMessage.text_body || '[Media]';
-        const truncatedText = originalText.length > 40 ? originalText.substring(0, 40) + '...' : originalText;
-        const authorName = originalMessage.direction === 'inbound' ? 'Customer' : 'You';
-        originalMessageHtml = `
-          <div class="reply-preview" onclick="scrollToMessage('${originalMessage.original_message_id}')" style="cursor:pointer; margin:4px 0 2px 0;">
-            <div class="reply-preview-content" style="display:flex; gap:8px; align-items:flex-start; background:#f5f7f9; border-left:3px solid ${m.direction==='inbound' ? '#3b82f6' : '#10b981'}; padding:6px 8px; border-radius:6px;">
-              <div style="flex:1; min-width:0;">
-                <div class="reply-preview-author" style="font-size:11px; color:#64748b; font-weight:600;">${authorName}</div>
-                <div class="reply-preview-text" style="font-size:12px; color:#111b21; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(truncatedText)}</div>
-              </div>
-            </div>
-          </div>
-        `;
-      }
-      let reactionsHtml = '';
-      if (messageReactions.length > 0) {
-        reactionsHtml = '<div class="message-reactions">';
-        messageReactions.forEach(reaction => {
-          const isUserReaction = userReactions.includes(reaction.emoji);
-          const reactionClass = isUserReaction ? 'user-reaction' : 'customer-reaction';
-          const allowClick = isUserReaction && isUpgraded;
-          const clickHandler = allowClick ? `onclick="toggleReaction('${m.id}', '${reaction.emoji}')"` : '';
-          const cursorStyle = allowClick ? 'cursor: pointer;' : 'cursor: default;';
-          const title = isUserReaction ? 'Click to remove your reaction' : 'Customer reaction';
-          reactionsHtml += `<span class="reaction ${reactionClass}" data-message-id="${m.id}" data-emoji="${reaction.emoji}" ${clickHandler} style="${cursorStyle}" title="${title}">${reaction.emoji}<span class="reaction-count">${reaction.count}</span></span>`;
-        });
-        reactionsHtml += '</div>';
-      }
-      const actionButtons = isUpgraded ? `
-        <div class="message-actions">
-          <button class="action-btn reply-btn" onclick="replyToMessage('${m.id}')" title="Reply to this message">↩️</button>
-          <button class="action-btn reaction-btn" onclick="showReactionPicker('${m.id}')" title="Add reaction">+</button>
-        </div>
-      ` : '';
-      
-      return `<div class="${cls} message-container" id="message-${m.id}" data-message-id="${m.id}">${originalMessageHtml}<div class="${bubbleClass}">${safe}<div class="meta">${ts}${statusTicks}</div>${reactionsHtml}${actionButtons}</div></div>`;
-    }).join("");
+    const items = renderThreadMessagesHtml(msgs, {
+      userId,
+      req,
+      isUpgraded,
+      reactionsByMessage,
+      userReactionsByMessage,
+      replyOriginals,
+      templatePreviewByKey,
+    });
+    const assetVer = process.env.STATIC_ASSETS_VERSION || process.env.VERCEL_GIT_COMMIT_SHA || process.env.GIT_COMMIT || 'dev';
     const toastMsg = (req.query?.toast || '').toString();
     const toastType = (req.query?.type || '').toString();
     res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -1380,6 +1384,7 @@ export default function registerInboxRoutes(app) {
     res.end(`
       <html>${getProfessionalHead(`Chat +${String(phone).replace(/^\+/, '')}`)}<body>
           <script src="/toast.js"></script>
+          <script src="/inbox-chat-pagination.js?v=${assetVer}"></script>
           <script>
             (async function checkAuthOnLoad(){
               await window.authManager.checkAuthOnLoad();
@@ -2582,7 +2587,13 @@ export default function registerInboxRoutes(app) {
                     `;
                   })()}
                   <div class="chat-thread">
-                    <div class="chat-thread-messages">
+                    <div class="chat-thread-messages" id="chatThreadMessages"
+                      data-phone="${escapeHtml(String(phone))}"
+                      data-oldest-ts="${oldestThreadTs}"
+                      data-has-more="${hasMoreThreadMessages ? '1' : '0'}">
+                      <div class="chat-thread-load-older" id="chatThreadLoadOlder"${hasMoreThreadMessages ? '' : ' hidden'}>
+                        <button type="button" class="btn btn-ghost btn-sm" id="chatLoadOlderBtn">Load older messages</button>
+                      </div>
                       ${items || '<div class="chat-empty-state">No messages</div>'}
                       <div data-thread-anchor="true"></div>
                     </div>

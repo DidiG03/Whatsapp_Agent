@@ -12,6 +12,7 @@ class AuthManager {
     this._clerkReady = null;
     this._authRedirectScheduled = false;
     this._lastAuthToastAt = 0;
+    this._hadActiveSession = false;
 
     this.authenticatedFetch = this.authenticatedFetch.bind(this);
     this.getSessionToken = this.getSessionToken.bind(this);
@@ -25,9 +26,16 @@ class AuthManager {
     try {
       setInterval(async () => {
         try {
-          if (document.hidden) return;
+          if (document.hidden || this.isPublicPage()) return;
           const status = await this.checkAuthStatus();
-          if (status?.success === true && status?.signedIn === false) {
+          if (status?.signedIn) {
+            this._hadActiveSession = true;
+          }
+          if (
+            status?.success === true
+            && status?.signedIn === false
+            && this._hadActiveSession
+          ) {
             this.handleUnauthorized();
           }
         } catch {}
@@ -37,8 +45,9 @@ class AuthManager {
     try {
       setInterval(async () => {
         try {
-          if (document.hidden) return;
-          await this.touchSession();
+          if (document.hidden || this.isPublicPage()) return;
+          const ok = await this.touchSession();
+          if (ok) this._hadActiveSession = true;
         } catch {}
       }, this.keepaliveIntervalMs);
     } catch {}
@@ -56,7 +65,9 @@ class AuthManager {
         window.Clerk.load(),
         new Promise((_, reject) => setTimeout(() => reject(new Error('Clerk load timeout')), 8000))
       ]);
-      return !!window.Clerk?.session;
+      const hasSession = !!window.Clerk?.session;
+      if (hasSession) this._hadActiveSession = true;
+      return hasSession;
     })().catch(() => false);
     return this._clerkReady;
   }
@@ -211,6 +222,14 @@ class AuthManager {
     }
   }
 
+  isPublicPage(pathname = window.location.pathname) {
+    const path = String(pathname || '/').replace(/\/+$/, '') || '/';
+    if (path === '/') return true;
+    if (path.startsWith('/auth/')) return true;
+    if (document.body?.classList?.contains('landing-page')) return true;
+    return false;
+  }
+
   shouldSuppressAuthToast(url) {
     const value = String(url || '');
     return [
@@ -222,6 +241,7 @@ class AuthManager {
   }
 
   handleUnauthorized(responseUrl) {
+    if (this.isPublicPage()) return;
     if (this._authRedirectScheduled) return;
     const now = Date.now();
     if (now - this._lastAuthToastAt < 5000) return;
@@ -308,8 +328,10 @@ class AuthManager {
 
   async checkAuthOnLoad() {
     try {
+      if (this.isPublicPage()) return true;
       await this.touchSession();
       const authStatus = await this.checkAuthStatus();
+      if (authStatus.signedIn) this._hadActiveSession = true;
       if (authStatus.success === true && authStatus.signedIn === false) {
         window.location.href = '/auth/signin?redirect_url=' + encodeURIComponent(window.location.href);
         return false;

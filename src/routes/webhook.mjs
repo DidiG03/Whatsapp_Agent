@@ -69,6 +69,31 @@ function buildAiContextSnippets(cfg, { kbMatches = [], profileSnippet = null } =
   ];
 }
 
+function getInteractiveReplyId(message) {
+  const data = message?.interactive;
+  if (!data) return null;
+  if (data.type === 'list_reply') return data.list_reply?.id || null;
+  if (data.type === 'button_reply') return data.button_reply?.id || null;
+  return null;
+}
+
+function isCsatInteractiveReply(message) {
+  const id = getInteractiveReplyId(message);
+  return !!id && /^CSAT_[1-5]$/.test(id);
+}
+
+function isCsatTextRating(rawText) {
+  const raw = String(rawText || '');
+  const emojiMatch = /[\u{1F600}-\u{1F64F}\u{1F920}-\u{1F9FF}\u{1F300}-\u{1F5FF}]/u.exec(raw);
+  const emoji = emojiMatch ? emojiMatch[0] : null;
+  const emojiScores = { '😡': 1, '😕': 2, '🙂': 3, '😀': 4, '🤩': 5, '😠': 1, '😢': 2, '😃': 4, '😄': 4, '😁': 4, '😍': 5 };
+  if (emoji && emojiScores[emoji]) return true;
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) return false;
+  const keywords = ['excellent', 'amazing', 'great', 'good', 'okay', 'ok', 'fine', 'bad', 'poor', 'terrible', 'awful', 'very bad'];
+  return keywords.some((match) => normalized.includes(match));
+}
+
 const RE_GREETING_SIMPLE = /^(hi|hello|hey|yo|hiya|howdy|greetings)\b/;
 const RE_GREETING_GOOD = /^good\s+(morning|afternoon|evening)\b/;
 const RE_ACK_ONLY_EMOJI = /^[\u{1F44D}\u{1F44C}\u{1F64F}\u{1F44F}\u{2764}\u{1F60A}\u{1F642}]+$/u;
@@ -2154,12 +2179,28 @@ export default function registerWebhookRoutes(app) {
           if (current === CONVERSATION_STATUSES.RESOLVED || current === CONVERSATION_STATUSES.CLOSED) {
             let shouldReopen = false;
             try {
-              if (normalizedType === 'text') {
+              let awaitingRating = false;
+              try {
+                const dbNative = getDB();
+                const cs = await dbNative.collection('contact_state').findOne(
+                  { user_id: String(tenantUserId), contact_id: String(message.from) },
+                  { projection: { await_rating: 1 } }
+                );
+                awaitingRating = !!cs?.await_rating;
+              } catch {}
+
+              if (normalizedType === 'interactive' && isCsatInteractiveReply(message)) {
+                shouldReopen = false;
+              } else if (normalizedType === 'text') {
                 const s = String(text || '').trim();
                 if (s) {
-                  const ack = isAcknowledgement(s) || isGreeting(s);
-                  const substantive = hasSubstantiveRequest(s) || wantsHuman(s) || s.includes('?');
-                  shouldReopen = substantive && !ack;
+                  if (awaitingRating && isCsatTextRating(s)) {
+                    shouldReopen = false;
+                  } else {
+                    const ack = isAcknowledgement(s) || isGreeting(s);
+                    const substantive = hasSubstantiveRequest(s) || wantsHuman(s) || s.includes('?');
+                    shouldReopen = substantive && !ack;
+                  }
                 }
               } else if (normalizedType === 'interactive') {
                 shouldReopen = true;
@@ -3541,6 +3582,25 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           if (DEBUG_LOGS) console.log('[Webhook] Inbound record result:', { inserted, inboundId, audioTextLen: (text || '').length });
           if (!inserted && inboundId && String(text || '').trim()) {
             await persistInboundTranscript(inboundId, text);
+            try {
+              const existsAfter = await getDB().collection('messages').findOne(
+                { id: String(inboundId) },
+                { projection: { _id: 1, text_body: 1 } }
+              );
+              if (existsAfter && !inserted) {
+                const messageData = {
+                  id: inboundId,
+                  direction: 'inbound',
+                  type: normalizedType || 'text',
+                  text_body: String(text || '').trim(),
+                  timestamp: message.timestamp ? Number(message.timestamp) : Math.floor(Date.now() / 1000),
+                  from_digits: normalizePhone(from),
+                  to_digits: normalizePhone(metadata?.display_phone_number),
+                  contact: from,
+                };
+                try { broadcastNewMessage(tenantUserId, from, messageData); } catch {}
+              }
+            } catch {}
           }
           // Meta often retries the same webhook delivery; don't answer twice.
           if (!inserted) {
@@ -3563,6 +3623,8 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
                   } else {
                     return res.sendStatus(200);
                   }
+                } else if (String(text || '').trim()) {
+                  await persistInboundTranscript(inboundId, text);
                 } else {
                   return res.sendStatus(200);
                 }

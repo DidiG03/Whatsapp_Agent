@@ -473,7 +473,8 @@
             const status = resp.status;
             const show = (msg) => Toast.show(msg, status >= 500 ? 'error' : 'warning', 4000);
             if (status === 401) {
-              const suppress = window.authManager?.shouldSuppressAuthToast?.(url);
+              const suppress = window.authManager?.shouldSuppressAuthToast?.(url)
+                || window.authManager?.isPublicPage?.();
               if (!suppress) {
                 window.authManager?.handleUnauthorized?.(url);
               }

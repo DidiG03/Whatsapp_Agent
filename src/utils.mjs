@@ -13,16 +13,51 @@ export function getVercelWebAnalyticsSnippet() {
       <script defer src="/_vercel/insights/script.js"></script>
   `;
 }
+export function getClerkJsVersion() {
+  return (process.env.CLERK_JS_VERSION || "5").toString().trim() || "5";
+}
+
+export function getClerkScriptSrc() {
+  if (!CLERK_PUBLISHABLE) return "";
+  return `https://unpkg.com/@clerk/clerk-js@${getClerkJsVersion()}/dist/clerk.browser.js`;
+}
+
+export function getClerkPreloadHeadSnippet() {
+  if (!CLERK_ENABLED || !CLERK_PUBLISHABLE) return "";
+  const src = getClerkScriptSrc();
+  return `
+      <link rel="preconnect" href="https://unpkg.com" crossorigin>
+      <link rel="dns-prefetch" href="https://unpkg.com">
+      <link rel="preload" href="${src}" as="script" crossorigin>
+      <meta name="clerk-publishable-key" content="${CLERK_PUBLISHABLE}">`;
+}
+
 export function getClerkBrowserScript() {
   if (!CLERK_ENABLED || !CLERK_PUBLISHABLE) return "";
-  const clerkJsVersion = (process.env.CLERK_JS_VERSION || "5").toString().trim() || "5";
+  const src = getClerkScriptSrc();
   return `
       <script
-        async
         crossorigin="anonymous"
         data-clerk-publishable-key="${CLERK_PUBLISHABLE}"
-        src="https://unpkg.com/@clerk/clerk-js@${clerkJsVersion}/dist/clerk.browser.js"
+        src="${src}"
       ></script>`;
+}
+
+export function getLandingHead(title) {
+  return `
+    <head>
+      <title>Code Orbit Agent — ${title}</title>
+      <link rel="icon" href="/favicon.ico" sizes="any">
+      <link rel="stylesheet" href="/styles.css?v=${ASSET_VER}">
+      <link rel="preconnect" href="https://fonts.googleapis.com">
+      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+      <meta name="theme-color" content="#1e293b">
+      ${getClerkPreloadHeadSnippet()}
+      ${getVercelWebAnalyticsSnippet()}
+    </head>
+  `;
 }
 
 export function getProfessionalHead(title) {

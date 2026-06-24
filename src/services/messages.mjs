@@ -78,16 +78,24 @@ export async function recordInboundMessage({
       timestamp: ts,
       raw: raw || null
     };
+    const body = text ? String(text).trim() : (doc.text_body || null);
+    const insertDoc = { ...doc, text_body: body };
     const res = await messages.updateOne(
       { id: doc.id },
-      {
-        $setOnInsert: doc,
-        ...(text ? { $set: { text_body: String(text).trim() } } : {}),
-      },
+      { $setOnInsert: insertDoc },
       { upsert: true }
     );
-    return (res.upsertedCount || 0) > 0 || (res.modifiedCount || 0) > 0;
+    if (body && !res.upsertedCount) {
+      await messages.updateOne(
+        { id: doc.id },
+        { $set: { text_body: body } }
+      );
+    }
+    if ((res.upsertedCount || 0) > 0 || (res.matchedCount || 0) > 0) return true;
+    const found = await messages.findOne({ id: doc.id }, { projection: { _id: 1 } });
+    return !!found;
   } catch (e) {
+    console.error('[recordInboundMessage] failed:', e?.message || e, { messageId, userId });
     return false;
   }
 }
