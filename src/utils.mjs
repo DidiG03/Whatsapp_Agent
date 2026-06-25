@@ -73,6 +73,7 @@ export function getProfessionalHead(title) {
       <meta name="theme-color" content="#1e293b">
       ${getClerkBrowserScript()}
       <script src="/auth-utils.js?v=${ASSET_VER}"></script>
+      <script src="/bot-sandbox-widget.js?v=${ASSET_VER}" defer></script>
       ${getEnhancementsScript()}
       ${getVercelWebAnalyticsSnippet()}
     </head>

@@ -9,16 +9,33 @@ import {
 } from "../utils.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
 import { getPlanStatus } from "../services/usage.mjs";
-import { refiningCoachReply } from "../services/ai.mjs";
+import { refiningCoachReply, isRefiningSuggestionRequest } from "../services/ai.mjs";
 import { retrieveCoachKbContext } from "../services/kb.mjs";
 import { buildCoachBusinessContext } from "../services/coachContext.mjs";
 import { parseRefiningDirectives, applyRefiningDirectives, removeRuleAtIndex, clearAllRefiningRules, listRefiningRules } from "../services/refiningDirectives.mjs";
+import { mergeEnforcedRules, removeEnforcedRulesMatchingNeedle } from "../services/refiningEnforcement.mjs";
+import { getBookingFieldsFromSettings, listBookingFieldsSummary } from "../services/bookingFields.mjs";
 
 function parseRulesList(rulesText = "") {
   return String(rulesText || "")
     .split(/\n+/)
     .map((line) => line.replace(/^[\-\d.)\s]+/, "").trim())
     .filter(Boolean);
+}
+
+function renderBookingFields(settings = {}) {
+  const fields = listBookingFieldsSummary(settings);
+  if (!fields.length) {
+    return `<p class="refining-rules__empty">Default booking questions apply (based on business type).</p>`;
+  }
+  const items = fields
+    .map((f) => `
+      <li class="refining-rules__item refining-rules__item--field">
+        <p class="refining-rules__text"><strong>${escapeHtml(f.label)}</strong>${f.required ? "" : " <span class=\"small\">(optional)</span>"}</p>
+        <p class="small" style="margin:4px 0 0;color:var(--muted,#666);">${escapeHtml(f.prompt)}</p>
+      </li>`)
+    .join("");
+  return `<ol class="refining-rules__list">${items}</ol>`;
 }
 
 function renderActiveRules(rulesText = "") {
@@ -49,6 +66,21 @@ function renderRulesHeaderActions(rulesText = "") {
   return `<button type="button" class="btn btn-ghost btn-sm refining-rules__clear" id="refining-clear-all"${count ? "" : " hidden"}>Clear all</button>`;
 }
 
+function hasRefiningTranscript(transcript = "") {
+  return String(transcript || "").trim().length > 0;
+}
+
+function renderRefiningEmptyChat() {
+  return `<div class="refining-empty">
+          <p class="refining-empty__title">Start a coaching session</p>
+          <p class="refining-empty__hint">Describe how your WhatsApp bot should behave, ask for suggestions, or refine rules.</p>
+        </div>`;
+}
+
+function renderChatHeaderActions(transcript = "") {
+  return `<button type="button" class="btn btn-ghost btn-sm refining-chat__clear" id="refining-clear-chat"${hasRefiningTranscript(transcript) ? "" : " hidden"}>Clear chat</button>`;
+}
+
 function renderRulesBadge(rulesText = "") {
   const count = parseRulesList(rulesText).length;
   return count
@@ -66,10 +98,7 @@ export default function registerRefiningRoutes(app) {
     const rules = settings?.ai_refining_rules || "";
     const chatHtml = transcript.trim()
       ? renderTranscriptAsBubbles(transcript)
-      : `<div class="refining-empty">
-          <p class="refining-empty__title">Start a coaching session</p>
-          <p class="refining-empty__hint">Describe how your WhatsApp bot should behave, ask for suggestions, or refine rules. Off-topic questions won't be answered — this coach focuses on your bot only.</p>
-        </div>`;
+      : renderRefiningEmptyChat();
 
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
@@ -82,12 +111,13 @@ export default function registerRefiningRoutes(app) {
             <main class="main">
               <div class="main-content refining-content">
                 <div class="refining-shell">
-                  <div class="refining-layout">
+                  <div class="refining-layout" id="refining-layout">
                     <section class="refining-panel refining-panel--chat" aria-label="Refining chat">
                       <header class="refining-panel__header">
                         <div>
                           <h2 class="refining-panel__title">Coach chat</h2>
                         </div>
+                        ${renderChatHeaderActions(transcript)}
                       </header>
                       <div id="refining-transcript" class="refining-chat-box">${chatHtml}</div>
                       <form id="refining-form" class="refining-composer" novalidate>
@@ -96,14 +126,29 @@ export default function registerRefiningRoutes(app) {
                           id="refining-input"
                           class="refining-input"
                           name="message"
-                          rows="2"
+                          rows="1"
                           placeholder="e.g. For groups over 30, ask customers to call us instead of booking by message…"
                           aria-describedby="refining-input-hint"
                         ></textarea>
                         <button type="submit" class="btn btn-primary refining-send" id="refining-send">Send</button>
                       </form>
                     </section>
-                    <aside class="refining-panel refining-panel--rules" aria-label="Active bot rules">
+                    <div class="refining-rules-drawer" id="refining-rules-drawer">
+                      <button
+                        type="button"
+                        class="refining-rules-drawer__toggle"
+                        id="refining-rules-drawer-toggle"
+                        aria-label="Hide rules panel"
+                        aria-expanded="true"
+                        aria-controls="refining-rules-panel"
+                        title="Hide rules panel"
+                      >
+                        <svg class="refining-rules-drawer__icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
+                          <path d="M10 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                      </button>
+                      <div class="refining-rules-drawer__track">
+                      <aside id="refining-rules-panel" class="refining-panel refining-panel--rules" aria-label="Active bot rules">
                       <header class="refining-panel__header refining-panel__header--rules">
                         <div>
                           <h2 class="refining-panel__title">Active rules ${renderRulesBadge(rules)}</h2>
@@ -111,7 +156,15 @@ export default function registerRefiningRoutes(app) {
                         ${renderRulesHeaderActions(rules)}
                       </header>
                       <div id="refining-rules" class="refining-rules__body">${renderActiveRules(rules)}</div>
-                    </aside>
+                      <header class="refining-panel__header refining-panel__header--rules" style="margin-top:20px;">
+                        <div>
+                          <h2 class="refining-panel__title">Booking questions</h2>
+                        </div>
+                      </header>
+                      <div id="refining-booking-fields" class="refining-rules__body">${renderBookingFields(settings)}</div>
+                      </aside>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -125,7 +178,39 @@ export default function registerRefiningRoutes(app) {
             const sendBtn = document.getElementById("refining-send");
             const transcriptEl = document.getElementById("refining-transcript");
             const rulesEl = document.getElementById("refining-rules");
+            const bookingFieldsEl = document.getElementById("refining-booking-fields");
             const sendLabel = sendBtn?.textContent || "Send";
+            const INPUT_MIN_HEIGHT = 48;
+            const layoutEl = document.getElementById("refining-layout");
+            const drawerToggle = document.getElementById("refining-rules-drawer-toggle");
+            const RULES_PANEL_STORAGE_KEY = "refining-rules-panel-collapsed";
+
+            function setRulesPanelCollapsed(collapsed) {
+              if (!layoutEl || !drawerToggle) return;
+              layoutEl.classList.toggle("is-rules-collapsed", collapsed);
+              drawerToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+              drawerToggle.setAttribute("aria-label", collapsed ? "Show rules panel" : "Hide rules panel");
+              drawerToggle.title = collapsed ? "Show rules panel" : "Hide rules panel";
+              try {
+                localStorage.setItem(RULES_PANEL_STORAGE_KEY, collapsed ? "1" : "0");
+              } catch {}
+            }
+
+            function isRulesPanelCollapsed() {
+              try {
+                return localStorage.getItem(RULES_PANEL_STORAGE_KEY) === "1";
+              } catch {
+                return false;
+              }
+            }
+
+            drawerToggle?.addEventListener("click", function () {
+              setRulesPanelCollapsed(!layoutEl.classList.contains("is-rules-collapsed"));
+            });
+
+            if (isRulesPanelCollapsed()) {
+              setRulesPanelCollapsed(true);
+            }
 
             function notify(message, type) {
               if (window.Toast && typeof window.Toast.show === "function") {
@@ -162,6 +247,35 @@ export default function registerRefiningRoutes(app) {
               notify(clearAll ? "All rules removed." : "Rule removed.", "success");
             }
 
+            function updateClearChatButton() {
+              const btn = document.getElementById("refining-clear-chat");
+              if (!btn || !transcriptEl) return;
+              btn.hidden = !!transcriptEl.querySelector(".refining-empty");
+            }
+
+            document.getElementById("refining-clear-chat")?.addEventListener("click", async function () {
+              if (!confirm("Clear the coach chat history? Your active rules will stay saved.")) return;
+              const btn = this;
+              btn.disabled = true;
+              try {
+                const resp = await fetch("/api/refining/chat/clear", {
+                  method: "POST",
+                  headers: { Accept: "application/json" },
+                  credentials: "include",
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) throw new Error(data.error || "Could not clear chat.");
+                if (data.transcriptHtml) transcriptEl.innerHTML = data.transcriptHtml;
+                updateClearChatButton();
+                notify("Chat cleared.", "success");
+                input?.focus();
+              } catch (err) {
+                notify(err?.message || "Could not clear chat.", "error");
+              } finally {
+                btn.disabled = false;
+              }
+            });
+
             rulesEl?.addEventListener("click", async function (e) {
               const btn = e.target.closest(".refining-rules__remove");
               if (!btn || btn.disabled) return;
@@ -195,9 +309,70 @@ export default function registerRefiningRoutes(app) {
               transcriptEl.scrollTop = transcriptEl.scrollHeight;
             }
 
+            function ensureChatContainer() {
+              const empty = transcriptEl.querySelector(".refining-empty");
+              if (empty) empty.remove();
+              let chat = transcriptEl.querySelector(".chat");
+              if (!chat) {
+                transcriptEl.innerHTML = '<div class="chat"></div>';
+                chat = transcriptEl.querySelector(".chat");
+              }
+              return chat;
+            }
+
+            function appendUserBubble(text) {
+              const chat = ensureChatContainer();
+              const row = document.createElement("div");
+              row.className = "row user";
+              const bubble = document.createElement("div");
+              bubble.className = "bubble user";
+              String(text || "").split("\\n").forEach(function (line, index) {
+                if (index > 0) bubble.appendChild(document.createElement("br"));
+                bubble.appendChild(document.createTextNode(line));
+              });
+              row.appendChild(bubble);
+              chat.appendChild(row);
+              updateClearChatButton();
+            }
+
+            function showTypingIndicator() {
+              removeTypingIndicator();
+              const chat = ensureChatContainer();
+              const row = document.createElement("div");
+              row.className = "row ai refining-typing-row";
+              row.id = "refining-typing-indicator";
+              const bubble = document.createElement("div");
+              bubble.className = "bubble ai typing-indicator";
+              bubble.setAttribute("aria-live", "polite");
+              const dots = document.createElement("div");
+              dots.className = "typing-dots";
+              dots.setAttribute("aria-label", "Coach is typing");
+              for (let i = 0; i < 3; i += 1) dots.appendChild(document.createElement("span"));
+              bubble.appendChild(dots);
+              row.appendChild(bubble);
+              chat.appendChild(row);
+            }
+
+            function removeTypingIndicator() {
+              document.getElementById("refining-typing-indicator")?.remove();
+            }
+
+            function resetInputHeight() {
+              if (!input) return;
+              input.style.height = INPUT_MIN_HEIGHT + "px";
+              form?.classList.remove("is-multiline");
+            }
+
+            function syncInputHeight() {
+              if (!input) return;
+              input.style.height = INPUT_MIN_HEIGHT + "px";
+              const nextHeight = Math.min(Math.max(input.scrollHeight, INPUT_MIN_HEIGHT), 140);
+              input.style.height = nextHeight + "px";
+              form?.classList.toggle("is-multiline", nextHeight > INPUT_MIN_HEIGHT);
+            }
+
             input?.addEventListener("input", function () {
-              this.style.height = "auto";
-              this.style.height = Math.min(this.scrollHeight, 140) + "px";
+              syncInputHeight();
               this.classList.remove("is-invalid");
             });
 
@@ -217,6 +392,13 @@ export default function registerRefiningRoutes(app) {
                 input?.focus();
                 return;
               }
+              const sentMessage = message;
+              input.value = "";
+              resetInputHeight();
+              input.classList.remove("is-invalid");
+              appendUserBubble(sentMessage);
+              showTypingIndicator();
+              scrollChatToBottom();
               sendBtn.disabled = true;
               sendBtn.textContent = "Sending…";
               try {
@@ -224,14 +406,18 @@ export default function registerRefiningRoutes(app) {
                   method: "POST",
                   headers: { "Content-Type": "application/json", Accept: "application/json" },
                   credentials: "include",
-                  body: JSON.stringify({ message }),
+                  body: JSON.stringify({ message: sentMessage }),
                 });
                 const data = await resp.json().catch(() => ({}));
                 if (!resp.ok) throw new Error(data.error || "Could not save your instruction.");
+                removeTypingIndicator();
                 if (data.transcriptHtml) transcriptEl.innerHTML = data.transcriptHtml;
                 if (data.rulesHtml) {
                   rulesEl.innerHTML = data.rulesHtml;
                   updateRulesBadge();
+                }
+                if (data.bookingFieldsHtml && bookingFieldsEl) {
+                  bookingFieldsEl.innerHTML = data.bookingFieldsHtml;
                 }
                 if (data.saved && data.removed) {
                   notify("Rule removed.", "success");
@@ -240,11 +426,10 @@ export default function registerRefiningRoutes(app) {
                 } else if (data.saved) {
                   notify("Instruction saved.", "success");
                 }
-                input.value = "";
-                input.style.height = "auto";
-                input.classList.remove("is-invalid");
                 scrollChatToBottom();
+                updateClearChatButton();
               } catch (err) {
+                removeTypingIndicator();
                 notify(err?.message || "Could not send your message. Please try again.", "error");
               } finally {
                 sendBtn.disabled = false;
@@ -254,7 +439,19 @@ export default function registerRefiningRoutes(app) {
             });
 
             scrollChatToBottom();
+            updateClearChatButton();
+            resetInputHeight();
             input?.focus();
+
+            const initialMessage = new URLSearchParams(window.location.search).get("message");
+            if (initialMessage && input && form) {
+              input.value = initialMessage;
+              syncInputHeight();
+              const cleanUrl = new URL(window.location.href);
+              cleanUrl.searchParams.delete("message");
+              window.history.replaceState({}, "", cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
+              form.requestSubmit();
+            }
           })();
         </script>
       </body></html>
@@ -271,8 +468,9 @@ export default function registerRefiningRoutes(app) {
     try {
       const settings = await getSettingsForUser(userId);
       const history = settings?.refining_transcript || "";
+      const isSuggestionRequest = isRefiningSuggestionRequest(userMsg);
       const [kbContext, businessContext] = await Promise.all([
-        retrieveCoachKbContext(userId, userMsg, history),
+        retrieveCoachKbContext(userId, userMsg, history, { fullCatalog: isSuggestionRequest }),
         buildCoachBusinessContext(settings),
       ]);
       const coach = await refiningCoachReply(userMsg, history, {
@@ -282,6 +480,7 @@ export default function registerRefiningRoutes(app) {
         currentRules: settings?.ai_refining_rules || "",
         kbItems: kbContext,
         businessContext: businessContext || "",
+        isSuggestionRequest,
       });
 
       const directives = parseRefiningDirectives(coach);
@@ -293,6 +492,7 @@ export default function registerRefiningRoutes(app) {
         refining_transcript: newTranscript,
         ai_refining_rules: rules || settings?.ai_refining_rules || null,
       });
+      const updatedSettings = await getSettingsForUser(userId);
 
       return res.json({
         ok: true,
@@ -303,10 +503,32 @@ export default function registerRefiningRoutes(app) {
         transcriptHtml: renderTranscriptAsBubbles(newTranscript),
         rulesHtml: renderActiveRules(rules),
         rulesCount: parseRulesList(rules).length,
+        bookingFieldsHtml: renderBookingFields(updatedSettings),
       });
     } catch (err) {
       console.error("[refining] message error:", err?.message || err);
       return res.status(500).json({ error: "Could not process your request." });
+    }
+  });
+
+  app.post("/api/refining/chat/clear", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    try {
+      const settings = await getSettingsForUser(userId);
+      await upsertSettingsForUser(userId, {
+        ...settings,
+        refining_transcript: "",
+      });
+
+      return res.json({
+        ok: true,
+        transcriptHtml: renderRefiningEmptyChat(),
+      });
+    } catch (err) {
+      console.error("[refining] clear chat error:", err?.message || err);
+      return res.status(500).json({ error: "Could not clear chat." });
     }
   });
 
@@ -320,20 +542,28 @@ export default function registerRefiningRoutes(app) {
       const clearAll = !!req.body?.clearAll;
 
       let nextRules = current;
+      let nextEnforced = settings?.ai_refining_enforced_json ?? null;
       if (clearAll) {
         nextRules = clearAllRefiningRules().rules;
+        nextEnforced = mergeEnforcedRules(nextEnforced, { clearAll: true });
       } else {
         const index = Number(req.body?.index);
+        const rulesList = listRefiningRules(current);
+        const removedText = rulesList[index] || "";
         const result = removeRuleAtIndex(current, index);
         if (!result.ok) {
           return res.status(400).json({ error: "Rule not found." });
         }
         nextRules = result.rules;
+        if (removedText) {
+          nextEnforced = removeEnforcedRulesMatchingNeedle(nextEnforced, removedText);
+        }
       }
 
       await upsertSettingsForUser(userId, {
         ...settings,
         ai_refining_rules: nextRules || null,
+        ai_refining_enforced_json: nextEnforced,
       });
 
       return res.json({

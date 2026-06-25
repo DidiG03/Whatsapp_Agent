@@ -120,6 +120,7 @@ const settingsMultiSchema = new mongoose.Schema({
   entry_greeting: String,
   bookings_enabled: { type: Boolean, default: false },
   booking_questions_json: String,
+  booking_fields_json: String,
   reschedule_min_lead_minutes: { type: Number, default: 60 },
   cancel_min_lead_minutes: { type: Number, default: 60 },
   reminders_enabled: { type: Boolean, default: false },
@@ -150,6 +151,7 @@ const settingsMultiSchema = new mongoose.Schema({
   smtp_pass: String,
   dashboard_preferences: String,
   ai_refining_rules: String,
+  ai_refining_enforced_json: String,
   refining_transcript: String
 }, {
   timestamps: true,
@@ -288,53 +290,6 @@ const notificationSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'notifications'
 });
-const agentStripeSchema = new mongoose.Schema({
-  user_id: { type: String, required: true, unique: true },
-  stripe_user_id: { type: String, required: true },
-  stripe_account_id: { type: String },
-  access_token: { type: String, required: true },
-  refresh_token: { type: String },
-  token_type: { type: String },
-  scope: { type: String },
-  livemode: { type: Boolean, default: false },
-  publishable_key: { type: String },
-  default_currency: { type: String, default: 'usd' },
-  charges_enabled: { type: Boolean, default: false },
-  payouts_enabled: { type: Boolean, default: false },
-  details_submitted: { type: Boolean, default: false },
-  business_profile: mongoose.Schema.Types.Mixed,
-  last_sync_ts: { type: Number, default: 0 },
-  onboarding_url: { type: String },
-  error_message: { type: String }
-}, {
-  timestamps: true,
-  collection: 'agent_stripe_connections'
-});
-const paymentRequestSchema = new mongoose.Schema({
-  user_id: { type: String, required: true, index: true },
-  contact_id: { type: String, required: true, index: true },
-  created_by: { type: String, required: true },
-  amount: { type: Number, required: true },
-  currency: { type: String, default: 'usd' },
-  description: { type: String },
-  status: {
-    type: String,
-    enum: ['pending', 'paid', 'expired', 'canceled', 'failed'],
-    default: 'pending'
-  },
-  checkout_session_id: { type: String, unique: true, sparse: true },
-  payment_intent_id: { type: String, unique: true, sparse: true },
-  payment_link_url: { type: String },
-  stripe_account_id: { type: String },
-  expires_at: { type: Number },
-  paid_at: { type: Number },
-  last_event_payload: mongoose.Schema.Types.Mixed,
-  message_id: { type: String },
-  metadata: mongoose.Schema.Types.Mixed
-}, {
-  timestamps: true,
-  collection: 'payment_requests'
-});
 const usageStatsSchema = new mongoose.Schema({
   user_id: { type: String, required: true },
   month_year: { type: String, required: true },
@@ -443,11 +398,6 @@ const createIndexes = async () => {
     await Customer.collection.createIndex({ user_id: 1, status: 1 });
     await Notification.collection.createIndex({ user_id: 1 });
     await Notification.collection.createIndex({ user_id: 1, is_read: 1 });
-    await AgentStripeConnection.collection.createIndex({ user_id: 1 }, { unique: true, name: 'agent_stripe_user' });
-    await AgentStripeConnection.collection.createIndex({ stripe_user_id: 1 }, { unique: true, sparse: true, name: 'agent_stripe_account' });
-    await PaymentRequest.collection.createIndex({ user_id: 1, contact_id: 1, createdAt: -1 }, { name: 'payment_requests_contact_recent' });
-    await PaymentRequest.collection.createIndex({ checkout_session_id: 1 }, { unique: true, sparse: true, name: 'payment_requests_session' });
-    await PaymentRequest.collection.createIndex({ payment_intent_id: 1 }, { unique: true, sparse: true, name: 'payment_requests_intent' });
     await UsageStats.collection.createIndex({ user_id: 1, month_year: 1 }, { unique: true });
     try {
       const sessionTtlHours = Number(process.env.BOOKING_SESSION_TTL_HOURS || 24);
@@ -475,6 +425,12 @@ const createIndexes = async () => {
       }
     );
     await SettingsAudit.collection.createIndex({ user_id: 1, createdAt: -1 }, { name: 'settings_audit_user' });
+    try {
+      await mongoose.connection.collection('stripe_checkout_sessions').createIndex(
+        { session_id: 1 },
+        { unique: true, name: 'stripe_checkout_session_id' }
+      );
+    } catch {}
 
     console.log('MongoDB indexes created successfully');
   } catch (error) {
@@ -499,8 +455,6 @@ export const Customer = mongoose.model('Customer', customerSchema);
 export const ContactTag = mongoose.model('ContactTag', contactTagSchema);
 export const ContactInteraction = mongoose.model('ContactInteraction', contactInteractionSchema);
 export const Notification = mongoose.model('Notification', notificationSchema);
-export const AgentStripeConnection = mongoose.model('AgentStripeConnection', agentStripeSchema);
-export const PaymentRequest = mongoose.model('PaymentRequest', paymentRequestSchema);
 export const UsageStats = mongoose.model('UsageStats', usageStatsSchema);
 export const UserPlan = mongoose.model('UserPlan', userPlanSchema);
 export const QuickReply = mongoose.model('QuickReply', quickReplySchema);
@@ -528,8 +482,6 @@ export default {
   ContactTag,
   ContactInteraction,
   Notification,
-  AgentStripeConnection,
-  PaymentRequest,
   UsageStats,
   UserPlan,
   QuickReply,

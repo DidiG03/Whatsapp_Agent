@@ -1,5 +1,15 @@
 import { upsertKbItem } from "./kb.mjs";
 import { upsertSettingsForUser, getSettingsForUser } from "./settings.mjs";
+import {
+  appendCompiledEnforcedFromRuleText,
+  mergeEnforcedRules,
+  parseEnforceDirective,
+  removeEnforcedRulesMatchingNeedle,
+} from "./refiningEnforcement.mjs";
+import {
+  applyBookingFieldDirectives,
+  parseAddBookingFieldDirective,
+} from "./bookingFields.mjs";
 
 function splitRules(text = "") {
   return String(text || "")
@@ -20,6 +30,11 @@ export function parseRefiningDirectives(text = "") {
   const removeRules = [];
   const addKb = [];
   const sets = {};
+  const enforceRules = [];
+  let bookingProfile = null;
+  const addBookingFields = [];
+  const removeBookingFieldIds = [];
+  let clearBookingFields = false;
 
   for (const line of lines) {
     if (/^REPLY\|/.test(line)) {
@@ -56,10 +71,45 @@ export function parseRefiningDirectives(text = "") {
       const key = (setMatch[1] || "").trim();
       const value = (setMatch[2] || "").trim();
       if (key) sets[key] = value;
+      continue;
+    }
+    if (/^ENFORCE\|party_size_call\|/.test(line)) {
+      const parsed = parseEnforceDirective(line);
+      if (parsed) enforceRules.push(parsed);
+      continue;
+    }
+    if (/^BOOKING_PROFILE\|/.test(line)) {
+      bookingProfile = String(line.split("|")[1] || "").trim().toLowerCase();
+      continue;
+    }
+    if (/^ADD_BOOKING_FIELD\|/.test(line)) {
+      const parsed = parseAddBookingFieldDirective(line);
+      if (parsed) addBookingFields.push(parsed);
+      continue;
+    }
+    if (/^REMOVE_BOOKING_FIELD\|/.test(line)) {
+      const id = String(line.split("|")[1] || "").trim();
+      if (id) removeBookingFieldIds.push(id);
+      continue;
+    }
+    if (/^CLEAR_BOOKING_FIELDS$/.test(line)) {
+      clearBookingFields = true;
     }
   }
 
-  return { reply, askMore, addRules, removeRules, addKb, sets };
+  return {
+    reply,
+    askMore,
+    addRules,
+    removeRules,
+    addKb,
+    sets,
+    enforceRules,
+    bookingProfile,
+    addBookingFields,
+    removeBookingFieldIds,
+    clearBookingFields,
+  };
 }
 
 export function mergeRefiningRules(currentRulesText, { addRules = [], removeRules = [] } = {}) {
@@ -108,14 +158,21 @@ export async function applyRefiningDirectives(userId, directives = {}) {
     removeRules = [],
     addKb = [],
     sets = {},
+    enforceRules = [],
+    bookingProfile = null,
+    addBookingFields = [],
+    removeBookingFieldIds = [],
+    clearBookingFields = false,
   } = directives;
 
   const needsClarification = !!String(askMore || "").trim();
   const effectiveAddRules = needsClarification ? [] : addRules;
+  const effectiveEnforceRules = needsClarification ? [] : enforceRules;
 
   const summaries = [];
   const current = await getSettingsForUser(userId);
   const updates = { ...sets };
+  let enforcedJson = current?.ai_refining_enforced_json ?? null;
 
   if (effectiveAddRules.length || removeRules.length) {
     const mergedRules = mergeRefiningRules(current?.ai_refining_rules, {
@@ -130,9 +187,46 @@ export async function applyRefiningDirectives(userId, directives = {}) {
     if (removeRules.includes("__ALL__")) summaries.push("Cleared all bot rules.");
   }
 
+  if (!needsClarification) {
+    if (removeRules.includes("__ALL__")) {
+      enforcedJson = mergeEnforcedRules(enforcedJson, { clearAll: true });
+    } else if (removeRules.length) {
+      for (const needle of removeRules) {
+        enforcedJson = removeEnforcedRulesMatchingNeedle(enforcedJson, needle);
+      }
+    }
+    for (const ruleText of effectiveAddRules) {
+      enforcedJson = appendCompiledEnforcedFromRuleText(enforcedJson, ruleText);
+    }
+    if (effectiveEnforceRules.length) {
+      enforcedJson = mergeEnforcedRules(enforcedJson, { add: effectiveEnforceRules });
+      summaries.push(`Enforced ${effectiveEnforceRules.length} hard rule${effectiveEnforceRules.length === 1 ? "" : "s"} (code-level).`);
+    }
+    updates.ai_refining_enforced_json = enforcedJson;
+  }
+
   for (const item of addKb) {
     const ok = await upsertKbItem(userId, item.title, item.content);
     if (ok) summaries.push(`Saved “${item.title}” to Knowledge Base.`);
+  }
+
+  if (
+    !needsClarification
+    && (bookingProfile || addBookingFields.length || removeBookingFieldIds.length || clearBookingFields)
+  ) {
+    const nextFieldsJson = applyBookingFieldDirectives(current?.booking_fields_json, {
+      profile: bookingProfile,
+      addFields: addBookingFields,
+      removeIds: removeBookingFieldIds,
+      clear: clearBookingFields,
+    });
+    updates.booking_fields_json = nextFieldsJson;
+    if (bookingProfile) summaries.push(`Booking profile set to ${bookingProfile}.`);
+    if (addBookingFields.length) {
+      summaries.push(`Updated ${addBookingFields.length} booking question${addBookingFields.length === 1 ? "" : "s"}.`);
+    }
+    if (removeBookingFieldIds.length) summaries.push("Removed booking question(s).");
+    if (clearBookingFields) summaries.push("Cleared custom booking questions.");
   }
 
   if (Object.keys(updates).length && !needsClarification) {
@@ -159,7 +253,12 @@ export async function applyRefiningDirectives(userId, directives = {}) {
   const saved = !needsClarification && (
     effectiveAddRules.length > 0
     || removeRules.length > 0
+    || effectiveEnforceRules.length > 0
     || addKb.length > 0
+    || bookingProfile
+    || addBookingFields.length > 0
+    || removeBookingFieldIds.length > 0
+    || clearBookingFields
     || Object.keys(sets).length > 0
   );
   const removed = !needsClarification && removeRules.length > 0;

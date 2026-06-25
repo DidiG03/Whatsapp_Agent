@@ -61,4 +61,14 @@ describe("refiningDirectives", () => {
   test("removeRuleAtIndex rejects invalid index", () => {
     expect(removeRuleAtIndex("Only rule", 5).ok).toBe(false);
   });
+
+  test("parseRefiningDirectives extracts ENFORCE lines", () => {
+    const parsed = parseRefiningDirectives([
+      "REPLY|Saved.",
+      "ADD_RULE|When party size exceeds 30, call us.",
+      "ENFORCE|party_size_call|30|+355691234567",
+    ].join("\n"));
+    expect(parsed.enforceRules).toHaveLength(1);
+    expect(parsed.enforceRules[0].minParty).toBe(30);
+  });
 });

@@ -3,6 +3,13 @@
  * decision merging, and reply guardrails — keeps the LLM aligned with server truth.
  */
 
+import {
+  fieldsIncludeType,
+  resolveBookingFieldValues,
+  bookingFieldsReady,
+  bookingReplyAsksForAnyField,
+} from "./bookingFields.mjs";
+
 function stripAccentsLower(s) {
   return String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
@@ -32,7 +39,7 @@ export function isExplicitAvailabilityRequest(text) {
 export function bookingReplyAsksForName(text) {
   const raw = String(text || "");
   const sq = stripAccentsLower(raw);
-  return /\b(emri|emrin|emër|emer|quheni|si quheni|me cilin emer|me cilin emër|what name|under what name|name should i|put on the reservation|ta vendos rezervimin)\b/.test(sq);
+  return /\b(emri|emrin|emër|emer|quheni|si quheni|me cilin emer|me cilin emër|what name|what(?:'|')?s your name|under what name|name should i|put on the reservation|ta vendos rezervimin)\b/.test(sq);
 }
 
 export function looksLikeStandaloneCustomerName(raw) {
@@ -211,6 +218,9 @@ export function inferServerIntent({
   bookingsEnabled = false,
   historyMessages = [],
   upcomingAppt = null,
+  bookingFields = [],
+  knownCustomerName = "",
+  contactId = "",
 } = {}) {
   if (!bookingsEnabled || !text) return null;
   const sq = stripAccentsLower(text);
@@ -284,26 +294,42 @@ export function inferServerIntent({
     }
   }
 
+  const needsPartySize = fieldsIncludeType(bookingFields, "party_size");
+
+  if ((phase === "booking_flow" || phase === "general") && hasTimeCue && !looksLikeStandaloneCustomerName(raw)) {
+    const partySize = needsPartySize ? parsePartySizeFromHistory(historyMessages) : true;
+    const name = resolveNameFromHistory(historyMessages)
+      || (isUsableCustomerName(knownCustomerName, contactId) ? String(knownCustomerName).trim() : null);
+    if (partySize && name) {
+      const data = { datetime: raw, name };
+      if (needsPartySize && typeof partySize === "number") data.partySize = partySize;
+      return { type: "book", data, confidence: 0.9, source: "rules" };
+    }
+  }
+
   if (looksLikeStandaloneCustomerName(raw) && (phase === "booking_flow" || phase === "general")) {
     const askedForName = (historyMessages || []).some(
       (m) => m?.role === "assistant" && bookingReplyAsksForName(String(m.content || ""))
     );
-    const partySize = parsePartySizeFromHistory(historyMessages);
+    const partySize = needsPartySize ? parsePartySizeFromHistory(historyMessages) : true;
     if ((askedForName || historyHasBookingDateTime(historyMessages)) && partySize) {
-      const data = { name: raw.trim(), partySize };
+      const data = { name: raw.trim() };
+      if (needsPartySize && typeof partySize === "number") data.partySize = partySize;
       return { type: "book", data, confidence: 0.92, source: "rules" };
     }
   }
 
   if ((phase === "booking_flow" || phase === "general") && historyHasBookingDateTime(historyMessages)) {
-    const partySize = parsePartySizeFromHistory(historyMessages);
+    const partySize = needsPartySize ? parsePartySizeFromHistory(historyMessages) : true;
     const name = resolveNameFromHistory(historyMessages);
     const timePick = /\b(\d{1,2})(?::\d{2})?\b/.test(sq)
       && /\b(okej|ok|po|pra|ne|at|ora|oren|fiks|fix)\b/.test(sq);
     if (partySize && name && timePick) {
+      const data = { datetime: raw, name };
+      if (needsPartySize && typeof partySize === "number") data.partySize = partySize;
       return {
         type: "book",
-        data: { datetime: raw, partySize, name },
+        data,
         confidence: 0.88,
         source: "rules",
       };
@@ -372,6 +398,13 @@ export function buildLiveSessionBrief({
     availability_check: lang === "sq" ? "Faza: disponueshmëri." : "Phase: availability.",
   };
   if (phaseHints[phase]) lines.push(phaseHints[phase]);
+  if (phase === "booking_flow" && mem.display_name) {
+    lines.push(
+      lang === "sq"
+        ? `Emri në dosje: ${mem.display_name} — mos e pyet përsëri për emrin nëse nuk kërkon ta ndryshojë.`
+        : `Name on file: ${mem.display_name} — do not ask for their name again unless they want to change it.`
+    );
+  }
 
   return lines.join("\n");
 }
@@ -407,6 +440,7 @@ function shouldApplyInferredIntent(inferred, aiDecision, options = {}) {
   const aiType = String(aiDecision?.intent?.type || "none").toLowerCase();
 
   if (replyCollectsMissingInfo(aiText)) {
+    if (options.completingBookingWithName && inferred.type === "book") return true;
     if (["book", "availability"].includes(inferred.type)) return false;
   }
 
@@ -480,30 +514,48 @@ export function bookIntentReady({
   historyMessages = [],
   knownCustomerName = "",
   contactId = "",
+  bookingFields = [],
+  isUsableCustomerName: isUsableCustomerNameFn = isUsableCustomerName,
 } = {}) {
-  if (!bookingHasPartySize(text, intentData, historyMessages)) return false;
-  const name = resolveBookIntentName({ text, intentData, historyMessages, knownCustomerName, contactId });
-  if (!isUsableCustomerName(name, contactId)) return false;
-  if (isBookingNameCompletion(text, historyMessages) && !bookingHasPartySize(text, intentData, historyMessages)) {
-    return false;
+  const fields = Array.isArray(bookingFields) && bookingFields.length
+    ? bookingFields
+    : [
+      { id: "name", type: "name", required: true },
+      { id: "party_size", type: "party_size", required: true },
+    ];
+  const values = resolveBookingFieldValues({
+    fields,
+    text,
+    historyMessages,
+    intentData,
+    knownCustomerName,
+    contactId,
+    isUsableCustomerName: isUsableCustomerNameFn,
+  });
+  if (isBookingNameCompletion(text, historyMessages) && fieldsIncludeType(fields, "party_size")) {
+    if (!bookingHasPartySize(text, intentData, historyMessages)) return false;
   }
-  return true;
+  return bookingFieldsReady(values, fields).ready;
 }
 
 function sanitizeBookIntentDecision(decision, options = {}) {
   if (!decision || String(decision.intent?.type || "").toLowerCase() !== "book") return decision;
   if (options.completingBookingWithName) return decision;
-  if (bookingReplyAsksForName(String(decision.text || options.aiText || ""))) {
-    return { ...decision, intent: { type: "none", data: {} } };
-  }
+  const fields = options.bookingFields || [];
   if (bookIntentReady({
     text: options.userText || "",
     intentData: decision.intent?.data,
     historyMessages: options.historyMessages || [],
     knownCustomerName: options.knownCustomerName || "",
     contactId: options.contactId || "",
+    bookingFields: fields,
+    isUsableCustomerName: options.isUsableCustomerName,
   })) {
     return decision;
+  }
+  if (bookingReplyAsksForAnyField(String(decision.text || options.aiText || ""), fields)
+    || bookingReplyAsksForName(String(decision.text || options.aiText || ""))) {
+    return { ...decision, intent: { type: "none", data: {} } };
   }
   return { ...decision, intent: { type: "none", data: {} } };
 }
@@ -516,15 +568,42 @@ export function normalizeExecutedIntent({
   historyMessages = [],
   knownCustomerName = "",
   contactId = "",
+  bookingFields = [],
 }) {
   let type = String(intentType || "none").toLowerCase();
   const data = intentData && typeof intentData === "object" ? { ...intentData } : {};
   if (type === "availability" && !wantsTimeSlotSuggestions(text)) type = "none";
-  if (type === "book" && bookingReplyAsksForName(replyText)) type = "none";
-  if (type === "book" && !bookIntentReady({ text, intentData: data, historyMessages, knownCustomerName, contactId })) {
+  if (type === "book" && !bookIntentReady({
+    text,
+    intentData: data,
+    historyMessages,
+    knownCustomerName,
+    contactId,
+    bookingFields,
+  })) {
     type = "none";
   }
   return { intentType: type, intentData: data };
+}
+
+/** Strip redundant booking questions from the AI reply when the server is about to book. */
+export function sanitizeReplyWhenBookingReady(text, { lang = "en", bookingFields = [] } = {}) {
+  let s = String(text || "").trim();
+  if (!s) return s;
+  if (!bookingReplyAsksForName(s) && !bookingReplyAsksForAnyField(s, bookingFields)) return s;
+
+  const sentences = s.split(/(?<=[.!?])\s+/).filter(Boolean);
+  const kept = sentences.filter((sentence) => {
+    if (!/\?/.test(sentence)) return true;
+    if (bookingReplyAsksForName(sentence)) return false;
+    if (bookingReplyAsksForAnyField(sentence, bookingFields)) return false;
+    return true;
+  });
+  s = kept.join(" ").trim();
+  if (!s || s.length < 4) {
+    return lang === "sq" ? "Perfekt, faleminderit!" : "Perfect, thank you!";
+  }
+  return s;
 }
 
 export function guardPrematureActionClaims(text, { phase, lang = "en" } = {}) {

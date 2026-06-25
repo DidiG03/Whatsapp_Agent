@@ -46,6 +46,7 @@ export async function upsertSettingsForUser(userId, values) {
     ai_style: values.ai_style ?? current.ai_style ?? null,
     bookings_enabled: values.bookings_enabled ?? current.bookings_enabled ?? 0,
     booking_questions_json: values.booking_questions_json ?? current.booking_questions_json ?? null,
+    booking_fields_json: values.booking_fields_json ?? current.booking_fields_json ?? null,
     reschedule_min_lead_minutes: values.reschedule_min_lead_minutes ?? current.reschedule_min_lead_minutes ?? 60,
     cancel_min_lead_minutes: values.cancel_min_lead_minutes ?? current.cancel_min_lead_minutes ?? 60,
     reminders_enabled: values.reminders_enabled ?? current.reminders_enabled ?? 0,
@@ -76,7 +77,8 @@ export async function upsertSettingsForUser(userId, values) {
     staff_whatsapp_group_id: values.staff_whatsapp_group_id ?? current.staff_whatsapp_group_id ?? null,
     staff_whatsapp_group_enabled: values.staff_whatsapp_group_enabled ?? current.staff_whatsapp_group_enabled ?? false,
     ai_refining_rules: values.ai_refining_rules ?? current.ai_refining_rules ?? null,
-    refining_transcript: values.refining_transcript ?? current.refining_transcript ?? null,
+    ai_refining_enforced_json: values.ai_refining_enforced_json ?? current.ai_refining_enforced_json ?? null,
+    refining_transcript: pickSetting(values, current, "refining_transcript"),
   };
   try {
     const res = await SettingsMulti.findOneAndUpdate(
@@ -109,7 +111,7 @@ export async function findSettingsByBusinessPhone(digits) {
 }
 
 /** Structured snippet injected into AI context so the bot can answer from dashboard settings. */
-export function buildBusinessSettingsSnippet(cfg = {}) {
+export function buildBusinessSettingsSnippet(cfg = {}, options = {}) {
   const lines = [];
   const name = String(cfg.business_name || "").trim();
   const type = String(cfg.business_type || "").trim();
@@ -127,14 +129,15 @@ export function buildBusinessSettingsSnippet(cfg = {}) {
   const address = String(cfg.business_address || "").trim();
   if (address) lines.push(`Address: ${address}`);
 
-  for (const line of buildGoogleBusinessContextLines(cfg)) {
-    if (line && !lines.includes(line)) lines.push(line);
+  if (options.includeGoogleProfile !== false) {
+    for (const line of buildGoogleBusinessContextLines(cfg)) {
+      if (line && !lines.includes(line)) lines.push(line);
+    }
+    try {
+      const snap = typeof cfg.google_business_json === "string" ? JSON.parse(cfg.google_business_json) : cfg.google_business_json;
+      if (snap?.syncedAt) lines.push(`Google profile last synced: ${String(snap.syncedAt).slice(0, 10)}`);
+    } catch {}
   }
-
-  try {
-    const snap = typeof cfg.google_business_json === "string" ? JSON.parse(cfg.google_business_json) : cfg.google_business_json;
-    if (snap?.syncedAt) lines.push(`Google profile last synced: ${String(snap.syncedAt).slice(0, 10)}`);
-  } catch {}
 
   if (cfg.bookings_enabled) lines.push("Bookings: enabled");
   if (cfg.reminders_enabled) lines.push("Appointment reminders: enabled");

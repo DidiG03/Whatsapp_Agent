@@ -3,7 +3,7 @@ import { renderSidebar, renderTopbar, escapeHtml, getProfessionalHead, renderPag
 import { getDB } from "../db-mongodb.mjs";
 import { Message, MessageStatus } from "../schemas/mongodb.mjs";
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
-import { getPlanStatus } from "../services/usage.mjs";
+import { getPlanStatus, getMessagingBlockMessage } from "../services/usage.mjs";
 import { enqueueOutboundMessage } from "../jobs/outboundQueue.mjs";
 import { sendTemplateStatusEmail } from "../services/email.mjs";
 import { sendWhatsAppText, sendWhatsAppTemplate } from "../services/whatsapp.mjs";
@@ -694,6 +694,12 @@ export default function registerCampaignRoutes(app) {
   app.post("/campaigns/send", ensureAuthed, async (req, res) => {
     try {
       const userId = getCurrentUserId(req);
+      const billingBlock = await getMessagingBlockMessage(userId);
+      if (billingBlock) {
+        return res.redirect(
+          "/campaigns?toast=" + encodeURIComponent(billingBlock) + "&type=error"
+        );
+      }
       const db = getDB();
       const cfg = await getSettingsForUser(userId);
 

@@ -15,7 +15,7 @@ import {
 import { getQuickReplies } from "../services/quickReplies.mjs";
 import { getMessageReactions, toggleReaction, removeReaction, getMessagesReactions, getUserReactionsForMessages } from "../services/reactions.mjs";
 import { createReply, getMessagesReplies, getReplyOriginals } from "../services/replies.mjs";
-import { getUserPlan, getPlanStatus, isPlanUpgraded, isUsageExceeded } from "../services/usage.mjs";
+import { getUserPlan, getPlanStatus, isPlanUpgraded, getMessagingBlockMessage } from "../services/usage.mjs";
 import { updateContactActivity } from "../services/contacts.mjs";
 import { canonicalContactId, contactIdVariants, findHandoffForContact, resolveHumanMode, upsertHandoffForContact } from "../services/handoff.mjs";
 import { recordOutboundMessage } from "../services/messages.mjs";
@@ -2828,8 +2828,9 @@ export default function registerInboxRoutes(app) {
 
     try {
       if (isLive) {
-        if (await isUsageExceeded(userId)) {
-          return fail(403, 'You have exceeded your monthly message limit. Please upgrade your plan.');
+        const billingBlock = await getMessagingBlockMessage(userId);
+        if (billingBlock) {
+          return fail(403, billingBlock);
         }
         if (await isConversationOver24h(userId, phone)) {
           return fail(400, 'Live mode is disabled because the last customer message is older than 24 hours.');
@@ -3228,6 +3229,8 @@ export default function registerInboxRoutes(app) {
     const cfg = await getSettingsForUser(userId);
     const text = (req.body?.text || "").toString().trim();
     if (!text) return respondError('Message cannot be empty.', 400);
+    const billingBlock = await getMessagingBlockMessage(userId);
+    if (billingBlock) return respondError(billingBlock, 403);
     try {
       let over24h = false;
       try {
@@ -3341,6 +3344,11 @@ export default function registerInboxRoutes(app) {
   app.post("/retry-message/:messageId", ensureAuthed, async (req, res) => {
     const messageId = req.params.messageId;
     const userId = getCurrentUserId(req);
+
+    const billingBlock = await getMessagingBlockMessage(userId);
+    if (billingBlock) {
+      return res.status(403).json({ success: false, error: billingBlock });
+    }
     
     try {
       const retryResult = await retryFailedMessage(messageId);
@@ -3434,6 +3442,11 @@ export default function registerInboxRoutes(app) {
   app.post("/upload-image/:phone", ensureAuthed, uploadImage.single('image'), async (req, res) => {
     const to = parseRouteContact(req.params.phone);
     const userId = getCurrentUserId(req);
+    const billingBlock = await getMessagingBlockMessage(userId);
+    if (billingBlock) {
+      const msg = encodeURIComponent(billingBlock);
+      return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${msg}&type=error`);
+    }
     const cfg = await getSettingsForUser(userId);
     const caption = (req.body?.caption || "").toString().trim();
     
@@ -3529,6 +3542,11 @@ export default function registerInboxRoutes(app) {
   app.post("/upload-document/:phone", ensureAuthed, uploadDocument.single('document'), async (req, res) => {
     const to = parseRouteContact(req.params.phone);
     const userId = getCurrentUserId(req);
+    const billingBlock = await getMessagingBlockMessage(userId);
+    if (billingBlock) {
+      const msg = encodeURIComponent(billingBlock);
+      return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${msg}&type=error`);
+    }
     const cfg = await getSettingsForUser(userId);
     const caption = (req.body?.caption || "").toString().trim();
     
@@ -3647,6 +3665,11 @@ export default function registerInboxRoutes(app) {
   app.post("/inbox/:phone/send-template", ensureAuthed, async (req, res) => {
     const to = parseRouteContact(req.params.phone);
     const userId = getCurrentUserId(req);
+    const billingBlock = await getMessagingBlockMessage(userId);
+    if (billingBlock) {
+      const msg = encodeURIComponent(billingBlock);
+      return res.redirect(`/inbox/${encodeURIComponent(to)}?toast=${msg}&type=error`);
+    }
     const cfg = await getSettingsForUser(userId);
     const tname = (cfg.wa_template_name || '').toString().trim();
     if (!tname) {

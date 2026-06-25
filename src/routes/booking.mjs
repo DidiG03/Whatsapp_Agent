@@ -78,6 +78,9 @@ export default function registerBookingRoutes(app) {
       
       return res.json({ ok: true, id: r.id, gcal_event_id: r.gcal_event_id });
     } catch (e) {
+      if (e?.code === "BOOKING_ENFORCED") {
+        return res.status(403).json({ error: e.reply || e.message, enforced: true });
+      }
       return res.status(409).json({ error: String(e && e.message || e) });
     }
   });

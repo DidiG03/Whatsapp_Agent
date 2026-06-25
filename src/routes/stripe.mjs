@@ -1,6 +1,6 @@
 import "../config.mjs";
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
-import { createCheckoutSession, getCheckoutSession, handleSuccessfulPayment, handleSubscriptionCanceled, isStripeEnabled } from "../services/stripe.mjs";
+import { createCheckoutSession, getCheckoutSession, handleSuccessfulPayment, handleSubscriptionCanceled, isStripeEnabled, formatStripeApiError, stripeErrorHttpStatus, isStripeResourceMissingError, reconcileStaleStripeBilling, reconcileStaleStripeSubscription } from "../services/stripe.mjs";
 import { getUserPlan, updateUserPlan } from "../services/usage.mjs";
 import { renderSidebar, renderTopbar } from "../utils.mjs";
 import Stripe from 'stripe';
@@ -40,11 +40,14 @@ export default function registerStripeRoutes(app) {
             });
           }
         } catch (e) {
+          if (isStripeResourceMissingError(e)) {
+            await reconcileStaleStripeBilling(userId);
+          }
         }
       }
 
       const result = await createCheckoutSession(userId, plan_name, email, price_id, promo_code);
-      
+
       if (plan_name === 'free') {
         updateUserPlan(userId, {
           plan_name: 'free',
@@ -52,14 +55,14 @@ export default function registerStripeRoutes(app) {
           whatsapp_numbers: 1,
           billing_cycle_start: Math.floor(Date.now() / 1000)
         });
-        
+
         return res.json({ success: true, message: 'Plan updated to Free' });
       }
-      
-      return res.json({ 
-        success: true, 
+
+      return res.json({
+        success: true,
         checkout_url: result.url,
-        session_id: result.sessionId 
+        session_id: result.sessionId
       });
     } catch (error) {
       console.error('Checkout session creation failed:', {
@@ -67,7 +70,7 @@ export default function registerStripeRoutes(app) {
         type: error?.type,
         code: error?.code,
         statusCode: error?.statusCode,
-        raw: error?.raw,
+        raw: error?.raw || error?.stripeError?.raw,
         stack: error?.stack,
         userId,
         plan_name,
@@ -76,11 +79,12 @@ export default function registerStripeRoutes(app) {
         has_publishable: !!process.env.STRIPE_PUBLISHABLE_KEY,
         configured_price_env: process.env[`STRIPE_PRICE_ID_${String(plan_name || '').toUpperCase()}`] || process.env.STRIPE_PRICE_ID || null
       });
-      const stripeMsg = error?.raw?.message || error?.message || 'Unknown error';
-      const code = error?.code || error?.type || null;
-      return res.status(500).json({
+      const stripeErr = error?.stripeError || error;
+      const detail = formatStripeApiError(stripeErr, error?.message || 'Failed to create checkout session');
+      const code = error?.code || stripeErr?.code || stripeErr?.type || null;
+      return res.status(stripeErrorHttpStatus(stripeErr)).json({
         error: 'Failed to create checkout session',
-        detail: stripeMsg,
+        detail,
         code
       });
     }
@@ -302,11 +306,9 @@ export default function registerStripeRoutes(app) {
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
     switch (event.type) {
-      case 'checkout.session.completed':
+      case 'checkout.session.completed': {
         const session = event.data.object;
-        if (session.metadata?.payment_request_id) {
-          break;
-        } else if (session.mode === 'subscription') {
+        if (session.mode === 'subscription') {
           await handleSuccessfulPayment(session);
         } else if (session.mode === 'setup' && session.metadata?.purpose === 'payg_setup') {
           try {
@@ -317,10 +319,8 @@ export default function registerStripeRoutes(app) {
           }
         }
         break;
-      case 'checkout.session.expired':
-      case 'checkout.session.async_payment_failed':
-        break;
-        
+      }
+
       case 'customer.subscription.updated':
         try {
           const { handleSubscriptionUpdated } = await import('../services/stripe.mjs');
@@ -375,7 +375,15 @@ export default function registerStripeRoutes(app) {
       if (!stripe) {
         return res.status(500).json({ error: 'Stripe not configured' });
       }
+      const plan = await getUserPlan(userId);
+      if (plan?.stripe_subscription_id && String(plan.stripe_subscription_id) !== String(subscription_id)) {
+        return res.status(403).json({ error: 'Subscription does not belong to this account' });
+      }
       const sub = await stripe.subscriptions.retrieve(subscription_id, { expand: ['schedule'] });
+      const subCustomer = typeof sub?.customer === 'string' ? sub.customer : sub?.customer?.id;
+      if (plan?.stripe_customer_id && subCustomer && String(plan.stripe_customer_id) !== String(subCustomer)) {
+        return res.status(403).json({ error: 'Subscription does not belong to this account' });
+      }
       let scheduleId = null;
       try { scheduleId = (sub?.schedule && (typeof sub.schedule === 'string' ? sub.schedule : sub.schedule?.id)) || null; } catch {}
       if (!scheduleId) {
@@ -402,7 +410,7 @@ export default function registerStripeRoutes(app) {
       } else {
         const updated = await stripe.subscriptions.update(subscription_id, { cancel_at_period_end: true });
         try {
-          updateUserPlan(userId, {
+          await updateUserPlan(userId, {
             status: 'active',
             stripe_subscription_id: updated?.id || subscription_id
           });
@@ -415,8 +423,27 @@ export default function registerStripeRoutes(app) {
         });
       }
     } catch (error) {
-      console.error('Failed to cancel subscription:', error);
-      return res.status(500).json({ error: 'Failed to cancel subscription' });
+      console.error('Failed to cancel subscription:', error?.message || error);
+      if (isStripeResourceMissingError(error)) {
+        try {
+          const reconciled = await reconcileStaleStripeSubscription(userId, subscription_id);
+          if (reconciled.reconciled) {
+            return res.json({
+              success: true,
+              stale_subscription_cleared: true,
+              message: reconciled.message,
+            });
+          }
+        } catch (reconcileError) {
+          console.error('Failed to reconcile stale subscription:', reconcileError?.message || reconcileError);
+        }
+      }
+      const detail = formatStripeApiError(error, 'Failed to cancel subscription');
+      return res.status(stripeErrorHttpStatus(error)).json({
+        error: 'Failed to cancel subscription',
+        detail,
+        code: error?.code || error?.raw?.code || null,
+      });
     }
   });
   app.post("/stripe/resume-subscription", ensureAuthed, async (req, res) => {
@@ -452,8 +479,27 @@ export default function registerStripeRoutes(app) {
         });
       }
     } catch (error) {
-      console.error('Failed to resume subscription:', error);
-      return res.status(500).json({ error: 'Failed to resume subscription' });
+      console.error('Failed to resume subscription:', error?.message || error);
+      if (isStripeResourceMissingError(error)) {
+        try {
+          const reconciled = await reconcileStaleStripeSubscription(userId, subscription_id);
+          if (reconciled.reconciled) {
+            return res.json({
+              success: true,
+              stale_subscription_cleared: true,
+              message: reconciled.message,
+            });
+          }
+        } catch (reconcileError) {
+          console.error('Failed to reconcile stale subscription:', reconcileError?.message || reconcileError);
+        }
+      }
+      const detail = formatStripeApiError(error, 'Failed to resume subscription');
+      return res.status(stripeErrorHttpStatus(error)).json({
+        error: 'Failed to resume subscription',
+        detail,
+        code: error?.code || error?.raw?.code || null,
+      });
     }
   });
 }

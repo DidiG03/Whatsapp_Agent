@@ -165,6 +165,20 @@ function threadPhoneMatch(phoneDigits) {
   };
 }
 
+export async function clearMessagesForThread(userId, phoneDigits) {
+  if (!userId || !phoneDigits) return 0;
+  try {
+    const res = await Message.deleteMany({
+      user_id: userId,
+      ...threadPhoneMatch(phoneDigits),
+    });
+    return res?.deletedCount || 0;
+  } catch (error) {
+    console.error("Error clearing messages for thread:", error);
+    return 0;
+  }
+}
+
 export async function listMessagesForThread(userId, phoneDigits) {
   try {
     const messages = await Message.find({

@@ -1,6 +1,6 @@
 import Ably from "ably";
 import { ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
-import { isUsageExceeded } from "../services/usage.mjs";
+import { getMessagingBlockMessage } from "../services/usage.mjs";
 import { Handoff, Notification } from "../schemas/mongodb.mjs";
 import { canonicalContactId, upsertHandoffForContact } from "../services/handoff.mjs";
 
@@ -230,9 +230,9 @@ export default function registerRealtimeRoutes(app) {
     const contactId = canonicalContactId(phone);
 
     try {
-      const overLimit = await isUsageExceeded(userId);
-      if (overLimit && isLive) {
-        return res.status(403).json({ error: "You have exceeded your monthly message limit. Please upgrade your plan." });
+      const billingBlock = await getMessagingBlockMessage(userId);
+      if (billingBlock && isLive) {
+        return res.status(403).json({ error: billingBlock });
       }
 
       const now = Math.floor(Date.now() / 1000);

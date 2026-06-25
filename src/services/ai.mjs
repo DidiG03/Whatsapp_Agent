@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { normalizePhoneE164 } from "../utils.mjs";
 import { detectLanguage, languageInstruction, kbScopeGuidance, conversationalStyleGuidance, conversationContinuityInstruction, howAreYouReplyGuidance, isHowAreYouQuestion, isCustomerWellbeingReply, customerWellbeingReplyGuidance, isThankYouMessage, thanksReplyGuidance, t as translate } from "./i18n.mjs";
 import { formatRefiningRulesForPrompt } from "./refiningDirectives.mjs";
+import { buildBookingFieldsPromptBlock } from "./bookingFields.mjs";
 
 // Resolve the reply language from an explicit hint, the current message, and
 // recent history, so the assistant consistently mirrors the customer.
@@ -107,6 +108,11 @@ const REFINING_LINE_PATTERNS = [
   /^CLEAR_RULES$/,
   /^ADD_KB\|[^|\n]{1,60}\|.+$/,
   /^SET\|[a-z_]+\|.+$/,
+  /^ENFORCE\|party_size_call\|\d{1,3}\|.*$/,
+  /^BOOKING_PROFILE\|(restaurant|appointment)$/,
+  /^ADD_BOOKING_FIELD\|[^|\n]+\|[^|\n]+(\|[^|\n]*)*$/,
+  /^REMOVE_BOOKING_FIELD\|[^|\n]+$/,
+  /^CLEAR_BOOKING_FIELDS$/,
 ];
 
 function isValidRefiningDslResponse(s) {
@@ -570,6 +576,8 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
   const knownCustomerName = String(features.customer_name || '').trim();
 
   const lang = resolveReplyLanguage(userMessage, historyMessages, options.lang);
+  const bookingFieldsBlock = buildBookingFieldsPromptBlock(options.bookingFields || [], lang);
+  const collectsPartySize = (options.bookingFields || []).some((f) => f.type === "party_size");
   const conversationStarted = !!options.conversationStarted;
   const userMessageIsGreeting = !!options.userMessageIsGreeting;
   const isBusinessOverviewQuestion = !!options.isBusinessOverviewQuestion;
@@ -587,6 +595,7 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
     isCustomerWellbeingReply(userMessage) ? customerWellbeingReplyGuidance(lang) : "",
     isThankYouMessage(userMessage) ? thanksReplyGuidance(lang) : "",
     buildRefiningRulesBlock(options),
+    bookingFieldsBlock,
     options?.refiningRules
       ? (lang === "sq"
         ? "Kur zbatohet një rregull i pronarit, përshëndet klientin nëse ka përshëndetur dhe mbyll me 'Faleminderit!' kur jep një përgjigje të plotë ose ridrejtim — mos u përgjigj vetëm me tekst politik pa ngrohtësi."
@@ -624,8 +633,12 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
   if (options.conversationPhase === "booking_flow") {
     systemParts.push(
       lang === "sq"
-        ? "Je duke mbledhur detajet e rezervimit. Mos përsërit adresën ose vendndodhjen. Përdor intent book VETËM kur ke datën, orën, numrin e personave DHE emrin e klientit — përndryshe intent none dhe pyet për çfarë mungon (zakonisht emri)."
-        : "You are collecting booking details. Do not repeat the address or location. Use intent book ONLY when you have date, time, party size AND the customer's name — otherwise use intent none and ask for what is missing (usually their name)."
+        ? (collectsPartySize
+          ? "Je duke mbledhur detajet e rezervimit. Mos përsërit adresën. Përdor intent book VETËM kur ke datën, orën dhe të gjitha fushat e detyrueshme nga BOOKING FIELDS."
+          : "Je duke mbledhur detajet e terminit. Mos pyet sa persona. Përdor intent book VETËM kur ke datën, orën dhe të gjitha fushat e detyrueshme nga BOOKING FIELDS.")
+        : (collectsPartySize
+          ? "You are collecting booking details. Do not repeat the address. Use intent book ONLY when you have date, time, and all required BOOKING FIELDS."
+          : "You are collecting appointment details. Do not ask party size. Use intent book ONLY when you have date, time, and all required BOOKING FIELDS.")
     );
   }
 
@@ -681,13 +694,17 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
     systemParts.push(
       "Primary goal: genuinely help the customer get what they want with replies that feel human, friendly, and effortless.",
       "Be an excellent booking assistant: if the customer wants to book, reschedule, cancel, or check availability, take initiative. Confirm what you understood from this conversation, and ask only for what is truly missing — one short, natural question at a time in the customer's language.",
-      "Collect party size, a specific clock time, and name when missing. Party size must come from the customer in this conversation — never assume, reuse, or announce a number from past bookings or memory.",
+      collectsPartySize
+        ? "Collect party size, a specific clock time, and other required BOOKING FIELDS when missing. Party size must come from the customer in this conversation — never assume or reuse from memory."
+        : "Collect a specific clock time and all required BOOKING FIELDS when missing. Do NOT ask how many people — this business books one customer per appointment.",
       "Do NOT ask why they are visiting or recall past occasions/reasons from earlier chats — only the customer's name may be remembered.",
       "When the customer gives a date and/or time in ANY phrasing or language (e.g. 'tomorrow at 3', 'nesër ora 15:00', 'Friday afternoon', 'nesër në dark', 'next week'), capture it and pass it through as the intent — do not ask them to rephrase into a specific format.",
       "For evening/morning/afternoon WITHOUT a specific hour (e.g. 'nesër në dark', 'tomorrow evening'), that is NOT enough to book — use intent none and ask for an exact clock time. Do NOT list or offer available times unless they explicitly ask to see them.",
       "For evening/morning/afternoon requests, set intent.data.timeOfDay to 'morning', 'afternoon', or 'evening' (e.g. 'në dark' / 'in the evening' → evening) when relevant, but still use intent none until they give an exact hour.",
       "Use intent type availability ONLY when the customer explicitly asks to see open times or wants slot suggestions (e.g. 'what times do you have?', 'cilat orare keni?', 'show me available times', 'shiko oraret'). Asking whether you have free reservations or tables for a date is NOT an availability request — use intent book or none and ask how many people.",
-      "Use intent type book ONLY when date, a specific clock time, party size, and the customer's name are all known in this conversation (or a real saved name from Customer Profile — never a phone number). If anything is missing — especially the name — use intent none and ask one short question.",
+      collectsPartySize
+        ? "Use intent type book ONLY when date, a specific clock time, party size, and all other required BOOKING FIELDS are known. If anything is missing, use intent none and ask one short question."
+        : "Use intent type book ONLY when date, a specific clock time, and all required BOOKING FIELDS are known (no party size needed). If anything is missing, use intent none and ask one short question.",
       "When the customer names a specific time (e.g. 'at 9:30', 'në orën 21:30', '9') but their name is still missing, use intent none and ask for their name — do NOT use intent book yet.",
       "INTENT TYPES: availability, book, reschedule, cancel, update_name, handoff, none.",
       "For availability/book/reschedule intents, include the customer's natural date/time phrase in intent.data (e.g. data.datetime or data.range); the server will parse Albanian and English phrasing.",
@@ -1031,7 +1048,11 @@ function buildRefiningSystem(tonePref, stylePref, blockedTopics, currentRules = 
     "",
     "Suggestions (when asked):",
     "- If the owner asks for ideas, suggestions, recommendations, or 'what should I add/change', use REPLY| with 3–5 concrete suggestions.",
-    "- Ground every suggestion in their business profile, website summary, knowledge base, services, and current rules — not generic chatbot advice.",
+    "- Suggestions must be GAPS only — things the customer bot still cannot answer or handle from the knowledge base, business profile, Google profile, website, and current rules.",
+    "- Before suggesting, review what is ALREADY covered. Do NOT suggest rules that merely repeat KB facts (e.g. sharing opening hours, address/maps link, menu link, payment methods, Wi-Fi, delivery policy) when those topics are already in KB or business profile — the live bot already answers those.",
+    "- Good suggestions: missing edge cases, escalation/handoff triggers, booking workflows not covered, tone boundaries, policies not in KB, large-group handling beyond existing rules, seasonal exceptions, complaint handling, or behaviour when KB has no answer.",
+    "- If basics are well covered, say so briefly (1 sentence), then suggest only genuine gaps — do not pad the list with KB duplicates.",
+    "- Ground gap suggestions in their business type and what is missing — not generic chatbot advice.",
     "- Keep all suggestions in a single REPLY| line (use semicolons or 1) 2) 3) — no markdown bullets).",
     "- Do NOT output ADD_RULE unless they explicitly want to save a rule or give a complete instruction to save.",
     "- You may end with a short question offering to turn a suggestion into a saved rule.",
@@ -1040,6 +1061,10 @@ function buildRefiningSystem(tonePref, stylePref, blockedTopics, currentRules = 
     blockedLine,
     "- Never invent facts about the business (phone numbers, prices, policies). Ask if missing.",
     "- Ground rules and ADD_KB suggestions in the business profile, website summary, and knowledge base below when relevant.",
+    "- ALWAYS read the business profile block in each owner message before answering — you are coaching the bot for THIS specific business (name, type, categories, services, hours, Google description).",
+    "- Use business type and Google place types to choose sensible defaults: Restaurant / Food → BOOKING_PROFILE|restaurant; clinics, dentists, salons, spas, professionals → BOOKING_PROFILE|appointment (no party size).",
+    "- When the owner asks about booking questions, align with what this business actually does — do not suggest party size for one-to-one appointments.",
+    "- Prefer facts from dashboard settings and Google Business Profile over assumptions; ask ASK_MORE if settings are empty or ambiguous.",
     "",
     "Output ONLY these line types:",
     "  ASK_MORE|<single clarifying question>",
@@ -1049,7 +1074,27 @@ function buildRefiningSystem(tonePref, stylePref, blockedTopics, currentRules = 
     "  CLEAR_RULES",
     "  ADD_KB|<Title>|<Content>",
     "  SET|<settings_key>|<value>",
+    "  ENFORCE|party_size_call|<min_party>|<phone_e164_or_empty>",
+    "  BOOKING_PROFILE|restaurant|appointment",
+    "  ADD_BOOKING_FIELD|<id>|<type>|<label>|<prompt>|<required|optional>",
+    "  REMOVE_BOOKING_FIELD|<id>",
+    "  CLEAR_BOOKING_FIELDS",
     "",
+    "Booking questions (what the bot asks before creating a calendar booking):",
+    "- Use BOOKING_PROFILE|appointment for clinics, dentists, salons (name only — no party size).",
+    "- Use BOOKING_PROFILE|restaurant for restaurants (name + party size).",
+    "- Use ADD_BOOKING_FIELD to add fields, e.g. email or custom text:",
+    "  ADD_BOOKING_FIELD|email|email|Email|What's your email address?|required",
+    "  ADD_BOOKING_FIELD|reason|text|Reason for visit|What is the reason for your visit?|required",
+    "- Use REMOVE_BOOKING_FIELD|party_size when the business does not need headcount.",
+    "- Answers are saved on the calendar appointment automatically.",
+    "- You may combine REPLY + BOOKING_PROFILE / ADD_BOOKING_FIELD in one response (no ADD_RULE needed for booking questions).",
+    "",
+    "Hard enforcement (ENFORCE):",
+    "- When a rule must ALWAYS block large-group bookings (not just AI guidance), output ENFORCE|party_size_call|<min>|<phone> on the same response as ADD_RULE.",
+    "- Example: REPLY|Done — large groups must call you.",
+    "  ADD_RULE|When a customer requests a booking for more than 30 people, advise them to call +355 69 123 4567. Do not complete large group bookings via WhatsApp.",
+    "  ENFORCE|party_size_call|30|+355691234567",
     "When to ASK_MORE (no ADD_RULE in the same response):",
     "- Instruction is vague ('be nicer', 'handle big groups', 'don't allow that').",
     "- Missing threshold, phone number, exact wording, scope, or exception.",
@@ -1077,16 +1122,23 @@ function buildRefiningSystem(tonePref, stylePref, blockedTopics, currentRules = 
     "Owner: 'Handle big bookings differently'",
     "ASK_MORE|From how many people should the bot stop taking reservations by message and ask customers to call instead?",
     "",
+    "Example booking questions (dental clinic):",
+    "Owner: 'We are a dental clinic — only one patient per appointment, ask for name and reason for visit, not party size'",
+    "REPLY|Done — booking will collect name and reason for visit only (no party size).",
+    "BOOKING_PROFILE|appointment",
+    "ADD_BOOKING_FIELD|reason|text|Reason for visit|What is the reason for your visit?|required",
+    "",
     "Owner: '30'",
     "ASK_MORE|What phone number or exact message should the bot give customers when that happens?",
     "",
     "Owner: '+355 69 123 4567'",
     "REPLY|Done — large groups will be directed to call you.",
     "ADD_RULE|When a customer requests a booking for more than 30 people, advise them to call +355 69 123 4567 directly. Do not complete large group bookings via WhatsApp message.",
+    "ENFORCE|party_size_call|30|+355691234567",
     "",
     "Example suggestions:",
     "Owner: 'Any ideas for rules I should add?'",
-    "REPLY|Based on your business, consider: 1) Escalate to a human when a customer asks for a refund; 2) Confirm party size before accepting bookings over 6; 3) Share your hours when someone asks if you're open; 4) Offer to send the menu link when asked about prices. Want me to save any of these as a rule?",
+    "REPLY|Your KB already covers hours, address, menu, and payments — the bot can answer those today. Gaps worth adding: 1) Escalate to a human when a customer asks for a refund; 2) Ask for allergy info before confirming food bookings; 3) Offer a callback when someone asks about hosting a private event. Want me to save any of these?",
     "",
     "Example off-topic:",
     "Owner: 'What's the weather tomorrow?'",
@@ -1096,25 +1148,47 @@ function buildRefiningSystem(tonePref, stylePref, blockedTopics, currentRules = 
   ].filter(Boolean).join("\n");
 }
 
-function buildRefiningInstruction(historyTranscript, userMessage, kbItems = [], businessContext = "") {
+function buildRefiningInstruction(historyTranscript, userMessage, kbItems = [], businessContext = "", options = {}) {
   const history = String(historyTranscript || "").slice(-MAX_HISTORY_CHARS);
   const kbBlock = formatCoachKbForPrompt(kbItems);
   const businessBlock = String(businessContext || "").trim() || "(not available)";
+  const suggestionBlock = options.isSuggestionRequest
+    ? `
+Suggestion request — owner wants GAPS only:
+- The knowledge base and business profile below show what the live bot ALREADY knows.
+- Do NOT suggest rules that only tell the bot to share facts already listed there (hours, address, menu, payments, Wi-Fi, etc.).
+- Suggest only missing behaviours, policies, edge cases, or workflows the bot cannot handle yet.
+`.trim()
+    : "";
   return `
-Business profile, settings, and website:
+Business profile, settings, Google Business, and website:
 ${businessBlock}
 
-Business knowledge base (facts already saved — use these; do not contradict or invent):
+Business knowledge base (facts already saved — the live bot uses these to answer customers; do not suggest duplicating them as rules):
 ${kbBlock}
-
+${suggestionBlock ? `\n${suggestionBlock}\n` : ""}
 Conversation history (latest last):
 ${history || "(no history)"}
 
 Owner message:
 ${String(userMessage || "").slice(0, 4000)}
 
-(Reply ONLY with valid DSL lines. Use ASK_MORE when you still need details — do NOT add ADD_RULE in the same response as ASK_MORE. When ready, use REPLY plus ADD_RULE. For off-topic messages, use REPLY only to decline and redirect. For suggestion requests, use REPLY only with grounded ideas.)
+(Reply ONLY with valid DSL lines. Use ASK_MORE when you still need details — do NOT add ADD_RULE in the same response as ASK_MORE. When ready, use REPLY plus ADD_RULE. For off-topic messages, use REPLY only to decline and redirect. For suggestion requests, use REPLY only with gap-focused ideas — never suggest repeating KB facts.)
 `.trim();
+}
+
+export function isRefiningSuggestionRequest(message = "") {
+  const m = String(message || "").trim().toLowerCase();
+  if (!m) return false;
+  return (
+    /\b(suggest(?:ion)?s?|recommend(?:ation)?s?|ideas?|improvements?|gaps?)\b/.test(m)
+    || /\bwhat (?:are |)(?:some )?good things to add\b/.test(m)
+    || /\bwhat should (?:i|we) add\b/.test(m)
+    || /\bwhat (?:can|could|should) (?:i|we) add\b/.test(m)
+    || /\bwhat(?:'s| is) missing\b/.test(m)
+    || /\bwhat else should\b/.test(m)
+    || /\bany (?:ideas|suggestions|recommendations)\b/.test(m)
+  );
 }
 
 export async function refiningCoachReply(userMessage, historyTranscript = "", options = {}) {
@@ -1128,7 +1202,8 @@ export async function refiningCoachReply(userMessage, historyTranscript = "", op
     historyTranscript,
     userMessage,
     options?.kbItems || options?.kbContext || [],
-    options?.businessContext || ""
+    options?.businessContext || "",
+    { isSuggestionRequest: !!options?.isSuggestionRequest }
   );
 
   async function callOnce(extra = "") {
@@ -1147,7 +1222,7 @@ export async function refiningCoachReply(userMessage, historyTranscript = "", op
   let out = await callOnce();
   if (!isValidRefiningDslResponse(out)) {
     out = await callOnce(
-      "\n\nREMINDER: Output ONLY valid DSL lines. Stay in refining scope — decline off-topic questions with REPLY| only. For suggestion requests, use REPLY| with grounded ideas (no ADD_RULE unless saving). Use ASK_MORE| when details are missing. Never combine ASK_MORE with ADD_RULE."
+      "\n\nREMINDER: Output ONLY valid DSL lines. Stay in refining scope — decline off-topic questions with REPLY| only. For suggestion requests, use REPLY| with GAP-only ideas (never suggest duplicating KB facts like hours/address/menu). Use ASK_MORE| when details are missing. Never combine ASK_MORE with ADD_RULE."
     );
   }
   if (!isValidRefiningDslResponse(out)) {

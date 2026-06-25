@@ -1,5 +1,7 @@
 import { buildBusinessSettingsSnippet } from "./settings.mjs";
+import { buildGoogleBusinessCoachBlock } from "./googleBusinessImport.mjs";
 import { fetchWebsiteTextSnippet } from "./websiteContext.mjs";
+import { listBookingFieldsSummary } from "./bookingFields.mjs";
 
 function pushUniqueLine(lines, line) {
   const value = String(line || "").trim();
@@ -7,9 +9,30 @@ function pushUniqueLine(lines, line) {
   if (!lines.includes(value)) lines.push(value);
 }
 
+function buildCoachBookingFieldsBlock(cfg = {}) {
+  const fields = listBookingFieldsSummary(cfg);
+  if (!fields.length) return null;
+  const lines = fields.map((f) => {
+    const req = f.required ? "required" : "optional";
+    return `- ${f.label} (${req}): ${f.prompt}`;
+  });
+  return lines.join("\n");
+}
+
+function buildCoachEscalationBlock(cfg = {}) {
+  let questions = [];
+  try {
+    questions = JSON.parse(cfg.escalation_questions_json || "[]");
+    if (!Array.isArray(questions)) questions = [];
+  } catch {}
+  questions = questions.map((q) => String(q || "").trim()).filter(Boolean);
+  if (!questions.length) return null;
+  return questions.map((q, i) => `${i + 1}. ${q}`).join("\n");
+}
+
 export function buildCoachSettingsContextBlock(cfg = {}) {
   const lines = [];
-  const snippet = buildBusinessSettingsSnippet(cfg);
+  const snippet = buildBusinessSettingsSnippet(cfg, { includeGoogleProfile: false });
   if (snippet?.content) {
     for (const line of String(snippet.content).split("\n")) {
       pushUniqueLine(lines, line);
@@ -17,7 +40,11 @@ export function buildCoachSettingsContextBlock(cfg = {}) {
   }
 
   const phone = String(cfg.business_phone || "").trim();
-  if (phone) pushUniqueLine(lines, `Phone: ${phone}`);
+  if (phone) pushUniqueLine(lines, `WhatsApp / business phone: ${phone}`);
+
+  if (cfg.business_place_id) {
+    pushUniqueLine(lines, `Google Place ID: ${String(cfg.business_place_id).slice(0, 80)}`);
+  }
 
   const tone = String(cfg.ai_tone || "").trim();
   const style = String(cfg.ai_style || "").trim();
@@ -28,7 +55,10 @@ export function buildCoachSettingsContextBlock(cfg = {}) {
   if (blocked) pushUniqueLine(lines, `Blocked topics: ${blocked}`);
 
   const mode = String(cfg.conversation_mode || "").trim();
-  if (mode && mode !== "full") pushUniqueLine(lines, `Conversation mode: ${mode}`);
+  if (mode) pushUniqueLine(lines, `Conversation mode: ${mode}`);
+
+  if (cfg.bookings_enabled) pushUniqueLine(lines, "Reservations: enabled");
+  else pushUniqueLine(lines, "Reservations: disabled");
 
   if (Number(cfg.booking_max_per_day) > 0) {
     pushUniqueLine(lines, `Max bookings per day: ${cfg.booking_max_per_day}`);
@@ -56,7 +86,22 @@ export async function buildCoachBusinessContext(cfg = {}, options = {}) {
   const parts = [];
   const settingsBlock = buildCoachSettingsContextBlock(cfg);
   if (settingsBlock) {
-    parts.push(`Business profile (from dashboard settings):\n${settingsBlock}`);
+    parts.push(`Dashboard settings (Business Information + scheduling):\n${settingsBlock}`);
+  }
+
+  const googleBlock = buildGoogleBusinessCoachBlock(cfg);
+  if (googleBlock) {
+    parts.push(`Google Business Profile (imported):\n${googleBlock}`);
+  }
+
+  const bookingFieldsBlock = buildCoachBookingFieldsBlock(cfg);
+  if (bookingFieldsBlock) {
+    parts.push(`Current WhatsApp booking questions:\n${bookingFieldsBlock}`);
+  }
+
+  const escalationBlock = buildCoachEscalationBlock(cfg);
+  if (escalationBlock) {
+    parts.push(`Escalation intake questions (human handoff):\n${escalationBlock}`);
   }
 
   const websiteUrl = String(cfg.website_url || "").trim();

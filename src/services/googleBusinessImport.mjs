@@ -250,6 +250,55 @@ export function parseGoogleBusinessSnapshot(cfg = {}) {
   }
 }
 
+export function buildGoogleBusinessCoachBlock(cfg = {}) {
+  const profile = parseGoogleBusinessSnapshot(cfg);
+  if (!profile) return null;
+
+  const lines = [];
+  if (profile.name) lines.push(`Name: ${profile.name}`);
+  if (profile.address) lines.push(`Address: ${profile.address}`);
+  if (profile.phone) lines.push(`Phone: ${profile.phone}`);
+  if (profile.website) lines.push(`Website: ${profile.website}`);
+
+  const types = mapGoogleTypesToCategories(profile.types);
+  if (types.length) lines.push(`Place types: ${types.join(", ")}`);
+
+  const inferred = inferBusinessTypeFromGoogleTypes(profile.types);
+  if (inferred) lines.push(`Inferred business type: ${inferred}`);
+
+  if (profile.description) {
+    lines.push(`Description: ${String(profile.description).slice(0, 800)}`);
+  }
+
+  const hours = formatOpeningHoursText(profile);
+  if (hours) lines.push(`Opening hours:\n${hours}`);
+
+  if (profile.rating != null) {
+    lines.push(
+      `Rating: ${profile.rating}${profile.ratingCount ? ` (${profile.ratingCount} Google reviews)` : ""}`
+    );
+  }
+
+  const price = priceLevelLabel(profile.priceLevel);
+  if (price) lines.push(`Price level: ${price}`);
+
+  if (profile.businessStatus && profile.businessStatus !== "OPERATIONAL") {
+    lines.push(`Status: ${humanizeType(profile.businessStatus)}`);
+  }
+
+  if (profile.mapsUrl) lines.push(`Google Maps: ${profile.mapsUrl}`);
+
+  const reviews = buildReviewsSummary(profile);
+  if (reviews) lines.push(`Recent reviews:\n${reviews.slice(0, 900)}`);
+
+  try {
+    const snap = typeof cfg.google_business_json === "string" ? JSON.parse(cfg.google_business_json) : cfg.google_business_json;
+    if (snap?.syncedAt) lines.push(`Last synced: ${String(snap.syncedAt).slice(0, 10)}`);
+  } catch {}
+
+  return lines.length ? lines.join("\n") : null;
+}
+
 export function buildGoogleBusinessContextLines(cfg = {}) {
   const profile = parseGoogleBusinessSnapshot(cfg);
   if (!profile) return [];

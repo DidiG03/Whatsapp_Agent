@@ -14,7 +14,11 @@ import {
   guardPrematureActionClaims,
   extractMemoryFacts,
   normalizeExecutedIntent,
+  sanitizeReplyWhenBookingReady,
+  bookIntentReady,
   isBookingNameCompletion,
+  isUsableCustomerName,
+  looksLikeStandaloneCustomerName,
 } from "./agent-intelligence.mjs";
 import { buildCustomerProfileSnippet, rememberName, rememberPartySize, getContactMemory } from "./memory.mjs";
 import { isGreeting as isGreetingMessage } from "./agentPipelineHelpers.mjs";
@@ -22,6 +26,10 @@ import { isKbMissReply, isLikelyFaqQuestion, isLocationQuestion, t as tr } from 
 import { MESSAGE_ROUTES, routeCustomerMessage } from "./messageRouter.mjs";
 import { detectMessageTopics } from "./messageTopics.mjs";
 import { buildConversationContextBrief } from "./conversationContext.mjs";
+import {
+  guardBookingEnforcement,
+} from "./refiningEnforcement.mjs";
+import { getBookingFieldsFromSettings, resolveBookingFieldValues, fieldIntentKey } from "./bookingFields.mjs";
 
 export async function runAgentMessagePipeline(ctx) {
   const {
@@ -53,6 +61,8 @@ export async function runAgentMessagePipeline(ctx) {
   const pipelineHistory = historyMessages;
   const bookingHistory = historyMessages;
   const bookingsEnabled = !!cfg?.bookings_enabled;
+  const bookingFieldConfig = getBookingFieldsFromSettings(tenant || cfg, lang);
+  const bookingFields = bookingFieldConfig.fields || [];
 
   const kbMatchesAIBase = await cachedRetrieveKbMatches(text, 8, tenantUserId, "", from, lang);
   const profileSnippet = await buildCustomerProfileSnippet(tenantUserId, from);
@@ -69,6 +79,9 @@ export async function runAgentMessagePipeline(ctx) {
       step: { $in: ["awaiting_cancel_confirm", "awaiting_reschedule_dt"] },
     });
     contactMem = await getContactMemory(tenantUserId, from);
+    if (!knownCustomerName && contactMem?.display_name) {
+      knownCustomerName = String(contactMem.display_name).trim();
+    }
     if (cfg?.bookings_enabled && bookingsEnabled) {
       upcomingAppt = await findUpcomingConfirmedAppointment({
         userId: tenantUserId,
@@ -91,6 +104,9 @@ export async function runAgentMessagePipeline(ctx) {
     bookingsEnabled,
     historyMessages: bookingHistory,
     upcomingAppt,
+    bookingFields,
+    knownCustomerName,
+    contactId: from,
   });
   const liveSessionBrief = buildLiveSessionBrief({
     phase: conversationPhase,
@@ -108,6 +124,14 @@ export async function runAgentMessagePipeline(ctx) {
   if (memoryFacts.name) {
     try { await rememberName(tenantUserId, from, memoryFacts.name); } catch {}
     knownCustomerName = memoryFacts.name;
+  }
+  if (
+    looksLikeStandaloneCustomerName(String(text || "").trim())
+    && (conversationPhase === "booking_flow" || isBookingNameCompletion(text, pipelineHistory))
+  ) {
+    const standaloneName = String(text || "").trim();
+    try { await rememberName(tenantUserId, from, standaloneName); } catch {}
+    knownCustomerName = standaloneName;
   }
 
   const routing = routeCustomerMessage(text, {
@@ -131,6 +155,26 @@ export async function runAgentMessagePipeline(ctx) {
     messageTopics,
     bookingsEnabled,
   });
+
+  const enforcement = await guardBookingEnforcement({
+    userId: tenantUserId,
+    contactId: from,
+    cfg,
+    tenant,
+    text,
+    historyMessages: pipelineHistory,
+    partySize: memoryFacts.partySize || null,
+    memPartySize: contactMem?.last_party_size || null,
+    lang,
+    conversationPhase,
+    route: routing.route,
+    intentType: inferredIntent?.type || null,
+    requireBookingContext: true,
+  });
+  if (enforcement?.blockBooking && enforcement.reply) {
+    await sendTextTracked(from, String(enforcement.reply).slice(0, 1000), cfg);
+    return { handled: true, route: "enforced_rule", knownCustomerName, enforcement };
+  }
 
   console.log("[AI-path] route", {
     route: routing.route,
@@ -200,6 +244,7 @@ export async function runAgentMessagePipeline(ctx) {
     businessWebsite: cfg?.website_url || "",
     businessCategories: aiOptions.businessCategories,
     refiningRules: tenant?.ai_refining_rules || cfg?.ai_refining_rules || "",
+    bookingFields,
     features: buildAgentFeatures(cfg, knownCustomerName, bookingsEnabled),
     multiTopic,
     messageTopics,
@@ -214,6 +259,8 @@ export async function runAgentMessagePipeline(ctx) {
     historyMessages: bookingHistory,
     knownCustomerName,
     contactId: from,
+    bookingFields,
+    isUsableCustomerName,
   });
   console.log("[AI-path] decision", {
     route: routing.route,
@@ -254,6 +301,79 @@ export async function runAgentMessagePipeline(ctx) {
     if (fallbackNormalized) replyText = fallbackNormalized;
   }
 
+  const normalizedIntent = normalizeExecutedIntent({
+    intentType: decision?.intent?.type,
+    intentData: decision?.intent?.data,
+    text,
+    replyText,
+    historyMessages: bookingHistory,
+    knownCustomerName,
+    contactId: from,
+    bookingFields,
+  });
+  const intentType = normalizedIntent.intentType;
+  let intentData = normalizedIntent.intentData;
+
+  const bookingReady = bookIntentReady({
+    text,
+    intentData,
+    historyMessages: bookingHistory,
+    knownCustomerName,
+    contactId: from,
+    bookingFields,
+    isUsableCustomerName,
+  });
+
+  if (replyText && bookingReady) {
+    replyText = sanitizeReplyWhenBookingReady(replyText, { lang, bookingFields });
+  }
+
+  let effectiveIntentType = intentType;
+  if (bookingReady && effectiveIntentType !== "book") {
+    effectiveIntentType = "book";
+    const values = resolveBookingFieldValues({
+      fields: bookingFields,
+      text,
+      historyMessages: bookingHistory,
+      intentData,
+      knownCustomerName,
+      contactId: from,
+      isUsableCustomerName,
+    });
+    intentData = { ...intentData };
+    for (const field of bookingFields) {
+      const key = fieldIntentKey(field);
+      const val = values[field.id];
+      if (val != null && String(val).trim() !== "") intentData[key] = val;
+    }
+  }
+
+  if (
+    bookingsEnabled
+    && effectiveIntentType
+    && (effectiveIntentType === "book" || effectiveIntentType === "availability")
+  ) {
+    const intentBlock = await guardBookingEnforcement({
+      userId: tenantUserId,
+      contactId: from,
+      cfg,
+      tenant,
+      text,
+      historyMessages: bookingHistory,
+      partySize: memoryFacts.partySize || null,
+      memPartySize: contactMem?.last_party_size || null,
+      lang,
+      conversationPhase,
+      route: routing.route,
+      intentType: effectiveIntentType,
+      requireBookingContext: false,
+    });
+    if (intentBlock?.blockBooking && intentBlock.reply) {
+      await sendTextTracked(from, String(intentBlock.reply).slice(0, 1000), cfg);
+      return { handled: true, route: "enforced_rule", knownCustomerName, enforcement: intentBlock };
+    }
+  }
+
   if (replyText) {
     await sendTextTracked(from, String(replyText).slice(0, 1000), cfg);
   } else if (decision?.text) {
@@ -279,23 +399,12 @@ export async function runAgentMessagePipeline(ctx) {
     }
   }
 
-  const normalizedIntent = normalizeExecutedIntent({
-    intentType: decision?.intent?.type,
-    intentData: decision?.intent?.data,
-    text,
-    replyText,
-    historyMessages: bookingHistory,
-    knownCustomerName,
-    contactId: from,
-  });
-  const intentType = normalizedIntent.intentType;
-  const intentData = normalizedIntent.intentData;
-  if (intentType && intentType !== "none") {
-    if (cfg?.conversation_mode === "escalation" && intentType !== "handoff") {
+  if (effectiveIntentType && effectiveIntentType !== "none") {
+    if (cfg?.conversation_mode === "escalation" && effectiveIntentType !== "handoff") {
       return { handled: true, route: routing.route, knownCustomerName };
     }
     await executeAgentIntent({
-      intentType,
+      intentType: effectiveIntentType,
       intentData,
       text,
       historyMessages,

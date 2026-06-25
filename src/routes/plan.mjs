@@ -1,25 +1,37 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
 import { renderSidebar, renderTopbar, escapeHtml, getProfessionalHead, renderPageHeader } from "../utils.mjs";
 import { getSettingsForUser } from "../services/settings.mjs";
-import { getCurrentUsage, getUserPlan, getUsageHistory, getPlanPricing, updateUserPlan, isPlanUpgraded, getCurrentMonthPaygOutstanding, recordPaygCharge } from "../services/usage.mjs";
-import { isStripeEnabled, getStripePublishableKey, getSubscription, getSubscriptionScheduleForSubscription, ensureCustomerForUser, createPayAsYouGoSetupSession, hasDefaultPaymentMethod, chargePayAsYouGo } from "../services/stripe.mjs";
+import { getCurrentUsage, getUserPlan, getUsageHistory, getPlanPricing, updateUserPlan, isPlanUpgraded, getCurrentMonthPaygOutstanding, settleOutstandingPaygCharges, isSubscriptionBillingBlocked } from "../services/usage.mjs";
+import { isStripeEnabled, getStripePublishableKey, getSubscription, getSubscriptionScheduleForSubscription, ensureCustomerForUser, createPayAsYouGoSetupSession, hasDefaultPaymentMethod, reconcileStaleStripeBilling } from "../services/stripe.mjs";
+import { allowDirectPlanChange } from "../services/planPolicy.mjs";
 
 export default function registerPlanRoutes(app) {
   app.get("/plan", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const email = await getSignedInEmail(req);
-    const [usage, plan, settings] = await Promise.all([
+    const [usage, planRow, settings] = await Promise.all([
       getCurrentUsage(userId),
       getUserPlan(userId),
       getSettingsForUser(userId)
     ]);
+    let plan = planRow;
+    const stripeEnabled = isStripeEnabled();
+    if (stripeEnabled && (plan?.stripe_subscription_id || plan?.stripe_customer_id)) {
+      try {
+        const reconciled = await reconcileStaleStripeBilling(userId);
+        if (reconciled.reconciled) {
+          plan = await getUserPlan(userId);
+        }
+      } catch (e) {
+        console.warn("Stale subscription reconcile failed:", e?.message || e);
+      }
+    }
     const history = await getUsageHistory(userId, 6);
     const pricing = getPlanPricing();
     const isUpgraded = isPlanUpgraded(plan);
     const totalMessages = usage.inbound_messages + usage.outbound_messages + usage.template_messages;
     const usagePercentage = plan.monthly_limit > 0 ? Math.round((totalMessages / plan.monthly_limit) * 100) : 0;
     const currentPlanDetails = pricing[plan.plan_name] || pricing.free;
-    const stripeEnabled = isStripeEnabled();
     const stripePublishableKey = getStripePublishableKey();
     const paygEnabled = !!plan?.payg_enabled;
     const paygRateCents = Number(plan?.payg_rate_cents ?? (process.env.PAYG_RATE_CENTS || 5));
@@ -91,12 +103,19 @@ export default function registerPlanRoutes(app) {
     const paygTotalCents = Number(paygSummary?.overageCents || 0);
     const paygChargedCents = Number(paygSummary?.chargedCents || 0);
     const paygOutstandingCents = Math.max(0, paygTotalCents - paygChargedCents);
+    const paygOutstandingUnits = Number(paygSummary?.outstandingUnits || 0);
+    const paygBillingHold = paygEnabled && paygOutstandingUnits > 0;
+    const subscriptionBillingBlocked = isSubscriptionBillingBlocked(plan);
     const planMonthlyPriceDollars = Number((currentPlanDetails?.price || 0));
     const paygPercentOfPlan = planMonthlyPriceDollars > 0 ? Math.min(100, Math.round((paygTotalCents / (planMonthlyPriceDollars * 100)) * 100)) : 0;
     const paygTotalFormatted = (()=>{ try { return new Intl.NumberFormat('en-US',{style:'currency', currency: paygCurrencyCode}).format(paygTotalCents/100); } catch { return `$${(paygTotalCents/100).toFixed(2)}`; } })();
     const paygOutstandingFormatted = (()=>{ try { return new Intl.NumberFormat('en-US',{style:'currency', currency: paygCurrencyCode}).format(paygOutstandingCents/100); } catch { return `$${(paygOutstandingCents/100).toFixed(2)}`; } })();
+    const usageBarClass = usagePercentage > 90 ? "danger" : usagePercentage > 75 ? "warning" : "success";
+    const paygBarClass = paygPercentOfPlan > 90 ? "danger" : paygPercentOfPlan > 75 ? "warning" : "success";
+    const messagesRemaining = Math.max(0, Number(plan.monthly_limit || 0) - totalMessages);
+    const isStarter = plan.plan_name === "starter";
     res.end(`
-      <html>${getProfessionalHead("Plan & Usage")}<body>
+      <html>${getProfessionalHead("Plan & Billing")}<body class="plan-page">
         <script>
           // Check authentication on page load
           (async function checkAuthOnLoad(){
@@ -115,8 +134,8 @@ export default function registerPlanRoutes(app) {
           <div class="layout">
             ${renderSidebar('plan', { showBookings: !!isUpgraded, isUpgraded })}
             <main class="main">
-              <div class="main-content">
-                <div id="appModal" class="day-modal" style="display:flex;">
+              <div class="main-content plan-content">
+                <div id="appModal" class="day-modal">
                   <div class="day-modal-overlay" onclick="Modal.close()"></div>
                   <div class="day-modal-content" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
                     <div class="day-modal-header">
@@ -125,105 +144,139 @@ export default function registerPlanRoutes(app) {
                     </div>
                     <div class="day-modal-body">
                       <div id="modalMessage">Are you sure?</div>
-                      <div id="modalButtons" style="margin-top:16px; display:flex; gap:8px; justify-content:flex-end;">
+                      <div id="modalButtons" class="plan-modal-actions">
                         <button id="modalCancel" class="btn btn-ghost">Cancel</button>
                         <button id="modalOk" class="btn btn-primary">OK</button>
                       </div>
                     </div>
                   </div>
                 </div>
-                <section class="plan-card-shell card">
-                  <h2 class="workspace-panel__title" style="margin-bottom:12px;">Current plan: ${currentPlanDetails.name}</h2>
-                  <div class="plan-stats-grid">
-                    <div class="plan-stat ">
-                      <div class="plan-stat-label">Monthly Messages</div>
-                      <div class="plan-stat-value">${totalMessages} / ${plan.monthly_limit}</div>
-                      <div class="plan-progress">
-                        <div class="plan-progress-bar ${usagePercentage > 90 ? 'danger' : usagePercentage > 75 ? 'warning' : 'success'}" style="width:${Math.min(usagePercentage, 100)}%"></div>
+
+                ${renderPageHeader("Plan & billing", "Monitor usage, manage pay-as-you-go, and change your subscription.")}
+
+                ${subscriptionBillingBlocked ? `
+                  <div class="plan-alert plan-alert--danger">
+                    <strong>Subscription payment failed</strong>
+                    <p>Messaging is paused until you update your payment method. Your WhatsApp bot will not reply and outbound sends are blocked.</p>
+                    <div class="plan-outstanding__actions">
+                      <button type="button" class="btn btn-primary" onclick="managePaygPaymentMethod()">Update payment method</button>
+                    </div>
+                  </div>
+                ` : ""}
+
+                <section class="plan-overview workspace-panel">
+                  <div class="plan-overview__top">
+                    <div class="plan-overview__identity">
+                      <span class="plan-overview__eyebrow">Current plan</span>
+                      <div class="plan-overview__title-row">
+                        <h2 class="plan-overview__title">${escapeHtml(currentPlanDetails.name)}</h2>
+                        ${isStarter ? '<span class="plan-pill plan-pill--accent">Starter</span>' : '<span class="plan-pill">Free</span>'}
                       </div>
+                      <p class="plan-overview__subtitle">
+                        ${planMonthlyPriceDollars > 0 ? `$${planMonthlyPriceDollars}/month` : "No monthly fee"}
+                        · ${plan.monthly_limit.toLocaleString()} messages included
+                      </p>
                     </div>
-                    <div class="plan-stat ">
-                      <div class="plan-stat-label">WhatsApp Numbers</div>
-                      <div class="plan-stat-value">1 / ${plan.whatsapp_numbers}</div>
+                    <div class="plan-overview__usage">
+                      <div class="plan-overview__usage-head">
+                        <span class="plan-overview__usage-label">Monthly usage</span>
+                        <span class="plan-overview__usage-value">${totalMessages.toLocaleString()} <span class="plan-overview__usage-of">/ ${plan.monthly_limit.toLocaleString()}</span></span>
+                      </div>
+                      <div class="plan-progress plan-progress--lg">
+                        <div class="plan-progress-bar ${usageBarClass}" style="width:${Math.min(usagePercentage, 100)}%"></div>
+                      </div>
+                      <p class="plan-overview__usage-meta">${messagesRemaining.toLocaleString()} messages remaining · ${usagePercentage}% used</p>
                     </div>
-                    <div class="plan-stat">
-                      <div class="plan-stat-label">Plan Cost</div>
-                      <div class="plan-stat-value">$${currentPlanDetails.price}/month</div>
+                  </div>
+                  <div class="plan-metrics">
+                    <div class="plan-metric">
+                      <span class="plan-metric__label">WhatsApp numbers</span>
+                      <span class="plan-metric__value">1 <span class="plan-metric__muted">/ ${plan.whatsapp_numbers}</span></span>
+                    </div>
+                    <div class="plan-metric">
+                      <span class="plan-metric__label">Inbound</span>
+                      <span class="plan-metric__value">${usage.inbound_messages.toLocaleString()}</span>
+                    </div>
+                    <div class="plan-metric">
+                      <span class="plan-metric__label">Outbound</span>
+                      <span class="plan-metric__value">${usage.outbound_messages.toLocaleString()}</span>
+                    </div>
+                    <div class="plan-metric">
+                      <span class="plan-metric__label">Templates</span>
+                      <span class="plan-metric__value">${usage.template_messages.toLocaleString()}</span>
                     </div>
                   </div>
                   ${usagePercentage > 90 ? `
-                    <div class="alert alert-warning" style="margin-top:12px;">
-                      <strong>Usage Warning</strong>
-                      <div>You've used ${usagePercentage}% of your monthly limit. Consider upgrading to avoid interruptions.</div>
+                    <div class="plan-alert plan-alert--warning">
+                      <strong>Approaching limit</strong>
+                      <p>You've used ${usagePercentage}% of your monthly allowance. Consider upgrading or enabling pay-as-you-go.</p>
                     </div>
-                  ` : ''}
+                  ` : ""}
                 </section>
-                <hr style="opacity:0.3;" />
-                <section class="card" style="margin-top:12px;">
-                  <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+
+                <section class="plan-panel workspace-panel">
+                  <div class="plan-panel__head plan-panel__head--split">
                     <div>
-                      <h3 style="margin:0;">Pay-as-you-go</h3>
-                      <div class="small" style="color:#6b7280; margin-top:4px;">
-                        Continue sending/receiving after your monthly limit of ${plan.monthly_limit} messages.
-                        ${stripeEnabled ? `Charges are ${escapeHtml(paygPriceText)} per message over the limit.` : `Stripe is not configured on this deployment.`}
-                      </div>
-                      <div style="margin-top:8px;">
-                        <div class="small" style="color:#374151;">This month: ${escapeHtml(paygTotalFormatted)} total (${paygPercentOfPlan}% of your monthly fee)</div>
-                        <div class="plan-progress" style="margin-top:6px;">
-                          <div class="plan-progress-bar ${paygPercentOfPlan > 90 ? 'danger' : paygPercentOfPlan > 75 ? 'warning' : 'success'}" style="width:${paygPercentOfPlan}%"></div>
+                      <h3 class="plan-panel__title">Pay-as-you-go</h3>
+                      <p class="plan-panel__hint">
+                        Keep messaging after your ${plan.monthly_limit.toLocaleString()} message limit.
+                        ${stripeEnabled ? `Billed at ${escapeHtml(paygPriceText)} per extra message.` : "Stripe is not configured on this deployment."}
+                      </p>
+                    </div>
+                    <label class="plan-toggle" title="${paygEnabled ? "Disable pay-as-you-go" : "Enable pay-as-you-go"}">
+                      <input id="paygToggle" type="checkbox" ${paygEnabled ? "checked" : ""} ${stripeEnabled ? "" : "disabled"} />
+                      <span class="plan-toggle__track" aria-hidden="true"></span>
+                      <span class="plan-toggle__text">${paygEnabled ? "On" : "Off"}</span>
+                    </label>
+                  </div>
+                  <div class="plan-payg-stats">
+                    <div>
+                      <span class="plan-payg-stats__label">This month</span>
+                      <span class="plan-payg-stats__value">${escapeHtml(paygTotalFormatted)}</span>
+                      <span class="plan-payg-stats__meta">${paygPercentOfPlan}% of monthly plan fee</span>
+                    </div>
+                    <div class="plan-progress">
+                      <div class="plan-progress-bar ${paygBarClass}" style="width:${paygPercentOfPlan}%"></div>
+                    </div>
+                    ${paygOutstandingCents > 0 ? `
+                      <div class="plan-outstanding">
+                        <div class="plan-alert plan-alert--danger">
+                          <strong>Unpaid pay-as-you-go balance</strong>
+                          <p>${escapeHtml(paygOutstandingFormatted)} for ${paygOutstandingUnits.toLocaleString()} message${paygOutstandingUnits === 1 ? "" : "s"} could not be collected. Messaging is paused until this is paid.</p>
                         </div>
-                        ${paygOutstandingCents > 0 ? `
-                          <div class="small" style="margin-top:6px; color:#92400e; background:#fef3c7; display:inline-block; padding:2px 8px; border-radius:9999px; border:1px solid #fcd34d;">
-                            Outstanding not yet charged: ${escapeHtml(paygOutstandingFormatted)}
-                          </div>
-                        ` : ``}
+                        <div class="plan-outstanding__actions">
+                          <button type="button" class="btn btn-primary" onclick="retryPaygSettlement()">Retry payment</button>
+                          <button type="button" class="btn btn-ghost" onclick="managePaygPaymentMethod()">Update payment method</button>
+                        </div>
                       </div>
-                    </div>
-                    <div>
-                      <label style="display:inline-flex; align-items:center; gap:8px; cursor:pointer;">
-                        <span class="text-xs" style="color:#374151;">${paygEnabled ? 'Enabled' : 'Disabled'}</span>
-                        <input id="paygToggle" type="checkbox" ${paygEnabled ? 'checked' : ''} ${stripeEnabled ? '' : 'disabled'} style="width:36px; height:20px; accent-color:#111827;" />
-                      </label>
-                    </div>
+                    ` : ""}
                   </div>
+                  ${paygBillingHold ? `
+                    <div class="plan-alert plan-alert--warning">
+                      <strong>Messaging paused</strong>
+                      <p>Your bot will not reply until the outstanding pay-as-you-go balance is settled.</p>
+                    </div>
+                  ` : ""}
                   ${(!paygEnabled && usagePercentage >= 100) ? `
-                    <div class="alert alert-warning" style="margin-top:12px;">
-                      <strong>You reached the Free plan limit.</strong>
-                      <div>Enable pay-as-you-go to continue service without upgrading plans.</div>
+                    <div class="plan-alert plan-alert--warning">
+                      <strong>Monthly limit reached</strong>
+                      <p>Enable pay-as-you-go to continue without upgrading your plan.</p>
                     </div>
-                  ` : ''}
+                  ` : ""}
                   ${paygEnabled ? `
-                    <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
-                      <button class="btn btn-ghost" onclick="managePaygPaymentMethod()">Manage payment method</button>
+                    <div class="plan-panel__actions">
+                      ${paygOutstandingCents <= 0 ? `<button type="button" class="btn btn-ghost" onclick="managePaygPaymentMethod()">Manage payment method</button>` : ""}
                     </div>
-                  ` : ''}
+                  ` : ""}
                 </section>
-                <hr style="opacity:0.3;" />
-                <section>
-                  <h3>Usage Breakdown</h3>
-                  <div class="plan-breakdown-grid">
-                    <div class="plan-breakdown card">
-                      <div class="plan-breakdown-label">Inbound</div>
-                      <div class="plan-breakdown-value">${usage.inbound_messages}</div>
-                      <div class="plan-breakdown-desc">Messages received</div>
-                    </div>
-                    <div class="plan-breakdown card">
-                      <div class="plan-breakdown-label">Outbound</div>
-                      <div class="plan-breakdown-value">${usage.outbound_messages}</div>
-                      <div class="plan-breakdown-desc">Messages sent</div>
-                    </div>
-                    <div class="plan-breakdown card">
-                      <div class="plan-breakdown-label">Templates</div>
-                      <div class="plan-breakdown-value">${usage.template_messages}</div>
-                      <div class="plan-breakdown-desc">Template messages</div>
-                    </div>
+
+                <section class="plan-panel workspace-panel">
+                  <div class="plan-panel__head">
+                    <h3 class="plan-panel__title">Usage history</h3>
+                    <p class="plan-panel__hint">Last 6 months of message activity.</p>
                   </div>
-                </section>
-                <hr style="opacity:0.3;" />
-                <section style="margin-top:12px; margin-bottom:12px;">
-                  <h3>Usage History</h3>
-                  <div class="table-responsive">
-                    <table class="table">
+                  <div class="table-responsive plan-table-wrap">
+                    <table class="table plan-table">
                       <thead>
                         <tr>
                           <th>Month</th>
@@ -240,17 +293,20 @@ export default function registerPlanRoutes(app) {
                   </div>
                 </section>
 
-                <section class="card">
-                  <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px;">
-                    <h3 style="margin:0;">Available Plans</h3>
-                    <div style="display:inline-flex; border:1px solid var(--border); border-radius:9999px; overflow:hidden;">
-                      <button id="billMonthly" type="button" class="text-xs" style="padding:6px 12px; border:none; background:#111827; color:#fff; cursor:pointer;">Monthly</button>
-                      <button id="billYearly" type="button" class="text-xs" style="padding:6px 12px; border:none; background:transparent; color:#111827; cursor:pointer;">Yearly</button>
+                <section class="plan-panel workspace-panel plan-panel--pricing">
+                  <div class="plan-panel__head plan-panel__head--split">
+                    <div>
+                      <h3 class="plan-panel__title">Available plans</h3>
+                      <p class="plan-panel__hint">Upgrade, downgrade, or switch billing cycle.</p>
+                    </div>
+                    <div class="plan-billing-toggle" role="group" aria-label="Billing period">
+                      <button id="billMonthly" type="button" class="plan-billing-toggle__btn is-active">Monthly</button>
+                      <button id="billYearly" type="button" class="plan-billing-toggle__btn">Yearly</button>
                     </div>
                   </div>
-                  <div style="display:flex; align-items:center; gap:8px; margin:8px 0 16px;">
-                    <input id="promoCodeInput" class="settings-field" placeholder="Promo code (optional)" style="max-width:200px;" />
-                    <span class="text-xs" style="color:#6b7280;">Coupons will be applied in Stripe Checkout</span>
+                  <div class="plan-promo">
+                    <input id="promoCodeInput" class="settings-field plan-promo__input" placeholder="Promo code (optional)" />
+                    <span class="plan-promo__hint">Applied at Stripe Checkout</span>
                   </div>
                   <div class="plans-grid">
                     ${Object.entries(pricing).map(([planKey, planDetails]) => `
@@ -267,33 +323,33 @@ export default function registerPlanRoutes(app) {
                           ) : ''}
                         </div>
                         <div class="plan-price">
-                          <span class="price-monthly" style="display:inline;">
+                          <span class="price-monthly">
                             $${planDetails.price}<span class="plan-price-period">/month</span>
                           </span>
-                          <span class="price-yearly" style="display:none;">
+                          <span class="price-yearly">
                             ${planKey === 'starter' ? `
-                              <div style="display:flex; align-items:center; gap:8px;">
-                                <span style="text-decoration:line-through; color:#9ca3af;">$348</span>
-                                <strong class="text-lg">$299</strong><span class="plan-price-period">/year</span>
-                                <span class="text-2xs" style="background:#d1fae5; color:#065f46; border:1px solid #a7f3d0; border-radius:9999px; padding:2px 8px; font-weight:600;">Discounted</span>
-                              </div>
+                              <span class="plan-price-yearly">
+                                <span class="plan-price-strike">$348</span>
+                                <strong>$299</strong><span class="plan-price-period">/year</span>
+                                <span class="plan-badge-discount">Save $49</span>
+                              </span>
                             ` : `
                               $0<span class="plan-price-period">/year</span>
                             `}
                           </span>
                           ${plan.plan_name === 'starter' && planKey === 'starter' && scheduledTargetInterval ? `
-                            <div class="small" style="margin-top:4px; color:#065f46; background:#ecfdf5; display:inline-block; padding:2px 8px; border-radius:9999px; border:1px solid #a7f3d0;">
+                            <div class="plan-schedule-note">
                               Switching on ${scheduledStartTs ? new Date(scheduledStartTs * 1000).toLocaleString() : ''}
                             </div>
                           ` : ``}
                           ${plan.plan_name === 'starter' && planKey === 'starter' && willCancelAtEnd ? `
                             ${
                               currentPaidInterval === 'year'
-                                ? `<div class="small cancel-yearly" style="margin-top:4px; color:#b45309; background:#fffbeb; display:inline-block; padding:2px 8px; border-radius:9999px; border:1px solid #fcd34d;">
-                                    Subscription will cancel on ${cancelAtTs ? new Date(cancelAtTs * 1000).toLocaleString() : ''}
+                                ? `<div class="plan-cancel-note cancel-yearly">
+                                    Subscription ends ${cancelAtTs ? new Date(cancelAtTs * 1000).toLocaleString() : ''}
                                    </div>`
-                                : `<div class="small cancel-monthly" style="margin-top:4px; color:#b45309; background:#fffbeb; display:inline-block; padding:2px 8px; border-radius:9999px; border:1px solid #fcd34d;">
-                                    Subscription will cancel on ${cancelAtTs ? new Date(cancelAtTs * 1000).toLocaleString() : ''}
+                                : `<div class="plan-cancel-note cancel-monthly">
+                                    Subscription ends ${cancelAtTs ? new Date(cancelAtTs * 1000).toLocaleString() : ''}
                                    </div>`
                             }
                           ` : ``}
@@ -306,12 +362,12 @@ export default function registerPlanRoutes(app) {
                             ${stripeEnabled && planKey !== 'free' ? `
                               <button class="btn btn-primary btn-full" onclick="subscribeToPlan('${planKey}')">
                                 <span class="cta-monthly">Subscribe to ${planDetails.name}</span>
-                                <span class="cta-yearly" style="display:none;">Subscribe to ${planKey === 'starter' ? 'Starter Yearly' : planDetails.name}</span>
+                                <span class="cta-yearly">Subscribe to ${planKey === 'starter' ? 'Starter Yearly' : planDetails.name}</span>
                               </button>
                             ` : `
-                              <button class="btn-primary btn-full" onclick="upgradePlan('${planKey}')">
+                              <button class="btn btn-primary btn-full" onclick="upgradePlan('${planKey}')">
                                 <span class="cta-monthly">${planKey === 'free' ? 'Downgrade' : 'Upgrade'} to ${planDetails.name}</span>
-                                <span class="cta-yearly" style="display:none;">${planKey === 'free' ? 'Downgrade' : 'Upgrade'} to ${planKey === 'starter' ? 'Starter Yearly' : planDetails.name}</span>
+                                <span class="cta-yearly">${planKey === 'free' ? 'Downgrade' : 'Upgrade'} to ${planKey === 'starter' ? 'Starter Yearly' : planDetails.name}</span>
                               </button>
                             `}
                           ` : plan.plan_name === 'starter' && stripeEnabled ? `
@@ -322,19 +378,19 @@ export default function registerPlanRoutes(app) {
                                     ? `
                                       <button class="btn btn-primary btn-full cta-monthly" onclick="schedulePlanChange('starter','month')">Switch to Starter Monthly</button>
                                       ${willCancelAtEnd
-                                        ? `<button class="btn btn-primary btn-full cta-yearly" style="display:none;" onclick="resumeSubscription()">Resume Subscription</button>`
-                                        : `<button class="btn btn-danger btn-full cta-yearly" style="display:none;" onclick="cancelSubscription()">Cancel Subscription</button>`}
+                                        ? `<button class="btn btn-primary btn-full cta-yearly" onclick="resumeSubscription()">Resume Subscription</button>`
+                                        : `<button class="btn btn-danger btn-full cta-yearly" onclick="cancelSubscription()">Cancel Subscription</button>`}
                                     `
                                     : `
                                       ${willCancelAtEnd
                                         ? `<button class="btn btn-primary btn-full cta-monthly" onclick="resumeSubscription()">Resume Subscription</button>`
                                         : `<button class="btn btn-danger btn-full cta-monthly" onclick="cancelSubscription()">Cancel Subscription</button>`}
-                                      <button class="btn-primary btn-full cta-yearly" style="display:none;" onclick="schedulePlanChange('starter','year')">Switch to Starter Yearly</button>
+                                      <button class="btn btn-primary btn-full cta-yearly" onclick="schedulePlanChange('starter','year')">Switch to Starter Yearly</button>
                                     `
                                   )
                             }
                             ${plan.plan_name === 'starter' ? `
-                              <button class="btn-ghost btn-full" onclick="managePaymentMethod()" style="margin-top:8px;">Manage Payment Method</button>
+                              <button class="btn btn-ghost btn-full plan-manage-payment" onclick="managePaymentMethod()">Manage payment method</button>
                             ` : ``}
                           ` : ''}
                         </div>
@@ -342,6 +398,7 @@ export default function registerPlanRoutes(app) {
                     `).join('')}
                   </div>
                 </section>
+              </div>
             </main>
           </div>
         </div>
@@ -355,6 +412,7 @@ export default function registerPlanRoutes(app) {
           const SCHEDULED_TARGET_INTERVAL = '${escapeHtml(scheduledTargetInterval || '')}';
           const SCHEDULED_START_TS = ${scheduledStartTs ? Number(scheduledStartTs) : 'null'};
           const PAYG_ENABLED = ${paygEnabled ? 'true' : 'false'};
+          const PAYG_OUTSTANDING_CENTS = ${paygOutstandingCents};
           const STRIPE_ENABLED = ${stripeEnabled ? 'true' : 'false'};
 
           // apiFetch: same-origin JSON helper that tolerates HTML responses
@@ -455,7 +513,11 @@ export default function registerPlanRoutes(app) {
                 title = 'Session Not Found';
                 message = 'We could not verify your checkout session. Please try again.';
               } else if (success === 'true') {
-                // Optional: soft success notice
+                if (PAYG_OUTSTANDING_CENTS > 0) {
+                  setTimeout(function(){ retryPaygSettlement(); }, 0);
+                  try { history.replaceState({}, document.title, location.pathname); } catch {}
+                  return;
+                }
                 title = null;
               }
               if (title) {
@@ -483,10 +545,8 @@ export default function registerPlanRoutes(app) {
               document.querySelectorAll('.cancel-monthly').forEach(function(el){ el.style.display = isYearly ? 'none' : 'inline-block'; });
               document.querySelectorAll('.cancel-yearly').forEach(function(el){ el.style.display = isYearly ? 'inline-block' : 'none'; });
               if (monthlyBtn && yearlyBtn) {
-                monthlyBtn.style.background = isYearly ? 'transparent' : '#111827';
-                monthlyBtn.style.color = isYearly ? '#111827' : '#ffffff';
-                yearlyBtn.style.background = isYearly ? '#111827' : 'transparent';
-                yearlyBtn.style.color = isYearly ? '#ffffff' : '#111827';
+                monthlyBtn.classList.toggle('is-active', !isYearly);
+                yearlyBtn.classList.toggle('is-active', isYearly);
               }
               try { localStorage.setItem('billingMode', isYearly ? 'yearly' : 'monthly'); } catch (e) {}
             }
@@ -574,8 +634,57 @@ export default function registerPlanRoutes(app) {
             }
           }
 
+          async function retryPaygSettlement() {
+            try {
+              const r = await apiFetch('/plan/payg/settle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+              });
+              const j = await r.json().catch(() => ({}));
+              if (!r.ok || !j?.success) {
+                await Modal.alert({
+                  title: 'Payment Failed',
+                  message: j?.error || 'We could not collect the outstanding balance. Please update your payment method and try again.'
+                });
+                return;
+              }
+              if (Number(j?.remaining_units || 0) > 0) {
+                await Modal.alert({
+                  title: 'Partially Paid',
+                  message: 'Some charges were collected, but an outstanding balance remains. Please update your payment method and retry.'
+                });
+                location.reload();
+                return;
+              }
+              await Modal.alert({
+                title: 'Balance Settled',
+                message: 'Your outstanding pay-as-you-go balance has been paid. Messaging will resume immediately.'
+              });
+              location.reload();
+            } catch (e) {
+              await Modal.alert({ title: 'Error', message: e?.message || String(e) });
+            }
+          }
+
+          (function initPaygOutstandingPrompt(){
+            if (!PAYG_OUTSTANDING_CENTS || PAYG_OUTSTANDING_CENTS <= 0) return;
+            setTimeout(function(){
+              Modal.confirm({
+                title: 'Unpaid Balance',
+                message: 'You have an outstanding pay-as-you-go balance and messaging is paused. Retry payment now?',
+                okText: 'Retry payment',
+                cancelText: 'Later'
+              }).then(function(ok){
+                if (ok) retryPaygSettlement();
+              });
+            }, 400);
+          })();
+
           async function upgradePlan(planName) {
-            const ok = await Modal.confirm({ 
+            if (STRIPE_ENABLED && planName !== 'free') {
+              return subscribeToPlan(planName);
+            }
+            const ok = await Modal.confirm({
               title: (planName === 'free' ? 'Confirm Downgrade' : 'Confirm Upgrade'),
               message: 'Are you sure you want to ' + (planName === 'free' ? 'downgrade' : 'upgrade') + ' to the <strong>' + planName + '</strong> plan?',
               okText: (planName === 'free' ? 'Downgrade' : 'Upgrade')
@@ -811,6 +920,14 @@ export default function registerPlanRoutes(app) {
               const data = await response.json();
               
               if (data.success) {
+                if (data.stale_subscription_cleared) {
+                  await Modal.alert({
+                    title: 'Subscription Updated',
+                    message: data.message || 'Your subscription record was cleared and your plan was reset to Free.'
+                  });
+                  location.reload();
+                  return;
+                }
                 var endText = '';
                 if (data.current_period_end) {
                   try { 
@@ -822,7 +939,7 @@ export default function registerPlanRoutes(app) {
                 // Reload to reflect any UI/state changes (e.g., show “cancellation scheduled” in future)
                 location.reload();
               } else {
-                await Modal.alert({ title: 'Error', message: 'Failed to cancel subscription: ' + (data.error || 'Unknown error') });
+                await Modal.alert({ title: 'Error', message: data.detail || data.error || 'Could not cancel subscription.' });
               }
             } catch (error) {
               await Modal.alert({ title: 'Error', message: 'Error canceling subscription: ' + error.message });
@@ -877,6 +994,17 @@ export default function registerPlanRoutes(app) {
     if (!plan_name || !['free', 'starter'].includes(plan_name)) {
       return res.status(400).json({ error: 'Invalid plan name' });
     }
+
+    const stripeEnabled = isStripeEnabled();
+    const allowUnpaidUpgrades = process.env.ALLOW_PLAN_UPDATE_WITHOUT_STRIPE === '1';
+    if (!allowDirectPlanChange(plan_name, { stripeEnabled, allowUnpaidUpgrades })) {
+      return res.status(403).json({
+        error: stripeEnabled
+          ? 'Upgrades require Stripe checkout. Use Subscribe on the Plan page.'
+          : 'Paid plan updates are disabled on this deployment.',
+        requires_checkout: stripeEnabled,
+      });
+    }
     
     try {
       const current = await getUserPlan(userId);
@@ -897,7 +1025,8 @@ export default function registerPlanRoutes(app) {
         plan_name: plan_name,
         monthly_limit: planDetails.monthly_limit,
         whatsapp_numbers: planDetails.whatsapp_numbers,
-        billing_cycle_start: Math.floor(Date.now() / 1000)      });
+        billing_cycle_start: Math.floor(Date.now() / 1000)
+      });
       
       res.json({ success: true, message: `Plan updated to ${planDetails.name}` });
     } catch (error) {
@@ -934,21 +1063,20 @@ export default function registerPlanRoutes(app) {
         }
       } else {
         try {
-          const { getCurrentMonthPaygOutstanding } = await import('../services/usage.mjs');
-          const out = await getCurrentMonthPaygOutstanding(userId);
-          if (out?.outstandingUnits > 0 && isStripeEnabled()) {
-            const chargedUnits = Number(out.chargedUnits || 0);
-            const monthYear = (await getCurrentUsage(userId))?.month_year || '';
-            const idKey = `payg_${String(userId)}_${monthYear}_${chargedUnits + Number(out.outstandingUnits)}`;
-            const result = await chargePayAsYouGo(userId, Number(out.outstandingUnits), { idempotencyKey: idKey });
-            if (!result?.charged) {
-              return res.status(402).json({ error: 'Outstanding PAYG charges could not be collected. Please update payment method and try again.' });
+          if (isStripeEnabled()) {
+            const out = await getCurrentMonthPaygOutstanding(userId);
+            if (out?.outstandingUnits > 0) {
+              const monthYear = (await getCurrentUsage(userId))?.month_year || "";
+              const idKey = `payg_${String(userId)}_${monthYear}_bulk_${Number(out.chargedUnits) + Number(out.outstandingUnits)}`;
+              const result = await settleOutstandingPaygCharges(userId, { bulkCharge: true, bulkIdempotencyKey: idKey });
+              if (!result?.success && Number(result?.remainingUnits || 0) > 0) {
+                return res.status(402).json({ error: "Outstanding PAYG charges could not be collected. Please update payment method and try again." });
+              }
             }
-            try { await recordPaygCharge(userId, Number(out.outstandingUnits), Number(out.outstandingCents)); } catch {}
           }
         } catch (e) {
-          console.error('PAYG charge-on-disable failed:', e?.message || e);
-          return res.status(500).json({ error: 'Failed to settle outstanding PAYG before disabling. Please try again.' });
+          console.error("PAYG charge-on-disable failed:", e?.message || e);
+          return res.status(500).json({ error: "Failed to settle outstanding PAYG before disabling. Please try again." });
         }
       }
       const finalEnabled = enabledBool && !needsSetup;
@@ -980,6 +1108,49 @@ export default function registerPlanRoutes(app) {
     } catch (e) {
       console.error('Failed to start PAYG setup session:', e?.message || e);
       return res.status(500).json({ error: 'Failed to start setup session' });
+    }
+  });
+  app.post("/plan/payg/settle", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
+    if (!isStripeEnabled()) {
+      return res.status(500).json({ error: "Stripe not configured" });
+    }
+    try {
+      const plan = await getUserPlan(userId);
+      if (!plan?.payg_enabled) {
+        return res.status(400).json({ error: "Pay-as-you-go is not enabled" });
+      }
+      const outBefore = await getCurrentMonthPaygOutstanding(userId);
+      if (Number(outBefore?.outstandingUnits || 0) <= 0) {
+        return res.json({
+          success: true,
+          charged_units: 0,
+          charged_cents: 0,
+          remaining_units: 0,
+          remaining_cents: 0,
+        });
+      }
+      const result = await settleOutstandingPaygCharges(userId);
+      if (!result?.success && Number(result?.remainingUnits || 0) > 0) {
+        return res.status(402).json({
+          error: "Outstanding PAYG charges could not be collected. Please update your payment method and try again.",
+          charged_units: result.chargedUnits || 0,
+          charged_cents: result.chargedCents || 0,
+          remaining_units: result.remainingUnits || 0,
+          remaining_cents: result.remainingCents || 0,
+          reason: result.reason || "payment_failed",
+        });
+      }
+      return res.json({
+        success: true,
+        charged_units: result.chargedUnits || 0,
+        charged_cents: result.chargedCents || 0,
+        remaining_units: result.remainingUnits || 0,
+        remaining_cents: result.remainingCents || 0,
+      });
+    } catch (e) {
+      console.error("Failed to settle PAYG balance:", e?.message || e);
+      return res.status(500).json({ error: "Failed to settle outstanding balance" });
     }
   });
 }

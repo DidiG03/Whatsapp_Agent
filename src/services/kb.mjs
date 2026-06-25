@@ -412,7 +412,7 @@ export async function retrieveKbMatches(query, limit = 3, userId = null, onboard
 }
 
 /** KB snippets for onboarding/refining coach chats. */
-export async function retrieveCoachKbContext(userId, userMessage = "", historyTranscript = "") {
+export async function retrieveCoachKbContext(userId, userMessage = "", historyTranscript = "", options = {}) {
   const uid = userId != null ? String(userId) : "";
   if (!uid) return [];
 
@@ -422,12 +422,13 @@ export async function retrieveCoachKbContext(userId, userMessage = "", historyTr
     .lean();
   if (!rows.length) return [];
 
+  const contentMax = options.fullCatalog ? 400 : COACH_KB_CONTENT_MAX;
   const toEntry = (row) => ({
     title: String(row?.title || "").trim(),
-    content: String(row?.content || "").trim().slice(0, COACH_KB_CONTENT_MAX),
+    content: String(row?.content || "").trim().slice(0, contentMax),
   });
 
-  if (rows.length <= COACH_KB_FULL_MAX) {
+  if (options.fullCatalog || rows.length <= COACH_KB_FULL_MAX) {
     return rows.map(toEntry).filter((r) => r.title);
   }
 

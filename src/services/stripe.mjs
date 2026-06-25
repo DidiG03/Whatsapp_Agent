@@ -18,9 +18,20 @@ export async function ensureCustomerForUser(userId, customerEmail = null) {
   try {
     const { UserPlan } = await import('../schemas/mongodb.mjs');
     const { updateUserPlan } = await import('./usage.mjs');
-    let plan = await UserPlan.findOne({ user_id: String(userId) }).lean();
+    const plan = await UserPlan.findOne({ user_id: String(userId) }).lean();
     if (plan?.stripe_customer_id) {
-      return String(plan.stripe_customer_id);
+      const storedId = String(plan.stripe_customer_id);
+      try {
+        await stripe.customers.retrieve(storedId);
+        return storedId;
+      } catch (error) {
+        if (!isStripeResourceMissingError(error)) throw error;
+        console.warn('Stale stripe_customer_id cleared for user', userId, storedId);
+        await updateUserPlan(userId, {
+          stripe_customer_id: null,
+          stripe_subscription_id: null,
+        });
+      }
     }
     let customerId = null;
     if (customerEmail) {
@@ -67,6 +78,119 @@ export function isStripeEnabled() {
 export function getStripePublishableKey() {
   return process.env.STRIPE_PUBLISHABLE_KEY;
 }
+
+export function formatStripeApiError(error, fallback = "Stripe request failed") {
+  const code = String(error?.code || error?.raw?.code || "").toLowerCase();
+  const rawMessage = String(error?.raw?.message || error?.message || "").trim();
+  if (code === "api_key_expired") {
+    return "Your Stripe secret key has expired. Generate a new key in the Stripe Dashboard and update STRIPE_SECRET_KEY (use sk_test_… keys for local development).";
+  }
+  if (error?.type === "StripeAuthenticationError" || code === "invalid_api_key") {
+    return "Stripe authentication failed. Check STRIPE_SECRET_KEY and STRIPE_PUBLISHABLE_KEY in your environment.";
+  }
+  if (isStripeResourceMissingError(error)) {
+    if (rawMessage.toLowerCase().includes("no such customer")) {
+      return STALE_CUSTOMER_MESSAGE;
+    }
+    return STALE_SUBSCRIPTION_MESSAGE;
+  }
+  if (rawMessage) return rawMessage;
+  return fallback;
+}
+
+export function stripeErrorHttpStatus(error) {
+  const code = String(error?.code || error?.raw?.code || "").toLowerCase();
+  if (code === "api_key_expired" || error?.type === "StripeAuthenticationError" || code === "invalid_api_key") {
+    return 503;
+  }
+  const status = Number(error?.statusCode || error?.raw?.statusCode || 0);
+  if (status >= 400 && status < 600) return status;
+  return 502;
+}
+
+export function isStripeResourceMissingError(error) {
+  const code = String(error?.code || error?.raw?.code || "").toLowerCase();
+  if (code === "resource_missing") return true;
+  const msg = String(error?.raw?.message || error?.message || "").toLowerCase();
+  return (
+    msg.includes("no such subscription") ||
+    msg.includes("no such customer") ||
+    msg.includes("no such schedule")
+  );
+}
+
+const STALE_SUBSCRIPTION_MESSAGE =
+  "Your saved subscription was not found in Stripe. This usually happens after switching between test and live API keys, or if the subscription was deleted in Stripe. Your plan has been reset to Free.";
+
+const STALE_CUSTOMER_MESSAGE =
+  "Your saved Stripe customer was not found in this Stripe account. This usually happens after switching between test and live API keys. Please try again — a new customer will be created.";
+
+export async function reconcileStaleStripeCustomer(userId) {
+  if (!isStripeEnabled() || !stripe || !userId) {
+    return { reconciled: false };
+  }
+  const { getUserPlan, updateUserPlan, getPlanPricing } = await import("./usage.mjs");
+  const plan = await getUserPlan(userId);
+  const customerId = plan?.stripe_customer_id;
+  if (!customerId) return { reconciled: false };
+
+  try {
+    await stripe.customers.retrieve(String(customerId));
+    return { reconciled: false };
+  } catch (error) {
+    if (!isStripeResourceMissingError(error)) throw error;
+  }
+
+  const pricing = getPlanPricing();
+  const free = pricing.free || { monthly_limit: 100, whatsapp_numbers: 1 };
+  await updateUserPlan(userId, {
+    plan_name: "free",
+    status: "active",
+    monthly_limit: free.monthly_limit,
+    whatsapp_numbers: free.whatsapp_numbers,
+    stripe_customer_id: null,
+    stripe_subscription_id: null,
+    billing_cycle_start: Math.floor(Date.now() / 1000),
+  });
+
+  return { reconciled: true, message: STALE_CUSTOMER_MESSAGE };
+}
+
+export async function reconcileStaleStripeBilling(userId) {
+  const customerResult = await reconcileStaleStripeCustomer(userId);
+  if (customerResult.reconciled) return customerResult;
+  return reconcileStaleStripeSubscription(userId);
+}
+
+export async function reconcileStaleStripeSubscription(userId, subscriptionId = null) {
+  if (!isStripeEnabled() || !stripe || !userId) {
+    return { reconciled: false };
+  }
+  const { getUserPlan, updateUserPlan, getPlanPricing } = await import("./usage.mjs");
+  const plan = await getUserPlan(userId);
+  const subId = subscriptionId || plan?.stripe_subscription_id;
+  if (!subId) return { reconciled: false };
+
+  try {
+    await stripe.subscriptions.retrieve(String(subId));
+    return { reconciled: false };
+  } catch (error) {
+    if (!isStripeResourceMissingError(error)) throw error;
+  }
+
+  const pricing = getPlanPricing();
+  const free = pricing.free || { monthly_limit: 100, whatsapp_numbers: 1 };
+  await updateUserPlan(userId, {
+    plan_name: "free",
+    status: "active",
+    monthly_limit: free.monthly_limit,
+    whatsapp_numbers: free.whatsapp_numbers,
+    stripe_subscription_id: null,
+    billing_cycle_start: Math.floor(Date.now() / 1000),
+  });
+
+  return { reconciled: true, message: STALE_SUBSCRIPTION_MESSAGE };
+}
 async function ensureSingleActiveSubscription(customerId, keepId = null) {
   if (!isStripeEnabled() || !stripe || !customerId) return;
   try {
@@ -102,20 +226,9 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
   }
 
   try {
-    let customerId = null;
-    try {
-      const { UserPlan } = await import('../schemas/mongodb.mjs');
-      const up = await UserPlan.findOne({ user_id: String(userId) }).select('stripe_customer_id').lean();
-      if (up?.stripe_customer_id) customerId = String(up.stripe_customer_id);
-    } catch {}
-    if (!customerId && customerEmail) {
-      const customers = await stripe.customers.list({ email: customerEmail, limit: 1 });
-      if (customers.data.length > 0) {
-        customerId = customers.data[0].id;
-      } else {
-        const customer = await stripe.customers.create({ email: customerEmail, metadata: { user_id: userId } });
-        customerId = customer.id;
-      }
+    const customerId = await ensureCustomerForUser(userId, customerEmail);
+    if (!customerId) {
+      throw new Error('Failed to create Stripe customer');
     }
     try {
       const envKey = `STRIPE_PRICE_ID_${String(planName || '').toUpperCase()}`;
@@ -208,7 +321,10 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
     return { url: session.url, sessionId: session.id, planName };
   } catch (error) {
     console.error('Stripe checkout session creation failed:', error);
-    throw new Error('Failed to create checkout session');
+    const wrapped = new Error(formatStripeApiError(error, 'Failed to create checkout session'));
+    wrapped.code = error?.code || error?.raw?.code;
+    wrapped.stripeError = error;
+    throw wrapped;
   }
 }
 export async function createPayAsYouGoSetupSession(userId, customerEmail = null) {
@@ -409,8 +525,10 @@ export async function getSubscription(subscriptionId) {
   try {
     return await stripe.subscriptions.retrieve(subscriptionId);
   } catch (error) {
-    console.error('Failed to retrieve subscription:', error);
-    throw new Error('Failed to retrieve subscription');
+    console.error('Failed to retrieve subscription:', error?.message || error);
+    const err = new Error(formatStripeApiError(error, 'Failed to retrieve subscription'));
+    err.code = error?.code || error?.raw?.code || null;
+    throw err;
   }
 }
 export async function getSubscriptionScheduleForSubscription(subscriptionId) {
@@ -474,44 +592,89 @@ function getPlanDetails(planName) {
 
   return plans[planName] || null;
 }
+
+async function claimCheckoutSession(sessionId, userId) {
+  if (!sessionId) return false;
+  try {
+    const { getDB } = await import("../db-mongodb.mjs");
+    const db = getDB();
+    const existing = await db.collection("stripe_checkout_sessions").findOneAndUpdate(
+      { session_id: String(sessionId) },
+      {
+        $setOnInsert: {
+          session_id: String(sessionId),
+          user_id: String(userId),
+          createdAt: new Date(),
+        },
+      },
+      { upsert: true, returnDocument: "before" }
+    );
+    return !existing;
+  } catch (e) {
+    console.error("claimCheckoutSession error:", e?.message || e);
+    return false;
+  }
+}
+
 export async function handleSuccessfulPayment(session) {
+  const sessionId = session?.id;
   const userId = session.metadata?.user_id;
   const planName = session.metadata?.plan_name;
-  
+
   if (!userId || !planName) {
-    console.error('Missing metadata in Stripe session:', session.id);
-    return;
+    console.error("Missing metadata in Stripe session:", sessionId);
+    return { ok: false, reason: "missing_metadata" };
   }
-  const { updateUserPlan } = await import('./usage.mjs');
-  const { getPlanPricing } = await import('./usage.mjs');
-  
+  if (!sessionId) {
+    console.error("Missing session id in Stripe checkout session");
+    return { ok: false, reason: "missing_session_id" };
+  }
+
+  const claimed = await claimCheckoutSession(sessionId, userId);
+  if (!claimed) {
+    return { ok: true, alreadyProcessed: true };
+  }
+
+  const { updateUserPlan, getPlanPricing } = await import("./usage.mjs");
+
   const pricing = getPlanPricing();
   const planDetails = pricing[planName];
-  
-  if (planDetails) {
-    updateUserPlan(userId, {
-      plan_name: planName,
-      monthly_limit: planDetails.monthly_limit,
-      whatsapp_numbers: planDetails.whatsapp_numbers,
-      billing_cycle_start: Math.floor(Date.now() / 1000),
-      stripe_subscription_id: session.subscription || null,
-      stripe_customer_id: session.customer || null
-    });
-    
-    console.log(`User ${userId} successfully subscribed to ${planName} plan`);
-    try { await ensureSingleActiveSubscription(session.customer, session.subscription); } catch (e) { console.warn('Single sub enforcement failed:', e?.message || e); }
-    try {
-      const { sendPaymentReceiptEmail } = await import('./email.mjs');
-      const amountCents = typeof session.amount_total === 'number' ? session.amount_total : planDetails.price * 100;
-      await sendPaymentReceiptEmail(userId, {
-        amountCents,
-        currency: session.currency || (process.env.STRIPE_CURRENCY || 'usd'),
-        planName,
-        invoiceUrl: session?.invoice ? undefined : undefined      });
-    } catch (e) {
-      console.error('Failed to send payment receipt email:', e?.message || e);
-    }
+
+  if (!planDetails) {
+    return { ok: false, reason: "invalid_plan" };
   }
+
+  await updateUserPlan(userId, {
+    plan_name: planName,
+    status: "active",
+    monthly_limit: planDetails.monthly_limit,
+    whatsapp_numbers: planDetails.whatsapp_numbers,
+    billing_cycle_start: Math.floor(Date.now() / 1000),
+    stripe_subscription_id: session.subscription || null,
+    stripe_customer_id: session.customer || null,
+  });
+
+  console.log(`User ${userId} successfully subscribed to ${planName} plan`);
+  try {
+    await ensureSingleActiveSubscription(session.customer, session.subscription);
+  } catch (e) {
+    console.warn("Single sub enforcement failed:", e?.message || e);
+  }
+  try {
+    const { sendPaymentReceiptEmail } = await import("./email.mjs");
+    const amountCents =
+      typeof session.amount_total === "number" ? session.amount_total : planDetails.price * 100;
+    await sendPaymentReceiptEmail(userId, {
+      amountCents,
+      currency: session.currency || process.env.STRIPE_CURRENCY || "usd",
+      planName,
+      invoiceUrl: session?.invoice ? undefined : undefined,
+    });
+  } catch (e) {
+    console.error("Failed to send payment receipt email:", e?.message || e);
+  }
+
+  return { ok: true, alreadyProcessed: false };
 }
 export async function handleSubscriptionCanceled(subscription) {
   const customerId = subscription.customer;
@@ -543,9 +706,20 @@ export async function handleSubscriptionUpdated(subscription) {
     const cancelAtPeriodEnd = !!subscription.cancel_at_period_end;
     const currentPeriodEnd = subscription.current_period_end ? Math.floor(subscription.current_period_end) : Math.floor(Date.now()/1000);
 
+    const stripeStatus = String(subscription.status || '').toLowerCase();
+    let planStatus = String(plan.status || 'active').toLowerCase();
+    if (stripeStatus === 'active' || stripeStatus === 'trialing') {
+      planStatus = 'active';
+    } else if (stripeStatus === 'past_due') {
+      planStatus = 'past_due';
+    } else if (stripeStatus === 'unpaid') {
+      planStatus = 'unpaid';
+    }
+
     const { updateUserPlan } = await import('./usage.mjs');
     await updateUserPlan(plan.user_id, {
       plan_name: plan.plan_name,
+      status: planStatus,
       monthly_limit: plan.monthly_limit,
       whatsapp_numbers: plan.whatsapp_numbers,
       billing_cycle_start: plan.billing_cycle_start,

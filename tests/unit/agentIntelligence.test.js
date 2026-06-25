@@ -6,6 +6,7 @@ import {
   isUsableCustomerName,
   mergeAgentDecision,
   normalizeExecutedIntent,
+  sanitizeReplyWhenBookingReady,
   wantsTimeSlotSuggestions,
 } from "../../src/services/agent-intelligence.mjs";
 import { isHowAreYouQuestion, isCustomerWellbeingReply, isThankYouMessage, polishPleasantryReply, sanitizeAssistantReply } from "../../src/services/i18n.mjs";
@@ -39,7 +40,7 @@ describe("agentIntelligence", () => {
     expect(merged.intent.type).toBe("none");
   });
 
-  test("normalizeExecutedIntent strips book when reply asks for name", () => {
+  test("normalizeExecutedIntent strips book when reply asks for name and booking not ready", () => {
     const out = normalizeExecutedIntent({
       intentType: "book",
       intentData: { datetime: "9" },
@@ -47,6 +48,32 @@ describe("agentIntelligence", () => {
       replyText: "Në çfarë emri ta vendos rezervimin?",
     });
     expect(out.intentType).toBe("none");
+  });
+
+  test("normalizeExecutedIntent keeps book when ready even if reply redundantly asks for name", () => {
+    const history = [
+      { role: "user", content: "tomorrow at 8" },
+      { role: "assistant", content: "What name should I put on the reservation?" },
+    ];
+    const out = normalizeExecutedIntent({
+      intentType: "book",
+      intentData: { name: "prupa drupa" },
+      text: "prupa drupa",
+      replyText: "Thanks, I've noted prupa drupa for tomorrow at 8. What's your name?",
+      historyMessages: history,
+      contactId: "447312706087",
+      bookingFields: [{ id: "name", type: "name", required: true }],
+    });
+    expect(out.intentType).toBe("book");
+  });
+
+  test("sanitizeReplyWhenBookingReady removes redundant name question", () => {
+    const out = sanitizeReplyWhenBookingReady(
+      "Thanks, I've noted prupa drupa for tomorrow at 8. What's your name?",
+      { lang: "en", bookingFields: [{ id: "name", type: "name", required: true }] }
+    );
+    expect(out).not.toMatch(/what'?s your name/i);
+    expect(out.length).toBeGreaterThan(3);
   });
 
   test("normalizeExecutedIntent strips availability without explicit slot request", () => {
