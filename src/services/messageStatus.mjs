@@ -7,7 +7,7 @@ export const READ_STATUS = {
   UNREAD: 'unread',
   READ: 'read'
 };
-export async function updateMessageDeliveryStatus(messageId, status, timestamp = null) {
+export async function updateMessageDeliveryStatus(messageId, status, timestamp = null, userId = null) {
   if (!Object.values(MESSAGE_STATUS).includes(status)) {
     throw new Error(`Invalid message status: ${status}`);
   }
@@ -19,10 +19,11 @@ export async function updateMessageDeliveryStatus(messageId, status, timestamp =
   };
 
   const db = getDB();
+  const scope = userId ? { user_id: String(userId) } : {};
   const now = timestamp || Math.floor(Date.now() / 1000);
   if (status === MESSAGE_STATUS.FAILED) {
     const resFailed = await db.collection('messages').updateOne(
-      { id: messageId },
+      { id: messageId, ...scope },
       { $set: { delivery_status: MESSAGE_STATUS.FAILED, delivery_timestamp: now } }
     );
     if (resFailed.modifiedCount > 0) {
@@ -33,7 +34,7 @@ export async function updateMessageDeliveryStatus(messageId, status, timestamp =
   }
 
   const existing = await db.collection('messages').findOne(
-    { id: messageId },
+    { id: messageId, ...scope },
     { projection: { delivery_status: 1 } }
   );
   const currentRank = rank[existing?.delivery_status] || 0;
@@ -43,7 +44,7 @@ export async function updateMessageDeliveryStatus(messageId, status, timestamp =
   }
 
   const res = await db.collection('messages').updateOne(
-    { id: messageId },
+    { id: messageId, ...scope },
     {
       $set: {
         delivery_status: status,
@@ -59,14 +60,15 @@ export async function updateMessageDeliveryStatus(messageId, status, timestamp =
   
   return false;
 }
-export async function updateMessageReadStatus(messageId, status, timestamp = null) {
+export async function updateMessageReadStatus(messageId, status, timestamp = null, userId = null) {
   if (!Object.values(READ_STATUS).includes(status)) {
     throw new Error(`Invalid read status: ${status}`);
   }
 
   const db = getDB();
+  const scope = userId ? { user_id: String(userId) } : {};
   const res = await db.collection('messages').updateOne(
-    { id: messageId },
+    { id: messageId, ...scope },
     { $set: { read_status: status, read_timestamp: timestamp || Math.floor(Date.now() / 1000), delivery_status: MESSAGE_STATUS.READ, delivery_timestamp: timestamp || Math.floor(Date.now() / 1000) } }
   );
   if (res.modifiedCount > 0) {
@@ -93,11 +95,12 @@ export async function markConversationAsRead(userId, contactId) {
   console.log(`👁️ Marked ${result.modifiedCount || 0} messages as read for conversation: ${contactId}`);
   return result.modifiedCount || 0;
 }
-export async function markMessageAsFailed(messageId, errorMessage = null) {
+export async function markMessageAsFailed(messageId, errorMessage = null, userId = null) {
   const db = getDB();
+  const scope = userId ? { user_id: String(userId) } : {};
   const timestamp = Math.floor(Date.now() / 1000);
   const res = await db.collection('messages').updateOne(
-    { id: messageId },
+    { id: messageId, ...scope },
     { $set: { delivery_status: MESSAGE_STATUS.FAILED, delivery_timestamp: timestamp, error_message: errorMessage } }
   );
   if (res.modifiedCount > 0) {
@@ -107,15 +110,16 @@ export async function markMessageAsFailed(messageId, errorMessage = null) {
   
   return false;
 }
-export async function retryFailedMessage(messageId) {
+export async function retryFailedMessage(messageId, userId = null) {
   const db = getDB();
-  const message = await db.collection('messages').findOne({ id: messageId, delivery_status: MESSAGE_STATUS.FAILED }, { projection: { id: 1, user_id: 1, text_body: 1, to_digits: 1, from_digits: 1, raw: 1 } });
+  const scope = userId ? { user_id: String(userId) } : {};
+  const message = await db.collection('messages').findOne({ id: messageId, delivery_status: MESSAGE_STATUS.FAILED, ...scope }, { projection: { id: 1, user_id: 1, text_body: 1, to_digits: 1, from_digits: 1, raw: 1 } });
   
   if (!message) {
     return { success: false, error: 'Message not found or not in failed state' };
   }
   const timestamp = Math.floor(Date.now() / 1000);
-  await db.collection('messages').updateOne({ id: messageId }, { $set: { delivery_status: MESSAGE_STATUS.SENT, delivery_timestamp: timestamp, error_message: null } });
+  await db.collection('messages').updateOne({ id: messageId, ...scope }, { $set: { delivery_status: MESSAGE_STATUS.SENT, delivery_timestamp: timestamp, error_message: null } });
   
   console.log(`🔄 Retrying failed message ${messageId}`);
   
@@ -131,19 +135,19 @@ export async function retryFailedMessage(messageId) {
     }
   };
 }
-export async function simulateDeliveryStatusUpdate(messageId, status) {
+export async function simulateDeliveryStatusUpdate(messageId, status, userId = null) {
   const timestamp = Math.floor(Date.now() / 1000);
   
   switch (status) {
     case 'delivered':
-      await updateMessageDeliveryStatus(messageId, MESSAGE_STATUS.DELIVERED, timestamp);
+      await updateMessageDeliveryStatus(messageId, MESSAGE_STATUS.DELIVERED, timestamp, userId);
       break;
     case 'read':
-      await updateMessageDeliveryStatus(messageId, MESSAGE_STATUS.READ, timestamp);
-      await updateMessageReadStatus(messageId, READ_STATUS.READ, timestamp);
+      await updateMessageDeliveryStatus(messageId, MESSAGE_STATUS.READ, timestamp, userId);
+      await updateMessageReadStatus(messageId, READ_STATUS.READ, timestamp, userId);
       break;
     case 'failed':
-      await markMessageAsFailed(messageId, 'Simulated failure');
+      await markMessageAsFailed(messageId, 'Simulated failure', userId);
       break;
     default:
       console.warn(`Unknown delivery status: ${status}`);

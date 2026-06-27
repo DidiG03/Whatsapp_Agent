@@ -1,5 +1,7 @@
 
 
+import compression from 'compression';
+import rateLimit from 'express-rate-limit';
 import { logHelpers } from '../monitoring/logger.mjs';
 import { businessMetrics } from '../monitoring/metrics.mjs';
 export const scalabilityConfig = {
@@ -43,7 +45,11 @@ export const scalabilityConfig = {
   },
   performance: {
     compression: {
-      enabled: process.env.COMPRESSION_ENABLED === 'true',
+      enabled: process.env.COMPRESSION_ENABLED === 'false'
+        ? false
+        : (process.env.COMPRESSION_ENABLED === 'true'
+          || process.env.NODE_ENV === 'production'
+          || !!process.env.VERCEL),
       level: parseInt(process.env.COMPRESSION_LEVEL || '6'),
       threshold: parseInt(process.env.COMPRESSION_THRESHOLD || '1024')
     },
@@ -201,14 +207,12 @@ export const scalabilityManager = {
 export function createPerformanceMiddleware() {
   const middleware = [];
   if (scalabilityConfig.performance.compression.enabled) {
-    const compression = require('compression');
     middleware.push(compression({
       level: scalabilityConfig.performance.compression.level,
       threshold: scalabilityConfig.performance.compression.threshold
     }));
   }
   if (scalabilityConfig.performance.rateLimiting.enabled) {
-    const rateLimit = require('express-rate-limit');
     middleware.push(rateLimit({
       windowMs: scalabilityConfig.performance.rateLimiting.windowMs,
       max: scalabilityConfig.performance.rateLimiting.maxRequests,

@@ -8,7 +8,17 @@ jest.mock('../../src/services/conversations.mjs', () => ({
   listContactsForUser: jest.fn(async () => ([
     { contact: '+1234567890', last_ts: 1, last_text: 'hi' }
   ])),
-  listMessagesForThread: jest.fn(async () => ([]))
+  listMessagesForThread: jest.fn(async () => ([])),
+  listThreadMessagesPage: jest.fn(async () => ({ messages: [], hasMore: false, oldestTs: null })),
+  getContactPreviewForUser: jest.fn(async () => null),
+  fetchUnreadCountsForContacts: jest.fn(async () => new Map()),
+  loadThreadMessagesForDisplay: jest.fn(async () => ({ messages: [], hasMore: false, oldestTs: null })),
+}));
+jest.mock('../../src/services/inboxSearch.mjs', () => ({
+  performAdvancedSearch: jest.fn(async () => ([
+    { contact: '+1234567890', last_message_ts: 2, message_count: 1, last_text: 'hello' },
+  ])),
+  performMessageSearch: jest.fn(async () => ({ messages: [], total: 0, hasMore: false })),
 }));
 jest.mock('../../src/services/usage.mjs', () => ({
   getUserPlan: jest.fn(async () => ({ plan_name: 'pro' })),

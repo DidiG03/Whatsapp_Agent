@@ -310,6 +310,15 @@ export function healthCheckMiddleware() {
   return async (req, res, next) => {
     if (req.path === '/health' || req.path === '/health/detailed') {
       try {
+        if (req.path === '/health/detailed') {
+          const isProd = process.env.NODE_ENV === 'production' || process.env.VERCEL;
+          const expected = String(process.env.HEALTH_DETAILED_SECRET || process.env.DIAG_SECRET || '').trim();
+          const provided = String(req.headers['x-health-key'] || req.query.key || '').trim();
+          if (isProd && (!expected || provided !== expected)) {
+            return res.status(404).json({ error: 'not_found' });
+          }
+        }
+
         const healthStatus = await runHealthChecks();
 
         if (req.path === '/health/detailed') {

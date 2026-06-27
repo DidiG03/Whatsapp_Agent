@@ -2,7 +2,7 @@
 import { CLERK_ENABLED, CLERK_PUBLISHABLE } from "./config.mjs";
 const ASSET_VER = process.env.STATIC_ASSETS_VERSION || process.env.VERCEL_GIT_COMMIT_SHA || process.env.GIT_COMMIT || 'dev';
 export function getEnhancementsScript() {
-  return `<script src="/enhancements.js"></script>`;
+  return `<script src="/enhancements.js?v=${ASSET_VER}" defer></script>`;
 }
 export function getVercelWebAnalyticsSnippet() {
   if (!process.env.VERCEL) return '';
@@ -32,14 +32,15 @@ export function getClerkPreloadHeadSnippet() {
       <meta name="clerk-publishable-key" content="${CLERK_PUBLISHABLE}">`;
 }
 
-export function getClerkBrowserScript() {
+export function getClerkBrowserScript(options = {}) {
   if (!CLERK_ENABLED || !CLERK_PUBLISHABLE) return "";
+  const deferAttr = options.defer === false ? "" : " defer";
   const src = getClerkScriptSrc();
   return `
       <script
         crossorigin="anonymous"
         data-clerk-publishable-key="${CLERK_PUBLISHABLE}"
-        src="${src}"
+        src="${src}"${deferAttr}
       ></script>`;
 }
 
@@ -60,7 +61,18 @@ export function getLandingHead(title) {
   `;
 }
 
-export function getProfessionalHead(title) {
+export function getProfessionalHead(title, options = {}) {
+  const {
+    sandbox = false,
+    deferClerk = true,
+    csrfToken = "",
+  } = options;
+  const sandboxScript = sandbox
+    ? `<script src="/bot-sandbox-widget.js?v=${ASSET_VER}" defer></script>`
+    : "";
+  const csrfScript = csrfToken
+    ? `<script>window.__CSRF_TOKEN__=${JSON.stringify(csrfToken)};</script>`
+    : "";
   return `
     <head>
       <title>Code Orbit Agent — ${title}</title>
@@ -71,10 +83,11 @@ export function getProfessionalHead(title) {
       <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
       <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
       <meta name="theme-color" content="#1e293b">
-      ${getClerkBrowserScript()}
-      <script src="/auth-utils.js?v=${ASSET_VER}"></script>
-      <script src="/bot-sandbox-widget.js?v=${ASSET_VER}" defer></script>
+      ${getClerkBrowserScript({ defer: deferClerk })}
+      <script src="/auth-utils.js?v=${ASSET_VER}" defer></script>
+      ${sandboxScript}
       ${getEnhancementsScript()}
+      ${csrfScript}
       ${getVercelWebAnalyticsSnippet()}
     </head>
   `;
@@ -198,7 +211,6 @@ export function renderSidebar(activeKey, options = {}) {
       ${showKb ? navLink("/kb/ui", "Knowledge Base", "kb", imgIcon("/JSON-icon.svg")) : ""}
       ${navLink("/refining", "Refining", "refining", svgIcon('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'))}
       ${navLink("/campaigns", "Campaigns", "campaigns", imgIcon("/send-whatsapp-icon.svg"))}
-      ${navLink("/plan", "Plan", "plan", imgIcon("/plan-icon.svg"))}
       ${navLink("/settings", "Settings", "settings", imgIcon("/settings-icon.svg"))}
     </ul>
   `;
@@ -221,9 +233,16 @@ export function renderSidebar(activeKey, options = {}) {
   `;
 }
 
-export function renderTopbar(crumbs, email) {
+export function renderTopbar(crumbs, email, options = {}) {
+  const { realtime = false, notifications = true } = options;
   const initials = getAccountInitials(email);
   const accountLabel = email ? email.split("@")[0] : "Account";
+  const realtimeScripts = realtime
+    ? `<script src="/realtime.js?v=${ASSET_VER}" defer></script>`
+    : "";
+  const notificationScripts = notifications
+    ? `<script src="/notifications.js?v=${ASSET_VER}" defer></script>`
+    : "";
   return `
     <div class="topbar">
       <div class="topbar__start">
@@ -262,8 +281,8 @@ export function renderTopbar(crumbs, email) {
       </div>
     </div>
     <script src="/toast.js"></script>
-    <script src="/realtime.js?v=${ASSET_VER}"></script>
-    <script src="/notifications.js?v=${ASSET_VER}"></script>
+    ${realtimeScripts}
+    ${notificationScripts}
     <script>
       (function checkUsageLimit(){
         try {

@@ -34,7 +34,7 @@ export default function registerBookingsTab(app) {
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     res.end(`
-      <html>${getProfessionalHead('Bookings')}<body>
+      <html>${getProfessionalHead('Bookings', { csrfToken: res.locals.csrfToken || '' })}<body>
         <style>
           /* Disable global spinner pseudo-element on this page */
           .loading::after { display: none !important; }

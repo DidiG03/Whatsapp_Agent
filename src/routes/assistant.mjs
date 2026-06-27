@@ -9,7 +9,7 @@ import { onboardingCoachReply } from "../services/ai.mjs";
 export default function registerAssistantRoutes(app) {
   app.get("/assistant", (req, res) => {
     const token = req.query?.token;
-    const userId = token ? verifySessionToken(token) : (req.query?.uid || getCurrentUserId(req));
+    const userId = token ? verifySessionToken(token) : getCurrentUserId(req);
     if (!userId) {
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       return res.end(`<html><head><link rel="stylesheet" href="/styles.css">${getVercelWebAnalyticsSnippet()}</head><body><div class="small" style="padding:12px;">Please sign in to use the assistant.</div></body></html>`);
@@ -213,7 +213,7 @@ export default function registerAssistantRoutes(app) {
 
   app.post("/assistant", async (req, res) => {
     const token = req.query?.token || req.body?.token;
-    const userId = token ? verifySessionToken(token) : (req.query?.uid || req.body?.uid || getCurrentUserId(req));
+    const userId = token ? verifySessionToken(token) : getCurrentUserId(req);
     if (!userId) return res.redirect('/auth');
     const userMsg = (req.body?.message || '').toString().trim();
     const state = getOnboarding(userId) || { step: 0, transcript: '' };
@@ -234,6 +234,7 @@ export default function registerAssistantRoutes(app) {
       const trimmed = lines.map(l => l.trim());
       const askLine = trimmed.find(l => /^ASK_MORE\|/.test(l));
       const setLines = trimmed.filter(l => /^SET\|/.test(l));
+      const addLines = trimmed.filter(l => /^ADD_KB\|/.test(l));
       const { summaries: savedSummaries, visible: appliedVisible } = await applyDirectives(userId, directives);
       let visible = appliedVisible;
       try {

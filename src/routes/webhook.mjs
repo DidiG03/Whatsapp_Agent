@@ -20,12 +20,12 @@ import {
   parseBookingNameChange,
   isUsableCustomerName,
   isBookingNameCompletion,
-  bookingHasPartySize,
 } from "../services/agent-intelligence.mjs";
 import { listMessagesForThread, clearMessagesForThread } from "../services/conversations.mjs";
+import { resetContactBotKnowledge } from "../services/contactReset.mjs";
 import { buildThreadHistory } from "../services/conversationContext.mjs";
 import { startMapJanitor } from "../utils/ttlCache.mjs";
-import { listAvailability, createBooking, rescheduleBooking, cancelBooking, updateBookingName, buildDayRows, filterSlotsByTimeOfDay, getStaffById, ensureAppointmentLegacyId, findAppointmentForUser, resolveAppointmentRefId } from "../services/booking.mjs";
+import { listAvailability, createBooking, rescheduleBooking, cancelBooking, updateBookingName, buildDayRows, filterSlotsByTimeOfDay, getStaffById, ensureAppointmentLegacyId, findAppointmentForUser, resolveAppointmentRefId, resolveSlotMinutes } from "../services/booking.mjs";
 import { recordOutboundMessage, recordInboundMessage, persistInboundTranscript } from "../services/messages.mjs";
 import { sendEscalationNotification, sendBookingNotification } from "../services/email.mjs";
 import { isStaffGroupConnectCommand, sendStaffGroupBookingNotification } from "../services/staffGroupNotifications.mjs";
@@ -61,6 +61,12 @@ import {
   pickMostRecentlyBooked,
   findAppointmentByRef,
 } from "../services/cancelResolve.mjs";
+import {
+  coalesceDelayMs,
+  loadInboundBurstText,
+  scheduleInboundCoalesce,
+  shouldUseInboundCoalescer,
+} from "../services/inboundCoalescer.mjs";
 function aiOpts(settings, extra = {}) {
   let businessCategories = [];
   try {
@@ -374,6 +380,9 @@ function normalizeTemporal(raw) {
   // Relative days (check the longer phrase first).
   s = s.replace(/\bpasneser\b/g, 'day after tomorrow');
   s = s.replace(/\bneser\b/g, 'tomorrow');
+  // "sonte" / "kete mbremje" = tonight (today, evening).
+  s = s.replace(/\bsonte\b/g, ' today pm evening ');
+  s = s.replace(/\bkete\s+mbremje\b/g, ' today pm evening ');
   s = s.replace(/\bsot\b/g, 'today');
   s = s.replace(/\bdje\b/g, 'yesterday');
   // "tek ora 8", "rreth ores 8", "ne oren 8" -> "at 8"
@@ -403,6 +412,29 @@ function normalizeTemporal(raw) {
   return s;
 }
 
+// Reference "now" anchored to noon UTC of the business-local calendar day, so
+// relative-date math (today / tonight / tomorrow / weekday) reflects the
+// business timezone instead of the server's UTC clock. This prevents an
+// off-by-one near midnight that would otherwise resolve "tonight" to a date
+// whose evening is already in the past. Falls back to real UTC now when no
+// timezone is provided (preserves prior behavior for non-booking callers).
+function refNow(timezone) {
+  if (!timezone) return new Date();
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date());
+    const y = Number(parts.find((p) => p.type === "year")?.value);
+    const mo = Number(parts.find((p) => p.type === "month")?.value);
+    const d = Number(parts.find((p) => p.type === "day")?.value);
+    if (y && mo && d) return new Date(Date.UTC(y, mo - 1, d, 12, 0, 0));
+  } catch {}
+  return new Date();
+}
+
 function dayOfMonthToISO(day, now = new Date()) {
   const d = Number(day);
   if (!Number.isFinite(d) || d < 1 || d > 31) return null;
@@ -418,32 +450,12 @@ function dayOfMonthToISO(day, now = new Date()) {
   return `${year}-${String(month).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 }
 
-function parseDayOfMonthFromText(text) {
+function parseDayOfMonthFromText(text, timezone) {
   const s = normalizeTemporal(text);
   let m = /\b(?:me\s+dat(?:en|e)|nga\s+data|data)\s+(\d{1,2})\b/.exec(s);
   if (!m) m = /\b(?:dit(?:en|e))\s+(\d{1,2})\b/.exec(s);
   if (!m) return null;
-  return dayOfMonthToISO(Number(m[1]));
-}
-
-function disambiguateHour(hh, normalizedText) {
-  return disambiguateBookingHour(hh, normalizedText);
-}
-
-function parsePartySize(raw) {
-  const s = stripAccentsLower(raw);
-  const patterns = [
-    /\b(?:jemi|ne\s+jemi|for\s+)?(\d{1,2})\s*(?:persona(?:ve)?|person(?:s|en)?|people|guests|veta|te\s+rinj)\b/,
-    /\b(\d{1,2})\s*(?:persona(?:ve)?|person(?:s|en)?|people|guests|veta)\b/,
-  ];
-  for (const re of patterns) {
-    const m = re.exec(s);
-    if (m) {
-      const n = Number(m[1]);
-      if (n >= 1 && n <= 100) return n;
-    }
-  }
-  return null;
+  return dayOfMonthToISO(Number(m[1]), refNow(timezone));
 }
 
 function parseClockTimeFromText(raw) {
@@ -468,7 +480,7 @@ function parseClockTimeFromText(raw) {
   let mm = Number(m || 0);
   if (ap === "pm" && hh < 12) hh += 12;
   if (ap === "am" && hh === 12) hh = 0;
-  hh = disambiguateHour(hh, text);
+  hh = disambiguateBookingHour(hh, text);
   if (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59) {
     return { hour: hh, minute: mm };
   }
@@ -506,10 +518,10 @@ function findSlotByWallClock(slots, dateISO, hour, minute, timeZone) {
   return null;
 }
 
-function findMatchingBookableSlot(slots, parsed, staff) {
+function findMatchingBookableSlot(slots, parsed, staff, durationMinOverride, settings) {
   const tz = staff?.timezone || "UTC";
   const start = buildUtcFromLocalWallTime(parsed.dateISO, parsed.hour, parsed.minute || 0, tz);
-  const durationMin = Number(staff?.slot_minutes || 30);
+  const durationMin = resolveSlotMinutes({ slotMinutes: durationMinOverride, settings, staff });
   const toleranceMs = Math.max(120000, Math.floor(durationMin * 60000 / 2));
 
   const wallMatch = findSlotByWallClock(slots, parsed.dateISO, parsed.hour, parsed.minute || 0, tz);
@@ -529,46 +541,57 @@ function dateISOFromTs(ts) {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 }
 
-function findBookingDatetimeInHistory(historyMessages, currentText) {
-  const current = parseRequestedDateTime(String(currentText || ""));
+function findBookingDatetimeInHistory(historyMessages, currentText, timezone) {
+  const current = parseRequestedDateTime(String(currentText || ""), timezone);
   if (current?.dateISO && current?.hour != null) return current;
-
-  const timeOnly = parseClockTimeFromText(String(currentText || ""));
 
   const userLines = (historyMessages || [])
     .filter((m) => m && m.role === "user")
     .map((m) => String(m.content || "").trim())
     .filter(Boolean);
 
-  let dateISO = current?.dateISO || null;
+  // A single message that already carries both a date and a time wins
+  // (most recent first), including the current message.
+  const allLines = [...userLines, String(currentText || "").trim()];
+  for (let i = allLines.length - 1; i >= 0; i--) {
+    const parsed = parseRequestedDateTime(allLines[i], timezone);
+    if (parsed?.dateISO && parsed.hour != null) return parsed;
+  }
+
+  // Otherwise merge the most recent stated date with the most recent stated
+  // time, even when they arrived in separate messages
+  // (e.g. "per sonte ne dark" then "ora 8").
+  let dateISO = current?.dateISO || parseDateOnly(String(currentText || ""), timezone);
   if (!dateISO) {
     for (let i = userLines.length - 1; i >= 0; i--) {
-      const parsed = parseRequestedDateTime(userLines[i]);
-      if (parsed?.dateISO) {
-        dateISO = parsed.dateISO;
+      const d = parseDateOnly(userLines[i], timezone);
+      if (d) {
+        dateISO = d;
         break;
       }
     }
   }
+  if (!dateISO) return null;
 
-  if (dateISO && (current?.hour != null || timeOnly?.hour != null)) {
-    return {
-      dateISO,
-      hour: current?.hour ?? timeOnly.hour,
-      minute: current?.minute ?? timeOnly?.minute ?? 0,
-    };
+  let time = current?.hour != null
+    ? { hour: current.hour, minute: current.minute ?? 0 }
+    : parseClockTimeFromText(String(currentText || ""));
+  if (time?.hour == null) {
+    for (let i = userLines.length - 1; i >= 0; i--) {
+      const t = parseClockTimeFromText(userLines[i]);
+      if (t?.hour != null) {
+        time = t;
+        break;
+      }
+    }
   }
+  if (time?.hour == null) return null;
 
-  userLines.push(String(currentText || "").trim());
-  for (let i = userLines.length - 1; i >= 0; i--) {
-    const parsed = parseRequestedDateTime(userLines[i]);
-    if (parsed?.dateISO && parsed.hour != null) return parsed;
-  }
-  return null;
+  return { dateISO, hour: time.hour, minute: time.minute ?? 0 };
 }
 
-function resolveRescheduleDatetime(phrase, historyMessages, intentData, apptStartTs) {
-  const parsed = resolveBookDatetime(phrase, historyMessages, intentData);
+function resolveRescheduleDatetime(phrase, historyMessages, intentData, apptStartTs, timezone) {
+  const parsed = resolveBookDatetime(phrase, historyMessages, intentData, timezone);
   if (parsed?.dateISO && parsed.hour != null) return parsed;
   const timeOnly = parseClockTimeFromText(String(intentData?.datetime || phrase || ""));
   if (timeOnly?.hour == null || !apptStartTs) return parsed;
@@ -579,27 +602,25 @@ function resolveRescheduleDatetime(phrase, historyMessages, intentData, apptStar
   };
 }
 
-function resolveBookDatetime(phrase, historyMessages, intentData) {
+function resolveBookDatetime(phrase, historyMessages, intentData, timezone) {
   const intentDatetime = String(intentData?.datetime || "").trim();
   const skipIntentDatetime = intentDatetime
     && (looksLikeStandaloneName(intentDatetime) || parseNameFromMessage(intentDatetime));
   if (intentDatetime && !skipIntentDatetime) {
-    const fromIntent = parseRequestedDateTime(intentDatetime);
+    const fromIntent = parseRequestedDateTime(intentDatetime, timezone);
     if (fromIntent?.dateISO && fromIntent.hour != null) return fromIntent;
     const intentTime = parseClockTimeFromText(intentDatetime);
     if (intentTime?.hour != null) {
-      const merged = findBookingDatetimeInHistory(historyMessages, phrase);
+      const merged = findBookingDatetimeInHistory(historyMessages, phrase, timezone);
       if (merged?.dateISO) {
         return { dateISO: merged.dateISO, hour: intentTime.hour, minute: intentTime.minute ?? 0 };
       }
     }
   }
-  const fromPhrase = parseRequestedDateTime(String(phrase || ""));
+  const fromPhrase = parseRequestedDateTime(String(phrase || ""), timezone);
   if (fromPhrase?.dateISO && fromPhrase.hour != null) return fromPhrase;
-  const merged = findBookingDatetimeInHistory(historyMessages, phrase);
+  const merged = findBookingDatetimeInHistory(historyMessages, phrase, timezone);
   if (merged) return merged;
-  const partySize = parsePartySize(phrase) || Number(intentData?.partySize || intentData?.guests || 0) || null;
-  if (partySize) return findBookingDatetimeInHistory(historyMessages, phrase);
   return fromPhrase?.dateISO ? fromPhrase : null;
 }
 
@@ -668,51 +689,18 @@ function looksLikeStandaloneName(raw) {
   return /^[A-Za-zËÇëç][A-Za-zËÇëç'\-]+(?:\s+[A-Za-zËÇëç][A-Za-zËÇëç'\-]+){0,2}$/.test(s);
 }
 
-function parseBookingReasonFromMessage(raw) {
-  const s = String(raw || "").trim();
-  if (!s || s.length > 120) return null;
-  if (parseNameFromMessage(s) || looksLikeStandaloneName(s)) return null;
-  if (parseRequestedDateTime(s) || parsePartySize(s)) return null;
-  if (/^(yes|no|ok|po|jo|faleminderit|thanks|mirë|mire|ne rregull|okej|flm)$/i.test(s)) return null;
-  if (/\b(rezerv|termin|orar|book|appointment|pasdite|mengjes|neser|nesër)\b/i.test(stripAccentsLower(s))) return null;
-  const re = /\b(?:reason|occasion|because|per|për|ne\s+lidhje\s+me|motivi|rast(?:i)?)\s*(?:is|:|ë?)?\s*(.+)$/i;
-  const m = re.exec(s);
-  if (m) return m[1].trim().slice(0, 120);
-  return null;
-}
-
-function findBookingDateInHistory(historyMessages, currentText) {
-  const merged = findBookingDatetimeInHistory(historyMessages, currentText);
+function findBookingDateInHistory(historyMessages, currentText, timezone) {
+  const merged = findBookingDatetimeInHistory(historyMessages, currentText, timezone);
   if (merged?.dateISO) return merged.dateISO;
-  const fromCurrent = parseDateOnly(String(currentText || ""));
+  const fromCurrent = parseDateOnly(String(currentText || ""), timezone);
   if (fromCurrent) return fromCurrent;
   const userLines = (historyMessages || [])
     .filter((m) => m && m.role === "user")
     .map((m) => String(m.content || "").trim())
     .filter(Boolean);
   for (let i = userLines.length - 1; i >= 0; i--) {
-    const d = parseDateOnly(userLines[i]);
+    const d = parseDateOnly(userLines[i], timezone);
     if (d) return d;
-  }
-  return null;
-}
-
-function resolvePartySizeFromBookingContext(text, historyMessages, intentData = {}) {
-  const direct = parsePartySize(text) || Number(intentData?.partySize || intentData?.guests || 0) || null;
-  if (direct) return direct;
-
-  for (const m of [...(historyMessages || [])].reverse()) {
-    if (m?.role === "assistant") {
-      const ac = stripAccentsLower(String(m.content || ""));
-      if (/\b(ref #|numri i referenc|u krye|all set|gjithcka u krye|booking confirmed)\b/.test(ac)) break;
-      continue;
-    }
-    if (m?.role !== "user") continue;
-    const c = String(m.content || "").trim();
-    if (!c) continue;
-    if (/\b(rezervim\s+te\s+ri|new\s+reservation|another\s+booking)\b/.test(stripAccentsLower(c))) break;
-    const p = parsePartySize(c);
-    if (p) return p;
   }
   return null;
 }
@@ -776,7 +764,7 @@ async function attemptBookFromRequest({
     return { status: "enforced", reply: bookingBlock.reply, ...details };
   }
 
-  const parsed = resolveBookDatetime(String(intentData?.datetime || phrase), historyMessages, intentData);
+  const parsed = resolveBookDatetime(String(intentData?.datetime || phrase), historyMessages, intentData, staff.timezone);
   if (!parsed?.dateISO || parsed.hour == null) return { status: "unparsed" };
 
   const notes = details.notes;
@@ -786,7 +774,7 @@ async function attemptBookFromRequest({
   const minLeadMs = Math.max(1, Number(process.env.BOOKING_MIN_LEAD_MINUTES || 5)) * 60000;
   if (start.getTime() < Date.now() + minLeadMs) return { status: "past" };
 
-  const durationMin = Number(staff.slot_minutes || 30);
+  const durationMin = resolveSlotMinutes({ settings: cfg, staff });
   const toleranceMs = Math.max(120000, Math.floor(durationMin * 60000 / 2));
   const fromDigits = String(from || "").replace(/\D/g, "");
   const locale = cfg?.__lang === "sq" ? "sq-AL" : undefined;
@@ -867,7 +855,7 @@ async function attemptBookFromRequest({
   const slots = (Array.isArray(avail) ? (avail[0]?.slots || []) : []).filter(
     (s) => new Date(s.start).getTime() >= nowCutoff
   );
-  const match = findMatchingBookableSlot(slots, parsed, staff);
+  const match = findMatchingBookableSlot(slots, parsed, staff, undefined, cfg);
   const scored = slots.map((s) => ({
     slot: s,
     diff: Math.abs(new Date(s.start).getTime() - start.getTime()),
@@ -902,35 +890,34 @@ async function attemptBookFromRequest({
   }
 }
 
-function parseRequestedDateTime(raw) {
+function parseRequestedDateTime(raw, timezone) {
   const text = normalizeTemporal(raw);
-  const now = new Date();
+  const now = refNow(timezone);
+  const nowMs = now.getTime();
   const out = { dateISO: null, hour: null, minute: null };
   const weekdays = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
   if (/\bday after tomorrow\b/.test(text)) {
-    const d = new Date(Date.now() + 2 * 86400000);
+    const d = new Date(nowMs + 2 * 86400000);
     out.dateISO = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
   } else if (/\b(today)\b/.test(text)) {
-    const d = new Date();
+    const d = now;
     out.dateISO = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
   } else if (/\b(tomorrow|tmrw|tmr)\b/.test(text)) {
-    const d = new Date(Date.now() + 86400000);
+    const d = new Date(nowMs + 86400000);
     out.dateISO = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
   } else {
     const mWeek = /\bnext\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/.exec(text);
     if (mWeek) {
       const target = weekdays.indexOf(mWeek[1]);
-      let d = new Date();
-      const delta = ((7 - d.getDay()) + target) % 7 || 7;
-      d = new Date(d.getTime() + delta*86400000);
+      const delta = ((7 - now.getUTCDay()) + target) % 7 || 7;
+      const d = new Date(nowMs + delta*86400000);
       out.dateISO = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
     } else {
       const mDay = /\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/.exec(text);
       if (mDay) {
         const target = weekdays.indexOf(mDay[1]);
-        const d = new Date();
-        const delta = ((target - d.getDay()) + 7) % 7 || 7;
-        const nd = new Date(d.getTime() + delta*86400000);
+        const delta = ((target - now.getUTCDay()) + 7) % 7 || 7;
+        const nd = new Date(nowMs + delta*86400000);
         out.dateISO = `${nd.getUTCFullYear()}-${String(nd.getUTCMonth()+1).padStart(2,'0')}-${String(nd.getUTCDate()).padStart(2,'0')}`;
       }
     }
@@ -967,7 +954,7 @@ function parseRequestedDateTime(raw) {
     }
   }
   if (!out.dateISO) {
-    out.dateISO = parseDayOfMonthFromText(text);
+    out.dateISO = parseDayOfMonthFromText(text, timezone);
   }
   let mt = /(?:\bat|\bfor|\baround)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i.exec(text);
   let matchedByKeyword = !!mt;
@@ -986,7 +973,7 @@ function parseRequestedDateTime(raw) {
     let mm = Number(m || 0);
     if (ap === 'pm' && hh < 12) hh += 12;
     if (ap === 'am' && hh === 12) hh = 0;
-    hh = disambiguateHour(hh, text);
+    hh = disambiguateBookingHour(hh, text);
     if (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59) {
       out.hour = hh; out.minute = mm;
     }
@@ -995,19 +982,20 @@ function parseRequestedDateTime(raw) {
   if (!out.dateISO || out.hour == null) return null;
   return out;
 }
-function parseDateOnly(raw) {
+function parseDateOnly(raw, timezone) {
   const text = normalizeTemporal(raw);
-  const now = new Date();
+  const now = refNow(timezone);
+  const nowMs = now.getTime();
   if (/\bday after tomorrow\b/.test(text)) {
-    const d = new Date(Date.now() + 2 * 86400000);
+    const d = new Date(nowMs + 2 * 86400000);
     return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
   }
   if (/\btoday\b/.test(text)) {
-    const d = new Date();
+    const d = now;
     return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
   }
   if (/\b(tomorrow|tmrw|tmr)\b/.test(text)) {
-    const d = new Date(Date.now()+86400000);
+    const d = new Date(nowMs+86400000);
     return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
   }
   const months = ['january','february','march','april','may','june','july','august','september','october','november','december'];
@@ -1032,28 +1020,28 @@ function parseDateOnly(raw) {
     const yr = c < 100 ? (2000 + c) : c;
     return `${yr}-${String(mm2).padStart(2,'0')}-${String(dd2).padStart(2,'0')}`;
   }
-  return parseDayOfMonthFromText(text);
+  return parseDayOfMonthFromText(text, timezone);
 }
 
-function parseDateRange(raw) {
+function parseDateRange(raw, timezone) {
   const s = normalizeTemporal(raw);
-  const todayISO = (()=>{ const d=new Date(); return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`; })();
+  const now = refNow(timezone);
+  const todayISO = `${now.getUTCFullYear()}-${String(now.getUTCMonth()+1).padStart(2,'0')}-${String(now.getUTCDate()).padStart(2,'0')}`;
   let m = /next\s+(\d{1,2})\s+day(s)?/.exec(s);
   if (m) { const n = Math.max(1, Number(m[1]||1)); return { startISO: todayISO, days: Math.min(30, n) }; }
   if (/\bthis\s+week\b/.test(s)) {
-    const now = new Date();
     const wd = now.getUTCDay();    const remain = 7 - wd;
     return { startISO: todayISO, days: Math.max(1, remain) };
   }
   if (/\bnext\s+week\b/.test(s)) {
-    const d = new Date();
+    const d = now;
     const delta = ((8 - d.getUTCDay()) % 7) || 7;    const start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()+delta));
     return { startISO: `${start.getUTCFullYear()}-${String(start.getUTCMonth()+1).padStart(2,'0')}-${String(start.getUTCDate()).padStart(2,'0')}`, days: 7 };
   }
   m = /(?:between|from)\s+([\w\s\/.\-]+?)\s+(?:and|to|-)\s+([\w\s\/.\-]+)/.exec(s);
   if (m) {
-    const a = parseDateOnly(m[1]);
-    const b = parseDateOnly(m[2]);
+    const a = parseDateOnly(m[1], timezone);
+    const b = parseDateOnly(m[2], timezone);
     if (a && b) {
       const start = new Date(`${a}T00:00:00.000Z`);
       const end = new Date(`${b}T00:00:00.000Z`);
@@ -1061,7 +1049,7 @@ function parseDateRange(raw) {
       return { startISO: a, days };
     }
   }
-  const single = parseDateOnly(s);
+  const single = parseDateOnly(s, timezone);
   if (single) return { startISO: single, days: 1 };
   return null;
 }
@@ -1663,7 +1651,7 @@ export default function registerWebhookRoutes(app) {
           appointmentId: apptId,
           mongoId: apptOid,
         });
-        const parsed = resolveRescheduleDatetime(text, hist, {}, apptRow?.start_ts);
+        const parsed = resolveRescheduleDatetime(text, hist, {}, apptRow?.start_ts, staff.timezone);
         if (!parsed?.dateISO || parsed.hour == null) {
           const n = await generateAssistantNudge("ask_datetime", { examples: ["tomorrow 9pm", "nesër ora 21:00"] }, aiOpts(cfg));
           await sendTextTracked(from, n || tr("ask_datetime", cfg?.__lang), cfg);
@@ -1672,7 +1660,7 @@ export default function registerWebhookRoutes(app) {
 
         const base = new Date(`${parsed.dateISO}T00:00:00.000Z`);
         const start = buildUtcFromLocalWallTime(parsed.dateISO, parsed.hour, parsed.minute || 0, staff.timezone || "UTC");
-        const durationMin = Number(sess.service_minutes || staff.slot_minutes || 30);
+        const durationMin = Number(sess.service_minutes || resolveSlotMinutes({ settings: cfg, staff }));
         const minLeadMs = Math.max(1, Number(process.env.BOOKING_MIN_LEAD_MINUTES || 5)) * 60000;
         if (start.getTime() < Date.now() + minLeadMs) {
           await sendTextTracked(from, tr("past_time_warning", cfg?.__lang), cfg);
@@ -1688,14 +1676,11 @@ export default function registerWebhookRoutes(app) {
         const slots = (Array.isArray(avail) ? (avail[0]?.slots || []) : []).filter(
           (s) => new Date(s.start).getTime() >= Date.now() + minLeadMs
         );
-        const toleranceMs = Math.max(120000, Math.floor(durationMin * 60000 / 2));
-        const scored = slots.map((s) => ({
-          slot: s,
-          diff: Math.abs(new Date(s.start).getTime() - start.getTime()),
-        }));
-        scored.sort((a, b) => a.diff - b.diff);
-        const match = scored.find((x) => x.diff <= toleranceMs)?.slot;
+        const match = findMatchingBookableSlot(slots, parsed, staff, durationMin, cfg);
         if (!match) {
+          const scored = slots
+            .map((s) => ({ slot: s, diff: Math.abs(new Date(s.start).getTime() - start.getTime()) }))
+            .sort((a, b) => a.diff - b.diff);
           const suggestions = formatSlotSuggestions(
             scored.slice(0, 3).map((x) => x.slot),
             cfg?.__lang,
@@ -1773,14 +1758,14 @@ export default function registerWebhookRoutes(app) {
         }
         return true;
       }
-      const resolved = resolveBookDatetime(String(intentData.datetime || text), historyMessages, intentData);
+      const resolved = resolveBookDatetime(String(intentData.datetime || text), historyMessages, intentData, staff.timezone);
       let range = null;
       if (resolved?.dateISO && resolved?.hour != null) {
         range = { startISO: resolved.dateISO, days: 1 };
       } else if (intentData.startDate) {
         range = { startISO: String(intentData.startDate), days: Math.min(30, Math.max(1, Number(intentData.days || 1))) };
       } else {
-        range = parseDateRange(String(intentData.range || intentData.datetime || text));
+        range = parseDateRange(String(intentData.range || intentData.datetime || text), staff.timezone);
       }
       const tod = (() => {
         if (resolved?.dateISO && resolved?.hour != null) {
@@ -1877,7 +1862,7 @@ export default function registerWebhookRoutes(app) {
         }
         return true;
       }
-      if (bookResult.status === "needs_field" || bookResult.status === "needs_name") {
+      if (bookResult.status === "needs_field") {
         const missing = bookResult.missingField;
         const alreadyAsked = missing
           ? bookingReplyAsksForField(replyText, missing)
@@ -1901,7 +1886,7 @@ export default function registerWebhookRoutes(app) {
             digits: fromDigits,
             contactId: from,
           });
-          const parsed = resolveBookDatetime(String(intentData?.datetime || text), historyMessages, intentData);
+          const parsed = resolveBookDatetime(String(intentData?.datetime || text), historyMessages, intentData, staff.timezone);
           if (existing?.start_ts && parsed?.dateISO && parsed.hour != null) {
             const requestedStart = buildUtcFromLocalWallTime(
               parsed.dateISO,
@@ -1909,7 +1894,7 @@ export default function registerWebhookRoutes(app) {
               parsed.minute || 0,
               staff.timezone || "UTC"
             );
-            const toleranceMs = Math.max(120000, Math.floor(Number(staff.slot_minutes || 30) * 60000 / 2));
+            const toleranceMs = Math.max(120000, Math.floor(resolveSlotMinutes({ settings: cfg, staff }) * 60000 / 2));
             if (Math.abs(existing.start_ts * 1000 - requestedStart.getTime()) <= toleranceMs) {
               return true;
             }
@@ -1924,7 +1909,10 @@ export default function registerWebhookRoutes(app) {
         return true;
       }
       if (bookResult.status === "past") {
-        if (!replyText) await sendTextTracked(from, tr("past_time_warning", cfg?.__lang), cfg);
+        // Always inform the customer: the AI reply may have optimistically
+        // acknowledged the requested time before the server determined it was
+        // in the past, so staying silent would leave them without an answer.
+        await sendTextTracked(from, tr("past_time_warning", cfg?.__lang), cfg);
         return true;
       }
       if (bookResult.status === "error") {
@@ -1933,7 +1921,7 @@ export default function registerWebhookRoutes(app) {
       }
       if (bookResult.status === "unparsed") {
         const lang = cfg?.__lang || "en";
-        const dateISO = findBookingDateInHistory(historyMessages, String(intentData.datetime || text));
+        const dateISO = findBookingDateInHistory(historyMessages, String(intentData.datetime || text), staff.timezone);
         if (dateISO && !replyText) {
           const n = await generateAssistantNudge("ask_specific_time", {}, aiOpts(tenant));
           await sendTextTracked(from, n || tr("ask_specific_time", lang), cfg);
@@ -2058,11 +2046,11 @@ export default function registerWebhookRoutes(app) {
       }
       if (!staff) return true;
       const apptRefId = resolveAppointmentRefId(appt) || await ensureAppointmentLegacyId(appt, tenantUserId);
-      const parsed = resolveRescheduleDatetime(String(intentData.datetime || text), historyMessages, intentData, appt.start_ts);
+      const parsed = resolveRescheduleDatetime(String(intentData.datetime || text), historyMessages, intentData, appt.start_ts, staff.timezone);
       if (parsed?.dateISO && parsed.hour != null) {
         const base = new Date(`${parsed.dateISO}T00:00:00.000Z`);
         const start = buildUtcFromLocalWallTime(parsed.dateISO, parsed.hour, parsed.minute || 0, staff.timezone || "UTC");
-        const durationMin = Number(staff.slot_minutes || 30);
+        const durationMin = resolveSlotMinutes({ settings: cfg, staff });
         const minLeadMs = Math.max(1, Number(process.env.BOOKING_MIN_LEAD_MINUTES || 5)) * 60000;
         const avail = await listAvailability({
           userId: tenantUserId,
@@ -2072,10 +2060,10 @@ export default function registerWebhookRoutes(app) {
           slotMinutes: durationMin,
         });
         const slots = (avail[0]?.slots || []).filter((s) => new Date(s.start).getTime() >= Date.now() + minLeadMs);
-        const toleranceMs = Math.max(120000, Math.floor(durationMin * 60000 / 2));
-        const scored = slots.map((s) => ({ slot: s, diff: Math.abs(new Date(s.start).getTime() - start.getTime()) }));
-        scored.sort((a, b) => a.diff - b.diff);
-        const match = scored.find((x) => x.diff <= toleranceMs)?.slot;
+        const scored = slots
+          .map((s) => ({ slot: s, diff: Math.abs(new Date(s.start).getTime() - start.getTime()) }))
+          .sort((a, b) => a.diff - b.diff);
+        const match = findMatchingBookableSlot(slots, parsed, staff, durationMin, cfg);
         if (match) {
           try {
             await rescheduleBooking({
@@ -2903,29 +2891,10 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
   }
 }
 
-  async function maybeJoinRecentFragments({ text, from, tenantUserId, timestampSec }) {
+  async function maybeJoinRecentFragments({ text, from, tenantUserId }) {
     try {
-      const nowSec = Number(timestampSec || Math.floor(Date.now()/1000));
-      const digits = digitsOnly(from);
-      if (!digits) return text;
-      const windowSec = 20;
-      const recent = db.prepare(`
-        SELECT text_body AS t, timestamp AS ts
-        FROM messages
-        WHERE user_id = ? AND direction = 'inbound' AND type = 'text'
-          AND (REPLACE(from_id,'+','') = ? OR from_digits = ?)
-          AND timestamp >= ?
-        ORDER BY timestamp ASC
-        LIMIT 8
-      `).all(tenantUserId, digits, digits, nowSec - windowSec);
-      const parts = (recent || []).map(r => String(r.t || '').trim()).filter(Boolean);
-      const joined = parts.join(' ').replace(/\s+/g, ' ').trim();
-      const isShort = (s) => {
-        const trimmed = String(s || '').trim();
-        const wc = trimmed ? trimmed.split(/\s+/).length : 0;
-        return trimmed.length <= 4 || wc <= 2;
-      };
-      if (joined && (isShort(text) || parts.length >= 3)) return joined;
+      const burst = await loadInboundBurstText(tenantUserId, from);
+      if (burst) return burst;
     } catch {}
     return text;
   }
@@ -3638,11 +3607,11 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       return res.status(500).json({ error: e.message });
     }
   });
-  app.get("/webhook", rateLimit, (req, res) => {
+  app.get("/webhook", rateLimit, async (req, res) => {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
-    const s = findSettingsByVerifyToken(token);
+    const s = await findSettingsByVerifyToken(token);
     if (mode === "subscribe" && s) {
       if (DEBUG_LOGS) console.log("[WEBHOOK][GET] verified", {
         mode,
@@ -3653,6 +3622,23 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
     }
     return res.sendStatus(403);
   });
+  // A chainable no-op response used after we fast-ack Meta. Once the real 200
+  // has been sent, any later `res.sendStatus(...)`/`res.status(...).send(...)`
+  // in the (now background) processing must not touch the real socket.
+  function makeNoopRes() {
+    const noop = {
+      headersSent: true,
+      sendStatus() { return noop; },
+      status() { return noop; },
+      send() { return noop; },
+      json() { return noop; },
+      end() { return noop; },
+      set() { return noop; },
+      setHeader() { return noop; },
+      header() { return noop; },
+    };
+    return noop;
+  }
   app.post("/webhook", rateLimit, async (req, res) => {
     try {
       const maxBytes = Number(process.env.WEBHOOK_MAX_BYTES || 1048576);      const contentLen = Number(req.headers['content-length'] || 0);
@@ -3733,7 +3719,16 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           }
         }
       } catch {}
-      
+
+      // Fast-ack to Meta, then keep processing in the background. Meta expects a
+      // quick 200 and re-delivers (causing duplicate processing) when we are
+      // slow; synchronous OpenAI + WhatsApp work previously took 10-22s.
+      // Disable with WEBHOOK_ASYNC_ACK=0. On Vercel, registerBackgroundTask keeps
+      // the function alive until processing finishes (see api/index.js).
+      const asyncAck = process.env.NODE_ENV !== 'test'
+        && process.env.WEBHOOK_ASYNC_ACK !== '0';
+
+      const processWebhookPayload = async () => {
       if (DEBUG_LOGS) {
         try {
           const raw = JSON.stringify(payload);
@@ -4016,6 +4011,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       } catch {}
 
       const inboundId = message.id;
+      let webhookNonceKey = null;
       try {
         if (inboundId && tenantUserId && isRedisConnected()) {
           const redis = getRedisClient();
@@ -4025,8 +4021,18 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
           if (result !== 'OK') {
             return res.sendStatus(200);
           }
+          webhookNonceKey = nonceKey;
         }
       } catch {}
+      // Release the dedup lock when we fail to deliver a reply, so Meta's
+      // webhook retry can reprocess the same message and try again.
+      const releaseWebhookNonce = async () => {
+        if (!webhookNonceKey) return;
+        try {
+          if (isRedisConnected()) await getRedisClient().del(webhookNonceKey);
+        } catch {}
+        webhookNonceKey = null;
+      };
       if (inboundId) {
         try {
           const inserted = await recordAndBroadcastInbound({ message, tenantUserId, metadata, normalizedType, text, mediaUrl });
@@ -4064,7 +4070,29 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
                 const existingText = String(exists.text_body || "").trim();
                 if (existingText) {
                   text = existingText;
-                  return res.sendStatus(200);
+                  // Meta retries deliveries when our first response was slow or
+                  // the reply failed to send (e.g. WhatsApp 5xx). Only skip if we
+                  // actually delivered a reply already; otherwise fall through and
+                  // reprocess so the customer still gets an answer.
+                  let alreadyAnswered = true;
+                  try {
+                    const inboundTs = message?.timestamp ? Number(message.timestamp) : 0;
+                    const toDigits = normalizePhone(from);
+                    const replied = await getDB().collection('messages').findOne(
+                      {
+                        user_id: String(tenantUserId),
+                        direction: 'outbound',
+                        to_digits: toDigits,
+                        timestamp: { $gte: inboundTs },
+                      },
+                      { projection: { _id: 1 } }
+                    );
+                    alreadyAnswered = !!replied;
+                  } catch { alreadyAnswered = true; }
+                  if (alreadyAnswered) {
+                    return res.sendStatus(200);
+                  }
+                  if (DEBUG_LOGS) console.log('[Webhook] Duplicate delivery with no prior reply; reprocessing', { inboundId });
                 }
                 if (normalizedType === "audio" && message.audio?.id) {
                   const retry = await resolveInboundAudioText({ message, tenantUserId, from, cfg });
@@ -4183,11 +4211,15 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         }
         return res.sendStatus(200);
       }
-      try {
-        if (message.type !== "audio") {
-          text = await maybeJoinRecentFragments({ text, from, tenantUserId, timestampSec: Number(message.timestamp || Math.floor(Date.now()/1000)) });
-        }
-      } catch {}
+
+      async function runInboundAutomation(initialText) {
+        let text = String(initialText || "").trim();
+        if (!text) return;
+        try {
+          if (message.type !== "audio") {
+            text = await maybeJoinRecentFragments({ text, from, tenantUserId });
+          }
+        } catch {}
       // Detect the conversation language (Albanian vs English) and remember it,
       // so the assistant replies like a native speaker and stays consistent even
       // when later messages are short/ambiguous (e.g. "ok", a time, an emoji).
@@ -4233,14 +4265,14 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
             } catch {}
           }
         }
-        if (!appt) { await sendWhatsAppText(from, "No staff is configured or booking could not be created for test.", cfg); return res.sendStatus(200); }
+        if (!appt) { await sendWhatsAppText(from, "No staff is configured or booking could not be created for test.", cfg); return; }
         const when = new Date((appt.start_ts||0)*1000).toLocaleString();
         await sendButtonTracked(from, `Reminder: your appointment is at ${when}. Is this still correct?`, [
           { id: `REM_OK_${appt.id}`, title: 'Correct' },
           { id: `REM_CANCEL_${appt.id}`, title: 'Cancel' },
           { id: `REM_RESCHED_${appt.id}`, title: 'Reschedule' }
         ], cfg);
-        return res.sendStatus(200);
+        return;
       }
       // NOTE: The canned "when is my booking" and "previous agent" lookups were
       // removed. The bilingual AI already receives the customer's profile
@@ -4248,7 +4280,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       // naturally in the customer's language.
       if (tenantUserId && String(text || "").trim()) {
         if (await handleStructuredBookingSession({ tenantUserId, from, text, cfg, fromDigits })) {
-          return res.sendStatus(200);
+          return;
         }
       }
       const sess = tenantUserId ? await (async () => {
@@ -4269,7 +4301,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
         try { await getDB().collection('booking_sessions').deleteOne({ user_id: String(tenantUserId), contact_id: String(from) }); } catch {}
         const n = await generateAssistantNudge('reset_done', {}, aiOpts(tenant));
         await sendTextTracked(from, n, cfg);
-        return res.sendStatus(200);
+        return;
       }
       const wantsWaitlist = /\b(waitlist|notify\s+(me\s+)?(if\s+)?(earlier|sooner)|earlier\s+slot|sooner\s+(time|slot))\b/i.test(text || "")
         || /\b(njoftom|me\s+njofto|lajmerom|me\s+lajmero)\b.*\b(hapet|lirohet|orar\s+me\s+i\s+hershem|me\s+heret)\b/.test(sqText);
@@ -4289,7 +4321,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
               { upsert: true }
             );
             await sendTextTracked(from, tr('waitlist_added', cfg?.__lang), cfg);
-            return res.sendStatus(200);
+            return;
           }
         } catch {}
       }
@@ -4365,20 +4397,66 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
             trySendBusinessLocationPin,
             isGreeting,
           });
-          return res.sendStatus(200);
+          return;
         } catch (aiErr) {
           console.error('[AI-path] unhandled error:', { message: aiErr?.message || String(aiErr), stack: aiErr?.stack ? String(aiErr.stack).split('\n').slice(0, 3).join(' | ') : null });
+          const errMsg = String(aiErr?.message || aiErr || '');
+          const retryableSendFailure = /5xx|ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up|network|fetch failed|EAI_AGAIN/i.test(errMsg);
+          if (retryableSendFailure) {
+            // The channel itself is failing (e.g. WhatsApp 5xx). Sending a
+            // generic error would also fail, and if it somehow succeeded it
+            // would suppress the real reply on retry. Release the dedup lock and
+            // signal Meta to redeliver so the customer eventually gets answered.
+            await releaseWebhookNonce();
+            return res.sendStatus(503);
+          }
           try {
             await sendTextTracked(from, tr('error_generic', cfg?.__lang), cfg);
           } catch (sendErr) {
             console.error('[AI-path] error-notice send failed:', sendErr?.message || sendErr);
           }
-          return res.sendStatus(200);
+          return;
         }
+        return;
+      }
+      }
+
+      if (shouldUseInboundCoalescer({ text, messageType: message?.type, humanActive, awaitingRating })) {
+        scheduleInboundCoalesce(tenantUserId, from, {
+          delayMs: coalesceDelayMs(text),
+          onReady: async () => {
+            const burst = await loadInboundBurstText(tenantUserId, from);
+            if (!burst) return;
+            if (DEBUG_LOGS) {
+              console.log("[Webhook] Coalesced inbound burst", {
+                from: String(from).slice(-6),
+                textLen: burst.length,
+                preview: burst.slice(0, 120),
+              });
+            }
+            await runInboundAutomation(burst);
+          },
+        });
         return res.sendStatus(200);
       }
 
+      await runInboundAutomation(text);
       return res.sendStatus(200);
+      };
+
+      if (asyncAck && typeof req.registerBackgroundTask === 'function' && !res.headersSent) {
+        req.registerBackgroundTask(processWebhookPayload().catch((err) => {
+          console.error('Webhook background processing error:', err);
+        }));
+        return res.sendStatus(200);
+      }
+
+      if (asyncAck && !res.headersSent) {
+        try { res.sendStatus(200); } catch {}
+        res = makeNoopRes();
+      }
+
+      await processWebhookPayload();
       
     } catch (e) {
       console.error("Webhook error:", e);
@@ -4645,18 +4723,7 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
       const from = sandboxContactId(tenantUserId);
       const dbNative = getDB();
       await clearMessagesForThread(tenantUserId, from);
-      await dbNative.collection("booking_sessions").deleteMany({
-        user_id: String(tenantUserId),
-        contact_id: from,
-      });
-      await dbNative.collection("contact_state").deleteMany({
-        user_id: String(tenantUserId),
-        contact_id: from,
-      });
-      await dbNative.collection("customers").deleteOne({
-        user_id: String(tenantUserId),
-        contact_id: from,
-      });
+      await resetContactBotKnowledge(tenantUserId, from);
       return res.json({ ok: true });
     } catch (e) {
       console.error("[Sandbox] reset error:", e);
@@ -4666,5 +4733,5 @@ async function handleSimpleEscalationFlow({ tenantUserId, from, text, cfg }) {
 
 }
 
-export { parseDateRange, parseTimeOfDayFilter, parseDateOnly, normalizeTemporal, parseDayOfMonthFromText };
+export { parseDateRange, parseTimeOfDayFilter, parseDateOnly, normalizeTemporal, parseDayOfMonthFromText, parseRequestedDateTime, parseClockTimeFromText, findBookingDatetimeInHistory, resolveBookDatetime };
 

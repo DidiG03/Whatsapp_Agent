@@ -315,8 +315,7 @@ export const databaseAdapter = {
     if (process.env.DATABASE_TYPE === 'postgresql' && isPostgreSQLConnected()) {
       return db;
     } else {
-      const { db: sqliteDb } = require('../db.mjs');
-      return sqliteDb;
+      throw new Error('SQLite adapter is not available; this deployment uses MongoDB. Set DATABASE_TYPE=postgresql to use the SQL adapter.');
     }
   },
   async healthCheck() {

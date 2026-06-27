@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { normalizePhoneE164 } from "../utils.mjs";
-import { detectLanguage, languageInstruction, kbScopeGuidance, conversationalStyleGuidance, conversationContinuityInstruction, howAreYouReplyGuidance, isHowAreYouQuestion, isCustomerWellbeingReply, customerWellbeingReplyGuidance, isThankYouMessage, thanksReplyGuidance, t as translate } from "./i18n.mjs";
+import { detectLanguage, languageInstruction, kbScopeGuidance, conversationalStyleGuidance, conversationContinuityInstruction, howAreYouReplyGuidance, isHowAreYouQuestion, isCustomerWellbeingReply, customerWellbeingReplyGuidance, isThankYouMessage, thanksReplyGuidance, isBusinessIdentityConfirmationQuestion, t as translate } from "./i18n.mjs";
 import { formatRefiningRulesForPrompt } from "./refiningDirectives.mjs";
 import { buildBookingFieldsPromptBlock } from "./bookingFields.mjs";
 
@@ -44,7 +44,14 @@ function parseBusinessCategories(raw) {
   }
 }
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// Bound each request so a slow/hung OpenAI call can't stall the webhook reply
+// path, and let the SDK transparently retry transient failures (429s, 5xx,
+// connection drops) with exponential backoff before we fall back.
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+  timeout: Number(process.env.OPENAI_TIMEOUT_MS || 30000),
+  maxRetries: Number(process.env.OPENAI_MAX_RETRIES || 3),
+});
 
 export function logOpenAiError(err, label = "OpenAI error") {
   try {
@@ -81,6 +88,18 @@ function isReasoningModel(model) {
   return /^(gpt-5|o[1-9])/i.test(String(model || ""));
 }
 
+// True when an OpenAI error indicates a request parameter is unsupported by the
+// target model/deployment (a non-retryable 400 we can recover from by dropping
+// the offending field rather than failing the whole reply).
+function isUnsupportedParamError(err, param) {
+  const status = err?.status || err?.response?.status || null;
+  if (status && status !== 400) return false;
+  const message = String(err?.error?.message || err?.message || "").toLowerCase();
+  if (!message) return false;
+  return message.includes(String(param).toLowerCase())
+    && (message.includes("unsupported") || message.includes("not supported") || message.includes("invalid"));
+}
+
 // Drop-in replacement for openai.chat.completions.create that adapts the request
 // to whichever model is configured, so call sites can keep using temperature /
 // max_tokens uniformly regardless of the model family.
@@ -97,7 +116,17 @@ async function createChat(params = {}) {
     delete body.presence_penalty;
     if (!body.reasoning_effort) body.reasoning_effort = process.env.OPENAI_REASONING_EFFORT || "medium";
   }
-  return openai.chat.completions.create(body);
+  try {
+    return await openai.chat.completions.create(body);
+  } catch (err) {
+    // If a model doesn't accept response_format (JSON mode), degrade gracefully
+    // instead of failing every decision — the caller still parses/repairs JSON.
+    if (body.response_format && isUnsupportedParamError(err, "response_format")) {
+      const { response_format, ...rest } = body;
+      return openai.chat.completions.create(rest);
+    }
+    throw err;
+  }
 }
 
 const REFINING_LINE_PATTERNS = [
@@ -594,6 +623,11 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
     isHowAreYouQuestion(userMessage) ? howAreYouReplyGuidance(lang) : "",
     isCustomerWellbeingReply(userMessage) ? customerWellbeingReplyGuidance(lang) : "",
     isThankYouMessage(userMessage) ? thanksReplyGuidance(lang) : "",
+    isBusinessIdentityConfirmationQuestion(userMessage)
+      ? (lang === "sq"
+        ? "Klienti vetëm po konfirmon që ka shkruar te biznesi i duhur (p.sh. 'flas me ...?'). Përgjigju shkurt: Po, po flisni me [emri i biznesit]. Si mund t'ju ndihmoj? MOS shto llojin e biznesit, qytetin, kuzhinën, ose prezantim — ata e dinë tashmë ku kanë shkruar."
+        : "The customer is only confirming they reached the right business (e.g. 'am I speaking with X?'). Reply briefly: Yes, you're speaking with [business name]. How can I help? Do NOT add business type, city, cuisine, or a pitch — they already know who they messaged.")
+      : "",
     buildRefiningRulesBlock(options),
     bookingFieldsBlock,
     options?.refiningRules
@@ -862,6 +896,12 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
       messages,
       temperature: 0.3,
       max_tokens: 500,
+      // The prompt already mandates a single JSON object; asking the API to
+      // enforce JSON greatly reduces parse failures and the costly repair pass.
+      // Disable with OPENAI_JSON_MODE=0 if a model rejects it.
+      ...(process.env.OPENAI_JSON_MODE === '0'
+        ? {}
+        : { response_format: { type: 'json_object' } }),
     });
     const content = resp.choices?.[0]?.message?.content || '';
     let obj = tryExtractJson(content);
@@ -883,6 +923,9 @@ export async function generateAgentDecision(userMessage, contextSnippets, option
           ],
           temperature: 0.1,
           max_tokens: 400,
+          ...(process.env.OPENAI_JSON_MODE === '0'
+            ? {}
+            : { response_format: { type: 'json_object' } }),
         });
         obj = tryExtractJson(repair.choices?.[0]?.message?.content || '');
         if (obj && typeof obj === 'object' && obj.text) {
@@ -1025,11 +1068,17 @@ export async function onboardingCoachReply(userMessage, kbItems = [], historyTra
   return out.trim();
 }
 
-function buildRefiningSystem(tonePref, stylePref, blockedTopics, currentRules = "") {
+function buildRefiningSystem(tonePref, stylePref, blockedTopics, currentRules = "", bookingsEnabled = false) {
   const toneLine = tonePref ? `- Tone preference: ${String(tonePref)}.` : "";
   const styleLine = stylePref ? `- Style preference: ${String(stylePref)}.` : "";
   const blockedLine = blockedTopics ? `- Blocked topics: ${String(blockedTopics)}.` : "";
   const rulesBlock = formatRefiningRulesForPrompt(currentRules);
+  const bookingsLine = bookingsEnabled
+    ? "- Bookings: ENABLED — you may configure booking intake with BOOKING_PROFILE, ADD_BOOKING_FIELD, REMOVE_BOOKING_FIELD, or CLEAR_BOOKING_FIELDS."
+    : "- Bookings: DISABLED — do NOT output BOOKING_PROFILE, ADD_BOOKING_FIELD, REMOVE_BOOKING_FIELD, or CLEAR_BOOKING_FIELDS.";
+  const bookingsGateLine = bookingsEnabled
+    ? ""
+    : "- If the owner asks to add, change, or remove booking questions (or set a booking profile), use REPLY| only: explain that Bookings must be turned on first in Settings → Bookings, then they can ask you again to configure intake questions.";
   return [
     "You are a bot-refining copilot for a business owner using Code Orbit Agent on WhatsApp.",
     "The owner describes how the customer-facing bot should behave. You turn their requests into durable bot rules and optional KB updates.",
@@ -1065,6 +1114,8 @@ function buildRefiningSystem(tonePref, stylePref, blockedTopics, currentRules = 
     "- Use business type and Google place types to choose sensible defaults: Restaurant / Food → BOOKING_PROFILE|restaurant; clinics, dentists, salons, spas, professionals → BOOKING_PROFILE|appointment (no party size).",
     "- When the owner asks about booking questions, align with what this business actually does — do not suggest party size for one-to-one appointments.",
     "- Prefer facts from dashboard settings and Google Business Profile over assumptions; ask ASK_MORE if settings are empty or ambiguous.",
+    bookingsLine,
+    bookingsGateLine,
     "",
     "Output ONLY these line types:",
     "  ASK_MORE|<single clarifying question>",
@@ -1144,6 +1195,14 @@ function buildRefiningSystem(tonePref, stylePref, blockedTopics, currentRules = 
     "Owner: 'What's the weather tomorrow?'",
     "REPLY|I'm your refining coach — I help shape how your WhatsApp bot handles customers (rules, tone, and behaviour). I can't help with unrelated questions, but I can suggest or save bot rules if you'd like.",
     "",
+    bookingsEnabled
+      ? ""
+      : [
+          "Example booking questions while Bookings is disabled:",
+          "Owner: 'Ask for email before every reservation'",
+          "REPLY|Booking intake questions only apply when reservations are enabled. Please turn on Bookings in Settings → Bookings first, then tell me what you'd like the bot to ask (e.g. email or party size).",
+        ].join("\n"),
+    "",
     rulesBlock ? `\nCurrent active bot rules:\n${rulesBlock}` : "\nCurrent active bot rules: (none yet)",
   ].filter(Boolean).join("\n");
 }
@@ -1192,11 +1251,13 @@ export function isRefiningSuggestionRequest(message = "") {
 }
 
 export async function refiningCoachReply(userMessage, historyTranscript = "", options = {}) {
+  const bookingsEnabled = options?.bookingsEnabled === true;
   const system = buildRefiningSystem(
     options?.tone,
     options?.style,
     options?.blockedTopics,
-    options?.currentRules || ""
+    options?.currentRules || "",
+    bookingsEnabled
   );
   const instruction = buildRefiningInstruction(
     historyTranscript,

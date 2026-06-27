@@ -4,7 +4,7 @@ import { validateSettingsPayload } from "../../src/validators/settingsPayload.mj
 describe("validateSettingsPayload", () => {
   test("accepts minimal valid payload", () => {
     const result = validateSettingsPayload({
-      name: "Acme Inc",
+      business_name: "Acme Inc",
       conversation_mode: "full",
       reminder_windows: ["2h"],
       escalation_questions_json: "What is your name?\nHow can we help?",
@@ -12,7 +12,7 @@ describe("validateSettingsPayload", () => {
     });
 
     expect(result.success).toBe(true);
-    expect(result.data.name).toBe("Acme Inc");
+    expect(result.data.business_name).toBe("Acme Inc");
     expect(result.data.reminder_windows).toBe(JSON.stringify(["2h"]));
     expect(result.data.escalation_questions_json).toBe(JSON.stringify(["What is your name?", "How can we help?"]));
   });

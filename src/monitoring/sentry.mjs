@@ -30,11 +30,14 @@ export function initSentry() {
       
       return event;
     },
+    // v8+/v10 API: integrations are factory functions, not `new Sentry.Integrations.*`
+    // (which was removed and would throw on init). HTTP/Express are guarded so a
+    // minor version that renames them can't crash startup.
     integrations: [
       nodeProfilingIntegration(),
-      new Sentry.Integrations.Http({ tracing: true }),
-      new Sentry.Integrations.Express({ app: undefined }),
-    ],
+      ...(typeof Sentry.httpIntegration === 'function' ? [Sentry.httpIntegration()] : []),
+      ...(typeof Sentry.expressIntegration === 'function' ? [Sentry.expressIntegration()] : []),
+    ].filter(Boolean),
     release: process.env.SENTRY_RELEASE || 'whatsapp-agent@1.0.0',
     initialScope: {
       tags: {
@@ -45,6 +48,14 @@ export function initSentry() {
   });
 
   console.log('✅ Sentry initialized successfully');
+}
+
+/** Register after all routes; captures thrown errors before your errorHandler. */
+export function registerSentryExpressErrorHandler(app) {
+  if (!process.env.SENTRY_DSN) return;
+  if (typeof Sentry.setupExpressErrorHandler === 'function') {
+    Sentry.setupExpressErrorHandler(app);
+  }
 }
 export const sentryHelpers = {
   captureException: (error, context = {}) => {
@@ -78,8 +89,10 @@ export const sentryHelpers = {
   setTag: (key, value) => {
     Sentry.setTag(key, value);
   },
-  startTransaction: (name, op = 'custom') => {
-    return Sentry.startTransaction({ name, op });
+  // v8+/v10 replaced startTransaction() with the callback-based startSpan().
+  startSpan: (name, op = 'custom', callback = () => {}) => {
+    if (typeof Sentry.startSpan !== 'function') return callback();
+    return Sentry.startSpan({ name, op }, callback);
   }
 };
 

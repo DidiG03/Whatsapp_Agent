@@ -193,7 +193,22 @@ function parsePhoneFromText(text) {
 
 function looksLikeStandaloneName(raw) {
   const s = String(raw || "").trim();
-  return /^[A-Za-zËÇëç][A-Za-zËÇëç'\-]+(?:\s+[A-Za-zËÇëç][A-Za-zËÇëç'\-]+){0,2}$/.test(s);
+  if (!/^[A-Za-zËÇëç][A-Za-zËÇëç'\-]+(?:\s+[A-Za-zËÇëç][A-Za-zËÇëç'\-]+){0,2}$/.test(s)) return false;
+  return !isBookingVocabularyWord(s);
+}
+
+/** Common booking/time words that must never be stored as a customer name. */
+export function isBookingVocabularyWord(raw) {
+  const sq = stripAccentsLower(String(raw || "").trim());
+  if (!sq) return true;
+  const blocked = new Set([
+    "rezervim", "rezervime", "rezervimi", "termin", "termini", "takim", "takimi",
+    "neser", "sot", "dark", "darke", "mbremje", "pasdite", "dreke", "mengjes",
+    "okej", "ok", "po", "jo", "faleminderit", "pershendetje", "pranoni", "pranojme",
+    "dua", "bej", "nje", "informacion", "orarin", "vendndodhjen", "restorant",
+  ]);
+  if (blocked.has(sq)) return true;
+  return /\b(rezerv|book|cancel|anul|termin|takim|persona|veta|orar|menu|cmim)\w*/.test(sq);
 }
 
 function parseNameFromText(text) {
@@ -201,6 +216,28 @@ function parseNameFromText(text) {
   const m = /\b(?:emri\s+im\s+(?:eshte|është)|quhem|jam|my\s+name\s+is|i\s*am|i'm)\s+([a-zëç][a-zëç'\-]+(?:\s+[a-zëç][a-zëç'\-]+){0,2})/i.exec(raw);
   if (m) return m[1].trim();
   if (looksLikeStandaloneName(raw)) return raw;
+  return null;
+}
+
+function parseNameFromHistory(historyMessages = []) {
+  const hist = historyMessages || [];
+  for (let i = 0; i < hist.length; i++) {
+    const m = hist[i];
+    if (m?.role !== "user") continue;
+    const content = String(m.content || "").trim();
+    if (!content) continue;
+    const prior = hist.slice(0, i);
+    const askedName = prior.some((h) => {
+      if (h?.role !== "assistant") return false;
+      const c = stripAccentsLower(String(h.content || ""));
+      return /\b(emri|emrin|emër|emer|quheni|si quheni|me cilin emer|me cilin emër|what name|what(?:'|')?s your name|under what name|name should i|put on the reservation|ta vendos rezervimin)\b/.test(c);
+    });
+    if (/\b(?:emri\s+im|quhem|jam|my\s+name\s+is|i\s*am|i'm)\b/i.test(content)) {
+      const n = parseNameFromText(content);
+      if (n) return n;
+    }
+    if (askedName && looksLikeStandaloneName(content)) return content;
+  }
   return null;
 }
 
@@ -247,11 +284,8 @@ function resolveSingleFieldValue(field, { text, historyMessages, intentData, kno
     if (isUsableCustomerName && isUsableCustomerName(knownCustomerName, contactId)) {
       return String(knownCustomerName).trim();
     }
-    for (const m of [...(historyMessages || [])].reverse()) {
-      if (m?.role !== "user") continue;
-      const n = parseNameFromText(String(m.content || ""));
-      if (n) return n;
-    }
+    const fromHist = parseNameFromHistory(historyMessages);
+    if (fromHist) return fromHist;
     return null;
   }
 
@@ -401,6 +435,25 @@ export function applyBookingFieldDirectives(currentJson, {
   }
 
   return serializeBookingFieldsConfig(config);
+}
+
+/** Remove one booking question from effective config (including type defaults) and persist as custom JSON. */
+export function removeBookingFieldFromSettings(settings = {}, fieldId) {
+  const id = String(fieldId || "").trim().toLowerCase();
+  if (!id) return { ok: false, error: "missing_id" };
+  if (id === "name") return { ok: false, error: "name_required" };
+
+  const current = getBookingFieldsFromSettings(settings);
+  const before = (current.fields || []).length;
+  const serialized = serializeBookingFieldsConfig(current);
+  const nextJson = applyBookingFieldDirectives(serialized, { removeIds: [id] });
+  const after = getBookingFieldsFromSettings({ booking_fields_json: nextJson }).fields?.length || 0;
+
+  if (after >= before) {
+    return { ok: false, error: "not_found" };
+  }
+
+  return { ok: true, booking_fields_json: nextJson };
 }
 
 export function parseAddBookingFieldDirective(line) {

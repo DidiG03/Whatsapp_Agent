@@ -22,7 +22,14 @@ import {
 } from "./agent-intelligence.mjs";
 import { buildCustomerProfileSnippet, rememberName, rememberPartySize, getContactMemory } from "./memory.mjs";
 import { isGreeting as isGreetingMessage } from "./agentPipelineHelpers.mjs";
-import { isKbMissReply, isLikelyFaqQuestion, isLocationQuestion, t as tr } from "./i18n.mjs";
+import {
+  isKbMissReply,
+  isLikelyFaqQuestion,
+  isLocationQuestion,
+  isBusinessIdentityConfirmationQuestion,
+  buildBusinessIdentityConfirmationReply,
+  t as tr,
+} from "./i18n.mjs";
 import { MESSAGE_ROUTES, routeCustomerMessage } from "./messageRouter.mjs";
 import { detectMessageTopics } from "./messageTopics.mjs";
 import { buildConversationContextBrief } from "./conversationContext.mjs";
@@ -185,6 +192,20 @@ export async function runAgentMessagePipeline(ctx) {
     topics: messageTopics,
     multiTopic,
   });
+
+  if (
+    !multiTopic
+    && isBusinessIdentityConfirmationQuestion(text)
+  ) {
+    const reply = buildBusinessIdentityConfirmationReply({
+      businessName: cfg?.business_name || tenant?.business_name || "",
+      lang,
+      shouldGreet,
+      userMessage: text,
+    });
+    await sendTextTracked(from, reply, cfg);
+    return { handled: true, route: "identity_confirm" };
+  }
 
   if (
     !multiTopic

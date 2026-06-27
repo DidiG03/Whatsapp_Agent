@@ -6,6 +6,16 @@ import mongoose from 'mongoose';
 import { Staff, Appointment } from "../schemas/mongodb.mjs";
 import { getYmdPartsInTimeZone, buildUtcFromLocalWallTime } from "../utils.mjs";
 
+export function resolveSlotMinutes({ slotMinutes, settings, staff } = {}) {
+  const explicit = Number(slotMinutes);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  const fromSettings = Number(settings?.booking_display_interval_minutes);
+  if (Number.isFinite(fromSettings) && fromSettings > 0) return fromSettings;
+  const fromStaff = Number(staff?.slot_minutes);
+  if (Number.isFinite(fromStaff) && fromStaff > 0) return fromStaff;
+  return 30;
+}
+
 export function resolveAppointmentRefId(appt) {
   const id = Number(appt?.id);
   if (Number.isFinite(id) && id > 0) return id;
@@ -167,7 +177,7 @@ export async function listAvailability({ userId, staffId, dateISO, days = 1, slo
   const tz = staff.timezone || "UTC";
   const settings = await (async () => { try { return await getSettingsForUser(userId); } catch { return {}; } })();
 
-  const minutes = Number(slotMinutes || settings?.booking_display_interval_minutes || staff.slot_minutes || 30);
+  const minutes = resolveSlotMinutes({ slotMinutes, settings, staff });
   let working = (() => { try { return JSON.parse(staff.working_hours_json || '{}'); } catch { return {}; } })();
   try {
     const hasAny = working && Object.values(working).some(v => Array.isArray(v) && v.length > 0);
@@ -287,10 +297,14 @@ export async function createBooking({ userId, staffId, startISO, endISO, contact
     const legacyId = Math.floor(Date.now() / 1000) % 10000000;
     return { id: legacyId, gcal_event_id: null, _id: null, sandbox: true };
   }
+  // Final safety net: reaching createBooking *is* a booking action, so evaluate
+  // enforced refining rules directly from the resolved notes (which carry the
+  // party size) without requiring extra conversational booking context.
   await assertBookingAllowed({
     userId,
     contactId: contactPhone,
     notes,
+    requireBookingContext: false,
   });
 
   const staff = await getStaffById(staffId, userId);
@@ -452,42 +466,6 @@ export function filterSlotsByTimeOfDay(slots, tod, timeZone = "UTC") {
   });
 }
 
-export async function buildTimeRows({
-  userId,
-  staffId,
-  dateISO,
-  limit = 10,
-  apptId = null,
-  slotMinutes = undefined,
-  timezone = null,
-  tod = null,
-  lang = null,
-}) {
-  const staff = await getStaffById(staffId, userId);
-  const tz = timezone || staff?.timezone || "UTC";
-  const locale = lang === "sq" ? "sq-AL" : undefined;
-  const avail = await listAvailability({ userId, staffId, dateISO, days: 1, slotMinutes });
-  let slots = Array.isArray(avail) ? (avail[0]?.slots || []) : [];
-  const minLeadMs = Math.max(1, Number(process.env.BOOKING_MIN_LEAD_MINUTES || 5)) * 60000;
-  const cutoff = Date.now() + minLeadMs;
-  slots = slots.filter((s) => new Date(s.start).getTime() >= cutoff);
-  if (tod) slots = filterSlotsByTimeOfDay(slots, tod, tz);
-  const upcoming = slots.slice(0, Number(limit || 10));
-  const rows = upcoming.map((s) => ({
-    id: apptId
-      ? `RESCHED_PICK_TIME_${apptId}_${staffId}_${s.start}_${s.end}`
-      : `BOOK_SLOT_${s.start}_${s.end}_${staffId}`,
-    title: new Date(s.start).toLocaleTimeString(locale, {
-      hour: "numeric",
-      minute: "2-digit",
-      timeZone: tz,
-    }),
-    description: apptId
-      ? (lang === "sq" ? "Prek për të konfirmuar" : "Tap to confirm")
-      : (lang === "sq" ? "Prek për të rezervuar" : "Tap to book"),
-  }));
-  return rows;
-}
 export function isTooCloseToStart(nowSecs, startTs, minLeadMinutes) {
   const minsToStart = Math.floor(((startTs||0) - (nowSecs||0)) / 60);
   return minsToStart < Number(minLeadMinutes || 60);

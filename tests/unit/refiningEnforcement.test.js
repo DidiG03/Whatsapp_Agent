@@ -89,6 +89,31 @@ describe("refiningEnforcement", () => {
     expect(blocked?.blockBooking).toBe(true);
   });
 
+  test("guardBookingEnforcement with notes-only needs requireBookingContext:false (createBooking backstop)", async () => {
+    const settings = {
+      ai_refining_enforced_json: JSON.stringify([
+        { type: "party_size_call", minParty: 20, phone: "+10000000000", enabled: true },
+      ]),
+    };
+    // Reproduces the createBooking call site: only userId/contactId/notes, no text.
+    // With the default requireBookingContext (true) the guard short-circuits and
+    // the rule is never evaluated — which is why createBooking must pass false.
+    const notEnforced = await guardBookingEnforcement({
+      cfg: settings,
+      notes: "Name: Sam | Party size: 25",
+      lang: "en",
+    });
+    expect(notEnforced).toBeNull();
+
+    const enforced = await guardBookingEnforcement({
+      cfg: settings,
+      notes: "Name: Sam | Party size: 25",
+      lang: "en",
+      requireBookingContext: false,
+    });
+    expect(enforced?.blockBooking).toBe(true);
+  });
+
   test("guardBookingEnforcement skips non-booking context when party only in history", async () => {
     const blocked = await guardBookingEnforcement({
       cfg: {
@@ -136,6 +161,41 @@ describe("refiningEnforcement", () => {
     });
     expect(size?.blockBooking).toBe(true);
     expect(size?.partySize).toBe(40);
+  });
+
+  test("does not enforce party_size_call from stale history or memory alone", async () => {
+    const blocked = await guardBookingEnforcement({
+      cfg: {
+        ai_refining_enforced_json: JSON.stringify([
+          { type: "party_size_call", minParty: 30, phone: "+15556296064", enabled: true },
+        ]),
+      },
+      text: "doja nje rezervim per neser",
+      historyMessages: [{ role: "user", content: "40 veta per dje" }],
+      memPartySize: 40,
+      conversationPhase: "booking_flow",
+      intentType: "book",
+      lang: "sq",
+      requireBookingContext: false,
+    });
+    expect(blocked).toBeNull();
+  });
+
+  test("still blocks when partySize is passed explicitly from booking details", async () => {
+    const blocked = await guardBookingEnforcement({
+      cfg: {
+        ai_refining_enforced_json: JSON.stringify([
+          { type: "party_size_call", minParty: 30, phone: "+15556296064", enabled: true },
+        ]),
+      },
+      text: "tomorrow at 8pm",
+      partySize: 40,
+      notes: "Name: Ana | Party size: 40",
+      lang: "en",
+      requireBookingContext: false,
+    });
+    expect(blocked?.blockBooking).toBe(true);
+    expect(blocked?.partySize).toBe(40);
   });
 
   test("isInteractiveBookingAction detects booking buttons", () => {

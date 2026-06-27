@@ -1,12 +1,12 @@
 
 
 import { getDB } from '../db-mongodb.mjs';
-export async function getMessageReactions(messageId) {
+export async function getMessageReactions(messageId, userId = null) {
   if (!messageId) return [];
   const db = getDB();
   const coll = db.collection('message_reactions');
   const pipeline = [
-    { $match: { message_id: messageId } },
+    { $match: { message_id: messageId, ...(userId ? { user_id: String(userId) } : {}) } },
     { $group: { _id: { emoji: '$emoji', user_id: '$user_id' }, count: { $sum: 1 }, created_at: { $min: '$createdAt' } } },
     { $project: { emoji: '$_id.emoji', user_id: '$_id.user_id', count: 1, created_at: 1, _id: 0 } },
     { $sort: { created_at: 1 } }

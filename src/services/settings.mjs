@@ -1,7 +1,23 @@
 
 import { SettingsMulti } from "../schemas/mongodb.mjs";
-import { dataCache } from "../scalability/redis.mjs";
+import { dataCache, isRedisConnected } from "../scalability/redis.mjs";
+import { trimMapSize } from "../utils/ttlCache.mjs";
 import { buildGoogleBusinessContextLines, parseGoogleBusinessSnapshot } from "./googleBusinessImport.mjs";
+
+// In-process settings cache used when Redis is unavailable. Without this, every
+// inbound message triggers a Mongo read (and a noisy redis_cache_miss log).
+const memSettings = new Map();
+const SETTINGS_MEM_TTL_MS = Number(process.env.SETTINGS_MEM_TTL_MS || 60000);
+const SETTINGS_MEM_MAX = Number(process.env.SETTINGS_MEM_MAX || 1000);
+
+function setMemSettings(userId, value) {
+  memSettings.set(userId, { value, expires: Date.now() + SETTINGS_MEM_TTL_MS });
+  trimMapSize(memSettings, SETTINGS_MEM_MAX);
+}
+
+export function invalidateSettingsCache(userId) {
+  if (userId) memSettings.delete(userId);
+}
 
 function pickSetting(values, current, key, fallback = null) {
   return Object.prototype.hasOwnProperty.call(values, key)
@@ -9,15 +25,29 @@ function pickSetting(values, current, key, fallback = null) {
     : (current[key] ?? fallback);
 }
 
+export function isBookingsEnabled(cfg = {}) {
+  const v = cfg?.bookings_enabled;
+  return v === true || v === 1 || v === "1";
+}
+
 export async function getSettingsForUser(userId) {
   if (!userId) return {};
   const cacheKey = `settings:${userId}`;
-  const cached = await dataCache.getUserData(cacheKey);
-  if (cached) return cached;
+  if (isRedisConnected()) {
+    const cached = await dataCache.getUserData(cacheKey);
+    if (cached) return cached;
+  } else {
+    const memHit = memSettings.get(userId);
+    if (memHit && memHit.expires > Date.now()) return memHit.value;
+  }
   const row = await SettingsMulti.findOne({ user_id: userId }).lean();
   const value = row ? { ...row } : {};
   delete value.entry_greeting;
-  try { await dataCache.cacheUserData(cacheKey, value, 300); } catch {}
+  if (isRedisConnected()) {
+    try { await dataCache.cacheUserData(cacheKey, value, 300); } catch {}
+  } else {
+    setMemSettings(userId, value);
+  }
   return value;
 }
 export async function upsertSettingsForUser(userId, values) {
@@ -80,6 +110,19 @@ export async function upsertSettingsForUser(userId, values) {
     ai_refining_enforced_json: values.ai_refining_enforced_json ?? current.ai_refining_enforced_json ?? null,
     refining_transcript: pickSetting(values, current, "refining_transcript"),
   };
+  const resolvedPhoneNumberId = merged.phone_number_id ? String(merged.phone_number_id).trim() : '';
+  if (resolvedPhoneNumberId) {
+    const owner = await SettingsMulti.findOne(
+      { phone_number_id: resolvedPhoneNumberId },
+      { user_id: 1 }
+    ).lean();
+    if (owner && String(owner.user_id) !== String(userId)) {
+      const err = new Error('phone_number_id_already_in_use');
+      err.code = 'PHONE_NUMBER_ID_CONFLICT';
+      err.status = 409;
+      throw err;
+    }
+  }
   try {
     const res = await SettingsMulti.findOneAndUpdate(
       { user_id: userId },
@@ -87,6 +130,7 @@ export async function upsertSettingsForUser(userId, values) {
       { upsert: true, new: true }
     );
     try { await dataCache.cacheUserData(`settings:${userId}`, merged, 300); } catch {}
+    setMemSettings(userId, merged);
     return merged;
   } catch (e) {
     console.error('[settings.upsert] error', e?.message || e);
@@ -139,7 +183,7 @@ export function buildBusinessSettingsSnippet(cfg = {}, options = {}) {
     } catch {}
   }
 
-  if (cfg.bookings_enabled) lines.push("Bookings: enabled");
+  if (isBookingsEnabled(cfg)) lines.push("Bookings: enabled");
   if (cfg.reminders_enabled) lines.push("Appointment reminders: enabled");
 
   try {

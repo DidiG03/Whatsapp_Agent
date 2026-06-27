@@ -6,6 +6,10 @@ import {
   isExplicitAvailabilityRequest,
   wantsTimeSlotSuggestions,
 } from "../../src/services/agent-intelligence.mjs";
+import {
+  buildBusinessIdentityConfirmationReply,
+  isBusinessIdentityConfirmationQuestion,
+} from "../../src/services/i18n.mjs";
 
 describe("messageTopics", () => {
   test("splits Albanian compound message on dhe", () => {
@@ -49,5 +53,22 @@ describe("messageTopics", () => {
     expect(result.route).toBe(MESSAGE_ROUTES.GENERAL);
     expect(result.reason).toBe("multi_topic");
     expect(result.topics?.length).toBeGreaterThan(1);
+  });
+
+  test("isBusinessIdentityConfirmationQuestion detects right-number checks", () => {
+    expect(isBusinessIdentityConfirmationQuestion("Pershendetje flas me ullishtja agroturizem?")).toBe(true);
+    expect(isBusinessIdentityConfirmationQuestion("Am I speaking with Ullishtja Agroturizem?")).toBe(true);
+    expect(isBusinessIdentityConfirmationQuestion("Mund te me thuash pak rreth restorantit tuaj?")).toBe(false);
+  });
+
+  test("buildBusinessIdentityConfirmationReply stays brief", () => {
+    const reply = buildBusinessIdentityConfirmationReply({
+      businessName: "Ullishtja Agroturizëm",
+      lang: "sq",
+      userMessage: "Pershendetje flas me ullishtja agroturizem?",
+    });
+    expect(reply).toContain("Ullishtja Agroturizëm");
+    expect(reply).toMatch(/Si mund t'ju ndihmoj\?/);
+    expect(reply).not.toMatch(/restorant|Durr[eë]s/i);
   });
 });

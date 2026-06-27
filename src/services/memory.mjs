@@ -44,6 +44,12 @@ export async function updateContactMemory(userId, contactId, patch) {
 export async function buildCustomerProfileSnippet(userId, contactId) {
   try {
     const db = getDB();
+    const customerDoc = await db.collection("customers").findOne(
+      { user_id: String(userId), contact_id: String(contactId) },
+      { projection: { _id: 1 } }
+    );
+    if (!customerDoc) return null;
+
     const mem = await getContactMemory(userId, contactId);
     const digits = String(contactId || '').replace(/\D/g, '');
     const nowSec = Math.floor(Date.now() / 1000);

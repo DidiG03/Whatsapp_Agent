@@ -270,8 +270,12 @@ export default function registerMiscRoutes(app) {
   });
   app.get('/api/diag/openai', async (req, res) => {
     try {
+      const isProd = process.env.NODE_ENV === 'production' || process.env.VERCEL;
+      const expected = String(process.env.DIAG_SECRET || '').trim();
+      if (isProd && !expected) {
+        return res.status(404).json({ error: 'not_found' });
+      }
       const provided = String(req.query.key || req.headers['x-diag-key'] || '').trim();
-      const expected = String(process.env.DIAG_SECRET || process.env.WEBHOOK_VERIFY_TOKEN || '').trim();
       if (!expected || provided !== expected) return res.status(401).json({ error: 'unauthorized' });
 
       const rawKey = String(process.env.OPENAI_API_KEY || '');

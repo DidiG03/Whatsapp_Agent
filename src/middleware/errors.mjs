@@ -86,7 +86,7 @@ export function notFoundHandler(req, res) {
     return res.status(404).json({ error: "Not found" });
   }
   res.status(404).send(`
-    <html>${getProfessionalHead('Not Found')}<body>
+    <html>${getProfessionalHead('Not Found', { csrfToken: res.locals?.csrfToken || '' })}<body>
       <div class="container">
         ${renderTopbar('Not Found', '')}
         <div class="layout">

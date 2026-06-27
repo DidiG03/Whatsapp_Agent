@@ -1,5 +1,5 @@
 
-import { Message, Handoff } from "../schemas/mongodb.mjs";
+import { Message, Handoff, MessageStatus } from "../schemas/mongodb.mjs";
 import { canonicalContactId } from "./handoff.mjs";
 import { normalizePhone } from "../utils.mjs";
 export async function listContactsForUser(userId, opts = {}) {
@@ -179,14 +179,19 @@ export async function clearMessagesForThread(userId, phoneDigits) {
   }
 }
 
-export async function listMessagesForThread(userId, phoneDigits) {
+export async function listMessagesForThread(userId, phoneDigits, { limit = 80 } = {}) {
   try {
+    const cap = Math.min(200, Math.max(1, parseInt(limit, 10) || 80));
     const messages = await Message.find({
       user_id: userId,
       ...threadPhoneMatch(phoneDigits)
     })
       .select('direction text_body timestamp type')
-      .sort({ timestamp: 1 });
+      .sort({ timestamp: -1 })
+      .limit(cap)
+      .lean();
+
+    messages.reverse();
 
     return messages.map(msg => ({
       direction: msg.direction,
@@ -197,6 +202,34 @@ export async function listMessagesForThread(userId, phoneDigits) {
   } catch (error) {
     console.error('Error listing messages for thread:', error);
     return [];
+  }
+}
+
+export async function getContactPreviewForUser(userId, phoneDigits) {
+  if (!userId || !phoneDigits) return null;
+  const digits = normalizePhone(phoneDigits);
+  if (!digits) return null;
+  try {
+    const msg = await Message.findOne({
+      user_id: userId,
+      ...threadPhoneMatch(digits),
+      type: { $ne: 'system_clear' }
+    })
+      .sort({ timestamp: -1 })
+      .select('direction from_id to_id from_digits to_digits text_body timestamp')
+      .lean();
+    if (!msg) return null;
+    const rawContact = msg.direction === 'inbound'
+      ? (msg.from_id || msg.from_digits || digits)
+      : (msg.to_id || msg.to_digits || digits);
+    return {
+      contact: canonicalContactId(rawContact),
+      last_ts: msg.timestamp || 0,
+      last_text: msg.text_body || ''
+    };
+  } catch (error) {
+    console.error('Error fetching contact preview:', error);
+    return null;
   }
 }
 
@@ -225,5 +258,101 @@ export async function listThreadMessagesPage(userId, phoneDigits, { beforeTs = n
     hasMore,
     oldestTs: slice.length ? Number(slice[0].timestamp || 0) : null
   };
+}
+
+/** Bounded thread load for inbox SSR/API with latest delivery status per message. */
+export async function loadThreadMessagesForDisplay(userId, phoneDigits, { limit = 50 } = {}) {
+  const { messages, hasMore, oldestTs } = await listThreadMessagesPage(userId, phoneDigits, { limit });
+  if (!messages.length) {
+    return { messages: [], hasMore: false, oldestTs: null };
+  }
+
+  const messageIds = messages.map((m) => m.id).filter(Boolean);
+  const statusByMessageId = new Map();
+  if (messageIds.length) {
+    try {
+      const rows = await MessageStatus.aggregate([
+        { $match: { user_id: userId, message_id: { $in: messageIds } } },
+        { $sort: { timestamp: -1 } },
+        {
+          $group: {
+            _id: '$message_id',
+            status: { $first: '$status' },
+            timestamp: { $first: '$timestamp' },
+          },
+        },
+      ]);
+      for (const row of rows) {
+        statusByMessageId.set(row._id, row);
+      }
+    } catch (error) {
+      console.error('Error loading message statuses for thread:', error);
+    }
+  }
+
+  const msgs = messages.map((m) => {
+    const st = statusByMessageId.get(m.id);
+    return {
+      id: m.id,
+      direction: m.direction,
+      type: m.type,
+      text_body: m.text_body,
+      ts: m.timestamp || 0,
+      raw: m.raw,
+      delivery_status: m.delivery_status,
+      read_status: m.read_status,
+      delivery_timestamp: m.delivery_timestamp,
+      read_timestamp: m.read_timestamp,
+      message_status: st?.status,
+      status_timestamp: st?.timestamp,
+    };
+  });
+
+  return { messages: msgs, hasMore, oldestTs };
+}
+
+/** One aggregation round-trip for unread counts on the inbox contact list. */
+export async function fetchUnreadCountsForContacts(userId, contacts, lastSeenByContact) {
+  const unreadCounts = new Map();
+  const pairs = (contacts || []).slice(0, 50).map((c) => {
+    const contactId = String(c.contact || '');
+    if (!contactId) return null;
+    return {
+      contactId,
+      seenTs: lastSeenByContact.get(contactId) || 0,
+      digits: normalizePhone(contactId),
+    };
+  }).filter(Boolean);
+
+  if (!pairs.length) return unreadCounts;
+
+  const facet = {};
+  for (const { contactId, seenTs, digits } of pairs) {
+    const matchOr = [{ from_id: contactId }];
+    if (digits) matchOr.push({ from_digits: digits });
+    facet[contactId] = [
+      {
+        $match: {
+          user_id: userId,
+          direction: 'inbound',
+          timestamp: { $gt: seenTs },
+          $or: matchOr,
+        },
+      },
+      { $count: 'count' },
+    ];
+  }
+
+  try {
+    const [result] = await Message.aggregate([{ $facet: facet }]);
+    for (const { contactId } of pairs) {
+      const row = result?.[contactId]?.[0];
+      unreadCounts.set(contactId, Number(row?.count || 0));
+    }
+  } catch (error) {
+    console.error('fetchUnreadCountsForContacts failed:', error);
+  }
+
+  return unreadCounts;
 }
 

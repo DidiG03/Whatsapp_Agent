@@ -246,7 +246,6 @@
     const form = document.getElementById('account-password-form');
     if (!form) return;
 
-    const passwordEnabled = form.dataset.passwordEnabled === 'true';
     const clerkEnabled = form.dataset.clerkEnabled === 'true';
     const errorEl = document.getElementById('account-password-error');
     const successEl = document.getElementById('account-password-success');
@@ -283,6 +282,7 @@
         return;
       }
 
+      const passwordEnabled = form.dataset.passwordEnabled === 'true';
       const newPassword = String((newInput && newInput.value) || '');
       const confirmPassword = String((confirmInput && confirmInput.value) || '');
       const currentPassword = String((currentInput && currentInput.value) || '');
@@ -340,10 +340,80 @@
       } finally {
         if (submitBtn) {
           submitBtn.disabled = false;
-          submitBtn.textContent = passwordEnabled ? 'Update password' : 'Set password';
+          submitBtn.textContent = form.dataset.passwordEnabled === 'true' ? 'Update password' : 'Set password';
         }
       }
     });
+  }
+
+  function initAiConfiguration(root) {
+    const scope = root || document;
+    const radios = scope.querySelectorAll('input[name="conversation_mode"]');
+    const info = scope.querySelector('#escalation_info') || document.getElementById('escalation_info');
+    const messages = scope.querySelector('#escalation_messages') || document.getElementById('escalation_messages');
+    if (!radios.length) return;
+
+    function syncEscalationPanels() {
+      const mode = (scope.querySelector('input[name="conversation_mode"]:checked') || document.querySelector('input[name="conversation_mode"]:checked'))?.value;
+      const show = mode === 'escalation';
+      if (info) info.classList.toggle('hidden', !show);
+      if (messages) messages.classList.toggle('hidden', !show);
+    }
+
+    radios.forEach(function (radio) {
+      radio.addEventListener('change', syncEscalationPanels);
+    });
+    syncEscalationPanels();
+  }
+
+  window.initSettingsAiPanel = initAiConfiguration;
+
+  async function initAccountMeta() {
+    try {
+      const response = await fetch('/api/settings/account-meta', {
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) return;
+
+      const emailInput = document.getElementById('account-current-email');
+      if (emailInput && data.primaryEmail) {
+        emailInput.value = data.primaryEmail;
+      }
+
+      const emailHint = document.getElementById('account-email-hint');
+      if (emailHint) {
+        emailHint.textContent = data.signedInWithGoogle
+          ? 'You signed in with Google. To change your login email, add a new address, verify it, and it will become your primary email. Your Google sign-in will remain linked.'
+          : 'To change your primary email, add a new address and verify it with the code we send you.';
+      }
+
+      const passwordHint = document.getElementById('account-password-hint');
+      const passwordForm = document.getElementById('account-password-form');
+      const currentWrap = document.getElementById('account-current-password-wrap');
+      const currentInput = document.getElementById('account-current-password');
+      const submitBtn = document.getElementById('account-password-submit');
+      if (passwordHint) {
+        passwordHint.textContent = data.passwordEnabled
+          ? 'Update your sign-in password. For security, your current password is required.'
+          : 'You signed in without a password. Set one to also sign in with email and password.';
+      }
+      if (passwordForm) {
+        passwordForm.dataset.passwordEnabled = data.passwordEnabled ? 'true' : 'false';
+      }
+      if (currentWrap) {
+        currentWrap.hidden = !data.passwordEnabled;
+      }
+      if (currentInput) {
+        currentInput.required = !!data.passwordEnabled;
+      }
+      if (submitBtn) {
+        submitBtn.textContent = data.passwordEnabled ? 'Update password' : 'Set password';
+      }
+    } catch (error) {
+      console.warn('Account meta fetch failed:', error);
+    }
   }
 
   document.addEventListener('DOMContentLoaded', function () {
@@ -359,5 +429,6 @@
     }
     initAccountPasswordForm();
     initAccountEmailForm();
+    initAccountMeta();
   });
 })();

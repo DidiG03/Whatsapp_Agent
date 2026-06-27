@@ -79,6 +79,12 @@ export function getStripePublishableKey() {
   return process.env.STRIPE_PUBLISHABLE_KEY;
 }
 
+export function planBillingSettingsUrl(query = "") {
+  const base = process.env.PUBLIC_BASE_URL || "http://localhost:3000";
+  const q = query ? (query.startsWith("?") ? query : `?${query}`) : "";
+  return `${base}/settings${q}#billing`;
+}
+
 export function formatStripeApiError(error, fallback = "Stripe request failed") {
   const code = String(error?.code || error?.raw?.code || "").toLowerCase();
   const rawMessage = String(error?.raw?.message || error?.message || "").trim();
@@ -124,6 +130,48 @@ const STALE_SUBSCRIPTION_MESSAGE =
 
 const STALE_CUSTOMER_MESSAGE =
   "Your saved Stripe customer was not found in this Stripe account. This usually happens after switching between test and live API keys. Please try again — a new customer will be created.";
+
+export function getSubscriptionTrialDays() {
+  const raw = cleanEnv(process.env.STRIPE_TRIAL_DAYS);
+  if (raw === "0" || raw === "false" || raw === "off" || raw === "no") return 0;
+  const configured = raw === undefined || raw === null || raw === "" ? 14 : Number(raw);
+  if (!Number.isFinite(configured) || configured < 0) return 14;
+  return Math.floor(configured);
+}
+
+async function customerEligibleForTrial(customerId) {
+  const days = getSubscriptionTrialDays();
+  if (!days || !stripe || !customerId) return 0;
+  try {
+    const list = await stripe.subscriptions.list({
+      customer: String(customerId),
+      status: "all",
+      limit: 20,
+    });
+    const subs = Array.isArray(list?.data) ? list.data : [];
+    const hadSubscription = subs.some((s) => {
+      const st = String(s.status || "");
+      return st !== "incomplete" && st !== "incomplete_expired";
+    });
+    if (hadSubscription) return 0;
+  } catch (e) {
+    console.warn("Trial eligibility check failed:", e?.message || e);
+  }
+  return days;
+}
+
+export async function getOfferedTrialDays(customerId = null) {
+  const configured = getSubscriptionTrialDays();
+  if (!configured) return 0;
+  if (!customerId) return configured;
+  return customerEligibleForTrial(customerId);
+}
+
+async function getCheckoutSubscriptionExtras(customerId) {
+  const trialDays = await customerEligibleForTrial(customerId);
+  if (!trialDays) return {};
+  return { subscription_data: { trial_period_days: trialDays } };
+}
 
 export async function reconcileStaleStripeCustomer(userId) {
   if (!isStripeEnabled() || !stripe || !userId) {
@@ -257,14 +305,16 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
         const priceObj = await stripe.prices.retrieve(priceId);
         if (priceObj?.id) {
           if (priceObj.currency) currency = String(priceObj.currency).toLowerCase();
+          const subscriptionExtras = await getCheckoutSubscriptionExtras(customerId);
           const session = await stripe.checkout.sessions.create({
             customer: customerId,
             payment_method_types: ['card'],
             line_items: [ { price: priceObj.id, quantity: 1 } ],
             mode: 'subscription',
+            ...subscriptionExtras,
             ...(discountsArray ? { discounts: discountsArray } : { allow_promotion_codes: true }),
             success_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/stripe/success?session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/plan?canceled=true`,
+            cancel_url: planBillingSettingsUrl("canceled=true"),
             metadata: { user_id: userId, plan_name: planName, price_id: priceObj.id }
           }, { idempotencyKey: `cs_${userId}_${Date.now()}` });
           return { url: session.url, sessionId: session.id, planName };
@@ -281,6 +331,7 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
         if (existingCurrency) currency = existingCurrency.toLowerCase();
       }
     } catch {}
+    const subscriptionExtras = await getCheckoutSubscriptionExtras(customerId);
     const session = await stripe.checkout.sessions.create({
       customer: customerId,
       payment_method_types: ['card'],
@@ -309,9 +360,10 @@ export async function createCheckoutSession(userId, planName, customerEmail = nu
         },
       ],
       mode: 'subscription',
+      ...subscriptionExtras,
       ...(discountsArray ? { discounts: discountsArray } : { allow_promotion_codes: true }),
       success_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/stripe/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/plan?canceled=true`,
+      cancel_url: planBillingSettingsUrl("canceled=true"),
       metadata: {
         user_id: userId,
         plan_name: planName
@@ -339,8 +391,8 @@ export async function createPayAsYouGoSetupSession(userId, customerEmail = null)
       mode: 'setup',
       payment_method_types: ['card'],
       payment_method_collection: 'always',
-      success_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/plan?success=true`,
-      cancel_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/plan?canceled=true`,
+      success_url: planBillingSettingsUrl("success=true"),
+      cancel_url: planBillingSettingsUrl("canceled=true"),
       metadata: { user_id: String(userId), purpose: 'payg_setup' }
     });
     return { url: session?.url || null, sessionId: session?.id || null };
@@ -577,7 +629,7 @@ function getPlanDetails(planName) {
     },
     starter: {
       name: 'Starter',
-      price: 29,
+      price: 14,
       monthly_limit: 1000,
       whatsapp_numbers: 1,
       features: [
@@ -661,15 +713,17 @@ export async function handleSuccessfulPayment(session) {
     console.warn("Single sub enforcement failed:", e?.message || e);
   }
   try {
-    const { sendPaymentReceiptEmail } = await import("./email.mjs");
     const amountCents =
       typeof session.amount_total === "number" ? session.amount_total : planDetails.price * 100;
-    await sendPaymentReceiptEmail(userId, {
-      amountCents,
-      currency: session.currency || process.env.STRIPE_CURRENCY || "usd",
-      planName,
-      invoiceUrl: session?.invoice ? undefined : undefined,
-    });
+    if (amountCents > 0) {
+      const { sendPaymentReceiptEmail } = await import("./email.mjs");
+      await sendPaymentReceiptEmail(userId, {
+        amountCents,
+        currency: session.currency || process.env.STRIPE_CURRENCY || "usd",
+        planName,
+        invoiceUrl: session?.invoice ? undefined : undefined,
+      });
+    }
   } catch (e) {
     console.error("Failed to send payment receipt email:", e?.message || e);
   }

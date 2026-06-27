@@ -56,7 +56,7 @@ export const securityHeaders = (req, res, next) => {
   const clerkExtras = getClerkCspOrigins();
   res.setHeader('Content-Security-Policy', 
     "default-src 'self'; " +
-    ("script-src 'self' 'unsafe-inline' 'unsafe-eval' https://clerk.accounts.dev https://accounts.clerk.com https://unpkg.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com https://js.stripe.com https://vercel.live https://cdn.ably.io https://connect.facebook.net https://www.facebook.com" + (clerkExtras ? ` ${clerkExtras}` : '') + "; ") +
+    ("script-src 'self' 'unsafe-inline' https://clerk.accounts.dev https://accounts.clerk.com https://unpkg.com https://*.clerk.accounts.dev https://challenges.cloudflare.com https://*.cloudflare.com https://js.stripe.com https://vercel.live https://cdn.ably.io https://connect.facebook.net https://www.facebook.com" + (clerkExtras ? ` ${clerkExtras}` : '') + "; ") +
     "worker-src 'self' blob:; " +
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
     ("img-src 'self' data: https: https://m.stripe.network https://*.stripe.com" + (clerkExtras ? ` ${clerkExtras}` : '') + "; ") +
@@ -70,31 +70,25 @@ export const securityHeaders = (req, res, next) => {
   
   next();
 };
+const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 export const sanitizeInput = (req, res, next) => {
-  const sanitize = (obj) => {
-    if (typeof obj === 'string') {
-      return obj
-        .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-        .replace(/javascript:/gi, '')
-        .replace(/on\w+\s*=/gi, '')
-        .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '')
-        .replace(/<object\b[^<]*(?:(?!<\/object>)<[^<]*)*<\/object>/gi, '')
-        .replace(/<embed\b[^<]*(?:(?!<\/embed>)<[^<]*)*<\/embed>/gi, '');
-    }
+  const stripDangerousKeys = (obj, depth = 0) => {
+    if (depth > 50 || obj === null || typeof obj !== 'object') return obj;
     if (Array.isArray(obj)) {
-      return obj.map((v) => sanitize(v));
+      for (const item of obj) stripDangerousKeys(item, depth + 1);
+      return obj;
     }
-    if (typeof obj === 'object' && obj !== null) {
-      const sanitized = {};
-      for (const [key, value] of Object.entries(obj)) {
-        sanitized[key] = sanitize(value);
+    for (const key of Object.keys(obj)) {
+      if (DANGEROUS_KEYS.has(key)) {
+        delete obj[key];
+        continue;
       }
-      return sanitized;
+      stripDangerousKeys(obj[key], depth + 1);
     }
     return obj;
   };
   if (req.body && typeof req.body === 'object') {
-    req.body = sanitize(req.body);
+    stripDangerousKeys(req.body);
   }
 
   next();

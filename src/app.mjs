@@ -1,12 +1,13 @@
 
 import express from "express";
 import cookieParser from "cookie-parser";
-import { STATIC_DIR } from "./config.mjs";
+import crypto from "node:crypto";
+import { STATIC_DIR, assertProductionSecrets } from "./config.mjs";
 import { initClerk } from "./middleware/auth.mjs";
 import { securityHeaders, createRateLimiters, sanitizeInput } from "./middleware/security.mjs";
 import { errorHandler, requestLogger, notFoundHandler } from "./middleware/errors.mjs";
-import { csrfProtection, attachCsrfToken } from "./middleware/csrf.mjs";
-import { initSentry } from "./monitoring/sentry.mjs";
+import { csrfProtection, csrfProtectionUnlessSkipped, attachCsrfToken } from "./middleware/csrf.mjs";
+import { initSentry, registerSentryExpressErrorHandler } from "./monitoring/sentry.mjs";
 import { loggingMiddleware } from "./monitoring/logger.mjs";
 import { healthCheckMiddleware, startHealthCheckScheduler } from "./monitoring/health.mjs";
 import { metricsMiddleware, startMetricsCollection } from "./monitoring/metrics.mjs";
@@ -34,8 +35,11 @@ import registerRefiningRoutes from "./routes/refining.mjs";
 import { initOutboundQueue } from "./jobs/outboundQueue.mjs";
 
 export async function createApp() {
+  assertProductionSecrets();
   const app = express();
   app.use(cookieParser());
+  app.use(attachCsrfToken);
+  app.use(csrfProtectionUnlessSkipped);
   try { await initMongoDB(); } catch {}
   app.use(async (_req, res, next) => {
     if (!isMongoConnected()) {
@@ -49,6 +53,15 @@ export async function createApp() {
   initSentry();
   initVercelAnalytics();
   app.set('trust proxy', 1);
+  if (process.env.VERCEL) {
+    app.use((req, _res, next) => {
+      req._backgroundTasks = [];
+      req.registerBackgroundTask = (promise) => {
+        req._backgroundTasks.push(Promise.resolve(promise));
+      };
+      next();
+    });
+  }
   app.use(securityHeaders);
   const performanceMiddleware = createPerformanceMiddleware();
   performanceMiddleware.forEach(middleware => app.use(middleware));
@@ -98,7 +111,7 @@ export async function createApp() {
     const sig = (req.query.sig || '').toString();
     try {
       const secret = process.env.MEDIA_SIGN_SECRET || process.env.SESSION_TOKEN_SECRET || 'dev-media-secret';
-      const expected = require('node:crypto').createHmac('sha256', secret).update(`${urlPath}|${exp}`).digest('hex');
+      const expected = crypto.createHmac('sha256', secret).update(`${urlPath}|${exp}`).digest('hex');
       const now = Math.floor(Date.now()/1000);
       if (!exp || !sig || exp < now || sig !== expected) {
         return res.status(403).send('Invalid or expired media link');
@@ -128,6 +141,12 @@ export async function createApp() {
   app.use(healthCheckMiddleware());
   app.get('/health/scalability', async (req, res) => {
     try {
+      const isProd = process.env.NODE_ENV === 'production' || process.env.VERCEL;
+      const expected = String(process.env.HEALTH_DETAILED_SECRET || process.env.DIAG_SECRET || '').trim();
+      const provided = String(req.headers['x-health-key'] || req.query.key || '').trim();
+      if (isProd && (!expected || provided !== expected)) {
+        return res.status(404).json({ error: 'not_found' });
+      }
       const health = await scalabilityHealthCheck();
       res.status(health.overall === 'healthy' ? 200 : 503).json(health);
     } catch (error) {
@@ -251,10 +270,11 @@ export async function createApp() {
   registerMonitoringRoutes(app);
   registerUsageRoutes(app);
   registerRefiningRoutes(app);
+  app.use('/webhook', webhookLimiter);
   registerWebhookRoutes(app);
   registerMiscRoutes(app);
-  app.use('/webhook', webhookLimiter);
   startHealthCheckScheduler(300000);  startMetricsCollection(60000);  app.use(notFoundHandler);
+  registerSentryExpressErrorHandler(app);
   app.use(errorHandler);
   return { app };
 }

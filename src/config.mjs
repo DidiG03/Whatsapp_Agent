@@ -75,3 +75,23 @@ export const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || null;
 export const STRIPE_PUBLISHABLE_KEY = process.env.STRIPE_PUBLISHABLE_KEY || null;
 export const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || null;
 
+/** Fail fast in production when signing secrets would fall back to dev defaults. */
+export function assertProductionSecrets() {
+  if (process.env.NODE_ENV === 'test') return;
+  const isProd = process.env.NODE_ENV === 'production' || process.env.VERCEL_ENV === 'production';
+  if (!isProd) return;
+
+  const sessionSecret = (process.env.SESSION_TOKEN_SECRET || '').trim();
+  const clerkSecret = (process.env.CLERK_SECRET_KEY || process.env.CLERK_SECRET || '').trim();
+  const effectiveSession = sessionSecret || clerkSecret;
+
+  if (!effectiveSession || effectiveSession === 'dev-secret-change') {
+    throw new Error('[security] Set SESSION_TOKEN_SECRET or CLERK_SECRET_KEY in production');
+  }
+
+  const mediaSecret = (process.env.MEDIA_SIGN_SECRET || sessionSecret || clerkSecret || '').trim();
+  if (!mediaSecret || mediaSecret === 'dev-media-secret') {
+    throw new Error('[security] Set MEDIA_SIGN_SECRET or SESSION_TOKEN_SECRET in production');
+  }
+}
+

@@ -7,6 +7,7 @@ import { createServer } from "http";
 import { initTelemetry } from "./src/monitoring/otel.mjs";
 import { closeMongoDB } from "./src/db-mongodb.mjs";
 import { closeRedis } from "./src/scalability/redis.mjs";
+import { sentryHelpers } from "./src/monitoring/sentry.mjs";
 async function startServer() {
   try {
     logHelpers.logBusinessEvent('server_startup_initiated');
@@ -26,7 +27,10 @@ async function startServer() {
       console.log(`⚡ Scalability health: http://localhost:${PORT}/health/scalability`);
     });
     global.server = server;
+    let shuttingDown = false;
     function gracefulShutdown(signal) {
+      if (shuttingDown) return;
+      shuttingDown = true;
       logHelpers.logBusinessEvent('server_shutdown_initiated', { signal });
       
       console.log(`\n🛑 Received ${signal}, shutting down gracefully...`);
@@ -53,20 +57,26 @@ async function startServer() {
     
     process.on('SIGINT', () => gracefulShutdown('SIGINT'));
     process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+    // An uncaught exception leaves the process in an undefined state, so we log,
+    // report, and shut down so a process manager can restart cleanly.
     process.on('uncaughtException', (error) => {
       logHelpers.logError(error, { component: 'server', operation: 'uncaught_exception' });
+      try { sentryHelpers.captureException(error, { tags: { handler: 'uncaughtException' } }); } catch {}
       console.error('💥 Uncaught Exception:', error);
       gracefulShutdown('uncaughtException');
     });
-    process.on('unhandledRejection', (reason, promise) => {
-      logHelpers.logError(new Error('Unhandled Promise Rejection'), { 
-        component: 'server', 
+    // An unhandled promise rejection is NOT necessarily fatal (e.g. a single
+    // failed OpenAI/WhatsApp/Mongo call that wasn't awaited). Log and report it,
+    // but keep the server running so one stray rejection can't cause downtime.
+    process.on('unhandledRejection', (reason) => {
+      const error = reason instanceof Error ? reason : new Error(`Unhandled Promise Rejection: ${reason}`);
+      logHelpers.logError(error, {
+        component: 'server',
         operation: 'unhandled_rejection',
-        reason: reason?.toString(),
-        promise: promise?.toString()
+        reason: reason?.toString?.() || String(reason),
       });
-      console.error('💥 Unhandled Rejection at:', promise, 'reason:', reason);
-      gracefulShutdown('unhandledRejection');
+      try { sentryHelpers.captureException(error, { tags: { handler: 'unhandledRejection' } }); } catch {}
+      console.error('⚠️  Unhandled Rejection (continuing):', reason);
     });
     
   } catch (error) {

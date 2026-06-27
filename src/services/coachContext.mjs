@@ -1,4 +1,4 @@
-import { buildBusinessSettingsSnippet } from "./settings.mjs";
+import { buildBusinessSettingsSnippet, isBookingsEnabled } from "./settings.mjs";
 import { buildGoogleBusinessCoachBlock } from "./googleBusinessImport.mjs";
 import { fetchWebsiteTextSnippet } from "./websiteContext.mjs";
 import { listBookingFieldsSummary } from "./bookingFields.mjs";
@@ -57,8 +57,11 @@ export function buildCoachSettingsContextBlock(cfg = {}) {
   const mode = String(cfg.conversation_mode || "").trim();
   if (mode) pushUniqueLine(lines, `Conversation mode: ${mode}`);
 
-  if (cfg.bookings_enabled) pushUniqueLine(lines, "Reservations: enabled");
-  else pushUniqueLine(lines, "Reservations: disabled");
+  if (isBookingsEnabled(cfg)) {
+    pushUniqueLine(lines, "Bookings: enabled (WhatsApp calendar reservations are active)");
+  } else {
+    pushUniqueLine(lines, "Bookings: disabled (turn on in Settings → Bookings before the bot can take reservations or use booking questions)");
+  }
 
   if (Number(cfg.booking_max_per_day) > 0) {
     pushUniqueLine(lines, `Max bookings per day: ${cfg.booking_max_per_day}`);
@@ -95,8 +98,14 @@ export async function buildCoachBusinessContext(cfg = {}, options = {}) {
   }
 
   const bookingFieldsBlock = buildCoachBookingFieldsBlock(cfg);
-  if (bookingFieldsBlock) {
-    parts.push(`Current WhatsApp booking questions:\n${bookingFieldsBlock}`);
+  if (isBookingsEnabled(cfg)) {
+    if (bookingFieldsBlock) {
+      parts.push(`Current WhatsApp booking questions:\n${bookingFieldsBlock}`);
+    }
+  } else {
+    parts.push(
+      "WhatsApp booking questions: inactive — Bookings is disabled in Settings, so intake questions are not used until reservations are enabled."
+    );
   }
 
   const escalationBlock = buildCoachEscalationBlock(cfg);

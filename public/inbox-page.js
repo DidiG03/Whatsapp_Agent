@@ -261,42 +261,129 @@
     }
   }
 
+  function normalizeDigits(phone) {
+    return String(phone || '').replace(/\D/g, '');
+  }
+
+  function digitsMatch(a, b) {
+    const da = normalizeDigits(a);
+    const db = normalizeDigits(b);
+    if (!da || !db) return false;
+    if (da === db) return true;
+    const minLen = Math.min(da.length, db.length);
+    return minLen >= 8 && da.slice(-minLen) === db.slice(-minLen);
+  }
+
+  function findInboxRow(digits) {
+    const list = document.getElementById('inboxConversationListItems');
+    if (!list || !digits) return null;
+    let found = null;
+    list.querySelectorAll('.inbox-item').forEach(function (li) {
+      if (found) return;
+      const link = li.querySelector('a.inbox-item__link');
+      if (!link) return;
+      const hrefDigits = normalizeDigits(link.getAttribute('href') || '');
+      if (digitsMatch(hrefDigits, digits)) found = li;
+    });
+    return found;
+  }
+
+  function removeInboxEmptyState() {
+    const empty = document.querySelector('.empty-state-pro');
+    if (empty) empty.remove();
+  }
+
+  function updateInboxRowPreview(row, data) {
+    if (!row || !data) return;
+    const preview = messagePreviewText(data);
+    const previewEl = row.querySelector('.inbox-item__preview');
+    if (previewEl) {
+      previewEl.textContent = preview.length > 60 ? `${preview.slice(0, 57)}...` : preview;
+    }
+    const timeEl = row.querySelector('.inbox-item__time');
+    if (timeEl) {
+      timeEl.textContent = formatInboxListTime(data.timestamp) || timeEl.textContent;
+    }
+    if (data.direction === 'inbound') {
+      row.classList.add('inbox-item--unread');
+    }
+  }
+
+  function moveInboxRowToTop(row) {
+    const list = document.getElementById('inboxConversationListItems');
+    if (!list || !row) return;
+    const firstItem = list.querySelector('.inbox-item');
+    if (firstItem && firstItem !== row) {
+      list.insertBefore(row, firstItem);
+    }
+  }
+
+  function getInboxListShell() {
+    return document.getElementById('inboxConversationList');
+  }
+
+  function buildInboxListQueryParams(extra) {
+    const shell = getInboxListShell();
+    const params = new URLSearchParams(extra || {});
+    if (shell) {
+      if (shell.dataset.filter && shell.dataset.filter !== 'all' && !params.has('filter')) {
+        params.set('filter', shell.dataset.filter);
+      }
+      if (shell.dataset.archived === '1' && !params.has('archived')) {
+        params.set('archived', '1');
+      }
+    }
+    return params;
+  }
+
+  async function fetchAndInsertInboxRow(digits, data) {
+    const shell = getInboxListShell();
+    const list = document.getElementById('inboxConversationListItems');
+    if (!list) return null;
+    if (shell && shell.dataset.q) return null;
+
+    const params = buildInboxListQueryParams({ phone: digits });
+    try {
+      const r = await fetch(`/api/inbox/contacts/row?${params.toString()}`, {
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+      });
+      const j = await r.json();
+      if (!r.ok || !j.success || !j.visible || !j.html) return null;
+      const temp = document.createElement('ul');
+      temp.innerHTML = j.html;
+      const li = temp.querySelector('.inbox-item');
+      if (!li) return null;
+      removeInboxEmptyState();
+      const firstItem = list.querySelector('.inbox-item');
+      if (firstItem) list.insertBefore(li, firstItem);
+      else list.appendChild(li);
+      updateInboxRowPreview(li, data);
+      return li;
+    } catch (e) {
+      console.warn('Failed to fetch inbox row:', e);
+      return null;
+    }
+  }
+
   function initInboxListRealtimePreview() {
     const list = document.getElementById('inboxConversationListItems');
     if (!list) return;
 
-    function onNewMessage(data) {
+    async function onNewMessage(data) {
       if (!data) return;
       const phone = data.phone || data.contact
         || (data.direction === 'inbound' ? data.from_digits : data.to_digits);
-      const digits = String(phone || '').replace(/\D/g, '');
+      const digits = normalizeDigits(phone);
       if (!digits) return;
 
-      let row = null;
-      list.querySelectorAll('.inbox-item').forEach(function (li) {
-        const link = li.querySelector('a.inbox-item__link');
-        if (!link) return;
-        const hrefDigits = (link.getAttribute('href') || '').replace(/\D/g, '');
-        if (!hrefDigits || hrefDigits !== digits) return;
-        row = li;
-      });
-      if (!row) return;
-
-      const preview = messagePreviewText(data);
-      const previewEl = row.querySelector('.inbox-item__preview');
-      if (previewEl) {
-        previewEl.textContent = preview.length > 60 ? `${preview.slice(0, 57)}...` : preview;
-      }
-      const timeEl = row.querySelector('.inbox-item__time');
-      if (timeEl) {
-        timeEl.textContent = formatInboxListTime(data.timestamp) || timeEl.textContent;
-      }
-      if (data.direction === 'inbound') {
-        row.classList.add('inbox-item--unread');
-      }
-      const firstItem = list.querySelector('.inbox-item');
-      if (firstItem && firstItem !== row) {
-        list.insertBefore(row, firstItem);
+      let row = findInboxRow(digits);
+      if (!row) {
+        row = await fetchAndInsertInboxRow(digits, data);
+        if (!row) return;
+      } else {
+        updateInboxRowPreview(row, data);
+        moveInboxRowToTop(row);
       }
     }
 
@@ -313,6 +400,104 @@
         if (hookRealtime() || ++tries > 40) clearInterval(timer);
       }, 250);
     }
+  }
+
+  function initInboxListPollingFallback() {
+    const shell = getInboxListShell();
+    const list = document.getElementById('inboxConversationListItems');
+    if (!list) return;
+    if (shell && shell.dataset.q) return;
+
+    let pollTimer = null;
+    const POLL_MS = 15000;
+
+    async function refreshHead() {
+      if (document.hidden) return;
+      if (!shell || shell.dataset.infiniteScroll !== '1') return;
+
+      const params = buildInboxListQueryParams({
+        page: '1',
+        page_size: shell.dataset.pageSize || '20',
+      });
+
+      try {
+        const r = await fetch(`/api/inbox/contacts?${params.toString()}`, {
+          credentials: 'include',
+          headers: { Accept: 'application/json' },
+        });
+        const j = await r.json();
+        if (!r.ok || !j.success || !j.html) return;
+
+        const temp = document.createElement('ul');
+        temp.innerHTML = j.html;
+        const newRows = Array.from(temp.querySelectorAll('.inbox-item'));
+        newRows.forEach(function (newRow) {
+          const link = newRow.querySelector('a.inbox-item__link');
+          const d = normalizeDigits(link && link.getAttribute('href'));
+          const existingRow = findInboxRow(d);
+          if (existingRow) {
+            const previewEl = existingRow.querySelector('.inbox-item__preview');
+            const newPreview = newRow.querySelector('.inbox-item__preview');
+            if (previewEl && newPreview) previewEl.innerHTML = newPreview.innerHTML;
+            const timeEl = existingRow.querySelector('.inbox-item__time');
+            const newTime = newRow.querySelector('.inbox-item__time');
+            if (timeEl && newTime) timeEl.textContent = newTime.textContent;
+            const unreadEl = newRow.querySelector('.inbox-item__unread, .inbox-item__dot');
+            const existingUnread = existingRow.querySelector('.inbox-item__unread, .inbox-item__dot');
+            if (unreadEl && !existingUnread) {
+              const title = existingRow.querySelector('.inbox-item__title');
+              if (title) title.appendChild(unreadEl.cloneNode(true));
+            }
+            if (newRow.classList.contains('inbox-item--unread')) {
+              existingRow.classList.add('inbox-item--unread');
+            }
+            moveInboxRowToTop(existingRow);
+          } else {
+            removeInboxEmptyState();
+            const firstItem = list.querySelector('.inbox-item');
+            if (firstItem) list.insertBefore(newRow, firstItem);
+            else list.appendChild(newRow);
+          }
+        });
+      } catch (e) {
+        console.warn('Inbox poll refresh failed:', e);
+      }
+    }
+
+    function startPolling() {
+      if (pollTimer) return;
+      pollTimer = setInterval(refreshHead, POLL_MS);
+    }
+
+    function maybeStartPolling() {
+      const mgr = window.realtimeManager;
+      if (mgr && mgr.realtimeAvailable && mgr.isConnected) return;
+      startPolling();
+    }
+
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) refreshHead();
+    });
+
+    setTimeout(maybeStartPolling, 8000);
+
+    (async function () {
+      const mgr = window.realtimeManager;
+      if (!mgr) {
+        startPolling();
+        return;
+      }
+      try {
+        if (typeof mgr.ensureRealtimeAvailable === 'function') {
+          await mgr.ensureRealtimeAvailable();
+        }
+        if (!mgr.realtimeAvailable || !mgr.isConnected) {
+          startPolling();
+        }
+      } catch (_) {
+        startPolling();
+      }
+    })();
   }
 
   function initInboxListInfiniteScroll() {
@@ -410,6 +595,7 @@
     }
     initInboxListInfiniteScroll();
     initInboxListRealtimePreview();
+    initInboxListPollingFallback();
   });
 
   (async function checkAuthOnLoad() {

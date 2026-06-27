@@ -7,14 +7,14 @@ import { db } from "../db-mongodb.mjs";
 import mongoose from 'mongoose';
 
 export default function registerBookingRoutes(app) {
-  app.get("/booking/availability", async (req, res) => {
+  app.get("/booking/availability", ensureAuthed, async (req, res) => {
     try {
-      const userId = getCurrentUserId(req) || (req.query.user_id || null);
+      const userId = getCurrentUserId(req);
       const staffId = Number(req.query.staff_id || 0);
       const date = (req.query.date || new Date().toISOString().slice(0,10)).toString();
       const days = Number(req.query.days || 1);
       const slot = Number(req.query.slot_minutes || 30);
-      if (!userId || !staffId) return res.status(400).json({ error: "user_id and staff_id required" });
+      if (!userId || !staffId) return res.status(400).json({ error: "staff_id required" });
       const slots = await listAvailability({ userId, staffId, dateISO: `${date}T00:00:00.000Z`, days, slotMinutes: slot });
       return res.json({ availability: slots });
     } catch (e) {

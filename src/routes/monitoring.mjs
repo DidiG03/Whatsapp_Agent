@@ -52,7 +52,7 @@ export default function registerMonitoringRoutes(app) {
       res.setHeader("Expires", "0");
       
       res.end(`
-        <html>${getProfessionalHead('Monitoring Dashboard')}<body>
+        <html>${getProfessionalHead('Monitoring Dashboard', { csrfToken: res.locals.csrfToken || '' })}<body>
           <script src="/toast.js"></script>
           <script>
             // Enhanced authentication check on page load

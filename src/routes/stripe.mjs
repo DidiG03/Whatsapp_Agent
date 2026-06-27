@@ -1,6 +1,6 @@
 import "../config.mjs";
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
-import { createCheckoutSession, getCheckoutSession, handleSuccessfulPayment, handleSubscriptionCanceled, isStripeEnabled, formatStripeApiError, stripeErrorHttpStatus, isStripeResourceMissingError, reconcileStaleStripeBilling, reconcileStaleStripeSubscription } from "../services/stripe.mjs";
+import { createCheckoutSession, getCheckoutSession, handleSuccessfulPayment, handleSubscriptionCanceled, isStripeEnabled, formatStripeApiError, stripeErrorHttpStatus, isStripeResourceMissingError, reconcileStaleStripeBilling, reconcileStaleStripeSubscription, planBillingSettingsUrl } from "../services/stripe.mjs";
 import { getUserPlan, updateUserPlan } from "../services/usage.mjs";
 import { renderSidebar, renderTopbar } from "../utils.mjs";
 import Stripe from 'stripe';
@@ -231,25 +231,24 @@ export default function registerStripeRoutes(app) {
     const { session_id } = req.query;
     
     if (!session_id) {
-      return res.redirect('/plan?error=no_session_id');
+      return res.redirect("/settings?error=no_session_id#billing");
     }
-    
+
     try {
       const session = await getCheckoutSession(session_id);
-      
-      if (session.payment_status === 'paid') {
+
+      if (session.payment_status === "paid" || session.status === "complete") {
         await handleSuccessfulPayment(session);
-        return res.redirect('/plan?success=true');
-      } else {
-        return res.redirect('/plan?error=payment_not_completed');
+        return res.redirect("/settings?success=true#billing");
       }
+      return res.redirect("/settings?error=payment_not_completed#billing");
     } catch (error) {
-      console.error('Failed to process successful payment:', error);
-      return res.redirect('/plan?error=processing_failed');
+      console.error("Failed to process successful payment:", error);
+      return res.redirect("/settings?error=processing_failed#billing");
     }
   });
   app.get("/stripe/cancel", ensureAuthed, async (req, res) => {
-    return res.redirect('/plan?canceled=true');
+    return res.redirect("/settings?canceled=true#billing");
   });
   app.post("/stripe/customer-portal", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
@@ -272,7 +271,7 @@ export default function registerStripeRoutes(app) {
       if (!customerId) {
         return res.status(400).json({ error: 'No Stripe customer found for this account' });
       }
-      const returnUrl = `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/plan`;
+      const returnUrl = planBillingSettingsUrl();
       const session = await stripe.billingPortal.sessions.create({
         customer: String(customerId),
         return_url: returnUrl
@@ -456,7 +455,15 @@ export default function registerStripeRoutes(app) {
       if (!stripe) {
         return res.status(500).json({ error: 'Stripe not configured' });
       }
+      const plan = await getUserPlan(userId);
+      if (plan?.stripe_subscription_id && String(plan.stripe_subscription_id) !== String(subscription_id)) {
+        return res.status(403).json({ error: 'Subscription does not belong to this account' });
+      }
       const sub = await stripe.subscriptions.retrieve(subscription_id, { expand: ['schedule'] });
+      const subCustomer = typeof sub?.customer === 'string' ? sub.customer : sub?.customer?.id;
+      if (plan?.stripe_customer_id && subCustomer && String(plan.stripe_customer_id) !== String(subCustomer)) {
+        return res.status(403).json({ error: 'Subscription does not belong to this account' });
+      }
       let scheduleId = null;
       try { scheduleId = (sub?.schedule && (typeof sub.schedule === 'string' ? sub.schedule : sub.schedule?.id)) || null; } catch {}
       if (!scheduleId) {

@@ -39,3 +39,23 @@ describe("formatStripeApiError", () => {
     ).toBe(true);
   });
 });
+
+describe("getSubscriptionTrialDays", () => {
+  test("defaults to 14", async () => {
+    const prev = process.env.STRIPE_TRIAL_DAYS;
+    delete process.env.STRIPE_TRIAL_DAYS;
+    const { getSubscriptionTrialDays } = await import("../../src/services/stripe.mjs");
+    expect(getSubscriptionTrialDays()).toBe(14);
+    if (prev === undefined) delete process.env.STRIPE_TRIAL_DAYS;
+    else process.env.STRIPE_TRIAL_DAYS = prev;
+  });
+
+  test("respects zero to disable", async () => {
+    const prev = process.env.STRIPE_TRIAL_DAYS;
+    process.env.STRIPE_TRIAL_DAYS = "0";
+    const { getSubscriptionTrialDays } = await import("../../src/services/stripe.mjs");
+    expect(getSubscriptionTrialDays()).toBe(0);
+    if (prev === undefined) delete process.env.STRIPE_TRIAL_DAYS;
+    else process.env.STRIPE_TRIAL_DAYS = prev;
+  });
+});

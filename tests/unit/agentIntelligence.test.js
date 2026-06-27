@@ -2,6 +2,7 @@ import { describe, expect, test } from "@jest/globals";
 import {
   bookingReplyAsksForName,
   bookIntentReady,
+  guardPrematureActionClaims,
   isBookingNameCompletion,
   isUsableCustomerName,
   mergeAgentDecision,
@@ -9,6 +10,7 @@ import {
   sanitizeReplyWhenBookingReady,
   wantsTimeSlotSuggestions,
 } from "../../src/services/agent-intelligence.mjs";
+import { isBookingVocabularyWord, resolveBookingFieldValues } from "../../src/services/bookingFields.mjs";
 import { isHowAreYouQuestion, isCustomerWellbeingReply, isThankYouMessage, polishPleasantryReply, sanitizeAssistantReply } from "../../src/services/i18n.mjs";
 
 describe("agentIntelligence", () => {
@@ -158,6 +160,67 @@ describe("agentIntelligence", () => {
     })).toBe(true);
   });
 
+  test("bookIntentReady is false for a greeting from a known customer with no booking context", () => {
+    // Appointment business: only the name field is required, and the customer's
+    // name is already on file. A bare greeting must NOT be treated as a booking.
+    expect(bookIntentReady({
+      text: "Pershendetje",
+      intentData: {},
+      historyMessages: [],
+      knownCustomerName: "Mark",
+      contactId: "447312706087",
+      bookingFields: [{ id: "name", type: "name", required: true }],
+    })).toBe(false);
+  });
+
+  test("normalizeExecutedIntent strips a book intent on a plain greeting", () => {
+    const out = normalizeExecutedIntent({
+      intentType: "book",
+      intentData: { name: "Mark" },
+      text: "Pershendetje",
+      replyText: "Përshëndetje! Si mund t'ju ndihmoj sot?",
+      historyMessages: [],
+      knownCustomerName: "Mark",
+      contactId: "447312706087",
+      bookingFields: [{ id: "name", type: "name", required: true }],
+    });
+    expect(out.intentType).toBe("none");
+  });
+
+  test("bookIntentReady ignores stale booking history when the current message is unrelated", () => {
+    // Prior booking chatter is still in the loaded window, but the last assistant
+    // turn was a plain greeting reply — a new greeting must NOT be force-booked.
+    const history = [
+      { role: "user", content: "tomorrow at 8 for 4 people" },
+      { role: "assistant", content: "Si quheni?" },
+      { role: "user", content: "Mark" },
+      { role: "assistant", content: "Përshëndetje! Si mund t'ju ndihmoj sot?" },
+    ];
+    expect(bookIntentReady({
+      text: "me ke flas",
+      intentData: {},
+      historyMessages: history,
+      knownCustomerName: "Mark",
+      contactId: "447312706087",
+      bookingFields: [
+        { id: "name", type: "name", required: true },
+        { id: "party_size", type: "party_size", required: true },
+      ],
+    })).toBe(false);
+
+    expect(bookIntentReady({
+      text: "Pershendetje",
+      intentData: {},
+      historyMessages: history,
+      knownCustomerName: "Mark",
+      contactId: "447312706087",
+      bookingFields: [
+        { id: "name", type: "name", required: true },
+        { id: "party_size", type: "party_size", required: true },
+      ],
+    })).toBe(false);
+  });
+
   test("isBookingNameCompletion detects name reply after name prompt", () => {
     const history = [
       { role: "user", content: "Per neser ne 9 ne dark. Do jemi 5 persona" },
@@ -240,5 +303,51 @@ describe("agentIntelligence", () => {
     const out = polishPleasantryReply(raw, { userMessage, lang: "sq" });
     expect(out).toMatch(/^Përshëndetje!/i);
     expect(out).toMatch(/Faleminderit!/i);
+  });
+
+  test("guardPrematureActionClaims keeps reservation offer wording intact", () => {
+    const raw = "Shumë mirë! A dëshironi të bëni një rezervim, apo ju duhet informacion për orarin ose vendndodhjen?";
+    const out = guardPrematureActionClaims(raw, { phase: "general", lang: "sq" });
+    expect(out).toContain("rezervim");
+    expect(out).not.toMatch(/bëni një\s*,/);
+  });
+
+  test("isBookingVocabularyWord rejects booking words mistaken for names", () => {
+    expect(isBookingVocabularyWord("rezervim")).toBe(true);
+    expect(isBookingVocabularyWord("darke")).toBe(true);
+    expect(isBookingVocabularyWord("Bashruti Kuki")).toBe(false);
+  });
+
+  test("bookIntentReady stays false when only booking vocabulary appears in history", () => {
+    const history = [
+      { role: "user", content: "okej dua te bej nje" },
+      { role: "user", content: "rezervim" },
+      { role: "assistant", content: "Patjetër. Për cilën datë dhe në çfarë ore e doni rezervimin?" },
+      { role: "user", content: "per neser ne" },
+      { role: "user", content: "darke" },
+      { role: "assistant", content: "Patjetër, për nesër në darkë. Cila orë saktësisht ju përshtatet?" },
+    ];
+    const values = resolveBookingFieldValues({
+      fields: [
+        { id: "name", type: "name", required: true },
+        { id: "party_size", type: "party_size", required: true },
+      ],
+      text: "8 dhe jemi diku 6 persona",
+      historyMessages: history,
+      intentData: { partySize: 6 },
+      contactId: "447312706087",
+      isUsableCustomerName,
+    });
+    expect(values.name).toBeNull();
+    expect(bookIntentReady({
+      text: "8 dhe jemi diku 6 persona",
+      intentData: { partySize: 6, datetime: "8 pm tomorrow" },
+      historyMessages: history,
+      contactId: "447312706087",
+      bookingFields: [
+        { id: "name", type: "name", required: true },
+        { id: "party_size", type: "party_size", required: true },
+      ],
+    })).toBe(false);
   });
 });

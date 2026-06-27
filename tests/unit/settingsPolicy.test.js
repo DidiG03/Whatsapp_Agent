@@ -5,25 +5,24 @@ describe("enforceSettingsPolicy", () => {
   test("strips gated fields for free plan", () => {
     const { filtered, deniedFields } = enforceSettingsPolicy({
       bookings_enabled: true,
-      smtp_host: "smtp.example.com",
+      wa_template_name: "appointment_reminder",
       name: "Acme"
     }, { planName: "free" });
 
     expect(filtered.name).toBe("Acme");
     expect(filtered.bookings_enabled).toBeUndefined();
-    expect(filtered.smtp_host).toBeUndefined();
-    expect(deniedFields).toEqual(expect.arrayContaining(["bookings_enabled", "smtp_host"]));
+    expect(filtered.wa_template_name).toBeUndefined();
+    expect(deniedFields).toEqual(expect.arrayContaining(["bookings_enabled", "wa_template_name"]));
   });
 
   test("keeps fields for upgraded plan", () => {
     const { filtered, deniedFields } = enforceSettingsPolicy({
       bookings_enabled: true,
-      smtp_host: "smtp.example.com"
+      wa_template_name: "appointment_reminder"
     }, { planName: "pro" });
 
     expect(filtered.bookings_enabled).toBe(true);
-    expect(filtered.smtp_host).toBe("smtp.example.com");
+    expect(filtered.wa_template_name).toBe("appointment_reminder");
     expect(deniedFields).toHaveLength(0);
   });
 });
-

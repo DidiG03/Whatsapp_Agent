@@ -227,7 +227,7 @@ export function extractKbSearchKeywords(query, lang) {
 /** Guidance for when KB docs do not contain an answer. */
 export function kbScopeGuidance(lang) {
   const settingsRule = "Use the Business Settings block AND Docs (KB) for facts. Business Settings always includes the configured business name, type, categories, website, and services when present.";
-  const identityRule = "When asked who they are talking to, the business/restaurant name, or what kind of business this is, answer directly from Business Settings.";
+  const identityRule = "When the customer ONLY wants to confirm they reached the right business (e.g. 'am I speaking with X?', 'flas me ...?'), reply briefly: yes + business name, then ask how you can help — do NOT add business type, city, cuisine, or any pitch. When they ask what kind of business you are or want to learn more, then use Business Settings.";
   const overviewRule = "When the customer asks a broad overview (tell me about you, I want to know more, who are you), synthesize a warm 3–5 sentence introduction from Business Settings plus Docs like About Us, Google Business Profile, Hours, Location, and What We Do — do NOT answer with a single narrow FAQ such as menu or payment unless they asked only about that.";
   const faqRule = "Docs (KB) are FAQ pairs: title = question, content = answer. They may be stored in English. Match the customer's message by MEANING — e.g. Albanian 'a ka wifi?' matches English 'Do you have wi fi', and 'a pranoni karta krediti?' matches 'Do you accept credit cards'. Use the matched Doc's content as the factual answer.";
   if (lang === "sq") {
@@ -248,6 +248,51 @@ export function kbScopeGuidance(lang) {
     faqRule,
     "If neither Business Settings nor Docs support a factual answer, say briefly that you do not have that information yet.",
   ].join(" ");
+}
+
+/** Customer checking they reached the right WhatsApp — not asking for a business pitch. */
+export function isBusinessIdentityConfirmationQuestion(text) {
+  const s = stripAccents(String(text || "")).toLowerCase().trim();
+  if (!s) return false;
+  if (isGeneralBusinessOverviewQuestion(text)) return false;
+  if (/\b(cfare|cfare|what|tell me|me shum|pak rreth|about your|what do you do|prezant)\b/.test(s)) {
+    return false;
+  }
+
+  const patterns = [
+    /\bflas\s+me\b/,
+    /\bme\s+ke\s+po\s+flas\b/,
+    /\bme\s+kem\s+po\s+flas\b/,
+    /\ba\s+(?:jam|jemi)\s+te\b/,
+    /\bnumri\s+i\s+sakt\b/,
+    /\bam\s+i\s+(?:speaking|talking|texting|messaging)\s+(?:with|to)\b/,
+    /\bwho\s+am\s+i\s+(?:speaking|talking|texting|messaging)\s+(?:with|to)\b/,
+    /\bis\s+this\s+(?:the\s+)?(?:right|correct)\b/,
+    /\b(?:speaking|talking)\s+(?:with|to)\s+the\s+right\b/,
+  ];
+  if (patterns.some((re) => re.test(s))) return true;
+
+  return /^(?:pershendetje|përshëndetje|hello|hi|hey)[,!.\s-]*(kush\s+(?:je|jeni)|a\s+flas\s+me)\??$/.test(s)
+    || /^(kush\s+(?:je|jeni))\??$/.test(s);
+}
+
+export function buildBusinessIdentityConfirmationReply({
+  businessName = "",
+  lang = "en",
+  shouldGreet = false,
+  userMessage = "",
+} = {}) {
+  const name = String(businessName || "").trim() || (lang === "sq" ? "ne" : "us");
+  const sq = stripAccents(String(userMessage || "")).toLowerCase();
+  const userGreeted = /^(pershendetje|përshëndetje|hello|hi|hey|tung|miremengjes|miredita)\b/.test(sq);
+  const greet = shouldGreet || userGreeted;
+
+  if (lang === "sq") {
+    const lead = greet ? "Përshëndetje! " : "";
+    return `${lead}Po, po flisni me ${name}. Si mund t'ju ndihmoj?`;
+  }
+  const lead = greet ? "Hello! " : "";
+  return `${lead}Yes, you're speaking with ${name}. How can I help you today?`;
 }
 
 /** Broad "tell me about your business" questions — not a single narrow FAQ topic. */

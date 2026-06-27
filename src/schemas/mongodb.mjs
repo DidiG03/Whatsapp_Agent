@@ -424,6 +424,18 @@ const createIndexes = async () => {
         partialFilterExpression: { id: { $type: 'number', $gt: 0 } },
       }
     );
+    try {
+      await SettingsMulti.collection.createIndex(
+        { phone_number_id: 1 },
+        {
+          name: 'uniq_settings_phone_number_id',
+          unique: true,
+          partialFilterExpression: { phone_number_id: { $type: 'string', $gt: '' } },
+        }
+      );
+    } catch (phoneIdxError) {
+      logHelpers.logError(phoneIdxError, { component: 'mongodb', operation: 'create_phone_number_id_index' });
+    }
     await SettingsAudit.collection.createIndex({ user_id: 1, createdAt: -1 }, { name: 'settings_audit_user' });
     try {
       await mongoose.connection.collection('stripe_checkout_sessions').createIndex(

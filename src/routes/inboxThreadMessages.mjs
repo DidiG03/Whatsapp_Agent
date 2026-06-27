@@ -29,11 +29,13 @@ export function renderThreadMessagesHtml(msgs, ctx = {}) {
     userId,
     req,
     isUpgraded = false,
+    allowAgentActions = false,
     reactionsByMessage = {},
     userReactionsByMessage = {},
     replyOriginals = {},
     templatePreviewByKey = new Map(),
   } = ctx;
+  const canUseAgentActions = !!allowAgentActions && !!isUpgraded;
 
   return (msgs || []).map((m) => {
     const cls = m.direction === 'inbound' ? 'msg msg-in' : 'msg msg-out';
@@ -216,7 +218,7 @@ export function renderThreadMessagesHtml(msgs, ctx = {}) {
       messageReactions.forEach((reaction) => {
         const isUserReaction = userReactions.includes(reaction.emoji);
         const reactionClass = isUserReaction ? 'user-reaction' : 'customer-reaction';
-        const allowClick = isUserReaction && isUpgraded;
+        const allowClick = isUserReaction && canUseAgentActions;
         const clickHandler = allowClick ? `onclick="toggleReaction('${m.id}', '${reaction.emoji}')"` : '';
         const cursorStyle = allowClick ? 'cursor: pointer;' : 'cursor: default;';
         const title = isUserReaction ? 'Click to remove your reaction' : 'Customer reaction';
@@ -224,7 +226,7 @@ export function renderThreadMessagesHtml(msgs, ctx = {}) {
       });
       reactionsHtml += '</div>';
     }
-    const actionButtons = isUpgraded ? `
+    const actionButtons = canUseAgentActions ? `
         <div class="message-actions">
           <button class="action-btn reply-btn" onclick="replyToMessage('${m.id}')" title="Reply to this message">↩️</button>
           <button class="action-btn reaction-btn" onclick="showReactionPicker('${m.id}')" title="Add reaction">+</button>

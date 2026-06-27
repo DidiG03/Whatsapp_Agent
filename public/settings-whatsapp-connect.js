@@ -8,7 +8,6 @@
     const errorEl = document.getElementById('wa-connect-error');
     const successEl = document.getElementById('wa-connect-success');
     const connectBtn = document.getElementById('wa-connect-btn');
-    const showManualBtn = document.getElementById('wa-show-manual-btn');
     const manualConnectBtn = document.getElementById('wa-manual-connect-btn');
     const manualSetupEl = document.getElementById('wa-manual-setup');
     const disconnectBtn = document.getElementById('wa-connect-disconnect');
@@ -309,7 +308,6 @@
     }
 
     if (connectBtn) connectBtn.addEventListener('click', launchEmbeddedSignup);
-    if (showManualBtn) showManualBtn.addEventListener('click', openManualSetup);
     if (manualConnectBtn) manualConnectBtn.addEventListener('click', connectManually);
     if (disconnectBtn) {
       disconnectBtn.addEventListener('click', async function () {
@@ -370,9 +368,5 @@
     refreshStatus();
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initWhatsAppConnect);
-  } else {
-    initWhatsAppConnect();
-  }
+  window.initWhatsAppConnect = initWhatsAppConnect;
 })();

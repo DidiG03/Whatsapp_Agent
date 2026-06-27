@@ -91,11 +91,18 @@ export function parsePartySizeFromHistory(historyMessages = []) {
   return null;
 }
 
-export function resolveEffectivePartySize({ text = "", historyMessages = [], partySize = null, memPartySize = null } = {}) {
+export function resolveEffectivePartySize({
+  text = "",
+  historyMessages = [],
+  partySize = null,
+  memPartySize = null,
+  useStaleContext = false,
+} = {}) {
   const fromText = parsePartySizeFromText(text);
   if (fromText) return fromText;
   const direct = partySize != null ? Number(partySize) : null;
-  if (direct >= 1 && direct <= 100) return direct;
+  if (Number.isFinite(direct) && direct >= 1 && direct <= 100) return direct;
+  if (!useStaleContext) return null;
   const fromHistory = parsePartySizeFromHistory(historyMessages);
   if (fromHistory) return fromHistory;
   const mem = Number(memPartySize || 0);
@@ -163,11 +170,15 @@ export function evaluateEnforcedRules({
   const rules = Array.isArray(enforcedRules) ? enforcedRules : parseEnforcedRulesJson(enforcedRules);
   if (!rules.length) return null;
 
+  // Only count party size the customer stated in this turn (text/notes/explicit
+  // param). Stale thread history and last_party_size from prior bookings must
+  // not trigger large-group blocks on a fresh reservation request.
   const effectivePartySize = resolveEffectivePartySize({
     text,
     historyMessages,
     partySize,
     memPartySize,
+    useStaleContext: false,
   });
   if (effectivePartySize == null) return null;
 

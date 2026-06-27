@@ -22,7 +22,7 @@ async function initApp() {
 export default async function handler(req, res) {
   try {
     const { app } = await initApp();
-    return new Promise((resolve, reject) => {
+    await new Promise((resolve, reject) => {
       app(req, res, (err) => {
         if (err) {
           console.error('Express error:', err);
@@ -32,10 +32,15 @@ export default async function handler(req, res) {
         }
       });
     });
+
+    const tasks = req._backgroundTasks;
+    if (Array.isArray(tasks) && tasks.length) {
+      await Promise.allSettled(tasks);
+    }
   } catch (error) {
     console.error('Vercel handler error:', error);
     if (!res.headersSent) {
-      res.status(500).json({ 
+      res.status(500).json({
         error: 'Internal Server Error',
         message: error.message,
         stack: process.env.NODE_ENV === 'development' ? error.stack : undefined

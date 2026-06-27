@@ -319,7 +319,7 @@ export function getPlanPricing() {
     },
     starter: {
       name: 'Starter',
-      price: 29,
+      price: 14,
       monthly_limit: 1000,
       whatsapp_numbers: 1,
       kb_docs_limit: 500,

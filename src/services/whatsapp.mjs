@@ -69,7 +69,12 @@ async function postWhatsAppMessage(cfg, payload, { retry = false } = {}) {
         console.error('[WA] Auth 401 during retry', { body: text.slice(0, 2000) });
         throw new Error(`WhatsApp authentication failed (401): Invalid or expired token. Please check your WhatsApp Business API configuration.`);
       }
-      if (resp.status >= 500) throw new Error(`WhatsApp 5xx ${resp.status}`);
+      if (resp.status >= 500) {
+        let body = '';
+        try { body = await resp.text(); } catch {}
+        console.error('[WA] 5xx during retry', { status: resp.status, attempt, body: String(body).slice(0, 2000) });
+        throw new Error(`WhatsApp 5xx ${resp.status}`);
+      }
       if (!resp.ok) {
         const text = await resp.text();
         console.error('[WA] Non-OK response during retry', { status: resp.status, body: text.slice(0, 2000) });

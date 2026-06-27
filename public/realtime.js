@@ -602,7 +602,7 @@ class RealtimeManager {
       const ticksHtml = message?.direction === 'outbound'
         ? `<div class="message-status-ticks message-status-${deliveryStatus}"><div class="message-tick"></div><div class="message-tick"></div></div>`
         : '';
-      const canActions = (typeof window !== 'undefined' && !!window.IS_UPGRADED && message?.id);
+      const canActions = (typeof window !== 'undefined' && !!window.IS_UPGRADED && !!window.CHAT_IS_HUMAN && message?.id);
       const actionsHtml = canActions
         ? `<div class="message-actions">
              <button class="action-btn reply-btn" onclick="replyToMessage('${message.id}')" title="Reply to this message">↩️</button>
@@ -860,6 +860,7 @@ class RealtimeManager {
     if (typeof window.applyComposerLiveMode === 'function') {
       window.applyComposerLiveMode(isLive);
     }
+    try { window.CHAT_IS_HUMAN = !!isLive; } catch {}
     this.emitGlobal('live_mode_changed', data);
   }
 

@@ -251,11 +251,17 @@ export function collectSystemMetrics() {
   const cpuUsage = process.cpuUsage();
   setGauge('cpu_usage_percent', Math.round((cpuUsage.user + cpuUsage.system) / 1000000));
 }
-export function startMetricsCollection(intervalMs = 30000) {  setInterval(() => {
+export function startMetricsCollection(intervalMs = 30000) {
+  const timer = setInterval(() => {
     collectSystemMetrics();
   }, intervalMs);
-  
+
+  // Don't keep the process/event loop alive solely for metrics collection
+  // (otherwise test workers and short-lived processes hang on exit).
+  if (typeof timer.unref === 'function') timer.unref();
+
   logHelpers.logBusinessEvent('metrics_collection_started', { interval_ms: intervalMs });
+  return timer;
 }
 
 export default {

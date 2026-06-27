@@ -7,14 +7,14 @@ import {
   escapeHtml,
   getProfessionalHead,
 } from "../utils.mjs";
-import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
+import { getSettingsForUser, upsertSettingsForUser, isBookingsEnabled } from "../services/settings.mjs";
 import { getPlanStatus } from "../services/usage.mjs";
 import { refiningCoachReply, isRefiningSuggestionRequest } from "../services/ai.mjs";
 import { retrieveCoachKbContext } from "../services/kb.mjs";
 import { buildCoachBusinessContext } from "../services/coachContext.mjs";
 import { parseRefiningDirectives, applyRefiningDirectives, removeRuleAtIndex, clearAllRefiningRules, listRefiningRules } from "../services/refiningDirectives.mjs";
 import { mergeEnforcedRules, removeEnforcedRulesMatchingNeedle } from "../services/refiningEnforcement.mjs";
-import { getBookingFieldsFromSettings, listBookingFieldsSummary } from "../services/bookingFields.mjs";
+import { getBookingFieldsFromSettings, listBookingFieldsSummary, removeBookingFieldFromSettings } from "../services/bookingFields.mjs";
 
 function parseRulesList(rulesText = "") {
   return String(rulesText || "")
@@ -29,11 +29,28 @@ function renderBookingFields(settings = {}) {
     return `<p class="refining-rules__empty">Default booking questions apply (based on business type).</p>`;
   }
   const items = fields
-    .map((f) => `
+    .map((f) => {
+      const canRemove = String(f.id || "").toLowerCase() !== "name";
+      const removeBtn = canRemove
+        ? `<button
+          type="button"
+          class="refining-rules__remove"
+          data-field-id="${escapeHtml(f.id)}"
+          aria-label="Remove booking question"
+          title="Remove booking question"
+        >
+          <span aria-hidden="true">×</span>
+        </button>`
+        : "";
+      return `
       <li class="refining-rules__item refining-rules__item--field">
-        <p class="refining-rules__text"><strong>${escapeHtml(f.label)}</strong>${f.required ? "" : " <span class=\"small\">(optional)</span>"}</p>
-        <p class="small" style="margin:4px 0 0;color:var(--muted,#666);">${escapeHtml(f.prompt)}</p>
-      </li>`)
+        <div class="refining-rules__field-body">
+          <p class="refining-rules__text"><strong>${escapeHtml(f.label)}</strong>${f.required ? "" : " <span class=\"small\">(optional)</span>"}</p>
+          <p class="small" style="margin:4px 0 0;color:var(--muted,#666);">${escapeHtml(f.prompt)}</p>
+        </div>
+        ${removeBtn}
+      </li>`;
+    })
     .join("");
   return `<ol class="refining-rules__list">${items}</ol>`;
 }
@@ -103,7 +120,7 @@ export default function registerRefiningRoutes(app) {
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
     res.end(`
-      <html>${getProfessionalHead("Refining")}<body class="refining-page">
+      <html>${getProfessionalHead("Refining", { sandbox: true, csrfToken: res.locals.csrfToken || '' })}<body class="refining-page">
         <div class="container">
           ${renderTopbar("Refining", email)}
           <div class="layout">
@@ -304,6 +321,37 @@ export default function registerRefiningRoutes(app) {
               }
             });
 
+            async function removeBookingField(fieldId) {
+              const resp = await fetch("/api/refining/booking-fields/remove", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Accept: "application/json" },
+                credentials: "include",
+                body: JSON.stringify({ id: fieldId }),
+              });
+              const data = await resp.json().catch(() => ({}));
+              if (!resp.ok) throw new Error(data.error || "Could not remove booking question.");
+              if (data.bookingFieldsHtml && bookingFieldsEl) {
+                bookingFieldsEl.innerHTML = data.bookingFieldsHtml;
+              }
+              notify("Booking question removed.", "success");
+            }
+
+            bookingFieldsEl?.addEventListener("click", async function (e) {
+              const btn = e.target.closest(".refining-rules__remove[data-field-id]");
+              if (!btn || btn.disabled) return;
+              e.preventDefault();
+              const fieldId = btn.getAttribute("data-field-id");
+              if (!fieldId) return;
+              if (!confirm("Remove this booking question? The bot will stop asking it during reservations.")) return;
+              btn.disabled = true;
+              try {
+                await removeBookingField(fieldId);
+              } catch (err) {
+                notify(err?.message || "Could not remove booking question.", "error");
+                btn.disabled = false;
+              }
+            });
+
             function scrollChatToBottom() {
               if (!transcriptEl) return;
               transcriptEl.scrollTop = transcriptEl.scrollHeight;
@@ -421,6 +469,8 @@ export default function registerRefiningRoutes(app) {
                 }
                 if (data.saved && data.removed) {
                   notify("Rule removed.", "success");
+                } else if (data.bookingsBlocked) {
+                  notify("Enable Bookings in Settings before adding booking questions.", "info");
                 } else if (data.clarifying) {
                   notify("Answer the follow-up so I can save a precise rule.", "info");
                 } else if (data.saved) {
@@ -481,10 +531,11 @@ export default function registerRefiningRoutes(app) {
         kbItems: kbContext,
         businessContext: businessContext || "",
         isSuggestionRequest,
+        bookingsEnabled: isBookingsEnabled(settings),
       });
 
       const directives = parseRefiningDirectives(coach);
-      const { visible, rules, saved, needsClarification, removed } = await applyRefiningDirectives(userId, directives);
+      const { visible, rules, saved, needsClarification, removed, bookingsBlocked } = await applyRefiningDirectives(userId, directives);
 
       const newTranscript = `${history}${history ? "\n\n" : ""}You: ${userMsg}\nAI: ${visible}`;
       await upsertSettingsForUser(userId, {
@@ -499,6 +550,7 @@ export default function registerRefiningRoutes(app) {
         reply: visible,
         saved: !!saved,
         removed: !!removed,
+        bookingsBlocked: !!bookingsBlocked,
         clarifying: !!needsClarification,
         transcriptHtml: renderTranscriptAsBubbles(newTranscript),
         rulesHtml: renderActiveRules(rules),
@@ -574,6 +626,41 @@ export default function registerRefiningRoutes(app) {
     } catch (err) {
       console.error("[refining] remove rule error:", err?.message || err);
       return res.status(500).json({ error: "Could not remove rule." });
+    }
+  });
+
+  app.post("/api/refining/booking-fields/remove", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const fieldId = String(req.body?.id || req.body?.fieldId || "").trim();
+    if (!fieldId) {
+      return res.status(400).json({ error: "Field id is required." });
+    }
+
+    try {
+      const settings = await getSettingsForUser(userId);
+      const result = removeBookingFieldFromSettings(settings, fieldId);
+      if (!result.ok) {
+        if (result.error === "name_required") {
+          return res.status(400).json({ error: "The name question cannot be removed." });
+        }
+        return res.status(400).json({ error: "Booking question not found." });
+      }
+
+      await upsertSettingsForUser(userId, {
+        ...settings,
+        booking_fields_json: result.booking_fields_json,
+      });
+      const updatedSettings = await getSettingsForUser(userId);
+
+      return res.json({
+        ok: true,
+        bookingFieldsHtml: renderBookingFields(updatedSettings),
+      });
+    } catch (err) {
+      console.error("[refining] remove booking field error:", err?.message || err);
+      return res.status(500).json({ error: "Could not remove booking question." });
     }
   });
 }

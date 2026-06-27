@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { parseClosedDatesFromHolidays } from "../views/holidayClosures.mjs";
 
 const reminderOptions = ["2h", "4h", "1d"];
 
@@ -15,7 +16,12 @@ const ServiceSchema = z.object({
   price: z.string().trim().max(40).nullable().optional()
 });
 
-const DISPLAY_INTERVALS = [15, 20, 30, 40, 60, 90, 120];
+function snapSlotMinutes(value, fallback = 30) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(240, Math.max(5, Math.round(n / 5) * 5));
+}
+
 const CAPACITY_WINDOWS = [30, 60, 90, 120];
 
 const SettingsSchema = z.object({
@@ -52,7 +58,7 @@ const SettingsSchema = z.object({
   holiday_rules: z.array(HolidayRuleSchema).max(64),
   booking_max_per_day: nullableNumber(0, 500),
   booking_days_ahead: nullableNumber(1, 365),
-  booking_display_interval_minutes: z.number().int().refine((n) => DISPLAY_INTERVALS.includes(n)),
+  booking_display_interval_minutes: z.number().int().min(5).max(240),
   booking_capacity_window_minutes: z.number().int().refine((n) => CAPACITY_WINDOWS.includes(n)),
   booking_capacity_limit: nullableNumber(0, 500),
   waitlist_enabled: z.boolean().default(false),
@@ -185,12 +191,18 @@ function parseHolidayRules(body) {
   const dates = toArray(body.holiday_date);
   const starts = toArray(body.holiday_start);
   const ends = toArray(body.holiday_end);
+  const fullDays = toArray(body.holiday_full_day);
   const rules = [];
-  const max = Math.max(names.length, dates.length, starts.length, ends.length);
+  const max = Math.max(names.length, dates.length, starts.length, ends.length, fullDays.length);
   for (let i = 0; i < max; i++) {
     const date = String(dates[i] || "").trim();
-    const start = String(starts[i] || "").trim();
-    const end = String(ends[i] || "").trim();
+    const isFullDay = String(fullDays[i] || "") === "1";
+    let start = String(starts[i] || "").trim();
+    let end = String(ends[i] || "").trim();
+    if (isFullDay) {
+      start = "00:00";
+      end = "23:59";
+    }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
     if (!/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end)) continue;
     rules.push({
@@ -259,11 +271,17 @@ function normalizePayload(raw = {}) {
     escalation_out_of_hours_message: raw.escalation_out_of_hours_message,
     escalation_questions: parseEscalationQuestions(raw.escalation_questions_json),
     holidays_json_url: raw.holidays_json_url,
-    closed_dates: parseClosedDates(raw.closed_dates_json),
+    closed_dates: (() => {
+      const fromHolidays = parseClosedDatesFromHolidays(raw);
+      if (fromHolidays.length || toArray(raw.holiday_date).some((date) => String(date || "").trim())) {
+        return fromHolidays;
+      }
+      return parseClosedDates(raw.closed_dates_json);
+    })(),
     holiday_rules: parseHolidayRules(raw),
     booking_max_per_day: raw.booking_max_per_day,
     booking_days_ahead: raw.booking_days_ahead,
-    booking_display_interval_minutes: snapToAllowed(raw.booking_display_interval_minutes, DISPLAY_INTERVALS, 30),
+    booking_display_interval_minutes: snapSlotMinutes(raw.booking_display_interval_minutes, 30),
     booking_capacity_window_minutes: snapToAllowed(raw.booking_capacity_window_minutes, CAPACITY_WINDOWS, 60),
     booking_capacity_limit: raw.booking_capacity_limit,
     waitlist_enabled: coerceBoolean(raw.waitlist_enabled),
@@ -330,7 +348,83 @@ export function validateSettingsPayload(rawBody = {}) {
   return { success: true, data: payload };
 }
 
+/** Keep DB values for settings sections whose form fields were not in the POST body (lazy-loaded panels). */
+export function preserveUnloadedPanelFields(filtered, body, existing) {
+  if (!existing || !filtered) return filtered;
+  const out = { ...filtered };
+  const has = (key) => Object.prototype.hasOwnProperty.call(body || {}, key);
+  const copyIfMissing = (key) => {
+    if (!has(key) && existing[key] !== undefined) {
+      out[key] = existing[key];
+    }
+  };
+
+  if (!has("business_name")) {
+    [
+      "business_type",
+      "business_name",
+      "business_categories_json",
+      "website_url",
+      "business_address",
+      "business_latitude",
+      "business_longitude",
+      "business_place_id",
+    ].forEach(copyIfMissing);
+  }
+
+  if (!has("phone_number_id") && !has("waba_id") && !has("whatsapp_token")) {
+    [
+      "phone_number_id",
+      "waba_id",
+      "whatsapp_token",
+      "verify_token",
+      "app_secret",
+      "business_phone",
+      "staff_whatsapp_group_id",
+      "staff_whatsapp_group_enabled",
+    ].forEach(copyIfMissing);
+  }
+
+  if (!has("conversation_mode") && !has("ai_tone")) {
+    [
+      "ai_tone",
+      "ai_blocked_topics",
+      "ai_style",
+      "conversation_mode",
+      "bookings_enabled",
+      "reminders_enabled",
+      "escalation_additional_message",
+      "escalation_out_of_hours_message",
+      "escalation_questions_json",
+      "wa_template_name",
+      "wa_template_language",
+    ].forEach(copyIfMissing);
+  }
+
+  if (!has("closed_dates_json") && !has("holiday_date")) {
+    ["closed_dates_json", "holidays_rules_json", "holidays_json_url"].forEach(copyIfMissing);
+  }
+
+  if (!has("booking_days_ahead") && !has("booking_max_per_day")) {
+    [
+      "booking_max_per_day",
+      "booking_days_ahead",
+      "booking_display_interval_minutes",
+      "booking_capacity_window_minutes",
+      "booking_capacity_limit",
+      "waitlist_enabled",
+      "reschedule_min_lead_minutes",
+      "cancel_min_lead_minutes",
+      "reminder_windows",
+      "services_json",
+    ].forEach(copyIfMissing);
+  }
+
+  return out;
+}
+
 export default {
-  validateSettingsPayload
+  validateSettingsPayload,
+  preserveUnloadedPanelFields,
 };
 

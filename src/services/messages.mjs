@@ -85,15 +85,18 @@ export async function recordInboundMessage({
       { $setOnInsert: insertDoc },
       { upsert: true }
     );
-    if (body && !res.upsertedCount) {
+    const isNewMessage = (res.upsertedCount || 0) > 0;
+    // Backfill late-arriving text (e.g. audio transcription) onto an existing row.
+    if (body && !isNewMessage) {
       await messages.updateOne(
         { id: doc.id },
         { $set: { text_body: body } }
       );
     }
-    if ((res.upsertedCount || 0) > 0 || (res.matchedCount || 0) > 0) return true;
-    const found = await messages.findOne({ id: doc.id }, { projection: { _id: 1 } });
-    return !!found;
+    // Return true ONLY for genuinely new messages. Meta retries webhook
+    // deliveries, so callers rely on this to avoid replying twice and
+    // double-counting usage for the same message id.
+    return isNewMessage;
   } catch (e) {
     console.error('[recordInboundMessage] failed:', e?.message || e, { messageId, userId });
     return false;

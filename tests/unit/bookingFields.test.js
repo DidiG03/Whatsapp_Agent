@@ -8,6 +8,7 @@ import {
   formatBookingNotesFromValues,
   fieldsIncludeType,
   buildBookingFieldsPromptBlock,
+  removeBookingFieldFromSettings,
 } from "../../src/services/bookingFields.mjs";
 
 describe("bookingFields", () => {
@@ -75,5 +76,21 @@ describe("bookingFields", () => {
     const block = buildBookingFieldsPromptBlock(config.fields, "en");
     expect(block).toContain("BOOKING FIELDS");
     expect(block).toContain("Do NOT ask how many people");
+  });
+
+  test("removeBookingFieldFromSettings removes party_size from restaurant defaults", () => {
+    const settings = { business_type: "Restaurant / Food" };
+    const result = removeBookingFieldFromSettings(settings, "party_size");
+    expect(result.ok).toBe(true);
+    const config = getBookingFieldsFromSettings({ booking_fields_json: result.booking_fields_json });
+    expect(fieldsIncludeType(config.fields, "party_size")).toBe(false);
+    expect(fieldsIncludeType(config.fields, "name")).toBe(true);
+  });
+
+  test("removeBookingFieldFromSettings blocks removing name", () => {
+    const settings = { business_type: "Restaurant / Food" };
+    const result = removeBookingFieldFromSettings(settings, "name");
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("name_required");
   });
 });

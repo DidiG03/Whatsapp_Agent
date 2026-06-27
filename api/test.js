@@ -1,8 +1,12 @@
 
 export default function handler(req, res) {
+  if (process.env.NODE_ENV === 'production' || process.env.VERCEL) {
+    return res.status(404).json({ error: 'not_found' });
+  }
+
   try {
     console.log('Test handler called:', req.method, req.url);
-    
+
     res.status(200).json({
       message: 'WhatsApp Agent is running on Vercel!',
       timestamp: new Date().toISOString(),

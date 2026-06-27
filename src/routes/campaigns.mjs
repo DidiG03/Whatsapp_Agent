@@ -210,7 +210,7 @@ export default function registerCampaignRoutes(app) {
 
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.end(`
-      <html>${getProfessionalHead("Campaigns").replace("</head>", `
+      <html>${getProfessionalHead("Campaigns", { csrfToken: res.locals.csrfToken || '' }).replace("</head>", `
         <style>
           .meta-card { background:#ffffff; border:1px solid #e5e7eb; border-radius:10px; padding:16px; }
           .meta-form { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; margin-top:10px; }

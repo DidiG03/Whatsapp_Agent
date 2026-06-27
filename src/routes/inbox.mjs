@@ -1,6 +1,7 @@
 import { ensureAuthed, getCurrentUserId, getSignedInEmail } from "../middleware/auth.mjs";
 import { renderSidebar, normalizePhone, escapeHtml, renderTopbar, getProfessionalHead, renderPageHeader, renderVoiceMessageHtml } from "../utils.mjs";
-import { listContactsForUser, listMessagesForThread, listThreadMessagesPage } from "../services/conversations.mjs";
+import { listContactsForUser, listMessagesForThread, listThreadMessagesPage, getContactPreviewForUser, loadThreadMessagesForDisplay, fetchUnreadCountsForContacts } from "../services/conversations.mjs";
+import { performAdvancedSearch, performMessageSearch } from "../services/inboxSearch.mjs";
 import { db, getDB } from "../db-mongodb.mjs";
 import { Customer, Handoff, Message, MessageStatus } from '../schemas/mongodb.mjs';
 import { getSettingsForUser, upsertSettingsForUser } from "../services/settings.mjs";
@@ -20,6 +21,7 @@ import { updateContactActivity } from "../services/contacts.mjs";
 import { canonicalContactId, contactIdVariants, findHandoffForContact, resolveHumanMode, upsertHandoffForContact } from "../services/handoff.mjs";
 import { recordOutboundMessage } from "../services/messages.mjs";
 import { getContactMemory } from "../services/memory.mjs";
+import { resetContactBotKnowledge } from "../services/contactReset.mjs";
 import { detectLanguage, t as tr } from "../services/i18n.mjs";
 import { renderThreadMessagesHtml } from "./inboxThreadMessages.mjs";
 import { 
@@ -169,6 +171,47 @@ function contactInitials(displayName, contact) {
   return digits.slice(-2) || '??';
 }
 
+const INBOX_FILTERS = ['all', 'unread', 'live', 'requesting_agent'];
+
+function parseInboxFilter(raw) {
+  const value = String(raw || 'all');
+  return INBOX_FILTERS.includes(value) ? value : 'all';
+}
+
+function inboxFilterEmptyLabel(filter) {
+  if (filter === 'live') return 'live';
+  if (filter === 'requesting_agent') return 'requesting agent';
+  if (filter === 'unread') return 'unread';
+  return filter;
+}
+
+function isHandoffRequestingAgent(row, now = Math.floor(Date.now() / 1000)) {
+  if (!row) return false;
+  const step = String(row.escalation_step || '').trim();
+  if (step) return true;
+  const isHuman = !!row.is_human;
+  const exp = Number(row.human_expires_ts || 0);
+  const reason = String(row.escalation_reason || '').trim();
+  return isHuman && exp > now && !!reason;
+}
+
+function isHandoffLive(row, now = Math.floor(Date.now() / 1000)) {
+  if (!row) return false;
+  const isHuman = !!row.is_human;
+  const exp = Number(row.human_expires_ts || 0);
+  if (!isHuman || exp <= now) return false;
+  return !isHandoffRequestingAgent(row, now);
+}
+
+async function isContactInHumanMode(userId, phone) {
+  try {
+    const handoff = await findHandoffForContact(userId, phone, 'is_human human_expires_ts');
+    return resolveHumanMode(handoff).isHuman;
+  } catch {
+    return false;
+  }
+}
+
 function renderInboxContactListItems(contacts, ctx = {}) {
   const {
     showArchived = false,
@@ -177,6 +220,7 @@ function renderInboxContactListItems(contacts, ctx = {}) {
     statusByContact = new Map(),
     escalationByContact = new Map(),
     liveByContact = new Map(),
+    requestingAgentByContact = new Map(),
     unreadCounts = new Map(),
   } = ctx;
 
@@ -196,6 +240,7 @@ function renderInboxContactListItems(contacts, ctx = {}) {
     const seenTs = lastSeenByContact.get(String(c.contact)) || 0;
     const hasNew = lastTs > seenTs;
     const isLive = c.isLive ?? liveByContact.has(String(c.contact));
+    const isRequestingAgent = c.isRequestingAgent ?? requestingAgentByContact.has(String(c.contact));
     const unreadCount = (c.unreadCount ?? unreadCounts.get(String(c.contact))) || 0;
     const conversationStatus = c.conversationStatus || statusByContact.get(String(c.contact)) || CONVERSATION_STATUSES.NEW;
     const statusDisplay = STATUS_DISPLAY_NAMES[conversationStatus];
@@ -245,6 +290,7 @@ function renderInboxContactListItems(contacts, ctx = {}) {
       ? `<span class="inbox-item__unread">${unreadCount > 99 ? '99+' : unreadCount}</span>`
       : (hasNew ? '<span class="inbox-item__dot" aria-label="Unread"></span>' : '');
     const chips = [
+      isRequestingAgent ? '<span class="escalation-chip">Requesting Agent</span>' : '',
       isLive ? '<span class="live-chip">Live</span>' : '',
       conversationStatus !== CONVERSATION_STATUSES.NEW
         ? `<span class="status-chip" style="background-color:${statusColor}">${statusDisplay}</span>`
@@ -281,47 +327,23 @@ async function enrichInboxContacts(userId, contacts) {
   const customerNameByContact = new Map(customers.map(r => [String(r.contact_id), r.display_name]));
   const lastSeenRows = await Handoff.find({ user_id: userId }).select('contact_id last_seen_ts');
   const lastSeenByContact = new Map(lastSeenRows.map(r => [String(r.contact_id), Number(r.last_seen_ts || 0)]));
-  const unreadCounts = new Map();
-  try {
-    await Promise.all((contacts || []).slice(0, 50).map(async (c) => {
-      try {
-        const contactId = String(c.contact || '');
-        if (!contactId) return;
-        const seenTs = lastSeenByContact.get(contactId) || 0;
-        const digits = normalizePhone(contactId);
-        const cnt = await Message.countDocuments({
-          user_id: userId,
-          direction: 'inbound',
-          timestamp: { $gt: seenTs },
-          $or: [
-            { from_id: contactId },
-            { from_digits: digits }
-          ]
-        });
-        unreadCounts.set(contactId, Number(cnt || 0));
-      } catch (_) {}
-    }));
-  } catch (_) {}
-  const statusRows = await Handoff.find({ user_id: userId }).select('contact_id conversation_status');
+  const unreadCounts = await fetchUnreadCountsForContacts(userId, contacts, lastSeenByContact);
+  const statusRows = await Handoff.find({ user_id: userId }).select('contact_id conversation_status escalation_step escalation_reason is_human human_expires_ts');
   const statusByContact = new Map(statusRows.map(r => [String(r.contact_id), r.conversation_status || CONVERSATION_STATUSES.NEW]));
   const now = Math.floor(Date.now() / 1000);
-  const escalationRows = await Handoff.find({
-    user_id: userId,
-    escalation_reason: { $exists: true, $ne: null }
-  }).select('contact_id escalation_reason updatedAt is_human human_expires_ts');
-  const liveRows = await Handoff.find({
-    user_id: userId,
-    is_human: true,
-    human_expires_ts: { $gt: now }
-  }).select('contact_id');
   const escalationByContact = new Map();
-  const liveByContact = new Map(liveRows.map((row) => [String(row.contact_id), true]));
-  escalationRows.forEach((row) => {
+  const liveByContact = new Map();
+  const requestingAgentByContact = new Map();
+  statusRows.forEach((row) => {
     const contactId = String(row.contact_id);
-    const isHuman = Number(row.is_human || 0);
-    const humanExpiresTs = Number(row.human_expires_ts || 0);
-    if (isHuman && humanExpiresTs > now) {
+    if (row.escalation_reason) {
       escalationByContact.set(contactId, row.escalation_reason);
+    }
+    if (isHandoffRequestingAgent(row, now)) {
+      requestingAgentByContact.set(contactId, row.escalation_reason || true);
+    }
+    if (isHandoffLive(row, now)) {
+      liveByContact.set(contactId, true);
     }
   });
 
@@ -331,13 +353,15 @@ async function enrichInboxContacts(userId, contacts) {
     const lastTs = Number(c.last_ts || 0);
     const unreadCount = unreadCounts.get(contactId) || 0;
     const hasNew = lastTs > seenTs;
-    const hasEscalation = escalationByContact.has(contactId);
+    const hasEscalation = requestingAgentByContact.has(contactId);
+    const isRequestingAgent = hasEscalation;
     const isLive = liveByContact.has(contactId);
     return {
       ...c,
       unreadCount,
       hasNew,
       hasEscalation,
+      isRequestingAgent,
       isLive,
       conversationStatus: statusByContact.get(contactId) || CONVERSATION_STATUSES.NEW,
     };
@@ -350,6 +374,7 @@ async function enrichInboxContacts(userId, contacts) {
     statusByContact,
     escalationByContact,
     liveByContact,
+    requestingAgentByContact,
     unreadCounts,
   };
 }
@@ -406,132 +431,6 @@ const uploadDocument = multer({
     }
   }
 });
-async function performAdvancedSearch(userId, filters) {
-  const { q, messageType, direction, dateFrom, dateTo } = filters;
-  let whereConditions = ['m.user_id = ?'];
-  let queryParams = [userId];
-  if (q) {
-    whereConditions.push(`(m.text_body LIKE ? OR m.raw LIKE ?)`);
-    const searchTerm = `%${q}%`;
-    queryParams.push(searchTerm, searchTerm);
-  }
-  if (messageType) {
-    whereConditions.push('m.type = ?');
-    queryParams.push(messageType);
-  }
-  if (direction) {
-    whereConditions.push('m.direction = ?');
-    queryParams.push(direction);
-  }
-  if (dateFrom) {
-    whereConditions.push('m.timestamp >= ?');
-    queryParams.push(Math.floor(new Date(dateFrom).getTime() / 1000));
-  }
-  
-  if (dateTo) {
-    whereConditions.push('m.timestamp <= ?');
-    queryParams.push(Math.floor(new Date(dateTo + 'T23:59:59').getTime() / 1000));
-  }
-  const searchQuery = `
-    SELECT DISTINCT 
-      CASE 
-        WHEN m.direction = 'inbound' THEN m.from_digits
-        WHEN m.direction = 'outbound' THEN m.to_digits
-      END as contact,
-      MAX(m.timestamp) as last_message_ts,
-      COUNT(*) as message_count
-    FROM messages m
-    WHERE ${whereConditions.join(' AND ')}
-    GROUP BY contact
-    ORDER BY last_message_ts DESC
-  `;
-  
-  const searchResults = await db.prepare(searchQuery).all(...queryParams);
-  return (Array.isArray(searchResults) ? searchResults : []).map(result => ({
-    contact: parseRouteContact(result.contact),
-    last_message_ts: result.last_message_ts,
-    message_count: result.message_count
-  }));
-}
-async function performMessageSearch(userId, filters) {
-  const { q, messageType, direction, dateFrom, dateTo, contact, limit, offset } = filters;
-  let whereConditions = ['m.user_id = ?'];
-  let queryParams = [userId];
-  if (q) {
-    whereConditions.push(`(m.text_body LIKE ? OR m.raw LIKE ?)`);
-    const searchTerm = `%${q}%`;
-    queryParams.push(searchTerm, searchTerm);
-  }
-  if (messageType) {
-    whereConditions.push('m.type = ?');
-    queryParams.push(messageType);
-  }
-  if (direction) {
-    whereConditions.push('m.direction = ?');
-    queryParams.push(direction);
-  }
-  if (contact) {
-    whereConditions.push('(m.from_digits = ? OR m.to_digits = ?)');
-    queryParams.push(contact, contact);
-  }
-  if (dateFrom) {
-    whereConditions.push('m.timestamp >= ?');
-    queryParams.push(Math.floor(new Date(dateFrom).getTime() / 1000));
-  }
-  
-  if (dateTo) {
-    whereConditions.push('m.timestamp <= ?');
-    queryParams.push(Math.floor(new Date(dateTo + 'T23:59:59').getTime() / 1000));
-  }
-  const countQuery = `
-    SELECT COUNT(*) as total
-    FROM messages m
-    WHERE ${whereConditions.join(' AND ')}
-  `;
-  const totalResult = await db.prepare(countQuery).get(...queryParams);
-  const total = totalResult?.total || 0;
-  const messagesQuery = `
-    SELECT 
-      m.id,
-      m.direction,
-      m.type,
-      m.text_body,
-      m.timestamp,
-      m.from_digits,
-      m.to_digits,
-      m.raw,
-      c.display_name as contact_name
-    FROM messages m
-    LEFT JOIN customers c ON (
-      (m.direction = 'inbound' AND c.contact_id = m.from_digits) OR
-      (m.direction = 'outbound' AND c.contact_id = m.to_digits)
-    ) AND c.user_id = ?
-    WHERE ${whereConditions.join(' AND ')}
-    ORDER BY m.timestamp DESC
-    LIMIT ? OFFSET ?
-  `;
-  
-  const messages = await db.prepare(messagesQuery).all(userId, ...queryParams, limit, offset);
-  const formattedMessages = (Array.isArray(messages) ? messages : []).map(msg => ({
-    id: msg.id,
-    direction: msg.direction,
-    type: msg.type,
-    text_body: msg.text_body,
-    timestamp: msg.timestamp,
-    from_digits: msg.from_digits,
-    to_digits: msg.to_digits,
-    contact_name: msg.contact_name,
-    contact: msg.direction === 'inbound' ? msg.from_digits : msg.to_digits,
-    raw: msg.raw ? JSON.parse(msg.raw) : null,
-    formatted_time: formatTimestampForDisplay(msg.timestamp)
-  }));
-  
-  return {
-    messages: formattedMessages,
-    total: total,
-    hasMore: (offset + limit) < total
-  };
-}
 async function ensureInProgressIfHuman(userId, phone) {
   try {
     const handoff = await findHandoffForContact(userId, phone, 'is_human human_expires_ts');
@@ -582,9 +481,7 @@ export default function registerInboxRoutes(app) {
     const dateFrom = (req.query.date_from || "").toString().trim();
     const dateTo = (req.query.date_to || "").toString().trim();
     const showArchived = ['1','true','yes'].includes(String(req.query.archived||'').toLowerCase());
-    const inboxFilter = ['all', 'unread', 'live'].includes(String(req.query.filter || 'all'))
-      ? String(req.query.filter || 'all')
-      : 'all';
+    const inboxFilter = parseInboxFilter(req.query.filter);
     const page = Math.max(1, parseInt(req.query.page||'1', 10) || 1);
     const pageSize = Math.min(50, Math.max(10, parseInt(req.query.page_size||'20', 10) || 20));
     const isSearchMode = !showArchived && (q || messageType || direction || dateFrom || dateTo);
@@ -622,17 +519,20 @@ export default function registerInboxRoutes(app) {
       statusByContact,
       escalationByContact,
       liveByContact,
+      requestingAgentByContact,
       unreadCounts,
     } = await enrichInboxContacts(userId, contacts);
     const filteredContacts = enrichedContacts.filter((c) => {
       if (inboxFilter === 'unread') return (c.unreadCount || 0) > 0 || c.hasNew;
       if (inboxFilter === 'live') return c.isLive;
+      if (inboxFilter === 'requesting_agent') return c.isRequestingAgent;
       return true;
     });
     const filterCounts = {
       all: enrichedContacts.length,
       unread: enrichedContacts.filter((c) => (c.unreadCount || 0) > 0 || c.hasNew).length,
       live: enrichedContacts.filter((c) => c.isLive).length,
+      requesting_agent: enrichedContacts.filter((c) => c.isRequestingAgent).length,
     };
     const list = renderInboxContactListItems(filteredContacts, {
       showArchived,
@@ -641,6 +541,7 @@ export default function registerInboxRoutes(app) {
       statusByContact,
       escalationByContact,
       liveByContact,
+      requestingAgentByContact,
       unreadCounts,
     });
     const searchResultsCount = isSearchMode ?
@@ -663,13 +564,14 @@ export default function registerInboxRoutes(app) {
         <a class="inbox-filter-tab${inboxFilter === 'all' ? ' is-active' : ''}" href="${inboxTabHref('all')}">All<span class="inbox-filter-tab__count">${filterCounts.all}</span></a>
         <a class="inbox-filter-tab${inboxFilter === 'unread' ? ' is-active' : ''}" href="${inboxTabHref('unread')}">Unread<span class="inbox-filter-tab__count">${filterCounts.unread}</span></a>
         <a class="inbox-filter-tab${inboxFilter === 'live' ? ' is-active' : ''}" href="${inboxTabHref('live')}">Live<span class="inbox-filter-tab__count">${filterCounts.live}</span></a>
+        <a class="inbox-filter-tab${inboxFilter === 'requesting_agent' ? ' is-active' : ''}" href="${inboxTabHref('requesting_agent')}">Requesting Agent<span class="inbox-filter-tab__count">${filterCounts.requesting_agent}</span></a>
       </div>`;
     const hasMoreContacts = !isSearchMode && (contacts || []).length >= pageSize;
     const paginationNav = '';
     const listContent = list || (inboxFilter !== 'all' && enrichedContacts.length > 0 ? `
                   <li style="border:0;">
                     <div class="empty-state-pro">
-                      <h3 class="empty-state-pro__title">No ${inboxFilter === 'live' ? 'live' : inboxFilter} conversations here</h3>
+                      <h3 class="empty-state-pro__title">No ${inboxFilterEmptyLabel(inboxFilter)} conversations here</h3>
                       <p class="empty-state-pro__copy">Nothing on this page matches the filter. Try another tab or <a href="/inbox${buildInboxQuery(filterBase)}">view all conversations</a>.</p>
                     </div>
                   </li>
@@ -697,11 +599,11 @@ export default function registerInboxRoutes(app) {
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     res.end(`
-      <html>${getProfessionalHead('Inbox')}<body>
+      <html>${getProfessionalHead('Inbox', { sandbox: true, csrfToken: res.locals.csrfToken || '' })}<body>
         <script src="/toast.js"></script>
         <script src="/inbox-page.js?v=${assetVer}"></script>
         <div class="container">
-          ${renderTopbar('Inbox', email)}
+          ${renderTopbar('Inbox', email, { realtime: true })}
           <div class="layout">
             ${renderSidebar('inbox', { showBookings: !!isUpgraded, isUpgraded })}
             <main class="main">
@@ -822,9 +724,7 @@ export default function registerInboxRoutes(app) {
   app.get("/api/inbox/contacts", ensureAuthed, async (req, res) => {
     const userId = getCurrentUserId(req);
     const showArchived = ['1', 'true', 'yes'].includes(String(req.query.archived || '').toLowerCase());
-    const inboxFilter = ['all', 'unread', 'live'].includes(String(req.query.filter || 'all'))
-      ? String(req.query.filter || 'all')
-      : 'all';
+    const inboxFilter = parseInboxFilter(req.query.filter);
     const page = Math.max(1, parseInt(req.query.page || '1', 10) || 1);
     const pageSize = Math.min(50, Math.max(10, parseInt(req.query.page_size || '20', 10) || 20));
     const q = (req.query.q || '').toString().trim();
@@ -857,12 +757,14 @@ export default function registerInboxRoutes(app) {
       statusByContact,
       escalationByContact,
       liveByContact,
+      requestingAgentByContact,
       unreadCounts,
     } = await enrichInboxContacts(userId, contacts);
 
     const filteredContacts = enrichedContacts.filter((c) => {
       if (inboxFilter === 'unread') return (c.unreadCount || 0) > 0 || c.hasNew;
       if (inboxFilter === 'live') return c.isLive;
+      if (inboxFilter === 'requesting_agent') return c.isRequestingAgent;
       return true;
     });
 
@@ -873,6 +775,7 @@ export default function registerInboxRoutes(app) {
       statusByContact,
       escalationByContact,
       liveByContact,
+      requestingAgentByContact,
       unreadCounts,
     });
 
@@ -883,6 +786,84 @@ export default function registerInboxRoutes(app) {
       hasMore: (contacts || []).length >= pageSize,
       count: filteredContacts.length,
     });
+  });
+
+  app.get("/api/inbox/contacts/row", ensureAuthed, async (req, res) => {
+    const userId = getCurrentUserId(req);
+    const phone = parseRouteContact(req.query.phone || '');
+    const phoneDigits = normalizePhone(phone);
+    if (!phoneDigits) {
+      return res.status(400).json({ success: false, error: 'phone is required' });
+    }
+    const showArchived = ['1', 'true', 'yes'].includes(String(req.query.archived || '').toLowerCase());
+    const inboxFilter = parseInboxFilter(req.query.filter);
+
+    try {
+      const contact = await getContactPreviewForUser(userId, phoneDigits);
+      if (!contact) {
+        return res.json({ success: false, error: 'not_found' });
+      }
+
+      const contactId = String(contact.contact || phone);
+      const handoff = await Handoff.findOne({
+        user_id: userId,
+        contact_id: { $in: [contactId, phone, phoneDigits, `+${phoneDigits}`].filter(Boolean) }
+      })
+        .select('is_archived deleted_at')
+        .lean();
+      if (handoff?.deleted_at) {
+        return res.json({ success: false, error: 'not_found' });
+      }
+      if (!showArchived && handoff?.is_archived) {
+        return res.json({ success: true, html: '', visible: false, contact: contactId });
+      }
+
+      const {
+        enrichedContacts,
+        customerNameByContact,
+        lastSeenByContact,
+        statusByContact,
+        escalationByContact,
+        liveByContact,
+        requestingAgentByContact,
+        unreadCounts,
+      } = await enrichInboxContacts(userId, [contact]);
+      const enriched = enrichedContacts[0];
+      if (!enriched) {
+        return res.json({ success: false, error: 'not_found' });
+      }
+
+      if (inboxFilter === 'unread' && !(enriched.unreadCount > 0 || enriched.hasNew)) {
+        return res.json({ success: true, html: '', visible: false, contact: enriched.contact });
+      }
+      if (inboxFilter === 'live' && !enriched.isLive) {
+        return res.json({ success: true, html: '', visible: false, contact: enriched.contact });
+      }
+      if (inboxFilter === 'requesting_agent' && !enriched.isRequestingAgent) {
+        return res.json({ success: true, html: '', visible: false, contact: enriched.contact });
+      }
+
+      const html = renderInboxContactListItems([enriched], {
+        showArchived,
+        customerNameByContact,
+        lastSeenByContact,
+        statusByContact,
+        escalationByContact,
+        liveByContact,
+        requestingAgentByContact,
+        unreadCounts,
+      });
+
+      return res.json({
+        success: true,
+        html,
+        visible: true,
+        contact: enriched.contact,
+      });
+    } catch (error) {
+      console.error('Inbox contact row fetch failed:', error);
+      return res.status(500).json({ success: false, error: 'Failed to load conversation' });
+    }
   });
 
   app.get("/api/inbox/:phone/messages", ensureAuthed, async (req, res) => {
@@ -936,10 +917,12 @@ export default function registerInboxRoutes(app) {
         }
       } catch {}
 
+      const threadHumanMode = await isContactInHumanMode(userId, phone);
       const html = renderThreadMessagesHtml(msgs, {
         userId,
         req,
         isUpgraded: !!planStatus?.isUpgraded,
+        allowAgentActions: threadHumanMode && !!planStatus?.isUpgraded,
         reactionsByMessage,
         userReactionsByMessage,
         replyOriginals,
@@ -1058,7 +1041,7 @@ export default function registerInboxRoutes(app) {
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     res.end(`
-      <html>${getProfessionalHead('Search Results')}<body>
+      <html>${getProfessionalHead('Search Results', { sandbox: true, csrfToken: res.locals.csrfToken || '' })}<body>
         <script>
           // Check authentication on page load
           (async function checkAuthOnLoad(){
@@ -1073,7 +1056,7 @@ export default function registerInboxRoutes(app) {
           })();
         </script>
         <div class="container">
-          ${renderTopbar(`<a href="/inbox">Inbox</a> / Search Results`, email)}
+          ${renderTopbar(`<a href="/inbox">Inbox</a> / Search Results`, email, { realtime: true })}
           <div class="layout">
             ${renderSidebar('inbox', { showBookings: !!isUpgraded, isUpgraded })}
             <main class="main">
@@ -1204,9 +1187,9 @@ export default function registerInboxRoutes(app) {
         const { isUpgraded: isUpgraded404 } = await getPlanStatus(userId);
         res.status(404).setHeader("Content-Type", "text/html; charset=utf-8");
         return res.end(`
-          <html>${getProfessionalHead('Not Found')}<body>
+          <html>${getProfessionalHead('Not Found', { csrfToken: res.locals.csrfToken || '' })}<body>
             <div class="container">
-              ${renderTopbar(`<a href="/inbox">Inbox</a>`, email404)}
+              ${renderTopbar(`<a href="/inbox">Inbox</a>`, email404, { realtime: true })}
               <div class="layout">
                 ${renderSidebar('inbox', { showBookings: !!isUpgraded404, isUpgraded: !!isUpgraded404 })}
                 <main class="main">
@@ -1266,53 +1249,11 @@ export default function registerInboxRoutes(app) {
     const cust = await Customer.findOne({ user_id: userId, contact_id: phone }).select('display_name');
     const headerName = cust?.display_name || ('+' + String(phone).replace(/^\+/, ''));
     const headerInitials = contactInitials(cust?.display_name, phone);
-    let msgs = await Message.aggregate([
-      {
-        $match: {
-          user_id: userId,
-          $or: [
-            { $and: [ { direction: 'inbound' }, { $or: [ { from_digits: phoneDigits }, { $and: [ { from_digits: { $in: [null, undefined] } }, { $expr: { $eq: [ { $replaceAll: { input: { $replaceAll: { input: { $replaceAll: { input: { $ifNull: ['$from_id', ''] }, find: '+', replacement: '' } }, find: ' ', replacement: '' } }, find: '-', replacement: '' } }, phoneDigits ] } } ] } ] } ] },
-            { $and: [ { direction: 'outbound' }, { $or: [ { to_digits: phoneDigits }, { $and: [ { to_digits: { $in: [null, undefined] } }, { $expr: { $eq: [ { $replaceAll: { input: { $replaceAll: { input: { $replaceAll: { input: { $ifNull: ['$to_id', ''] }, find: '+', replacement: '' } }, find: ' ', replacement: '' } }, find: '-', replacement: '' } }, phoneDigits ] } } ] } ] } ] }
-          ]
-        }
-      },
-      { $sort: { timestamp: 1 } },
-      { $group: { _id: null, items: { $push: '$$ROOT' } } },
-      { $project: { items: { $slice: ['$items', -THREAD_MESSAGES_PAGE_SIZE] } } },
-      { $unwind: '$items' },
-      { $replaceRoot: { newRoot: '$items' } },
-      {
-        $lookup: {
-          from: 'message_statuses',
-          let: { mid: '$id', uid: '$user_id' },
-          pipeline: [
-            { $match: { $expr: { $and: [ { $eq: ['$message_id', '$$mid'] }, { $eq: ['$user_id', '$$uid'] } ] } } },
-            { $sort: { timestamp: -1 } },
-            { $limit: 1 }
-          ],
-          as: 'last_status'
-        }
-      },
-      {
-        $project: {
-          id: 1,
-          direction: 1,
-          type: 1,
-          text_body: 1,
-          ts: { $ifNull: ['$timestamp', 0] },
-          raw: 1,
-          delivery_status: 1,
-          read_status: 1,
-          delivery_timestamp: 1,
-          read_timestamp: 1,
-          message_status: { $arrayElemAt: ['$last_status.status', 0] },
-          status_timestamp: { $arrayElemAt: ['$last_status.timestamp', 0] }
-        }
-      }
-    ]);
-    try { msgs = msgs.filter(m => m?.type !== 'system_clear'); } catch {}
-    const hasMoreThreadMessages = msgs.length >= THREAD_MESSAGES_PAGE_SIZE;
-    const oldestThreadTs = msgs.length ? Number(msgs[0]?.ts || 0) : 0;
+    const {
+      messages: msgs,
+      hasMore: hasMoreThreadMessages,
+      oldestTs: oldestThreadTs,
+    } = await loadThreadMessagesForDisplay(userId, phoneDigits, { limit: THREAD_MESSAGES_PAGE_SIZE });
     const messageIds = msgs.map(m => m.id);
     const reactionsByMessage = await getMessagesReactions(messageIds);
     const userReactionsByMessage = await getUserReactionsForMessages(messageIds, userId);
@@ -1369,6 +1310,7 @@ export default function registerInboxRoutes(app) {
       userId,
       req,
       isUpgraded,
+      allowAgentActions: isHuman && isUpgraded,
       reactionsByMessage,
       userReactionsByMessage,
       replyOriginals,
@@ -1382,7 +1324,7 @@ export default function registerInboxRoutes(app) {
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     res.end(`
-      <html>${getProfessionalHead(`Chat +${String(phone).replace(/^\+/, '')}`)}<body>
+      <html>${getProfessionalHead(`Chat +${String(phone).replace(/^\+/, '')}`, { sandbox: true, csrfToken: res.locals.csrfToken || '' })}<body>
           <script src="/toast.js"></script>
           <script src="/inbox-chat-pagination.js?v=${assetVer}"></script>
           <script>
@@ -1494,12 +1436,25 @@ export default function registerInboxRoutes(app) {
               applyComposerLiveMode(isHumanMode);
             }
 
+            function isChatHumanMode() {
+              try {
+                if (window.CHAT_IS_HUMAN === true || window.CHAT_IS_HUMAN === 'true') return true;
+                const btn = document.getElementById('handoffToggleBtn');
+                return btn && btn.getAttribute('data-is-human') === 'true';
+              } catch (_) {
+                return false;
+              }
+            }
+            window.isChatHumanMode = isChatHumanMode;
+
             function applyComposerLiveMode(isHumanMode) {
               try {
+                window.CHAT_IS_HUMAN = !!isHumanMode;
                 const sendButton = document.getElementById('sendButton');
                 const messageInput = document.getElementById('messageInput');
                 const attachBtn = document.querySelector('.wa-attach-btn');
                 const emojiBtn = document.querySelector('.wa-emoji-btn');
+                const reactionPicker = document.getElementById('reactionPicker');
 
                 if (sendButton) {
                   if (isHumanMode) {
@@ -1518,6 +1473,12 @@ export default function registerInboxRoutes(app) {
                 if (emojiBtn) {
                   emojiBtn.disabled = !isHumanMode;
                 }
+                if (reactionPicker && !isHumanMode) {
+                  reactionPicker.style.display = 'none';
+                }
+                document.querySelectorAll('.message-actions').forEach(function (el) {
+                  el.style.display = isHumanMode ? '' : 'none';
+                });
                 if (typeof updateSendButtonState === 'function') {
                   updateSendButtonState();
                 }
@@ -1777,6 +1738,12 @@ export default function registerInboxRoutes(app) {
             let currentReplyToMessageId = null;
             
             function showReactionPicker(messageId) {
+              if (!isChatHumanMode()) {
+                if (window.Toast && typeof window.Toast.info === 'function') {
+                  window.Toast.info('Switch to Live mode to react to messages.');
+                }
+                return;
+              }
               currentMessageId = messageId;
               const picker = document.getElementById('reactionPicker');
               if (picker) {
@@ -1795,7 +1762,11 @@ export default function registerInboxRoutes(app) {
             
             function addReaction(emoji) {
               if (!currentMessageId) return;
-              
+              if (!isChatHumanMode()) {
+                hideReactionPicker();
+                return;
+              }
+
               const phone = '${phone}'.split('?')[0]; // Clean phone number
               fetch('/api/reactions/' + currentMessageId, {
                 method: 'POST',
@@ -1827,6 +1798,7 @@ export default function registerInboxRoutes(app) {
             }
             
             function toggleReaction(messageId, emoji) {
+              if (!isChatHumanMode()) return;
               const phone = '${phone}'.split('?')[0]; // Clean phone number
               fetch('/api/reactions/' + messageId, {
                 method: 'POST',
@@ -1918,6 +1890,7 @@ export default function registerInboxRoutes(app) {
             }
             // Reply functions
             function replyToMessage(messageId) {
+              if (!isChatHumanMode()) return;
               currentReplyToMessageId = messageId;
               const messageElement = document.getElementById('message-' + messageId);
               
@@ -2436,11 +2409,12 @@ export default function registerInboxRoutes(app) {
             })();
           </script>
         <script>
-          // Expose plan capability so realtime appends can mirror server-rendered actions
+          // Expose plan + live mode so realtime appends can mirror server-rendered actions
           window.IS_UPGRADED = ${isUpgraded ? 'true' : 'false'};
+          window.CHAT_IS_HUMAN = ${isHuman ? 'true' : 'false'};
         </script>
           <div class="container">
-            ${renderTopbar(`<a href="/inbox">Inbox</a> / +${String(phone).replace(/^\+/, '')}`, email)}
+            ${renderTopbar(`<a href="/inbox">Inbox</a> / +${String(phone).replace(/^\+/, '')}`, email, { realtime: true })}
             <div class="layout">
               ${renderSidebar('inbox', { showBookings: !!isUpgraded, isUpgraded })}
               <main class="main">
@@ -2630,7 +2604,7 @@ export default function registerInboxRoutes(app) {
                           <!-- Emojis will be populated by JavaScript -->
                         </div>
                       </div>
-                      <div id="reactionPicker" class="reaction-picker" style="display:none;">
+                      <div id="reactionPicker" class="reaction-picker" style="display:none;"${!isHuman ? ' hidden' : ''}>
                         <div class="reaction-picker-header">
                           <span class="reaction-picker-title">React to message</span>
                           <button type="button" class="reaction-picker-close" onclick="hideReactionPicker()">×</button>
@@ -2844,7 +2818,9 @@ export default function registerInboxRoutes(app) {
         const now = Math.floor(Date.now() / 1000);
         await upsertHandoffForContact(userId, phone, {
           is_human: true,
-          human_expires_ts: now + 5 * 60
+          human_expires_ts: now + 5 * 60,
+          escalation_step: null,
+          escalation_reason: null,
         });
         sendLiveModeWelcomeMessage(userId, phone, cfg, agentName);
       } else {
@@ -2890,7 +2866,12 @@ export default function registerInboxRoutes(app) {
           return res.redirect(`/inbox/${encodeURIComponent(phone)}?toast=${msg}&type=error`);
         }
         try {
-          await upsertHandoffForContact(userId, phone, { is_human: true, human_expires_ts: exp });
+          await upsertHandoffForContact(userId, phone, {
+            is_human: true,
+            human_expires_ts: exp,
+            escalation_step: null,
+            escalation_reason: null,
+          });
         } catch {}
         sendLiveModeWelcomeMessage(userId, phone, cfg, agentName);
       } else {
@@ -2912,7 +2893,7 @@ export default function registerInboxRoutes(app) {
       if (!messageId || !status) {
         return res.status(400).json({ error: 'Missing messageId or status' });
       }
-      simulateDeliveryStatusUpdate(messageId, status);
+      simulateDeliveryStatusUpdate(messageId, status, userId);
       broadcastMessageStatus(userId, phone, messageId, status, {
         messageId,
         status,
@@ -3171,18 +3152,9 @@ export default function registerInboxRoutes(app) {
       }
       await Message.deleteMany(criteria);
       try {
-        const dbNative = getDB();
-        await dbNative.collection('contact_interactions').deleteMany({
-          user_id: String(userId),
-          contact_id: { $in: variants.length ? variants : [phone, digits, '+' + digits] }
-        });
+        await resetContactBotKnowledge(userId, phone);
       } catch (e) {
-        console.warn('[Inbox][DELETE] delete contact_interactions failed:', e?.message || e);
-      }
-      try {
-        await Customer.deleteMany({ user_id: userId, contact_id: { $in: variants } });
-      } catch (e) {
-        console.warn('[Inbox][DELETE] delete customer failed:', e?.message || e);
+        console.warn("[Inbox][DELETE] reset contact bot knowledge failed:", e?.message || e);
       }
     } catch (e) {
       console.error('Delete conversation failed:', e?.message || e);
@@ -3351,7 +3323,7 @@ export default function registerInboxRoutes(app) {
     }
     
     try {
-      const retryResult = await retryFailedMessage(messageId);
+      const retryResult = await retryFailedMessage(messageId, userId);
       
       if (!retryResult.success) {
         return res.status(400).json({ 
@@ -3421,7 +3393,7 @@ export default function registerInboxRoutes(app) {
           newMessageId: outboundId
         });
       } else {
-        markMessageAsFailed(messageId, 'Retry failed: No message ID returned from WhatsApp');
+        markMessageAsFailed(messageId, 'Retry failed: No message ID returned from WhatsApp', userId);
         
         return res.status(500).json({ 
           success: false, 
@@ -3431,7 +3403,7 @@ export default function registerInboxRoutes(app) {
       
     } catch (error) {
       console.error('Retry message error:', error);
-      markMessageAsFailed(messageId, `Retry failed: ${error.message}`);
+      markMessageAsFailed(messageId, `Retry failed: ${error.message}`, userId);
       
       return res.status(500).json({ 
         success: false, 
@@ -3743,7 +3715,27 @@ export default function registerInboxRoutes(app) {
     if (!emoji) {
       return res.status(400).json({ error: 'Emoji is required' });
     }
-    
+
+    if (phone) {
+      const inHumanMode = await isContactInHumanMode(userId, phone);
+      if (!inHumanMode) {
+        return res.status(403).json({
+          success: false,
+          error: 'Reactions are only available in Live mode. Take over the conversation first.',
+        });
+      }
+    }
+
+    try {
+      const owns = await getDB().collection('messages').findOne(
+        { id: String(messageId), user_id: String(userId) },
+        { projection: { _id: 1 } }
+      );
+      if (!owns) return res.status(404).json({ error: 'Message not found' });
+    } catch {
+      return res.status(500).json({ error: 'Failed to toggle reaction' });
+    }
+
     const result = await toggleReaction(messageId, userId, emoji);
     if (result.success) {
       if (phone) {
@@ -3799,10 +3791,16 @@ export default function registerInboxRoutes(app) {
     }
   });
   
-  app.get("/api/reactions/:messageId", ensureAuthed, (req, res) => {
+  app.get("/api/reactions/:messageId", ensureAuthed, async (req, res) => {
     const { messageId } = req.params;
-    const reactions = getMessageReactions(messageId);
-    res.json({ reactions });
+    const userId = getCurrentUserId(req);
+    try {
+      const reactions = await getMessageReactions(messageId, userId);
+      res.json({ reactions });
+    } catch (error) {
+      console.error('Error fetching reactions:', error);
+      res.status(500).json({ error: 'Failed to fetch reactions' });
+    }
   });
   
   app.delete("/api/reactions/:messageId", ensureAuthed, async (req, res) => {
@@ -3818,6 +3816,16 @@ export default function registerInboxRoutes(app) {
     
     if (!emoji) {
       return res.status(400).json({ error: 'Emoji is required' });
+    }
+
+    try {
+      const owns = await getDB().collection('messages').findOne(
+        { id: String(messageId), user_id: String(userId) },
+        { projection: { _id: 1 } }
+      );
+      if (!owns) return res.status(404).json({ error: 'Message not found' });
+    } catch {
+      return res.status(500).json({ error: 'Failed to remove reaction' });
     }
     
     const result = await removeReaction(messageId, userId, emoji);

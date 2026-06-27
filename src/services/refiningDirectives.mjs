@@ -1,5 +1,5 @@
 import { upsertKbItem } from "./kb.mjs";
-import { upsertSettingsForUser, getSettingsForUser } from "./settings.mjs";
+import { upsertSettingsForUser, getSettingsForUser, isBookingsEnabled } from "./settings.mjs";
 import {
   appendCompiledEnforcedFromRuleText,
   mergeEnforcedRules,
@@ -210,23 +210,28 @@ export async function applyRefiningDirectives(userId, directives = {}) {
     if (ok) summaries.push(`Saved “${item.title}” to Knowledge Base.`);
   }
 
-  if (
-    !needsClarification
-    && (bookingProfile || addBookingFields.length || removeBookingFieldIds.length || clearBookingFields)
-  ) {
-    const nextFieldsJson = applyBookingFieldDirectives(current?.booking_fields_json, {
-      profile: bookingProfile,
-      addFields: addBookingFields,
-      removeIds: removeBookingFieldIds,
-      clear: clearBookingFields,
-    });
-    updates.booking_fields_json = nextFieldsJson;
-    if (bookingProfile) summaries.push(`Booking profile set to ${bookingProfile}.`);
-    if (addBookingFields.length) {
-      summaries.push(`Updated ${addBookingFields.length} booking question${addBookingFields.length === 1 ? "" : "s"}.`);
+  let bookingsBlocked = false;
+  const hasBookingDirectives = !needsClarification
+    && (bookingProfile || addBookingFields.length || removeBookingFieldIds.length || clearBookingFields);
+
+  if (hasBookingDirectives) {
+    if (!isBookingsEnabled(current)) {
+      bookingsBlocked = true;
+    } else {
+      const nextFieldsJson = applyBookingFieldDirectives(current?.booking_fields_json, {
+        profile: bookingProfile,
+        addFields: addBookingFields,
+        removeIds: removeBookingFieldIds,
+        clear: clearBookingFields,
+      });
+      updates.booking_fields_json = nextFieldsJson;
+      if (bookingProfile) summaries.push(`Booking profile set to ${bookingProfile}.`);
+      if (addBookingFields.length) {
+        summaries.push(`Updated ${addBookingFields.length} booking question${addBookingFields.length === 1 ? "" : "s"}.`);
+      }
+      if (removeBookingFieldIds.length) summaries.push("Removed booking question(s).");
+      if (clearBookingFields) summaries.push("Cleared custom booking questions.");
     }
-    if (removeBookingFieldIds.length) summaries.push("Removed booking question(s).");
-    if (clearBookingFields) summaries.push("Cleared custom booking questions.");
   }
 
   if (Object.keys(updates).length && !needsClarification) {
@@ -246,6 +251,12 @@ export async function applyRefiningDirectives(userId, directives = {}) {
     }
   } else {
     visible = String(reply || "").trim();
+    if (bookingsBlocked) {
+      const gateMsg = "Bookings are disabled in Settings, so booking questions can't be saved yet. Turn on Bookings under Settings → Bookings, then ask me again to add or change intake questions.";
+      if (!visible || !/\b(bookings?|reservations?|settings)\b/i.test(visible)) {
+        visible = gateMsg;
+      }
+    }
     if (!visible && summaries.length) visible = summaries.join(" ");
     if (!visible) visible = "Got it.";
   }
@@ -255,11 +266,8 @@ export async function applyRefiningDirectives(userId, directives = {}) {
     || removeRules.length > 0
     || effectiveEnforceRules.length > 0
     || addKb.length > 0
-    || bookingProfile
-    || addBookingFields.length > 0
-    || removeBookingFieldIds.length > 0
-    || clearBookingFields
     || Object.keys(sets).length > 0
+    || (hasBookingDirectives && !bookingsBlocked)
   );
   const removed = !needsClarification && removeRules.length > 0;
 
@@ -270,6 +278,7 @@ export async function applyRefiningDirectives(userId, directives = {}) {
     needsClarification,
     saved,
     removed,
+    bookingsBlocked,
   };
 }
 

@@ -1,5 +1,13 @@
 (function () {
   const SETTINGS_PANEL_KEY = 'settings:activePanel:v1';
+  const PANEL_ALIASES = {
+    ai: 'ai_configuration',
+    conversation: 'ai_configuration',
+  };
+
+  function normalizePanelId(id) {
+    return PANEL_ALIASES[id] || id;
+  }
 
   function initSettingsPanels() {
     const panels = document.querySelectorAll('.settings-panel');
@@ -7,6 +15,7 @@
     const heading = document.getElementById('settings-panel-heading');
 
     function showPanel(id) {
+      id = normalizePanelId(id);
       if (!id) return;
       const hasPanel = Array.from(panels).some(function (panel) { return panel.id === id; });
       if (!hasPanel) return;
@@ -26,9 +35,15 @@
       }
 
       try { localStorage.setItem(SETTINGS_PANEL_KEY, id); } catch (_) {}
+      const panelInput = document.getElementById('settings-active-panel');
+      if (panelInput) panelInput.value = id;
       if (window.history && window.history.replaceState) {
-        window.history.replaceState(null, '', '#' + id);
+        const search = location.search || '';
+        window.history.replaceState(null, '', location.pathname + search + '#' + id);
       }
+      try {
+        document.dispatchEvent(new CustomEvent('settings-panel-shown', { detail: { panelId: id } }));
+      } catch (_) {}
     }
 
     links.forEach(function (link) {
@@ -38,14 +53,21 @@
     });
 
     window.addEventListener('hashchange', function () {
-      const hash = (location.hash || '').replace(/^#/, '');
+      const hash = normalizePanelId((location.hash || '').replace(/^#/, ''));
       if (hash) showPanel(hash);
     });
 
-    const hash = (location.hash || '').replace(/^#/, '');
+    const hash = normalizePanelId((location.hash || '').replace(/^#/, ''));
     let stored = null;
-    try { stored = localStorage.getItem(SETTINGS_PANEL_KEY); } catch (_) {}
-    const initial = (hash && document.getElementById(hash)) ? hash : (stored || 'account');
+    try { stored = normalizePanelId(localStorage.getItem(SETTINGS_PANEL_KEY)); } catch (_) {}
+    const search = new URLSearchParams(location.search || '');
+    const stripeBillingErrors = new Set(['payment_not_completed', 'processing_failed', 'no_session_id']);
+    const stripeBillingReturn = search.get('success') === 'true'
+      || search.get('canceled') === 'true'
+      || stripeBillingErrors.has(search.get('error'));
+    const initial = (hash && document.getElementById(hash))
+      ? hash
+      : (stripeBillingReturn ? 'billing' : (stored || 'account'));
     showPanel(initial);
   }
 

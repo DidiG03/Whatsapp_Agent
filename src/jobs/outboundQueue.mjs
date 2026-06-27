@@ -27,14 +27,33 @@ async function loadBullMq() {
 }
 
 export async function initOutboundQueue() {
+  // Idempotent: never create a second queue/worker for the same process.
+  if (queue) return true;
+  // Give Redis a chance to connect when it is explicitly enabled but the
+  // (lazy) connection has not finished yet, e.g. during startup.
+  if (!isRedisConnected() && String(process.env.REDIS_ENABLED || '').toLowerCase() === 'true') {
+    try { await ensureRedisConnected(3000); } catch {}
+  }
   if (!isRedisConnected()) {
     logHelpers.logBusinessEvent('queue_disabled', { reason: 'redis_not_connected' });
     return false;
   }
   const ok = await loadBullMq();
   if (!ok) return false;
+  if (queue) return true;
 
-  const connection = getRedisClient()?.options || {};
+  // Dedicated BullMQ connections — do NOT reuse getRedisClient() options wholesale.
+  // The cache client sets commandTimeout: 5000, but Worker/QueueEvents use blocking
+  // reads that wait indefinitely when idle; with a timeout ioredis throws
+  // "Command timed out" every few seconds even though Redis is healthy.
+  const connection = {
+    host: process.env.REDIS_HOST || 'localhost',
+    port: parseInt(process.env.REDIS_PORT || '6379', 10),
+    password: process.env.REDIS_PASSWORD || undefined,
+    db: parseInt(process.env.REDIS_DB || '0', 10),
+    maxRetriesPerRequest: null,
+    ...(String(process.env.REDIS_TLS || '').toLowerCase() === 'true' ? { tls: {} } : {}),
+  };
   queue = new Queue('outbound_messages', { connection });
   dlq = new Queue('outbound_messages_dlq', { connection });
   const concurrency = Number(process.env.QUEUE_CONCURRENCY || 5);

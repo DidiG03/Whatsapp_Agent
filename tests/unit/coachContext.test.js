@@ -88,4 +88,13 @@ describe("coachContext", () => {
     expect(ctx).toContain("Google Business Profile");
     expect(ctx).toContain("Party size");
   });
+
+  it("buildCoachBusinessContext notes when bookings are disabled", async () => {
+    const ctx = await buildCoachBusinessContext({
+      business_name: "Acme Spa",
+      bookings_enabled: false,
+    });
+    expect(ctx).toContain("Bookings: disabled");
+    expect(ctx).toContain("inactive");
+  });
 });

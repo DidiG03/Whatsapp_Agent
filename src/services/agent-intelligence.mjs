@@ -8,6 +8,7 @@ import {
   resolveBookingFieldValues,
   bookingFieldsReady,
   bookingReplyAsksForAnyField,
+  isBookingVocabularyWord,
 } from "./bookingFields.mjs";
 
 function stripAccentsLower(s) {
@@ -44,7 +45,10 @@ export function bookingReplyAsksForName(text) {
 
 export function looksLikeStandaloneCustomerName(raw) {
   const s = String(raw || "").trim();
-  return /^[A-Za-zËÇëç][A-Za-zËÇëç'\-]+(?:\s+[A-Za-zËÇëç][A-Za-zËÇëç'\-]+){0,2}$/.test(s);
+  if (!/^[A-Za-zËÇëç][A-Za-zËÇëç'\-]+(?:\s+[A-Za-zËÇëç][A-Za-zËÇëç'\-]+){0,2}$/.test(s)) {
+    return false;
+  }
+  return !isBookingVocabularyWord(s);
 }
 
 export function isBookingNameCompletion(text, historyMessages = []) {
@@ -52,7 +56,7 @@ export function isBookingNameCompletion(text, historyMessages = []) {
   if (!looksLikeStandaloneCustomerName(raw)) return false;
   return (historyMessages || []).some(
     (m) => m?.role === "assistant" && bookingReplyAsksForName(String(m.content || ""))
-  ) || historyHasBookingDateTime(historyMessages);
+  );
 }
 
 function historyHasBookingDateTime(historyMessages = []) {
@@ -77,10 +81,11 @@ function parsePartySizeFromHistory(historyMessages = []) {
 }
 
 function resolveNameFromHistory(historyMessages = []) {
-  for (const m of [...(historyMessages || [])].reverse()) {
+  for (let i = 0; i < (historyMessages || []).length; i++) {
+    const m = historyMessages[i];
     if (m?.role !== "user") continue;
     const c = String(m.content || "").trim();
-    if (looksLikeStandaloneCustomerName(c)) return c;
+    if (isBookingNameCompletion(c, historyMessages.slice(0, i))) return c;
   }
   return null;
 }
@@ -91,6 +96,48 @@ export function bookingHasPartySize(text, intentData = {}, historyMessages = [])
   const n = Number(intentData?.partySize || intentData?.guests || 0);
   if (n >= 1 && n <= 100) return true;
   return parsePartySizeFromHistory(historyMessages) != null;
+}
+
+/** Current message carries a booking word, a date/time, or a party size. */
+function currentMessageHasBookingCue(text) {
+  const sq = stripAccentsLower(String(text || ""));
+  if (!sq) return false;
+  if (/\b(rezerv|book|booking|termin|takim)\w*/.test(sq)) return true;
+  if (/\b(\d{1,2})\s*(?:persona(?:ve)?|people|guests|veta)\b/.test(sq)) return true;
+  return /\b(\d{1,2}(?::\d{2})?\s*(?:am|pm)?|ora\s+\d|oren\s+\d|at\s+\d|neser|nesër|tomorrow|today|sot|pasdite|evening|dark|mbremje|data\s+\d{1,2}|\d{1,2}[\/\-.]\d{1,2})\b/.test(sq);
+}
+
+/**
+ * True only when the assistant's MOST RECENT turn was actively asking the customer for a
+ * booking detail (name, party size, a specific time/date). We look at the latest assistant
+ * message — not anywhere in history — so stale booking chatter from earlier in the thread
+ * cannot make an unrelated reply look like a booking continuation.
+ */
+function lastAssistantIsCollectingBooking(historyMessages = []) {
+  const lastAssistant = [...(historyMessages || [])]
+    .reverse()
+    .find((m) => m?.role === "assistant" && String(m?.content || "").trim());
+  if (!lastAssistant) return false;
+  const content = String(lastAssistant.content || "");
+  if (bookingReplyAsksForName(content)) return true;
+  const a = stripAccentsLower(content);
+  return /\b(sa persona|how many people|how many|what time|exact time|preferred time|n[ëe] cfar[ëe] ore|n[ëe] cilar ore|cila ore|what date|which date|cfar[ëe] date)\b/.test(a);
+}
+
+/**
+ * True only when the conversation actually involves a booking *right now* — a date/time
+ * was provided for this turn, the current message itself carries a booking cue, or the
+ * customer is directly answering the assistant's most recent booking question.
+ *
+ * Deliberately does NOT treat stale booking date/time still sitting in the loaded history
+ * window as sufficient: otherwise an unrelated message (e.g. a plain greeting) from a
+ * customer with prior booking chatter — and whose name is saved in memory — would be
+ * force-booked and fail with a nonsensical "that slot was just taken" reply.
+ */
+export function hasActiveBookingContext({ text = "", intentData = {}, historyMessages = [] } = {}) {
+  if (intentData && String(intentData.datetime || intentData.range || "").trim()) return true;
+  if (currentMessageHasBookingCue(text)) return true;
+  return lastAssistantIsCollectingBooking(historyMessages);
 }
 
 export function detectConversationPhase({ text, bookingSession, hasUpcomingAppt, lang = "en", historyMessages = [] } = {}) {
@@ -535,6 +582,10 @@ export function bookIntentReady({
   if (isBookingNameCompletion(text, historyMessages) && fieldsIncludeType(fields, "party_size")) {
     if (!bookingHasPartySize(text, intentData, historyMessages)) return false;
   }
+  // A booking is never "ready" without genuine booking context — otherwise a plain
+  // greeting from a known customer (name already on file) would be force-booked and
+  // fail with a nonsensical "that slot was just taken" reply.
+  if (!hasActiveBookingContext({ text, intentData, historyMessages })) return false;
   return bookingFieldsReady(values, fields).ready;
 }
 
@@ -637,7 +688,7 @@ export function guardPrematureActionClaims(text, { phase, lang = "en" } = {}) {
   }
 
   const falseComplete = lang === "sq"
-    ? /\b(rezervimi|termini|rezervim|gjith[cç]ka u krye|u krye|u anulua|u konfirmua|u rezervua|u ndryshua|u zhvendos|e\s+shenova|e\s+shënova|kam\s+rezervuar|eshte\s+rezervuar|është\s+rezervuar|t[eë] kam\s+rezervuar)\b/i
+    ? /\b(rezervimi\s+u\s+krye|gjith[cç]ka u krye|u krye|u anulua|u konfirmua|u rezervua|u ndryshua|u zhvendos|e\s+shenova|e\s+shënova|kam\s+rezervuar|eshte\s+rezervuar|është\s+rezervuar|t[eë] kam\s+rezervuar)\b/i
     : /\b((?:booking|appointment|reservation).*(?:has been|is|was) (?:canceled|cancelled|confirmed|booked|moved|updated|reserved)|you(?:'re| are) all set|everything is (?:done|set|confirmed))\b/i;
 
   const guardedPhases = [

@@ -65,7 +65,7 @@ export async function initMongoDB() {
     });
 
     console.log('MongoDB connected successfully');
-    if (!process.env.MONGODB_BOOTSTRAP_INDEXES && process.env.VERCEL) {
+    if (process.env.MONGODB_BOOTSTRAP_INDEXES === '0') {
       return { client, db: mongoDb };
     }
     try {
@@ -320,6 +320,27 @@ class MongoDBAdapter {
             }
             console.warn(`Invalid MongoDB run target:`, collectionName);
             return { changes: 0, lastInsertRowid: null };
+          }
+          if (typeof collectionName === 'string' && /INSERT\s+INTO\s+notifications/i.test(collectionName)) {
+            try {
+              const [user_id, type, title, message, link, metadata] = args;
+              const doc = {
+                user_id: user_id != null ? String(user_id) : null,
+                type: type || null,
+                title: title || null,
+                message: message || null,
+                link: link || null,
+                metadata: metadata || null,
+                is_read: false,
+                created_at: new Date(),
+                timestamp: Math.floor(Date.now() / 1000),
+              };
+              const result = await this.db.collection('notifications').insertOne(doc);
+              return { changes: 1, lastInsertRowid: result.insertedId };
+            } catch (e) {
+              console.warn('MongoDB notifications insert translation failed:', e?.message || e);
+              return { changes: 0, lastInsertRowid: null };
+            }
           }
           if (typeof collectionName === 'string' && /UPDATE\s+handoff\s+SET\s+is_human\s*=\s*0/i.test(collectionName)) {
             try {

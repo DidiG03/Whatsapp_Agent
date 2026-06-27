@@ -129,16 +129,20 @@ export default function registerKbRoutes(app) {
   }));
   app.get('/kb/file/:id', ensureAuthed, async (req, res) => {
     try {
+      const userId = getCurrentUserId(req);
       const { getDB } = await import('../db-mongodb.mjs');
       const dbNative = getDB();
       const { GridFSBucket, ObjectId } = await import('mongodb');
       const bucket = new GridFSBucket(dbNative, { bucketName: 'kbfiles' });
-      const id = new ObjectId(String(req.params.id));
-      try {
-        const files = dbNative.collection('kbfiles.files');
-        const meta = await files.findOne({ _id: id });
-        if (meta?.contentType) res.setHeader('Content-Type', meta.contentType);
-      } catch {}
+      let id;
+      try { id = new ObjectId(String(req.params.id)); } catch { return res.status(404).send('Not Found'); }
+      const files = dbNative.collection('kbfiles.files');
+      const meta = await files.findOne({ _id: id });
+      if (!meta) return res.status(404).send('Not Found');
+      if (String(meta?.metadata?.user_id || '') !== String(userId || '')) {
+        return res.status(404).send('Not Found');
+      }
+      if (meta?.contentType) res.setHeader('Content-Type', meta.contentType);
       bucket.openDownloadStream(id).on('error', () => res.status(404).end()).pipe(res);
     } catch (e) {
       return res.status(404).send('Not Found');
@@ -190,7 +194,7 @@ export default function registerKbRoutes(app) {
     const plan = await getUserPlan(userId);
     const isUpgraded = (plan?.plan_name || 'free') !== 'free';
     if (!isUpgraded) {
-      return res.redirect(303, '/plan');
+      return res.redirect(303, '/settings#billing');
     }
     const email = await getSignedInEmail(req);
     const settings = await getSettingsForUser(userId);
@@ -282,7 +286,7 @@ export default function registerKbRoutes(app) {
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     res.end(`
-      <html>${getProfessionalHead("Knowledge Base")}<body>
+      <html>${getProfessionalHead("Knowledge Base", { sandbox: true, csrfToken: res.locals.csrfToken || '' })}<body>
         <script src="/toast.js"></script>
         
         <script>
