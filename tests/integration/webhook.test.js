@@ -1,6 +1,15 @@
 import request from 'supertest';
 import crypto from 'node:crypto';
 
+jest.mock('../../src/db-mongodb.mjs', () => ({
+  db: { prepare: () => ({ all: () => [], get: () => null, run: () => ({}) }) },
+  getDB: () => ({ collection: () => ({ aggregate: () => ({ toArray: async () => [] }) }) }),
+  getMongoose: () => ({ connection: { readyState: 1 } }),
+  initMongoDB: async () => ({ client: null, db: null }),
+  isMongoConnected: () => true,
+  closeMongoDB: async () => {},
+}));
+
 jest.mock('../../src/services/settings.mjs', () => ({
   ...jest.requireActual('../../src/services/settings.mjs'),
   findSettingsByVerifyToken: jest.fn(async (token) => {

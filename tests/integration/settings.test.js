@@ -2,6 +2,24 @@ import request from 'supertest';
 process.env.CLERK_PUBLISHABLE = '';
 process.env.CLERK_SECRET_KEY = '';
 
+jest.mock('../../src/db-mongodb.mjs', () => ({
+  db: { prepare: () => ({ all: () => [], get: () => null, run: () => ({}) }) },
+  getDB: () => ({ collection: () => ({ aggregate: () => ({ toArray: async () => [] }) }) }),
+  getMongoose: () => ({ connection: { readyState: 1 } }),
+  initMongoDB: async () => ({ client: null, db: null }),
+  isMongoConnected: () => true,
+  closeMongoDB: async () => {},
+}));
+
+jest.mock('../../src/services/usage.mjs', () => ({
+  getUserPlan: jest.fn(async () => ({ plan_name: 'free' })),
+  isPlanUpgraded: jest.fn(() => false),
+}));
+
+jest.mock('../../src/services/audit.mjs', () => ({
+  recordSettingsAudit: jest.fn(async () => {}),
+}));
+
 jest.mock('../../src/services/settings.mjs', () => ({
   getSettingsForUser: jest.fn(async () => ({})),
   upsertSettingsForUser: jest.fn(async () => true)
