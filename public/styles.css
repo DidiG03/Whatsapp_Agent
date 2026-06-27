@@ -480,6 +480,193 @@ header h1, header h2 {
   box-shadow: var(--shadow-sm);
 }
 
+.setup-checklist {
+  margin-bottom: var(--space-3);
+}
+
+.setup-checklist__card {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+}
+
+.setup-checklist__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.setup-checklist--minimized .setup-checklist__header {
+  margin-bottom: 0;
+}
+
+.setup-checklist__summary {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.setup-checklist__title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #f8fafc;
+}
+
+.setup-checklist__summary-meta {
+  font-size: 11px;
+  font-weight: 600;
+  color: #94a3b8;
+  white-space: nowrap;
+}
+
+.setup-checklist__toggle {
+  border: 0;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+  flex: 0 0 auto;
+}
+
+.setup-checklist__toggle:hover,
+.setup-checklist__summary:hover .setup-checklist__title {
+  color: #e2e8f0;
+}
+
+.setup-checklist__body {
+  overflow: hidden;
+  transition: max-height 0.2s ease, opacity 0.2s ease;
+  max-height: 480px;
+  opacity: 1;
+}
+
+.setup-checklist--minimized .setup-checklist__body {
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.setup-checklist--minimized .setup-checklist__card {
+  padding-top: var(--space-3);
+  padding-bottom: var(--space-3);
+}
+
+.setup-checklist__lead {
+  margin: 0 0 var(--space-3);
+  font-size: 12px;
+  line-height: 1.45;
+  color: #94a3b8;
+}
+
+.setup-checklist__progress {
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.18);
+  overflow: hidden;
+  margin-bottom: var(--space-2);
+}
+
+.setup-checklist__progress-bar {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #818cf8, #6366f1);
+  transition: width 0.25s ease;
+}
+
+.setup-checklist__progress-bar--done {
+  background: linear-gradient(90deg, #34d399, #22c55e);
+}
+
+.setup-checklist__meta {
+  font-size: 11px;
+  color: #64748b;
+  margin-bottom: var(--space-3);
+}
+
+.setup-checklist__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.setup-checklist__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.setup-checklist__bullet,
+.setup-checklist__check {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.setup-checklist__bullet {
+  border: 1.5px solid rgba(148, 163, 184, 0.45);
+}
+
+.setup-checklist__check {
+  background: rgba(34, 197, 94, 0.18);
+  color: #86efac;
+}
+
+.setup-checklist__link {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  min-width: 0;
+}
+
+.setup-checklist__link:hover .setup-checklist__label {
+  color: #ffffff;
+}
+
+.setup-checklist__label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #e2e8f0;
+  line-height: 1.35;
+}
+
+.setup-checklist__hint {
+  display: block;
+  font-size: 11px;
+  color: #64748b;
+  line-height: 1.35;
+  margin-top: 1px;
+}
+
+.setup-checklist__item.is-done .setup-checklist__label,
+.setup-checklist__item.is-done .setup-checklist__hint {
+  color: #64748b;
+}
+
 .notification-bell {
   position: relative;
   cursor: pointer;
@@ -5758,6 +5945,11 @@ body:has(.layout) .sidebar .logout:hover {
   background: rgba(239, 68, 68, 0.18);
   color: #fecaca;
   transform: none;
+}
+
+body:has(.layout) .setup-checklist__card {
+  background: rgba(15, 23, 42, 0.55);
+  border-color: rgba(148, 163, 184, 0.14);
 }
 
 body:has(.layout) .main-content {

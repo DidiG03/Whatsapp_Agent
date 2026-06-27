@@ -1,5 +1,6 @@
 import { ensureAuthed, getCurrentUserId } from "../middleware/auth.mjs";
 import { getSettingsForUser } from "../services/settings.mjs";
+import { getSetupChecklist } from "../services/setupChecklist.mjs";
 import { getVercelWebAnalyticsSnippet } from "../utils.mjs";
 import OpenAI from "openai";
 
@@ -316,6 +317,17 @@ export default function registerMiscRoutes(app) {
       return res.json({ keyMeta, openai: openaiResult });
     } catch (e) {
       return res.status(500).json({ error: 'diag_failed', message: e?.message || String(e) });
+    }
+  });
+
+  app.get("/api/setup-checklist", ensureAuthed, async (req, res) => {
+    try {
+      const userId = getCurrentUserId(req);
+      const checklist = await getSetupChecklist(userId);
+      return res.json({ success: true, ...checklist });
+    } catch (error) {
+      console.error("[GET /api/setup-checklist]", error?.message || error);
+      return res.status(500).json({ success: false, error: "Failed to load setup checklist" });
     }
   });
 }

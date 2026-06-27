@@ -2,7 +2,8 @@
 import { CLERK_ENABLED, CLERK_PUBLISHABLE } from "./config.mjs";
 const ASSET_VER = process.env.STATIC_ASSETS_VERSION || process.env.VERCEL_GIT_COMMIT_SHA || process.env.GIT_COMMIT || 'dev';
 export function getEnhancementsScript() {
-  return `<script src="/enhancements.js?v=${ASSET_VER}" defer></script>`;
+  return `<script src="/enhancements.js?v=${ASSET_VER}" defer></script>
+  <script src="/setup-checklist.js?v=${ASSET_VER}" defer></script>`;
 }
 export function getVercelWebAnalyticsSnippet() {
   if (!process.env.VERCEL) return '';
@@ -228,6 +229,7 @@ export function renderSidebar(activeKey, options = {}) {
       </a>
       ${nav}
       <div class="spacer"></div>
+      <div id="setup-checklist" class="setup-checklist" aria-label="Setup checklist" hidden></div>
       ${logout}
     </aside>
   `;
